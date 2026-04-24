@@ -7,7 +7,7 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { appendEvents } from '#src/store/append.js';
 import { readJobProgress, loadJobProjectionDetail } from '#src/store/queries/jobs.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -29,7 +29,7 @@ afterEach(() => {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

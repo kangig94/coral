@@ -3,7 +3,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/contract.js';
-import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
+import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
 import { backendLog } from '../../infra/backend-log.js';
 import {
   describeSessionInterrupted,

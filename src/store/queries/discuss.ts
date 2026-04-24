@@ -1,28 +1,17 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import type { Database } from 'better-sqlite3';
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import {
-  readDiscussDiscoveryForSourceWithStorage,
-  readDiscussEventLogWithStorage,
-  readDiscussSnapshotWithStorage,
-  readDiscussSummaryIndexForSourceWithStorage,
-  resolveDiscussSessionDirForSourceWithStorage,
-} from '../../discuss/shell/discuss-sources-catalog.js';
-import {
-  discussBaseDirForSource,
-  discussDiscoveryPathForSource,
-  discussEventLogPath,
-  discussSessionDirForSource,
-  discussSourcesPath,
-  discussStatePath,
-  discussSummaryIndexPathForSource,
-  resolveProjectSource,
-} from '../../infra/paths.js';
-import type { DiscussPathResolver, StoragePort } from '../../runtime/ports.js';
+  listProjectionDiscussSnapshots,
+  readProjectionDiscuss,
+} from '../../discuss/projections.js';
 import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
 } from '../../discuss/persistence-types.js';
+import { resolveProjectSource } from '../../infra/paths.js';
+import { decodeStoredBody, type StoreReadContext } from '../body-codec.js';
+import type { EventsRow } from '../schema.js';
 
 export type DiscussSnapshotRow = PersistedDiscussSnapshot;
 export type DiscussEventLogEntry = DiscussDomainEvent;
@@ -33,77 +22,124 @@ export type DiscussReadRef =
       sessionId: string;
     };
 
-const nodeDiscussStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync: (filePath) => existsSync(filePath),
-  readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
-  readdirSync: (dirPath, options) => readdirSync(dirPath, options),
-};
+function discussIdFromRef(ref: DiscussReadRef): string {
+  return typeof ref === 'string' ? ref : ref.sessionId;
+}
 
-const nodeDiscussPaths: Pick<
-  DiscussPathResolver,
-  | 'projectSource'
-  | 'discussSourcesPath'
-  | 'discussBaseDirForSource'
-  | 'discussDiscoveryPathForSource'
-  | 'discussSummaryIndexPathForSource'
-  | 'discussSessionDirForSource'
-  | 'discussStatePath'
-  | 'discussEventLogPath'
-> = {
-  projectSource: resolveProjectSource,
-  discussSourcesPath,
-  discussBaseDirForSource,
-  discussDiscoveryPathForSource,
-  discussSummaryIndexPathForSource,
-  discussSessionDirForSource,
-  discussStatePath,
-  discussEventLogPath,
-};
-
-function resolveDiscussFilePath(
-  ref: DiscussReadRef,
-  kind: 'snapshot' | 'event-log',
-): string | null {
-  if (typeof ref === 'string') {
-    return ref;
+function eventTopic(payload: Record<string, unknown>, snapshot: PersistedDiscussSnapshot | null): string {
+  const input = payload.input;
+  if (
+    input !== null
+    && typeof input === 'object'
+    && !Array.isArray(input)
+    && typeof (input as { topic?: unknown }).topic === 'string'
+  ) {
+    return (input as { topic: string }).topic;
   }
 
-  const sessionDir = resolveDiscussSessionDirForSourceWithStorage(
-    nodeDiscussStorage,
-    nodeDiscussPaths,
-    ref.source,
-    ref.sessionId,
-  );
+  return snapshot?.state.topic ?? '';
+}
 
-  if (sessionDir === null) {
-    return null;
-  }
+function toDiscussDomainEvent(
+  row: EventsRow,
+  snapshot: PersistedDiscussSnapshot | null,
+  ctx: StoreReadContext,
+): DiscussDomainEvent {
+  const body = decodeStoredBody(row, ctx) as Record<string, unknown>;
+  const { sourceSeq, ...payload } = body;
 
-  return kind === 'snapshot' ? discussStatePath(sessionDir) : discussEventLogPath(sessionDir);
+  return {
+    v: 1,
+    sessionId: row.stream_id,
+    projectRoot: row.project ?? snapshot?.projectRoot ?? '',
+    topic: eventTopic(payload, snapshot),
+    seq: typeof sourceSeq === 'number' ? sourceSeq : row.seq,
+    kind: row.type.startsWith('discuss.')
+      ? (row.type.slice('discuss.'.length) as DiscussDomainEvent['kind'])
+      : (row.type as DiscussDomainEvent['kind']),
+    ts: row.ts,
+    payload,
+  } as DiscussDomainEvent;
+}
+
+function snapshotsForSource(db: Database, source: string): PersistedDiscussSnapshot[] {
+  return listProjectionDiscussSnapshots(db)
+    .map((row) => row.state)
+    .filter((snapshot) => snapshot.projectRoot === source || resolveProjectSource(snapshot.projectRoot) === source);
+}
+
+function latestUpdatedAt(snapshots: PersistedDiscussSnapshot[]): string {
+  return snapshots
+    .map((snapshot) => snapshot.updatedAt)
+    .sort()
+    .at(-1) ?? new Date(0).toISOString();
 }
 
 export function readDiscussSnapshot(
+  db: Database,
   ref: DiscussReadRef,
 ): DiscussSnapshotRow | null {
-  const statePath = resolveDiscussFilePath(ref, 'snapshot');
-  return statePath === null ? null : readDiscussSnapshotWithStorage(nodeDiscussStorage, statePath);
+  return readProjectionDiscuss(db, discussIdFromRef(ref))?.state ?? null;
 }
 
 export function readDiscussEventLog(
+  db: Database,
   ref: DiscussReadRef,
+  ctx: StoreReadContext,
 ): DiscussEventLogEntry[] {
-  const logPath = resolveDiscussFilePath(ref, 'event-log');
-  return logPath === null ? [] : readDiscussEventLogWithStorage(nodeDiscussStorage, logPath);
+  const discussId = discussIdFromRef(ref);
+  const snapshot = readProjectionDiscuss(db, discussId)?.state ?? null;
+  const rows = db
+    .prepare(
+      `SELECT *
+         FROM events
+        WHERE stream_kind = 'discuss'
+          AND stream_id = ?
+        ORDER BY seq ASC`,
+    )
+    .all(discussId) as EventsRow[];
+
+  return rows.map((row) => toDiscussDomainEvent(row, snapshot, ctx));
 }
 
 export function readDiscussDiscovery(
+  db: Database,
   source: string,
 ): DiscussDiscoveryData | null {
-  return readDiscussDiscoveryForSourceWithStorage(nodeDiscussStorage, nodeDiscussPaths, source);
+  const snapshots = snapshotsForSource(db, source);
+  if (snapshots.length === 0) return null;
+
+  return {
+    source,
+    updatedAt: latestUpdatedAt(snapshots),
+    sessions: snapshots.map((snapshot) => ({
+      sessionId: snapshot.sessionId,
+      topic: snapshot.state.topic,
+      sessionDir: `journal:${snapshot.sessionId}`,
+      createdAt: snapshot.state.created_at,
+    })),
+  };
 }
 
 export function readDiscussSummaryIndex(
+  db: Database,
   source: string,
 ): DiscussSummaryIndexData | null {
-  return readDiscussSummaryIndexForSourceWithStorage(nodeDiscussStorage, nodeDiscussPaths, source);
+  const snapshots = snapshotsForSource(db, source);
+  if (snapshots.length === 0) return null;
+
+  return {
+    source,
+    updatedAt: latestUpdatedAt(snapshots),
+    sessions: snapshots.map((snapshot) => ({
+      sessionId: snapshot.sessionId,
+      projectRoot: snapshot.projectRoot,
+      topic: snapshot.state.topic,
+      status: snapshot.state.status,
+      createdAt: snapshot.state.created_at,
+      agentCount: Object.keys(snapshot.state.agents).length,
+      updatedAt: snapshot.updatedAt,
+      lastSeq: snapshot.lastAppliedSeq,
+    })),
+  };
 }

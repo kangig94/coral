@@ -18,6 +18,10 @@ function snapshotDirForProject(projectDir) {
   return join(projectTmpDir(projectDir), 'hooks');
 }
 
+function logNoRelevantJobs(projectDir, extra = {}) {
+  logHookLine('pre-compact', 'no relevant jobs to snapshot', { projectDir, ...extra });
+}
+
 await failOpen(async () => {
   const input = JSON.parse((await readStdin()) || '{}');
   const projectDir = projectDirFromInput(input, process.cwd());
@@ -26,21 +30,29 @@ await failOpen(async () => {
 
   const dbPath = storeDbPath();
   if (!existsSync(dbPath)) {
-    logHookLine('pre-compact', 'store db missing; skipping snapshot', { projectDir });
+    logNoRelevantJobs(projectDir);
     return;
   }
 
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    const rows = db
-      .prepare(
-        `SELECT job_id AS jobId, phase
-           FROM projection_jobs
-          WHERE project_root = ?
-          ORDER BY last_seq DESC
-          LIMIT 20`,
-      )
-      .all(projectDir);
+    let rows;
+    try {
+      rows = db
+        .prepare(
+          `SELECT job_id AS jobId, phase
+             FROM projection_jobs
+            WHERE project_root = ?
+            ORDER BY last_seq DESC
+            LIMIT 20`,
+        )
+        .all(projectDir);
+    } catch (error) {
+      logNoRelevantJobs(projectDir, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
 
     const jobs = rows.flatMap((row) => {
       if (typeof row.jobId !== 'string' || typeof row.phase !== 'string') {
@@ -61,7 +73,7 @@ await failOpen(async () => {
     });
 
     if (jobs.length === 0) {
-      logHookLine('pre-compact', 'no relevant jobs to snapshot', { projectDir });
+      logNoRelevantJobs(projectDir);
       return;
     }
 

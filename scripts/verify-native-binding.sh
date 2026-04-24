@@ -4,7 +4,7 @@
 #
 # Builds the backend bundle, then spawns `build/coral-backend.cjs --smoke-open-store`
 # from a fresh tempdir (outside the repo) to prove better-sqlite3 loads, openStoreDatabase
-# resolves migrations via bundle-aware paths, and a round-trip append+read succeeds.
+# resolves schemas via bundle-aware paths, and a round-trip append+read succeeds.
 #
 # Usage:  bash scripts/verify-native-binding.sh
 # Exit 0 + prints "OK" on success; exit 1 on failure.

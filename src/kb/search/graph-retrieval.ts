@@ -2,7 +2,6 @@ import { normalizeWhitespace } from '../orama-factory.js';
 import type {
   EntityGraph,
   KbIndex,
-  KbResult,
   KbSearchScope,
   RelationshipType,
 } from '../entry-types.js';

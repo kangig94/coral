@@ -1,27 +1,35 @@
 import { join, resolve } from 'node:path';
+import type BetterSqlite3 from 'better-sqlite3';
 
-import { noopAppendEvents, type AppendEventsFn } from '../../store/append.js';
+import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
-import { backendLog } from '../../infra/backend-log.js';
-import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { ProviderInstruction } from '../../providers/contract.js';
-import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
-import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from '../../runtime/ports.js';
+import { currentBuildFlavor } from '../../infra/paths.js';
+import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeTimePort } from '../../runtime/ports.js';
+import { openBackendStoreDb } from '../../store/db.js';
+import { composeReducers } from '../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import {
   DEFAULT_SESSION_CONTROLLER,
   sessionControllerFromProfile,
+  sessionEntrySchema,
   type SessionControllerProfile,
   type SessionEntry,
 } from '../entry.js';
+import { sessionsRegistry } from '../events.js';
+import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
 import type {
   SessionCloseReason,
   SessionInterruptedFault,
 } from '../fault.js';
-import { isValidSessionEntry } from './session-read.js';
+import {
+  listProjectionSessionEntries,
+  readProjectionSession,
+} from '../projections.js';
 
 export type SessionAllocateOptions = {
   provider: string;
@@ -39,6 +47,11 @@ export type SessionAllocateOptions = {
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
+type Database = BetterSqlite3.Database;
+
+export type SessionManagerOptions = {
+  db?: Database;
+};
 
 function toSessionNamespace(
   dir: string,
@@ -56,8 +69,9 @@ function toSessionNamespace(
 }
 
 function isValidEntry(value: unknown): value is SessionEntry {
-  if (!isValidSessionEntry(value)) return false;
-  if (!providerIdentPattern.test(value.provider)) return false;
+  const parsed = sessionEntrySchema.safeParse(value);
+  if (!parsed.success) return false;
+  if (!providerIdentPattern.test(parsed.data.provider)) return false;
   return true;
 }
 
@@ -83,6 +97,7 @@ function sessionOpenedEvent(entry: SessionEntry, shardDir: string): CoralEventIn
     refs: { sessionId: entry.sessionId },
     bodyVersion: 1,
     body: {
+      entry,
       controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
       provider: entry.provider,
       shard_dir: shardDir,
@@ -99,113 +114,120 @@ function sessionCheckpointedEvent(
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId },
     bodyVersion: 1,
-    body: snapshot,
+    body: {
+      entry,
+      snapshot,
+    },
   };
 }
 
-function sessionInterruptedEvent(sessionId: string, fault: SessionInterruptedFault): CoralEventInput {
+function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput {
+  return {
+    type: 'session.claimed',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: { sessionId: entry.sessionId, jobId },
+    bodyVersion: 1,
+    body: {
+      entry,
+      jobId,
+    },
+  };
+}
+
+function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEventInput {
+  return {
+    type: 'session.claim.released',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: { sessionId: entry.sessionId, jobId },
+    bodyVersion: 1,
+    body: {
+      entry,
+      jobId,
+    },
+  };
+}
+
+function sessionInterruptedEvent(sessionId: string, fault: SessionInterruptedFault, entry?: SessionEntry): CoralEventInput {
   return {
     type: 'session.interrupted',
     stream: { kind: 'session', id: sessionId },
     refs: { sessionId },
     bodyVersion: 1,
-    body: fault,
+    body: entry === undefined
+      ? fault
+      : {
+          entry,
+          fault,
+        },
   };
 }
 
-function sessionClosedEvent(sessionId: string, reason: SessionCloseReason): CoralEventInput {
+function sessionClosedEvent(sessionId: string, reason: SessionCloseReason, entry?: SessionEntry): CoralEventInput {
   return {
     type: 'session.closed',
     stream: { kind: 'session', id: sessionId },
     refs: { sessionId },
     bodyVersion: 1,
-    body: { reason },
+    body: {
+      ...(entry === undefined ? {} : { entry }),
+      reason,
+    },
   };
 }
 
+function createLocalSessionAppendEvents(db: Database, time: RuntimeTimePort): AppendEventsFn {
+  const reducers = composeReducers(sessionsRegistry);
+  const upcasters = createDefaultUpcasterRegistry();
+
+  return (inputs) =>
+    appendJournalEvents(db, inputs, {
+      now: () => new Date(time.now()),
+      reducers,
+      upcasters,
+    });
+}
+
 export class SessionManager {
-  private readonly storage: RuntimeStoragePort;
   private readonly paths: RuntimePathsPort;
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
   private readonly appendEvents: AppendEventsFn;
   private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly sessionDir: string;
+  private readonly db: Database;
   private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
-  private shardStamp = 0;
-  private cacheHydrated = false;
 
   constructor(
     workingDirectory: string,
     runtime: SessionRuntime,
-    appendEvents: AppendEventsFn = noopAppendEvents,
-    isRawShardPath = false,
+    appendEvents?: AppendEventsFn,
     releaseEmitter: SessionReleasedEmitter = () => {},
+    db?: Database,
   ) {
-    this.storage = runtime.storage;
     this.paths = runtime.paths;
     this.time = runtime.time;
     this.ids = runtime.ids;
-    this.appendEvents = appendEvents;
+    this.db = db ?? openBackendStoreDb(runtime, currentBuildFlavor());
+    this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
-    this.sessionDir = isRawShardPath
-      ? workingDirectory
-      : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
-    if (!isRawShardPath) {
-      this.storage.mkdirSync(this.sessionDir, { recursive: true });
-    }
-    this.shardStamp = this.readShardStamp();
-  }
-
-  /** Open an existing shard directory without creating it (recovery path). */
-  static openShard(
-    shardDir: string,
-    runtime: SessionRuntime,
-    appendEvents: AppendEventsFn = noopAppendEvents,
-  ): SessionManager {
-    return new SessionManager(shardDir, runtime, appendEvents, true);
+    this.sessionDir = join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
   }
 
   static forProduction(
     workingDirectory: string,
     runtime: SessionRuntime,
-    appendEvents: AppendEventsFn,
+    appendEvents: AppendEventsFn | undefined,
     releaseEmitter: SessionReleasedEmitter,
-    options: { isRawShardPath?: boolean } = {},
+    options: SessionManagerOptions = {},
   ): SessionManager {
     return new SessionManager(
       workingDirectory,
       runtime,
       appendEvents,
-      options.isRawShardPath === true,
       releaseEmitter,
+      options.db,
     );
-  }
-
-  private sessionPath(sessionId: string): string {
-    return join(this.sessionDir, `${sessionId}.json`);
-  }
-
-  private lockPath(sessionId: string): string {
-    return join(this.sessionDir, `${sessionId}.lock`);
-  }
-
-  private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
-    return acquireDirectoryLock(
-      this.lockPath(sessionId),
-      { storage: this.storage, time: this.time },
-      timeoutMs,
-    );
-  }
-
-  private syncCacheWithShardStamp(): void {
-    const currentStamp = this.readShardStamp();
-    if (this.shardStamp === currentStamp) return;
-    this.cache.clear();
-    this.knownSessionIds.clear();
-    this.cacheHydrated = false;
-    this.shardStamp = currentStamp;
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
@@ -214,85 +236,45 @@ export class SessionManager {
   }
 
   private readEntry(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
-    this.syncCacheWithShardStamp();
-
     if (!options?.forceFresh) {
       const cached = this.cache.get(sessionId);
       if (cached) return normalizeEntry(cached);
     }
 
-    try {
-      const data = this.storage.readFileSync(this.sessionPath(sessionId), 'utf-8');
-      const parsed: unknown = JSON.parse(data);
-      if (isValidEntry(parsed)) {
-        const normalized = normalizeEntry(parsed);
-        this.populateCache(sessionId, normalized);
-        return normalized;
-      }
+    const projected = readProjectionSession(this.db, sessionId);
+    if (projected === null || projected.shardDir !== this.sessionDir) {
       this.cache.delete(sessionId);
-      backendLog.warn(`Session file ${sessionId}.json has unexpected shape, skipping`);
+      this.knownSessionIds.delete(sessionId);
       return null;
-    } catch (error: unknown) {
-      this.cache.delete(sessionId);
-      if (isNoEntryError(error)) {
-        this.knownSessionIds.delete(sessionId);
-        return null;
-      }
-      if (error instanceof SyntaxError) {
-        backendLog.warn(`Corrupt session file ${sessionId}.json, skipping`);
-        return null;
-      }
-      throw error;
     }
+
+    if (!isValidEntry(projected.entry)) {
+      this.cache.delete(sessionId);
+      this.knownSessionIds.delete(sessionId);
+      return null;
+    }
+
+    const normalized = normalizeEntry(projected.entry);
+    this.populateCache(sessionId, normalized);
+    return normalized;
   }
 
   readById(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
     return this.readEntry(sessionId, options);
   }
 
-  private persistEntry(entry: SessionEntry, options: { incrementVersion?: boolean } = {}): SessionEntry {
-    this.syncCacheWithShardStamp();
-    const filePath = this.sessionPath(entry.sessionId);
-    const stored: SessionEntry = {
-      ...entry,
-      version: options.incrementVersion === false ? entry.version : (entry.version ?? 0) + 1,
-    };
-    const didWrite = this.storage.writeAtomicSync(filePath, JSON.stringify(stored, null, 2), { encoding: 'utf-8' });
-    if (!didWrite) return stored;
-    this.shardStamp = this.readShardStamp();
-    this.populateCache(stored.sessionId, stored);
-    return stored;
-  }
-
-  private rollbackEntry(previousEntry: SessionEntry | null, sessionId: string): void {
-    if (previousEntry) {
-      this.persistEntry(previousEntry, { incrementVersion: false });
-      return;
-    }
-
-    this.storage.rmSync(this.sessionPath(sessionId), { force: true });
-    this.cache.delete(sessionId);
-    this.knownSessionIds.delete(sessionId);
-    this.shardStamp = this.readShardStamp();
-  }
-
   private appendSessionEvent(input: CoralEventInput): void {
     this.appendEvents([input]);
   }
 
-  private persistAndAppend(
-    nextEntry: SessionEntry,
-    eventInput: CoralEventInput,
-    previousEntry: SessionEntry | null,
-  ): SessionEntry {
-    const stored = this.persistEntry(nextEntry);
-    try {
-      this.appendSessionEvent(eventInput);
-      return stored;
-    } catch (error: unknown) {
-      this.rollbackEntry(previousEntry, nextEntry.sessionId);
-      throw error;
-    }
+  private appendEntryEvent(nextEntry: SessionEntry, eventInput: CoralEventInput): SessionEntry {
+    this.appendSessionEvent(eventInput);
+    this.populateCache(nextEntry.sessionId, nextEntry);
+    return normalizeEntry(nextEntry);
+  }
+
+  private bumpVersion(entry: SessionEntry): number {
+    return (entry.version ?? 0) + 1;
   }
 
   open(options: SessionAllocateOptions): SessionEntry {
@@ -313,10 +295,10 @@ export class SessionManager {
       ...(options.controllerProfile !== undefined ? { controllerProfile: options.controllerProfile } : {}),
       createdAt: now,
       lastUsedAt: now,
-      version: 0,
+      version: 1,
     };
 
-    return this.persistAndAppend(entry, sessionOpenedEvent(entry, this.sessionDir), null);
+    return this.appendEntryEvent(entry, sessionOpenedEvent(entry, this.sessionDir));
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
@@ -358,39 +340,40 @@ export class SessionManager {
       conversationRef: snapshot.conversationRef ?? undefined,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot), currentEntry);
+    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot));
   }
 
   interrupt(sessionId: string, fault: SessionInterruptedFault): void {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) {
-      this.appendSessionEvent(sessionInterruptedEvent(sessionId, fault));
       return;
     }
 
     const nextEntry: SessionEntry = {
       ...currentEntry,
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(nextEntry, sessionInterruptedEvent(sessionId, fault), currentEntry);
+    this.appendEntryEvent(nextEntry, sessionInterruptedEvent(sessionId, fault, nextEntry));
   }
 
   close(sessionId: string, reason: SessionCloseReason): void {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) {
-      this.appendSessionEvent(sessionClosedEvent(sessionId, reason));
       return;
     }
 
     const nextEntry: SessionEntry = {
       ...currentEntry,
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(nextEntry, sessionClosedEvent(sessionId, reason), currentEntry);
+    this.appendEntryEvent(nextEntry, sessionClosedEvent(sessionId, reason, nextEntry));
   }
 
   /** Set conversationRef and transition state from pending -> ready. */
@@ -403,12 +386,12 @@ export class SessionManager {
       conversationRef,
       state: 'ready',
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(
+    this.appendEntryEvent(
       nextEntry,
       sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-      currentEntry,
     );
   }
 
@@ -426,12 +409,12 @@ export class SessionManager {
         ? { conversationRef: update.conversationRef, state: 'ready' as const }
         : {}),
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(
+    this.appendEntryEvent(
       nextEntry,
       sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-      currentEntry,
     );
   }
 
@@ -444,28 +427,27 @@ export class SessionManager {
       ...currentEntry,
       state: 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
     };
 
-    this.persistAndAppend(
+    this.appendEntryEvent(
       nextEntry,
       sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-      currentEntry,
     );
   }
 
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
-    const release = await this.acquireSessionLock(sessionId);
-    try {
-      const entry = this.readEntry(sessionId, { forceFresh: true });
-      if (!entry || entry.activeJobId) return false;
-      if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
-      entry.activeJobId = jobId;
-      entry.lastUsedAt = nowIsoString(this.time);
-      this.persistEntry(entry);
-      return true;
-    } finally {
-      release();
-    }
+    const entry = this.readEntry(sessionId, { forceFresh: true });
+    if (!entry || entry.activeJobId) return false;
+    if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
+    const nextEntry: SessionEntry = {
+      ...entry,
+      activeJobId: jobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionClaimedEvent(nextEntry, jobId));
+    return true;
   }
 
   async finalizeJobContinuityAtomic(
@@ -476,50 +458,45 @@ export class SessionManager {
       mutation: SessionContinuityMutation;
     },
   ): Promise<boolean> {
-    const release = await this.acquireSessionLock(sessionId);
-    try {
-      const { expectedActiveJobId, expectedVersion, mutation } = options;
-      const currentEntry = this.readEntry(sessionId, { forceFresh: true });
-      if (!currentEntry) return false;
-      if (currentEntry.activeJobId !== expectedActiveJobId) return false;
-      if (currentEntry.version !== expectedVersion) return false;
+    const { expectedActiveJobId, expectedVersion, mutation } = options;
+    const currentEntry = this.readEntry(sessionId, { forceFresh: true });
+    if (!currentEntry) return false;
+    if (currentEntry.activeJobId !== expectedActiveJobId) return false;
+    if (currentEntry.version !== expectedVersion) return false;
 
-      const baseNextEntry: SessionEntry = {
-        ...currentEntry,
-        activeJobId: undefined,
-        lastJobId: expectedActiveJobId,
-        lastUsedAt: nowIsoString(this.time),
-        ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
-      };
-      const nextEntry: SessionEntry = (() => {
-        switch (mutation.type) {
-          case 'set_resumable':
-            return {
-              ...baseNextEntry,
-              conversationRef: mutation.conversationRef,
-              state: 'ready',
-            };
-          case 'clear_non_resumable':
-            return {
-              ...baseNextEntry,
-              conversationRef: undefined,
-              state: 'non_resumable',
-            };
-          case 'preserve':
-            return baseNextEntry;
-        }
-      })();
+    const baseNextEntry: SessionEntry = {
+      ...currentEntry,
+      activeJobId: undefined,
+      lastJobId: expectedActiveJobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
+      ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
+    };
+    const nextEntry: SessionEntry = (() => {
+      switch (mutation.type) {
+        case 'set_resumable':
+          return {
+            ...baseNextEntry,
+            conversationRef: mutation.conversationRef,
+            state: 'ready',
+          };
+        case 'clear_non_resumable':
+          return {
+            ...baseNextEntry,
+            conversationRef: undefined,
+            state: 'non_resumable',
+          };
+        case 'preserve':
+          return baseNextEntry;
+      }
+    })();
 
-      this.persistAndAppend(
-        nextEntry,
-        sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-        currentEntry,
-      );
-      this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
-      return true;
-    } finally {
-      release();
-    }
+    this.appendEntryEvent(
+      nextEntry,
+      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
+    );
+    this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
+    return true;
   }
 
   async checkpointJobContinuityAtomic(
@@ -530,31 +507,26 @@ export class SessionManager {
       snapshot: ContinuitySnapshot;
     },
   ): Promise<{ ok: true; nextVersion: number } | { ok: false }> {
-    const release = await this.acquireSessionLock(sessionId);
-    try {
-      const { expectedActiveJobId, expectedVersion, snapshot } = options;
-      const currentEntry = this.readEntry(sessionId, { forceFresh: true });
-      if (!currentEntry) return { ok: false };
-      if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
-      if (currentEntry.version !== expectedVersion) return { ok: false };
+    const { expectedActiveJobId, expectedVersion, snapshot } = options;
+    const currentEntry = this.readEntry(sessionId, { forceFresh: true });
+    if (!currentEntry) return { ok: false };
+    if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
+    if (currentEntry.version !== expectedVersion) return { ok: false };
 
-      const nextEntry: SessionEntry = {
-        ...currentEntry,
-        conversationRef: snapshot.conversationRef ?? undefined,
-        providerContinuity: snapshot.providerContinuity ?? undefined,
-        state: snapshot.resumable ? 'ready' : 'non_resumable',
-        lastUsedAt: nowIsoString(this.time),
-      };
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      conversationRef: snapshot.conversationRef ?? undefined,
+      providerContinuity: snapshot.providerContinuity ?? undefined,
+      state: snapshot.resumable ? 'ready' : 'non_resumable',
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
+    };
 
-      const stored = this.persistAndAppend(
-        nextEntry,
-        sessionCheckpointedEvent(nextEntry, snapshot),
-        currentEntry,
-      );
-      return { ok: true, nextVersion: stored.version };
-    } finally {
-      release();
-    }
+    const stored = this.appendEntryEvent(
+      nextEntry,
+      sessionCheckpointedEvent(nextEntry, snapshot),
+    );
+    return { ok: true, nextVersion: stored.version };
   }
 
   async releaseJobClaimAtomic(
@@ -564,23 +536,22 @@ export class SessionManager {
       expectedVersion: number;
     },
   ): Promise<boolean> {
-    const release = await this.acquireSessionLock(sessionId);
-    try {
-      const { expectedActiveJobId, expectedVersion } = options;
-      const entry = this.readEntry(sessionId, { forceFresh: true });
-      if (!entry) return false;
-      if (entry.activeJobId !== expectedActiveJobId) return false;
-      if (entry.version !== expectedVersion) return false;
+    const { expectedActiveJobId, expectedVersion } = options;
+    const entry = this.readEntry(sessionId, { forceFresh: true });
+    if (!entry) return false;
+    if (entry.activeJobId !== expectedActiveJobId) return false;
+    if (entry.version !== expectedVersion) return false;
 
-      entry.activeJobId = undefined;
-      entry.lastJobId = expectedActiveJobId;
-      entry.lastUsedAt = nowIsoString(this.time);
-      this.persistEntry(entry);
-      this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
-      return true;
-    } finally {
-      release();
-    }
+    const nextEntry: SessionEntry = {
+      ...entry,
+      activeJobId: undefined,
+      lastJobId: expectedActiveJobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionClaimReleasedEvent(nextEntry, expectedActiveJobId));
+    this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
+    return true;
   }
 
   async clearConversationRefAndMarkNonResumableAtomic(
@@ -602,9 +573,13 @@ export class SessionManager {
   claimForJobSync(sessionId: string, jobId: string): boolean {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
-    entry.activeJobId = jobId;
-    entry.lastUsedAt = nowIsoString(this.time);
-    this.persistEntry(entry);
+    const nextEntry: SessionEntry = {
+      ...entry,
+      activeJobId: jobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionClaimedEvent(nextEntry, jobId));
     return true;
   }
 
@@ -612,10 +587,14 @@ export class SessionManager {
   releaseJob(sessionId: string, jobId: string): void {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId !== jobId) return;
-    entry.activeJobId = undefined;
-    entry.lastJobId = jobId;
-    entry.lastUsedAt = nowIsoString(this.time);
-    this.persistEntry(entry);
+    const nextEntry: SessionEntry = {
+      ...entry,
+      activeJobId: undefined,
+      lastJobId: jobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionClaimReleasedEvent(nextEntry, jobId));
     this.releaseEmitter({ sessionId, jobId });
   }
 
@@ -628,39 +607,11 @@ export class SessionManager {
 
   /** List all sessions for a provider. */
   list(provider: string): SessionEntry[] {
-    this.syncCacheWithShardStamp();
-    if (this.cacheHydrated) {
-      return Array.from(this.knownSessionIds)
-        .map((sessionId) => this.readEntry(sessionId))
-        .filter((entry): entry is SessionEntry => entry !== null && entry.provider === provider);
+    const entries = listProjectionSessionEntries(this.db, provider, this.sessionDir);
+    this.knownSessionIds.clear();
+    for (const entry of entries) {
+      this.populateCache(entry.sessionId, entry);
     }
-
-    try {
-      const sessionIds = this.storage
-        .readdirSync(this.sessionDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name)
-        .filter((file) => file.endsWith('.json'))
-        .map((file) => file.slice(0, -5));
-      this.knownSessionIds.clear();
-      for (const sessionId of sessionIds) {
-        this.knownSessionIds.add(sessionId);
-      }
-      const entries = sessionIds
-        .map((sessionId) => this.readEntry(sessionId))
-        .filter((entry): entry is SessionEntry => entry !== null && entry.provider === provider);
-      this.cacheHydrated = true;
-      return entries;
-    } catch {
-      return [];
-    }
-  }
-
-  private readShardStamp(): number {
-    try {
-      return this.storage.statSync(this.sessionDir).mtimeMs;
-    } catch {
-      return 0;
-    }
+    return entries.map(normalizeEntry);
   }
 }

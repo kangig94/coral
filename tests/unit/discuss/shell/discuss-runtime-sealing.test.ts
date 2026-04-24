@@ -1,15 +1,14 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readStatusRecord } from '#tests/helpers/persistence-readers.js';
-import { readDiscussSourcesWithStorage } from '#src/discuss/shell/discuss-sources-catalog.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js';
 import { renderEntries } from '#src/discuss/transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#src/discuss/session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { parseJobStatus, type JobStatus } from '#src/jobs/records.js';
+import { ProgressStore } from '#src/jobs/job-store.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,
@@ -22,7 +21,8 @@ import { getWatchState, startDiscussSession, submitManualBid } from '#src/discus
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import { knownDiscussSources } from '#src/discuss/shell/session-read-service.js';
-import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
+import { DiscussSessionStore, createInMemoryDiscussJournal } from '#src/discuss/shell/session-store.js';
+import { toJournalInput } from '#src/discuss/store-registry.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
@@ -39,6 +39,7 @@ type SimulationDiscussHarness = {
   pluginRoot: string;
   source: string;
   store: DiscussSessionStore;
+  progressStore: ProgressStore;
   registry: DiscussContextRegistry;
   context: DiscussContext;
   invocationCtx: InvocationContext;
@@ -92,19 +93,6 @@ function createExecutionServiceStub(overrides: Partial<ExecutionService> = {}): 
   } as unknown as ExecutionService;
 }
 
-function readStatusRecordForRuntime(
-  runtime: Pick<SimulationRuntime, 'storage' | 'paths'>,
-  jobId: string,
-): JobStatus | null {
-  try {
-    return parseJobStatus(
-      JSON.parse(runtime.storage.readFileSync(resolve(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
-    );
-  } catch {
-    return null;
-  }
-}
-
 function manualAgents(): AgentConfig[] {
   return [{ name: 'alpha', persona: '# Alpha', participation: 'observer' }];
 }
@@ -124,10 +112,13 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const source = runtime.paths.projectSource(projectRoot);
+  const progressStore = new ProgressStore(
+    runtime.paths.pluginRootNamespace(pluginRoot),
+    runtime,
+    createDefaultUpcasterRegistry(),
+  );
   const store = new DiscussSessionStore(source, {
-    storage: runtime.storage,
-    time: runtime.time,
-    paths: runtime.paths,
+    journal: createInMemoryDiscussJournal(),
   });
   activeStores.push(store);
   const service = createExecutionServiceStub();
@@ -139,16 +130,11 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       time: runtime.time,
     },
     jobStatusReader: {
-      read: (jobId) => readStatusRecordForRuntime(runtime, jobId),
+      read: (jobId) => progressStore.readStatus(jobId),
     },
   });
   const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
-  return { runtime, projectRoot, pluginRoot, source, store, registry, context, invocationCtx, service };
-}
-
-function writeJson(runtime: SimulationRuntime, filePath: string, value: unknown): void {
-  runtime.storage.mkdirSync(dirname(filePath), { recursive: true });
-  runtime.storage.writeFileSync(filePath, JSON.stringify(value, null, 2), { encoding: 'utf-8' });
+  return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
 
 async function appendCreatedSession(
@@ -222,11 +208,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       ),
     );
     const finalSnapshot = await harness.store.append('sim-discuss-1', afterBid!.lastAppliedSeq, closed);
-    harness.store.flushDirtyIndexes();
 
-    const sessionDir = harness.store.resolveSessionDir('sim-discuss-1');
-    expect(harness.runtime.storage.existsSync(harness.runtime.paths.discussStatePath(sessionDir))).toBe(true);
-    expect(existsSync(harness.runtime.paths.discussStatePath(sessionDir))).toBe(false);
     expect(harness.store.load('sim-discuss-1')).toMatchObject({
       sessionId: 'sim-discuss-1',
       lastAppliedSeq: finalSnapshot.lastAppliedSeq,
@@ -242,7 +224,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     expect(harness.store.listRecoveryCandidates()).toEqual([
       expect.objectContaining({
         sessionId: 'sim-discuss-1',
-        sessionDir,
+        sessionDir: 'journal:sim-discuss-1',
       }),
     ]);
 
@@ -289,7 +271,6 @@ describe('AC7 runtime-sealed discuss behavior', () => {
         },
       ),
     ]);
-    harness.store.flushDirtyIndexes();
 
     vi.spyOn(Date, 'now').mockReturnValue(9_999_999_999_999);
     const first = getWatchState(harness.context, 'invalid-watch-ts');
@@ -306,13 +287,9 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     ]);
   });
 
-  it('discovers persisted sources from the current registry envelope', () => {
+  it('discovers persisted sources from the Journal source list', () => {
     const harness = createHarness();
     const source = 'runtime/source';
-    writeJson(harness.runtime, harness.runtime.paths.discussSourcesPath(), {
-      updatedAt: START_TS,
-      sources: [source, source],
-    });
 
     const sources = knownDiscussSources({
       discussRegistry: harness.registry,
@@ -320,7 +297,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
         throw new Error('store lookup is not needed for source discovery');
       },
       resolveProjectSource: harness.runtime.paths.projectSource.bind(harness.runtime.paths),
-      readDiscussSources: () => readDiscussSourcesWithStorage(harness.runtime.storage, harness.runtime.paths),
+      readDiscussSources: () => [source, source],
     });
 
     expect([...sources]).toEqual([source]);
@@ -334,38 +311,44 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       pluginRoot: '/virtual/backend/plugin',
     });
     activeBackends.push(world);
-    const source = world.runtime.paths.projectSource(world.projectRoot);
-    const seedStore = new DiscussSessionStore(source, {
-      storage: world.runtime.storage,
-      time: world.runtime.time,
-      paths: world.runtime.paths,
-    });
-    activeStores.push(seedStore);
-    const created = await appendCreatedSession(
-      { store: seedStore, projectRoot: world.projectRoot },
-      'backend-recovered-discuss',
+    const createdEvents = unwrap(
+      decideSessionCreate(
+        {
+          topic: TOPIC,
+          min_bid_delay_ms: 0,
+          agents: manualInputAgents(),
+        },
+        { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
+        1,
+        '2035-04-15T01:02:03.000Z',
+      ),
     );
+    const created = world.progressStore.appendEventsWithResult(createdEvents.map((event) => toJournalInput(event)));
+    expect(created).toHaveLength(createdEvents.length);
+    const createdSnapshot = world.progressStore.getDb()
+      .prepare(`SELECT state FROM projection_discuss WHERE discuss_id = ?`)
+      .get('backend-recovered-discuss') as { state: string } | undefined;
+    if (!createdSnapshot) {
+      throw new Error('Missing seeded discuss projection');
+    }
+    const seeded = JSON.parse(createdSnapshot.state) as PersistedDiscussSnapshot;
     const bid = unwrap(
       decideBid(
-        created.state,
+        seeded.state,
         'alpha',
         91,
         'Recovery should close this in virtual time.',
         { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
-        created.lastAppliedSeq + 1,
+        seeded.lastAppliedSeq + 1,
         '2035-04-15T01:02:04.000Z',
       ),
     );
-    await seedStore.append('backend-recovered-discuss', created.lastAppliedSeq, bid);
-    seedStore.flushDirtyIndexes();
-    const sessionDir = seedStore.resolveSessionDir('backend-recovered-discuss');
-    expect(existsSync(world.runtime.paths.discussStatePath(sessionDir))).toBe(false);
+    world.progressStore.appendEventsWithResult(bid.map((event) => toJournalInput(event)));
 
     const info = await world.backend.start();
     expect(world.hooks.recoverPersistedDiscussCalls).toBe(1);
     await world.advance(1);
 
-    expect(seedStore.load('backend-recovered-discuss')?.state.status).toBe('speaking');
     const response = await invokeBackend(world, info.token, 'GET', '/discuss/sessions');
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
@@ -401,22 +384,44 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       ),
     ];
     await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
-    const status: JobStatus = {
+    harness.progressStore.initJob({
       jobId,
       sessionId: 'execution-session-1',
       provider: 'codex',
       projectRoot: harness.projectRoot,
       backendNamespace: 'runtime-only',
-      phase: 'completed',
-      launch: { state: 'ready', updatedAt: '2035-04-15T01:02:05.000Z' },
-      result: {
+      initialPhase: 'running',
+    });
+    harness.progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId: 'execution-session-1',
+      provider: 'codex',
+      projectRoot: harness.projectRoot,
+      backendNamespace: 'runtime-only',
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'Recover the active job.',
+        cwd: harness.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: '2035-04-15T01:02:05.000Z',
+    });
+    harness.progressStore.markTerminalStatus(
+      jobId,
+      {
         content: 'Recovered content from runtime storage',
         outcome: { kind: 'completed' },
       },
-      continuity: null,
-    };
-    writeJson(harness.runtime, resolve(harness.runtime.paths.jobsDir(), jobId, 'status.json'), status);
-    expect(readStatusRecord(jobId)).toBeNull();
+      'completed',
+    );
+    expect(harness.progressStore.readStatus(jobId)).toMatchObject({
+      phase: 'completed',
+      result: { content: 'Recovered content from runtime storage' },
+    });
 
     const result = await runPlainTurn(harness.context, {
       agentName: 'alpha',

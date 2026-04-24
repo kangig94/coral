@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { createCoordinatorCurateScheduler } from '#src/coordinator/live/curate-scheduler.js';
 
 function createInnerScheduler() {
@@ -28,7 +28,7 @@ describe('coordinator curate scheduler', () => {
     const db = openStoreDatabase({
       path: ':memory:',
       storage: runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+      schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
     const inner = createInnerScheduler();
     const scheduler = createCoordinatorCurateScheduler({
@@ -63,7 +63,7 @@ describe('coordinator curate scheduler', () => {
     const db = openStoreDatabase({
       path: ':memory:',
       storage: runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+      schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
     const inner = createInnerScheduler();
     const scheduler = createCoordinatorCurateScheduler({

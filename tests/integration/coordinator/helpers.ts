@@ -53,7 +53,7 @@ export function createPluginFixture(
     'utf-8',
   );
 
-  cpSync(join(process.cwd(), 'dist', 'store', 'migrations'), join(root, 'dist', 'store', 'migrations'), {
+  cpSync(join(process.cwd(), 'dist', 'store', 'schemas'), join(root, 'dist', 'store', 'schemas'), {
     recursive: true,
   });
 

@@ -9,7 +9,7 @@ import { backendLog } from '../infra/backend-log.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { StoragePort } from '../runtime/ports.js';
 
-function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): string {
+function resolveSmokeSchemasDir(storage: Pick<StoragePort, 'existsSync'>): string {
   const entryPath = process.argv[1];
   if (!entryPath) {
     throw new Error('missing entry path');
@@ -17,9 +17,9 @@ function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): st
 
   const bundleDir = dirname(resolve(entryPath));
   const candidates = [
-    join(bundleDir, 'store', 'migrations'),
-    join(bundleDir, '..', 'dist', 'store', 'migrations'),
-    join(bundleDir, '..', 'store', 'migrations'),
+    join(bundleDir, 'store', 'schemas'),
+    join(bundleDir, '..', 'dist', 'store', 'schemas'),
+    join(bundleDir, '..', 'store', 'schemas'),
   ];
 
   for (const candidate of candidates) {
@@ -28,7 +28,7 @@ function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): st
     }
   }
 
-  throw new Error(`bundle migrations not found: ${candidates.join(', ')}`);
+  throw new Error(`bundle schemas not found: ${candidates.join(', ')}`);
 }
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
@@ -49,7 +49,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const db = openStoreDatabase({
       path: storePath,
       storage: runtime.storage,
-      migrationsDir: resolveSmokeMigrationsDir(runtime.storage),
+      schemasDir: resolveSmokeSchemasDir(runtime.storage),
     });
 
     try {

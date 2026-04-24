@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
@@ -23,7 +23,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

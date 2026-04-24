@@ -5,7 +5,7 @@ import * as storeBarrel from '#src/store/index.js';
 const ALLOWED_VALUE_EXPORTS = new Set([
   'CoralStore',
   'openStoreDatabase',
-  'applyMigrations',
+  'applyStoreSchemas',
   'journalEventEnvelopeSchema',
 ]);
 

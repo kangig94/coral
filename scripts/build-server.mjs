@@ -24,18 +24,20 @@ function parseArgs(argv) {
   return { flavor, release };
 }
 
-function copyStoreSqlAssets(outRoot) {
-  mkdirSync(`${outRoot}/store/migrations`, { recursive: true });
-  copyFileSync('src/store/schema.sql', `${outRoot}/store/schema.sql`);
-
-  for (const file of readdirSync(`${outRoot}/store/migrations`)) {
-    if (!file.endsWith('.sql')) continue;
-    rmSync(`${outRoot}/store/migrations/${file}`, { force: true });
+function copyStoreSchemaAssets(outRoot) {
+  rmSync(`${outRoot}/store/schema.sql`, { force: true });
+  rmSync(`${outRoot}/store/migrations`, { recursive: true, force: true });
+  rmSync(`${outRoot}/store/__tests__`, { recursive: true, force: true });
+  for (const extension of ['.d.ts', '.d.ts.map', '.js', '.js.map']) {
+    rmSync(`${outRoot}/store/migrations${extension}`, { force: true });
+    rmSync(`${outRoot}/store/schemas${extension}`, { force: true });
   }
+  rmSync(`${outRoot}/store/schemas`, { recursive: true, force: true });
+  mkdirSync(`${outRoot}/store/schemas`, { recursive: true });
 
-  for (const file of readdirSync('src/store/migrations')) {
+  for (const file of readdirSync('src/store/schemas')) {
     if (!file.endsWith('.sql')) continue;
-    copyFileSync(`src/store/migrations/${file}`, `${outRoot}/store/migrations/${file}`);
+    copyFileSync(`src/store/schemas/${file}`, `${outRoot}/store/schemas/${file}`);
   }
 }
 
@@ -43,7 +45,7 @@ const { flavor, release } = parseArgs(process.argv.slice(2));
 // Debug-only simulation must keep compiling against production source and must
 // stay sealed from concrete provider/bootstrap implementations.
 execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
-copyStoreSqlAssets('dist');
+copyStoreSchemaAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
@@ -87,7 +89,7 @@ await esbuild.build({
   outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
-copyStoreSqlAssets('build');
+copyStoreSchemaAssets('build');
 console.log('Built build/coral-backend.cjs');
 
 await esbuild.build({

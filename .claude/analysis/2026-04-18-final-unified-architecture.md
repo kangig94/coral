@@ -30,7 +30,7 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **Workflow** = durable plan declared once on `workflow/<id>` stream; child jobs reference slots by `slotId`.
 - **Failures (Journal)** = domain events on their originating stream; job terminals carry `causeRef: {stream, seq}` pointers. No wrapped fault union. The only fault ADT is `JobLifecycleFault` (3 variants).
 - **Cross-authority references** = `KbRef = { entryId, contentHash? }`. `contentHash` optional for point-in-time semantics.
-- **Schema evolution** = per-`type` `bodyVersion` + upcaster chain for Journal events; SQL migrations for projection schema; markdown format evolution via frontmatter parser flexibility.
+- **Schema evolution** = per-`type` `bodyVersion` + upcaster chain for Journal events; ordered SQL schema scripts for projection schema; markdown format evolution via frontmatter parser flexibility.
 - **Equipment** (Zelda UX) = opt-in `/equip needle` enhances specific query paths. Base tier fully functional with Orama (FTS zero-config, vector with embedding provider config per README). No native deps in base bundle.
 - Everything else (`status.json`, `result.md` as authority, `WorkflowCheckpoint`, `LaunchState` files, segment rotation, checkpoint files, advisory `writer.lock`, multi-variant `CoralFault` union, unified "everything is an event" thesis) either becomes a projection/export or disappears outright.
 
@@ -157,7 +157,7 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 
 The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
-Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Migration 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
+Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Schema 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
 
 **Projection freshness model**:
 Equipment consumers subscribe to an **authority** (Journal or Corpus, §2). Each authority has its own monotonic version:
@@ -279,7 +279,7 @@ CREATE TABLE equipment_cursors (
 
 -- Curate scheduler bookkeeping (replaces today's curate-state.json).
 -- Single row. Worker claim is omitted (coordinator single-writer covers it);
--- migration_version is omitted (meta.schema_version handles schema evolution).
+-- local schema marker is omitted (meta.schema_version handles schema evolution).
 CREATE TABLE kb_curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through          TEXT,                        -- JSON: CurateCursor
@@ -354,14 +354,14 @@ Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by 
 | Segment rotation logic | None — SQLite WAL checkpointing is automatic | Delete code |
 | Standalone checkpoint files | None — projections ARE the live state | Delete code |
 | Advisory `writer.lock` file | SQLite `BEGIN IMMEDIATE` | Delete code |
-| Projection versioning / invalidation files | `meta.schema_version` row + SQL migration | Simpler |
+| Projection versioning / invalidation files | `meta.schema_version` row + SQL schema script | Simpler |
 | Log-scan queries for cross-domain lookups | SQL JOIN | Faster, less code |
 | Cross-stream atomicity gap | `BEGIN..COMMIT` transaction | Correct by construction |
 | Custom JSONL segment readers/parsers | Parameterized SQL queries | Delete code |
 
 The `CoralStore` becomes a thin SQL query layer. The `CoralCoordinator` is the sole owner of a writable DB connection.
 
-**Terminology note**: "SQL migration" and the `migrations/` directory (§10) refer to **schema-change scripts** (CREATE/ALTER/DROP statements applied as Coral evolves) — the standard SQL ecosystem convention. They are **never** about migrating user data from a prior coral version, which does not exist (clean-slate rewrite, §0). If you read "migration" in this document, it always means SQL schema evolution, never data migration.
+**Terminology note**: SQL schema scripts live under `schemas/` (§10). They are ordered schema generations applied to an empty or existing Coral store and are never user-data migration scripts; this rewrite has no prior deployed SQL state to preserve (§0).
 
 ---
 
@@ -411,7 +411,7 @@ const journalEventEnvelope = z.object({
 
 **`correlationId` + `causationSeq`**: the causality graph. `correlationId` groups related events (same user command); `causationSeq` is a **general-purpose backward pointer** — for fault propagation it points to the originating event (§7); for request/response flows it points to the request event; etc. `causeRef` in terminal outcomes is a typed alias of `causationSeq` + stream context.
 
-**`bodyVersion`**: per-type schema version. Each event type starts at `bodyVersion: 1`. When a type's body shape evolves, the new version increments and an **upcaster** is registered that lifts older-version payloads into the current shape at read time (§4.2). There is no single envelope `v:` field — envelope evolution uses SQL migration on the `events` table itself (rare; a major surgery).
+**`bodyVersion`**: per-type schema version. Each event type starts at `bodyVersion: 1`. When a type's body shape evolves, the new version increments and an **upcaster** is registered that lifts older-version payloads into the current shape at read time (§4.2). There is no single envelope `v:` field — envelope evolution uses SQL schema script on the `events` table itself (rare; a major surgery).
 
 **`body: unknown`**: the envelope is type-stable; payloads are domain-owned. Validation happens at projection construction via the type's current Zod schema (after upcast).
 
@@ -1123,11 +1123,11 @@ src/
 
   store/                             ← SQL query layer over SQLite event DB
     db.ts                            — SQLite connection factory (WAL mode)
-    schema.sql                       — table definitions (events, projection_*, meta)
-    schema.ts                        — TypeScript types mirroring the schema
+    schema.ts                        — TypeScript row types mirroring the applied SQL schema
+    schema-loader.ts                 — locates and applies numbered SQL schema files
     envelope.ts                      — Zod validator for event envelope + upcaster registry
-    migrations/                      — numbered SQL migration files
-      001_initial.sql
+    schemas/                         — SQL schema authority; numbered files applied in order
+      001_initial.sql                — clean-slate baseline (events, projection_*, meta)
     append.ts                        — transactional append primitive (single-writer gate)
     reducers.ts                      — per-domain event-to-projection reducers
     consumer-contract.ts             — neutral consumer error/kind vocabulary
@@ -1817,7 +1817,7 @@ Under cost-unconstrained selection:
 1. **B's final form is a projection over events** (`JobView` over `job.terminal.recorded`). A stored `JobResult` record is strictly redundant with the projection — it stores once what replay can derive.
 2. **The intermediate form (B stored as authority, D deferred) is not a stable waypoint**. Every consumer of B-the-record has to be rewritten again when D lands. The "B first, D later" path pays the rewrite twice.
 3. **B's insight survives as projection logic**, not as a storage step. Child jobs as independent streams, parent pointer via `refs.parentJobId`, composition as projection — these are B's contributions and they land with D simultaneously.
-4. **The only B-specific artifacts** are `JobTerminal` / `JobDiagnostics` / `JobView` type shapes and the reducer that builds children from child launch events. Both are consumed together with the journal substrate and domain migrations; neither needs a standalone step.
+4. **The only B-specific artifacts** are `JobTerminal` / `JobDiagnostics` / `JobView` type shapes and the reducer that builds children from child launch events. Both are consumed together with the journal substrate and domain schema evolution; neither needs a standalone step.
 
 Therefore the architecture recognizes **no "Pioneer B" phase**. The type shapes land with the journal substrate, and projections become authoritative when the domains are migrated. B's contributions are distributed across those steps, not sequenced separately.
 
@@ -1980,7 +1980,7 @@ Six pioneers + All-6 unifier + B-v2 reëxamination + Pioneer-final + KB-pioneer 
 - **Zelda-style equipment model**: base tier always functional (FTS zero-config, vector with one-line embedding setup); `/equip needle` sharpens the vector path for scale without adding commands. Curiosity-driven, never prompted.
 - **Command-class routing** replaces transport-topology assumptions.
 - **Journal recovery** = projection rebuild + reconciliation. **Corpus recovery** = rescan + per-consumer snapshot diff. Each authority recovers from its own truth.
-- **Schema evolution** via per-`type` `bodyVersion` + upcasters (Journal) or SQL migrations (projection tables); Corpus evolves through markdown format changes that the frontmatter parser accommodates.
+- **Schema evolution** via per-`type` `bodyVersion` + upcasters (Journal) or ordered SQL schema scripts (projection tables); Corpus evolves through markdown format changes that the frontmatter parser accommodates.
 
 The two-authority model is not an asymmetry to apologize for — it is Coral's **duality**. Process-like state lives on time (Journal). Knowledge-like state lives in space (Corpus). Forcing one substrate on both would distort one; naming them separately reveals the structure honestly.
 
@@ -1995,6 +1995,6 @@ This document is the sole design reference for any `/coral:plan` session impleme
 Tracked deviations from the original design adopted during implementation. Amendments are historical notes, not standing exceptions: if an amendment conflicts with §10 steady-state topology, deleted-tree rules, or layering invariants, §10 wins and the amendment must be folded back into the body or removed.
 
 - **Dev data path layout**. Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
-- **Schema delivery split**. The canonical DDL reference lives in `src/store/schema.sql`, while `src/store/migrations/001_initial.sql` is the first applied migration. Pre-merge schema changes edit `001_initial.sql` in place; `002+` versioning begins only after the first main merge.
+- **Single SQL schema authority**. `src/store/schemas/001_initial.sql` is the canonical clean-slate baseline and the first applied schema file. `src/store/schema.sql` was removed to avoid duplicate DDL authority; pre-merge schema changes edit `001_initial.sql` in place, and `002+` versioning begins only after the first main merge.
 - **Durable result artifact path**. The authoritative wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. `~/.coral/exports/jobs/<jobId>/` remains a future tooling path, not today's authoritative artifact location.
 - **IPC bootstrap detection**. `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling. The singleton lock remains the launch gate but is not the detection mechanism.

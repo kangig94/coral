@@ -29,7 +29,7 @@ const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'build', 'coral-cli.cjs');
 const SOURCE_MANIFEST = join(REPO_ROOT, 'build', 'manifest.json');
-const SOURCE_MIGRATIONS_DIR = join(REPO_ROOT, 'dist', 'store', 'migrations');
+const SOURCE_SCHEMAS_DIR = join(REPO_ROOT, 'dist', 'store', 'schemas');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 
 const tempRoots: string[] = [];
@@ -139,7 +139,7 @@ function createFixture(): Fixture {
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
-  cpSync(SOURCE_MIGRATIONS_DIR, join(root, 'dist', 'store', 'migrations'), { recursive: true });
+  cpSync(SOURCE_SCHEMAS_DIR, join(root, 'dist', 'store', 'schemas'), { recursive: true });
   writeFileSync(join(binDir, 'codex'), FAKE_CODEX_APP_SERVER, 'utf-8');
   chmodSync(join(binDir, 'codex'), 0o755);
   writeFileSync(

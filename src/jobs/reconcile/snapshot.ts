@@ -5,12 +5,9 @@ import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../job-store.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
-import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import type { JobStoreSnapshot } from './plan.js';
-import type { Runtime } from '../../runtime/ports.js';
 import { withBackendNamespace } from './recovery-effects.js';
-import { noopAppendEvents } from '../../store/append.js';
 
 function toExitRecord(detail: JobProjectionDetail): DurableProcessExit | null {
   if (!detail.exit) {
@@ -40,7 +37,6 @@ function toTerminalPayload(detail: JobProjectionDetail): JobTerminal | null {
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,
   namespace: string,
-  runtime: Runtime,
   log: (message: string) => void,
   sessionLookup: SessionLookup,
 ): JobStoreSnapshot {
@@ -76,23 +72,13 @@ export function buildRecoverySnapshot(
     terminalPayloadsByJob.set(jobId, toTerminalPayload(detail));
   }
 
-  const sessionRefs: Array<{ shardDir: string; sessionId: string; provider: string }> = [];
-  const sessionsByRef = new Map<string, SessionEntry | null>();
-  const sessionKey = (shardDir: string, provider: string, sessionId: string): string =>
-    `${shardDir}\u0000${provider}\u0000${sessionId}`;
-  const managersByShard = new Map<string, SessionManager>();
+  const sessionRefs: Array<{ sessionId: string; provider: string }> = [];
+  const sessionsById = new Map<string, SessionEntry | null>();
 
   for (const sessionRef of sessionLookup.listSessionRefs()) {
     try {
-      const sessionManager =
-        managersByShard.get(sessionRef.shardDir)
-        ?? SessionManager.openShard(sessionRef.shardDir, runtime, noopAppendEvents);
-      managersByShard.set(sessionRef.shardDir, sessionManager);
-      sessionRefs.push({ ...sessionRef });
-      sessionsByRef.set(
-        sessionKey(sessionRef.shardDir, sessionRef.provider, sessionRef.sessionId),
-        sessionManager.get(sessionRef.provider, sessionRef.sessionId),
-      );
+      sessionRefs.push({ sessionId: sessionRef.sessionId, provider: sessionRef.provider });
+      sessionsById.set(sessionRef.sessionId, sessionLookup.readSessionEntry(sessionRef.sessionId));
     } catch (error: unknown) {
       log(`Failed to check session ${sessionRef.sessionId}: ${formatError(error)}\n`);
     }
@@ -109,9 +95,8 @@ export function buildRecoverySnapshot(
     readRuntime: (jobId: string): JobRuntime | null => runtimesByJob.get(jobId) ?? null,
     readExit: (jobId: string): DurableProcessExit | null => exitsByJob.get(jobId) ?? null,
     readTerminalPayload: (jobId: string): JobTerminal | null => terminalPayloadsByJob.get(jobId) ?? null,
-    listSessionRefs: (): Array<{ shardDir: string; sessionId: string; provider: string }> => [...sessionRefs],
-    readSession: (shardDir: string, provider: string, sessionId: string): SessionEntry | null =>
-      sessionsByRef.get(sessionKey(shardDir, provider, sessionId)) ?? null,
+    listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
+    readSession: (sessionId: string): SessionEntry | null => sessionsById.get(sessionId) ?? null,
   };
 
   return Object.freeze(snapshot);

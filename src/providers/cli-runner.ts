@@ -1,11 +1,33 @@
-import type { LaunchCoordinator, LaunchPool } from '../jobs/shell/contracts.js';
+import type { LaunchPool } from '../jobs/launch.js';
 import type { JobRuntime } from '../jobs/records.js';
 import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
 import type { ProviderCliRunner } from './protocol.js';
 export type { ProviderCliRequest, ProviderCliResult, ProviderCliRunner } from './protocol.js';
 
+export interface ProviderDurableSpawner {
+  spawnDurableJob(options: {
+    provider: string;
+    command: string;
+    args: string[];
+    prompt?: string;
+    cwd?: string;
+    onEvent?: (line: string) => void;
+    signal?: AbortSignal;
+    permitGranted?: boolean;
+    pool?: LaunchPool;
+    extraEnv?: Record<string, string>;
+    jobDir: string;
+    onRuntimeRecord?: (record: JobRuntime) => void;
+  }): Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    aborted: boolean;
+  }>;
+}
+
 export function bindProviderRunner(
-  launchCoordinator: Pick<LaunchCoordinator, 'spawnDurableJob'>,
+  launchCoordinator: ProviderDurableSpawner,
   provider: string,
   signal: AbortSignal,
   pool: LaunchPool,

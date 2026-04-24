@@ -347,8 +347,6 @@ export class MockProcessSpawner {
     const stdoutPath = script.runtimeRecord?.stdoutPath ?? join(options.jobDir, 'stdout');
     const stderrPath = script.runtimeRecord?.stderrPath ?? join(options.jobDir, 'stderr');
     const envPath = join(options.jobDir, 'env.json');
-    const runtimePath = join(options.jobDir, 'runtime.json');
-    const exitPath = join(options.jobDir, 'exit.json');
 
     // Ensure scripted output paths stay within the job directory.
     // InMemoryStorage is entirely in-memory so this is a correctness concern,
@@ -377,7 +375,6 @@ export class MockProcessSpawner {
         signal: outcome.signal ?? null,
         endTime: nowIsoString(this.time),
       };
-      this.storage.writeAtomicSync(exitPath, JSON.stringify(exitRecord, null, 2), { encoding: 'utf-8' });
       if (exitError) {
         exitDeferred.reject(exitError);
       } else {
@@ -405,8 +402,8 @@ export class MockProcessSpawner {
     if ((script.runtimeDelayMs ?? 0) > 0) {
       await this.time.sleep(script.runtimeDelayMs ?? 0);
     }
-    if (!record.alive && !this.storage.existsSync(exitPath)) {
-      throw new Error(`Durable process ${pid} exited before runtime.json was written`);
+    if (!record.alive) {
+      throw new Error(`Durable process ${pid} exited before runtime was reported`);
     }
 
     const runtimeRecord: DurableCliRuntimeRecord = {
@@ -416,10 +413,6 @@ export class MockProcessSpawner {
       stdoutPath,
       stderrPath,
     };
-    this.storage.writeAtomicSync(runtimePath, JSON.stringify(runtimeRecord, null, 2), { encoding: 'utf-8' });
-
-    // Schedule exit AFTER runtime.json is persisted — mirrors production ordering
-    // where the wrapper always writes runtime.json before exit.json
     if (script.exit !== null) {
       const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
       this.schedule(record, exit.delayMs ?? 0, () => {

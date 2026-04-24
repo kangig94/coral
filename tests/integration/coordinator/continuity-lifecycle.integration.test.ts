@@ -11,7 +11,7 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/pool.js';
-import { createFilesystemSessionLookup } from '#src/sessions/lookup.js';
+import { createSessionLookup } from '#src/sessions/lookup.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -24,12 +24,11 @@ import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
 } from '#src/discuss/shell/live-registry.js';
-import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
+import { DiscussSessionStore, createInMemoryDiscussJournal } from '#src/discuss/shell/session-store.js';
 import { getSession } from '#src/discuss/shell/registry.js';
 import { startDiscussSession } from '#src/discuss/shell/operations.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { AgentConfig } from '#src/discuss/shell/context.js';
-import { parseJobStatus } from '#src/jobs/records.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 
 const mockState = vi.hoisted(() => ({
@@ -147,7 +146,7 @@ describe('coordinator continuity lifecycle integration', () => {
       eventBus,
       providerRegistry: providerRegistry as never,
       pluginRegistry: { discoverPluginRoot: () => null },
-      sessionLookup: createFilesystemSessionLookup(runtime),
+      sessionLookup: createSessionLookup(runtime),
     });
     return { service, progressStore };
   }
@@ -466,9 +465,7 @@ describe('coordinator continuity lifecycle integration', () => {
 
     const source = runtime.paths.projectSource(ctx.projectRoot);
     const store = new DiscussSessionStore(source, {
-      storage: runtime.storage,
-      time: runtime.time,
-      paths: runtime.paths,
+      journal: createInMemoryDiscussJournal(),
     });
     const registry = createDiscussContextRegistry();
     const discussContext = getOrCreateDiscussContext(registry, ctx.projectRoot, service, store, {
@@ -478,10 +475,7 @@ describe('coordinator continuity lifecycle integration', () => {
         time: runtime.time,
       },
       jobStatusReader: {
-        read: (jobId) =>
-          parseJobStatus(
-            JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
-          ),
+        read: (jobId) => progressStore.readStatus(jobId),
       },
     });
     const agents: AgentConfig[] = [

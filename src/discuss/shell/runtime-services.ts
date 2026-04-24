@@ -1,5 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { formatError } from '../../infra/error-format.js';
+import type { Database } from 'better-sqlite3';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobStatus } from '../../jobs/records.js';
@@ -9,8 +10,11 @@ import * as discussLoop from './loop.js';
 import * as discussOperations from './operations.js';
 import type { RecoveredDiscussResume } from './operations.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
-import { DiscussSessionStore } from './session-store.js';
-import { readDiscussSourcesWithStorage } from './discuss-sources-catalog.js';
+import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
+import { toJournalInput } from '../store-registry.js';
+import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
+import { readDiscussEventLog } from '../../store/queries/discuss.js';
+import { createDefaultStoreReadContext } from '../../store/read-context.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -20,6 +24,8 @@ type CreateDiscussRuntimeDeps = {
     };
     progressStore: {
       readStatus(jobId: string): JobStatus | null;
+      getDb(): Database;
+      appendEventsWithResult(inputs: ReturnType<typeof toJournalInput>[]): unknown;
     };
     resolveProjectSource: (projectRoot: string) => string;
     eventBus: {
@@ -53,14 +59,45 @@ export function createDiscussRuntime({
   discussStores: Map<string, DiscussSessionStore>;
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
+  const readCtx = createDefaultStoreReadContext();
+
+  function snapshotBelongsToSource(snapshot: { projectRoot: string }, source: string): boolean {
+    return snapshot.projectRoot === source || world.resolveProjectSource(snapshot.projectRoot) === source;
+  }
+
+  function createJournal(): DiscussSessionJournal {
+    return {
+      append(_source, _snapshot, events) {
+        world.progressStore.appendEventsWithResult(events.map((event) => toJournalInput(event)));
+      },
+      readSnapshot(sessionId) {
+        return readProjectionDiscuss(world.progressStore.getDb(), sessionId)?.state ?? null;
+      },
+      readEvents(sessionId) {
+        return readDiscussEventLog(world.progressStore.getDb(), sessionId, readCtx);
+      },
+      listSnapshots(source) {
+        return listProjectionDiscussSnapshots(world.progressStore.getDb())
+          .map((row) => row.state)
+          .filter((snapshot) => snapshotBelongsToSource(snapshot, source));
+      },
+      listSources() {
+        return [
+          ...new Set(
+            listProjectionDiscussSnapshots(world.progressStore.getDb()).map((row) =>
+              world.resolveProjectSource(row.state.projectRoot),
+            ),
+          ),
+        ].sort();
+      },
+    };
+  }
 
   function getDiscussStoreForSource(source: string): DiscussSessionStore {
     const existing = discussStores.get(source);
     if (existing) return existing;
     const created = new DiscussSessionStore(source, {
-      storage: runtime.storage,
-      time: runtime.time,
-      paths: runtime.paths,
+      journal: createJournal(),
       onCommit: (snapshot) => {
         world.eventBus.emit('discuss:updated', {
           projectRoot: snapshot.projectRoot,
@@ -109,7 +146,7 @@ export function createDiscussRuntime({
     discussRegistry: world.discussRegistry,
     getDiscussStoreForSource,
     resolveProjectSource: world.resolveProjectSource,
-    readDiscussSources: () => readDiscussSourcesWithStorage(runtime.storage, runtime.paths),
+    readDiscussSources: () => createJournal().listSources(),
   };
 
   const hooks = {

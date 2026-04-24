@@ -11,14 +11,14 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents, type AppendInput } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { applyTestCounterMigration, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(MODULE_DIR, '../../src/store/migrations');
-const SIM_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
+const SCHEMAS_DIR = join(MODULE_DIR, '../../src/store/schemas');
+const SIM_SCHEMAS_DIR = '/tmp/sim/store/schemas';
 const CONSUMER_ID = 'journal-projection-consumer';
 const EVENT_COUNT = 1_000;
 const SIM_EPOCH_MS = Date.parse('2026-04-18T00:00:00.000Z');
@@ -45,43 +45,43 @@ interface Snapshot {
   readonly serialized: string;
 }
 
-type MigrationStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
+type SchemaStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
 
-function openMemoryDatabase(storage: MigrationStorage, migrationsDir: string): Database.Database {
+function openMemoryDatabase(storage: SchemaStorage, schemasDir: string): Database.Database {
   return openStoreDatabase({
     path: ':memory:',
     storage: storage as StoragePort,
-    migrationsDir,
+    schemasDir,
   });
 }
 
-function seedMigrations(storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>): void {
-  storage.mkdirSync(SIM_MIGRATIONS_DIR, { recursive: true });
+function seedSchemas(storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>): void {
+  storage.mkdirSync(SIM_SCHEMAS_DIR, { recursive: true });
 
-  for (const entry of readdirSync(MIGRATIONS_DIR, { withFileTypes: true })) {
+  for (const entry of readdirSync(SCHEMAS_DIR, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.sql')) {
       continue;
     }
 
-    storage.writeFileSync(join(SIM_MIGRATIONS_DIR, entry.name), readFileSync(join(MIGRATIONS_DIR, entry.name), 'utf-8'));
+    storage.writeFileSync(join(SIM_SCHEMAS_DIR, entry.name), readFileSync(join(SCHEMAS_DIR, entry.name), 'utf-8'));
   }
 }
 
-function createMigrationStorage(runtime: { storage: MigrationStorage }): {
-  storage: MigrationStorage;
-  migrationsDir: string;
+function createSchemaStorage(runtime: { storage: SchemaStorage }): {
+  storage: SchemaStorage;
+  schemasDir: string;
 } {
   if (runtime instanceof SimulationRuntime) {
-    seedMigrations(runtime.storage);
+    seedSchemas(runtime.storage);
     return {
       storage: runtime.storage,
-      migrationsDir: SIM_MIGRATIONS_DIR,
+      schemasDir: SIM_SCHEMAS_DIR,
     };
   }
 
   return {
     storage: runtime.storage,
-    migrationsDir: MIGRATIONS_DIR,
+    schemasDir: SCHEMAS_DIR,
   };
 }
 
@@ -140,8 +140,8 @@ function captureSnapshot(db: Database.Database): Snapshot {
 
 async function runSimulationSequence(): Promise<Snapshot> {
   const runtime = new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } });
-  const { storage, migrationsDir } = createMigrationStorage(runtime);
-  const db = openMemoryDatabase(storage, migrationsDir);
+  const { storage, schemasDir } = createSchemaStorage(runtime);
+  const db = openMemoryDatabase(storage, schemasDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createEmptyRegistry();
@@ -149,8 +149,8 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const counterIds = Array.from({ length: 5 }, () => runtime.ids.uuid());
 
   try {
-    applyMigrations({ db, storage, migrationsDir });
-    applyTestCounterMigration(db);
+    applyStoreSchemas({ db, storage, schemasDir });
+    applyTestCounterSchema(db);
     registerConsumer(driver);
 
     let lastSeq = 0;
@@ -198,18 +198,18 @@ function createSequencePlan(): SequencePlan {
 }
 
 async function runPlannedSequence(
-  runtime: { storage: MigrationStorage },
+  runtime: { storage: SchemaStorage },
   plan: SequencePlan,
 ): Promise<Snapshot> {
-  const { storage, migrationsDir } = createMigrationStorage(runtime);
-  const db = openMemoryDatabase(storage, migrationsDir);
+  const { storage, schemasDir } = createSchemaStorage(runtime);
+  const db = openMemoryDatabase(storage, schemasDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createEmptyRegistry();
 
   try {
-    applyMigrations({ db, storage, migrationsDir });
-    applyTestCounterMigration(db);
+    applyStoreSchemas({ db, storage, schemasDir });
+    applyTestCounterSchema(db);
     registerConsumer(driver);
 
     let lastSeq = 0;

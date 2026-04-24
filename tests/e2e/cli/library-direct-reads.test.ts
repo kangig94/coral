@@ -20,7 +20,7 @@ import { pluginRootNamespace } from '#src/infra/paths.js';
 import { memoDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { CoralStore, openStoreDatabase } from '#src/store/index.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/store/paths.js';
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 import {
@@ -36,7 +36,7 @@ import {
 const REPO_ROOT = process.cwd();
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'build', 'coral-cli.cjs');
 const SOURCE_MANIFEST = join(REPO_ROOT, 'build', 'manifest.json');
-const SOURCE_MIGRATIONS_DIR = join(REPO_ROOT, 'dist', 'store', 'migrations');
+const SOURCE_SCHEMAS_DIR = join(REPO_ROOT, 'dist', 'store', 'schemas');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
 
@@ -80,7 +80,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
-  cpSync(SOURCE_MIGRATIONS_DIR, join(root, 'dist', 'store', 'migrations'), { recursive: true });
+  cpSync(SOURCE_SCHEMAS_DIR, join(root, 'dist', 'store', 'schemas'), { recursive: true });
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(SOURCE_SQLITE3_DIR, join(root, 'node_modules', 'better-sqlite3'), 'dir');
@@ -198,7 +198,7 @@ function seedStore(fixture: Fixture): void {
   const db = openStoreDatabase({
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
-    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {

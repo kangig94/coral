@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { composeChildEnv } from '../../src/infra/env-sanitize.js';
 import { MAX_BUFFER } from '../../src/infra/process-constants.js';
 import type { Runtime, RuntimeExecOptions, ProcessPort } from '../../src/runtime/ports.js';
-import { copyMigrationAssets, resolveDefaultMigrationsDir } from '../../src/store/migrations.js';
+import { copySchemaAssets, resolveDefaultSchemasDir } from '../../src/store/schema-loader.js';
 import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';
 import { MockProcessSpawner } from './core/mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './core/runtime-doubles.js';
@@ -11,19 +11,19 @@ import { DEFAULT_EPOCH_MS, VirtualTime } from './core/virtual-time.js';
 import { buildExecPromise } from '../../src/runtime/exec-builder.js';
 
 const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
-const nodeFsMigrationStorage = {
+const nodeFsSchemaStorage = {
   existsSync,
   readFileSync: (path: string, encoding: 'utf-8') => readFileSync(path, encoding),
   readdirSync: (path: string, options: { withFileTypes: true }) => readdirSync(path, options),
 };
 
-function seedStoreMigrations(storage: InMemoryStorage): void {
-  const migrationsDir = resolveDefaultMigrationsDir();
-  if (storage.existsSync(migrationsDir)) {
+function seedStoreSchemas(storage: InMemoryStorage): void {
+  const schemasDir = resolveDefaultSchemasDir();
+  if (storage.existsSync(schemasDir)) {
     return;
   }
 
-  copyMigrationAssets(nodeFsMigrationStorage, storage, migrationsDir, migrationsDir);
+  copySchemaAssets(nodeFsSchemaStorage, storage, schemasDir, schemasDir);
 }
 
 export interface SimulationRuntimeOptions {
@@ -48,7 +48,7 @@ export class SimulationRuntime implements Runtime {
     this.env = new SealedEnv(options.env);
     this.paths = new InMemoryPaths(roots);
     this.storage = new InMemoryStorage(this.time, roots);
-    seedStoreMigrations(this.storage);
+    seedStoreSchemas(this.storage);
     this.ids = new SequentialIds();
     this.observer = new InMemoryObserver();
     const inheritedEnv = this.env.fullSnapshot();

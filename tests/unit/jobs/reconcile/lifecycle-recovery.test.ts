@@ -281,6 +281,18 @@ function appendSessionOpenedEvent(
         refs: { sessionId: overrides.sessionId },
         bodyVersion: 1,
         body: {
+          entry: {
+            sessionId: overrides.sessionId,
+            provider: overrides.provider,
+            name: 'alpha',
+            state: 'pending',
+            cwd: overrides.projectRoot,
+            projectRoot: overrides.projectRoot,
+            backendNamespace: overrides.backendNamespace,
+            createdAt: new Date(runtime.time.now()).toISOString(),
+            lastUsedAt: new Date(runtime.time.now()).toISOString(),
+            version: 1,
+          },
           controller: 'default',
           provider: overrides.provider,
           shard_dir: overrides.shardDir,
@@ -918,12 +930,8 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
+    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
     const fakeService = createFakeExecutionAndRecoveryService();
-
-    if (!shard) {
-      throw new Error(`Missing shard for ${session.sessionId}`);
-    }
 
     progressStore.initJob({
       jobId: 'terminal-job',
@@ -945,7 +953,7 @@ describe('lifecycle recovery', () => {
       provider: 'fakeprovider',
       backendNamespace: namespace,
       projectRoot,
-      shardDir: shard.shardDir,
+      shardDir,
     });
     appendTerminalEvent(progressStore, {
       jobId: 'terminal-job',
@@ -962,11 +970,11 @@ describe('lifecycle recovery', () => {
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
     });
-    const filesystemLookupSpy = vi.spyOn(modules.sessionLookupModule, 'createFilesystemSessionLookup');
+    const sessionLookupSpy = vi.spyOn(modules.sessionLookupModule, 'createSessionLookup');
 
     try {
       await controller.start();
-      expect(filesystemLookupSpy).not.toHaveBeenCalled();
+      expect(sessionLookupSpy).not.toHaveBeenCalled();
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -987,19 +995,15 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
+    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
     const fakeService = createFakeExecutionAndRecoveryService();
-
-    if (!shard) {
-      throw new Error(`Missing shard for ${session.sessionId}`);
-    }
 
     appendSessionOpenedEvent(progressStore, {
       sessionId: session.sessionId,
       provider: 'fakeprovider',
       backendNamespace: namespace,
       projectRoot,
-      shardDir: shard.shardDir,
+      shardDir,
     });
     sessionManager.claimForJobSync(session.sessionId, 'missing-job');
 

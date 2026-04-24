@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver, FreshnessTimeout, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -14,7 +14,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS projection_sessions (
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
   shard_dir        TEXT NOT NULL,
+  entry            TEXT NOT NULL,
   last_seq         INTEGER NOT NULL
 );
 
@@ -178,7 +179,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '2'),
+  ('schema_version', '1'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));

@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { z } from 'zod';
 
-import type { SessionContinuityMutation } from '#src/providers/continuity-mutation.js';
+import type { SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
 import type {
   PreflightRuntime,
   ProviderAppServerContract,

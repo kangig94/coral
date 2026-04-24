@@ -388,7 +388,7 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(world.generation().backend).not.toBe(cycledBackend);
   });
 
-  it('writes env.json before runtime.json with composed child-env semantics', async () => {
+  it('writes env.json and records runtime metadata through the Journal', async () => {
     const world = new SimulationWorld({
       env: {
         KEEP_BASE: 'base-value',
@@ -427,7 +427,6 @@ describe('deterministic simulation lifecycle replay', () => {
     const jobDir = dirname(runtime.stdoutPath);
     const generation = world.generation();
     const envPath = join(jobDir, 'env.json');
-    const runtimePath = join(jobDir, 'runtime.json');
     const env = JSON.parse(generation.backend.runtime.storage.readFileSync(envPath, 'utf-8')) as Record<string, string>;
 
     expect(env).toMatchObject({
@@ -437,8 +436,11 @@ describe('deterministic simulation lifecycle replay', () => {
       CORAL_CHILD: '1',
     });
     expect(env).not.toHaveProperty('CORAL_BACKEND_IDLE_MS');
-    expect(generation.backend.runtime.storage.statSync(envPath).mtimeMs).toBeLessThan(
-      generation.backend.runtime.storage.statSync(runtimePath).mtimeMs,
-    );
+    expect(runtime).toMatchObject({
+      pid: 30_404,
+      stdoutPath: join(jobDir, 'stdout'),
+      stderrPath: join(jobDir, 'stderr'),
+    });
+    expect(generation.backend.runtime.storage.existsSync(join(jobDir, 'runtime.json'))).toBe(false);
   });
 });

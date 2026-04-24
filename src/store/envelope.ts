@@ -75,7 +75,7 @@ export function assertStreamKind(value: string): StreamKind {
     throw new CoralSetupError({
       code: 'event_stream_kind_invalid',
       userMessage: `Unknown stream.kind in events row: '${value}'`,
-      remediation: 'A migration likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
+      remediation: 'A schema update likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
       context: { streamKind: value },
     });
   }

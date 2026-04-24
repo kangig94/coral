@@ -8,7 +8,7 @@ import type * as MainMod from '#src/cli/main.js';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/store/paths.js';
 
 const REPO_ROOT = process.cwd();
@@ -39,7 +39,7 @@ function seedRetryQueue(entries: Array<{
   const db = openStoreDatabase({
     path: storePaths('prod').dbFile,
     storage: runtime.storage,
-    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {

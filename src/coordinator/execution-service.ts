@@ -63,10 +63,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.sessionManager = SessionManager.forProduction(
       ctx.projectRoot,
       deps.runtime,
-      deps.appendEvents ?? noopAppendEvents,
+      deps.appendEvents,
       (payload) => {
         this.eventBus.emit('session:released', payload);
       },
+      { db: deps.progressStore.getDb() },
     );
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;

@@ -9,7 +9,7 @@ import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
@@ -23,7 +23,7 @@ import type { WorkflowExecutionPort } from '#src/workflow/command.js';
 // behavior is added later, the test scaffold already exists. The distinct
 // third branch ("absent" -> relaunch) is the genuine divergence.
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -72,7 +72,7 @@ function createHarness(options: {
   projectionLastSeq?: number;
 }) {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+  applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
   const runtime = new SimulationRuntime();
   const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry());

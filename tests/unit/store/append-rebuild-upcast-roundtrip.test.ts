@@ -8,11 +8,11 @@ import { z } from 'zod';
 import { appendEvents } from '#src/store/append.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, type Reducer } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (p: string, opts: { withFileTypes: true }) => fs.readdirSync(p, opts),
   readFileSync: (p: string, enc: 'utf-8') => fs.readFileSync(p, enc),
@@ -22,7 +22,7 @@ describe('append/rebuild upcaster round-trip (AC9 lock)', () => {
   it('append stores raw v1 bytes; rebuild upcasts to v2 for reducer', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
       db.exec(`CREATE TABLE projection_test_upcasted (id TEXT PRIMARY KEY, count INTEGER NOT NULL)`);
 

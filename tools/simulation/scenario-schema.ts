@@ -230,15 +230,6 @@ const crashStepSchema = z.object({
   delayMs: z.number().optional(),
 });
 
-const corruptTargetSchema = z.enum(['status', 'runtime', 'exit']);
-export type CorruptTarget = z.infer<typeof corruptTargetSchema>;
-
-const corruptStepSchema = z.object({
-  type: z.literal('corrupt'),
-  jobId: z.string(),
-  target: corruptTargetSchema,
-});
-
 const stepSchema = z
   .discriminatedUnion('type', [
     bootStepSchema,
@@ -252,7 +243,6 @@ const stepSchema = z
     expectStepObjectSchema,
     hangStepSchema,
     crashStepSchema,
-    corruptStepSchema,
   ])
   .superRefine((step, ctx) => {
     if (step.type === 'wait' && (step.maxSteps === undefined) === (step.timeoutMs === undefined)) {

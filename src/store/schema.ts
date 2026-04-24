@@ -1,4 +1,4 @@
-// Row shapes mirroring src/store/schema.sql. Compile-time check against column drift.
+// Row shapes mirroring src/store/schemas/001_initial.sql. Compile-time check against column drift.
 export interface EventsRow {
   seq: number;
   ts: string;

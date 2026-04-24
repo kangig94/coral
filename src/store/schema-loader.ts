@@ -16,7 +16,7 @@ function resolveModuleDir(): string {
     const stack = new Error().stack as unknown as Array<{ getFileName?: () => string | null }> | undefined;
     const fileName = stack
       ?.map((frame) => frame.getFileName?.() ?? null)
-      .find((candidate) => typeof candidate === 'string' && /\/store\/migrations\.(?:ts|js)$/.test(candidate));
+      .find((candidate) => typeof candidate === 'string' && /\/store\/schema-loader\.(?:ts|js)$/.test(candidate));
 
     if (typeof fileName === 'string') {
       return dirname(fileName);
@@ -28,30 +28,30 @@ function resolveModuleDir(): string {
   return join(process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd(), 'src', 'store');
 }
 
-const MODULE_MIGRATIONS_DIR = join(resolveModuleDir(), 'migrations');
+const MODULE_SCHEMAS_DIR = join(resolveModuleDir(), 'schemas');
 const RUNTIME_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd();
-const DEFAULT_MIGRATIONS_DIR_CANDIDATES = [
-  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined,
-  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'build', 'store', 'migrations') : undefined,
-  MODULE_MIGRATIONS_DIR,
-  join(RUNTIME_ROOT, 'dist', 'store', 'migrations'),
-  join(RUNTIME_ROOT, 'build', 'store', 'migrations'),
-  join(RUNTIME_ROOT, 'src', 'store', 'migrations'),
+const DEFAULT_SCHEMAS_DIR_CANDIDATES = [
+  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'schemas') : undefined,
+  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'build', 'store', 'schemas') : undefined,
+  MODULE_SCHEMAS_DIR,
+  join(RUNTIME_ROOT, 'dist', 'store', 'schemas'),
+  join(RUNTIME_ROOT, 'build', 'store', 'schemas'),
+  join(RUNTIME_ROOT, 'src', 'store', 'schemas'),
 ].filter((candidate): candidate is string => typeof candidate === 'string');
-const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
+const SEEDED_SCHEMAS_DIR = '/tmp/sim/store/schemas';
 
-type MigrationStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
-type MigrationReadStorage = Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'>;
-type MigrationWriteStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
-type MigrationSeedStorage = MigrationReadStorage & MigrationWriteStorage;
+type SchemaStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
+type SchemaReadStorage = Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'>;
+type SchemaWriteStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
+type SchemaSeedStorage = SchemaReadStorage & SchemaWriteStorage;
 
-export interface ApplyMigrationsOptions {
+export interface ApplyStoreSchemasOptions {
   readonly db: BetterSqlite3.Database;
-  readonly storage: MigrationStorage;
-  readonly migrationsDir?: string;
+  readonly storage: SchemaStorage;
+  readonly schemasDir?: string;
 }
 
-export const CURRENT_STORE_SCHEMA_VERSION = 2;
+export const CURRENT_STORE_SCHEMA_VERSION = 1;
 
 function readCurrentVersion(db: BetterSqlite3.Database): number {
   try {
@@ -82,13 +82,13 @@ function parseVersion(filename: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function resolveDefaultMigrationsDir(): string {
-  return DEFAULT_MIGRATIONS_DIR_CANDIDATES.find((candidate) => existsSync(candidate)) ?? MODULE_MIGRATIONS_DIR;
+export function resolveDefaultSchemasDir(): string {
+  return DEFAULT_SCHEMAS_DIR_CANDIDATES.find((candidate) => existsSync(candidate)) ?? MODULE_SCHEMAS_DIR;
 }
 
-export function copyMigrationAssets(
-  sourceStorage: MigrationReadStorage,
-  targetStorage: MigrationWriteStorage,
+export function copySchemaAssets(
+  sourceStorage: SchemaReadStorage,
+  targetStorage: SchemaWriteStorage,
   sourceDir: string,
   targetDir: string,
 ): boolean {
@@ -114,26 +114,26 @@ export function copyMigrationAssets(
   return true;
 }
 
-export function ensureStoreMigrationsDir(
-  storage: MigrationSeedStorage,
-  seededDir: string = SEEDED_MIGRATIONS_DIR,
+export function ensureStoreSchemasDir(
+  storage: SchemaSeedStorage,
+  seededDir: string = SEEDED_SCHEMAS_DIR,
 ): string {
-  const migrationsDir = resolveDefaultMigrationsDir();
-  if (storage.existsSync(migrationsDir)) {
-    return migrationsDir;
+  const schemasDir = resolveDefaultSchemasDir();
+  if (storage.existsSync(schemasDir)) {
+    return schemasDir;
   }
 
-  if (copyMigrationAssets(storage, storage, migrationsDir, seededDir)) {
+  if (copySchemaAssets(storage, storage, schemasDir, seededDir)) {
     return seededDir;
   }
 
-  return migrationsDir;
+  return schemasDir;
 }
 
-export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMigrationsDir() }: ApplyMigrationsOptions): void {
+export function applyStoreSchemas({ db, storage, schemasDir = resolveDefaultSchemasDir() }: ApplyStoreSchemasOptions): void {
   const currentVersion = readCurrentVersion(db);
   const files = storage
-    .readdirSync(migrationsDir, { withFileTypes: true })
+    .readdirSync(schemasDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.sql'))
     .map((entry) => ({ name: entry.name, version: parseVersion(entry.name) }))
     .filter((e): e is { name: string; version: number } => e.version !== null)
@@ -144,7 +144,7 @@ export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMig
 
   const applyTxn = db.transaction(() => {
     for (const entry of files) {
-      const sql = storage.readFileSync(join(migrationsDir, entry.name), 'utf-8');
+      const sql = storage.readFileSync(join(schemasDir, entry.name), 'utf-8');
       db.exec(sql);
     }
   });

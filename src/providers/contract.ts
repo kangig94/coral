@@ -7,7 +7,7 @@ import {
   SESSION_PROVIDER_FAILED_EVENT,
   type ProviderFailureCause,
 } from './fault.js';
-import type { SessionContinuityMutation } from './continuity-mutation.js';
+import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
 import type {
   AbortReason,
   AppServerNotificationMessage,

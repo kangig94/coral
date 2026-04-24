@@ -14,6 +14,7 @@ import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import { createBackendServer } from '#src/coordinator/coordinator.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import type { ProgressStore } from '#src/jobs/job-store.js';
 import {
   appendPersistedEvents,
   cleanupDiscussHarnesses,
@@ -155,6 +156,7 @@ describe('server discuss API', () => {
     service = createExecutionServiceStub(),
     runtime?: Runtime,
     resolveProjectSourceFn?: (projectRoot: string) => string,
+    progressStore?: ProgressStore,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createBackendServer({
       runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,
@@ -167,6 +169,7 @@ describe('server discuss API', () => {
         log: () => {},
       },
       discussRegistry: registry,
+      progressStore,
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
         kb: {} as never,
@@ -226,7 +229,14 @@ describe('server discuss API', () => {
       ],
     });
 
-    const backend = await startServer(harness.projectRoot, createDiscussContextRegistry(), harness.service, harness.runtime);
+    const backend = await startServer(
+      harness.projectRoot,
+      createDiscussContextRegistry(),
+      harness.service,
+      harness.runtime,
+      undefined,
+      harness.progressStore,
+    );
 
     const controlResponse = await fetch(
       `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
@@ -288,6 +298,7 @@ describe('server discuss API', () => {
       secondHarness.service,
       firstHarness.runtime,
       () => sharedSource,
+      firstHarness.progressStore,
     );
 
     const response = await fetch(
@@ -326,6 +337,7 @@ describe('server discuss API', () => {
       firstHarness.service,
       firstHarness.runtime,
       () => sharedSource,
+      firstHarness.progressStore,
     );
     attachSession(secondHarness.context, secondSnapshot);
     attachSession(firstHarness.context, firstSnapshot);
@@ -369,7 +381,14 @@ describe('server discuss API', () => {
     });
 
     const registry = createDiscussContextRegistry();
-    const backend = await startServer(harness.projectRoot, registry, harness.service, harness.runtime);
+    const backend = await startServer(
+      harness.projectRoot,
+      registry,
+      harness.service,
+      harness.runtime,
+      undefined,
+      harness.progressStore,
+    );
     const context = getDiscussContext(registry, harness.projectRoot);
     if (!context) throw new Error('Expected recovered discuss context');
 

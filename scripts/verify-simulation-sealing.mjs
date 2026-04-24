@@ -8,6 +8,7 @@ const SCRIPT_DIR = dirname(__filename);
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const SIMULATION_ROOT = resolve(REPO_ROOT, 'tools', 'simulation');
+const TOOLS_TESTING_ROOT = resolve(REPO_ROOT, 'tools', 'testing');
 const MANIFEST_PATH = resolve(REPO_ROOT, 'sealed-inventory.json');
 const SIMULATION_CORE_ROOT = 'tools/simulation/core/backend.ts';
 const SERVER_ROOT = 'src/coordinator/bootstrap.ts';
@@ -84,7 +85,7 @@ function resolveRelativeSourcePath(sourceFilePath, sourceCanonicalPath, specifie
     }
   }
 
-  throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production src/*.ts file`);
+  throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production source file`);
 }
 
 function classifyImportDeclaration(node) {
@@ -315,6 +316,7 @@ function main() {
   const productionFilePaths = [
     ...listSourceFiles(SRC_ROOT),
     ...listSourceFiles(SIMULATION_ROOT),
+    ...listSourceFiles(TOOLS_TESTING_ROOT),
   ].sort();
   const productionFiles = new Set(productionFilePaths.map((filePath) => toCanonicalRepoPath(filePath)));
 

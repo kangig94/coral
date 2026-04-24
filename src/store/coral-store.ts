@@ -115,10 +115,10 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.discuss = {
-      snapshot: (ref) => readDiscussSnapshot(ref),
-      eventLog: (ref) => readDiscussEventLog(ref),
-      discovery: (source) => readDiscussDiscovery(source),
-      summaryIndex: (source) => readDiscussSummaryIndex(source),
+      snapshot: (ref) => readDiscussSnapshot(this.db, ref),
+      eventLog: (ref) => readDiscussEventLog(this.db, ref, this),
+      discovery: (source) => readDiscussDiscovery(this.db, source),
+      summaryIndex: (source) => readDiscussSummaryIndex(this.db, source),
     };
 
     this.sessions = {

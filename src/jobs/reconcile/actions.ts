@@ -16,7 +16,6 @@ import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from './contracts.js';
 import { markJobAsError, materializeProviderTerminal } from './recovery-effects.js';
-import { noopAppendEvents } from '../../store/append.js';
 import { materializeJobRecoveryFault } from '../shell/fault-materializer.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
@@ -35,7 +34,7 @@ type RecoveryActionContext = {
   runtime: Runtime;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
-  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>;
+  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
 };
 
@@ -63,8 +62,9 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       SessionManager.forProduction(
         action.status.projectRoot,
         runtime,
-        noopAppendEvents,
+        undefined,
         emitSessionReleased,
+        { db: progressStore.getDb() },
       ).releaseJob(
         action.status.sessionId,
         action.status.jobId,
@@ -101,18 +101,18 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       runningRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord, runtimeRecord: action.runtimeRecord });
       return;
     case 'releaseSessionClaim': {
-      const shard = sessionLookup.lookupSessionShard(action.sessionId);
-      if (!shard) {
-        log(`Skipped releasing session claim for ${action.sessionId}: shard lookup missing\n`);
+      const session = sessionLookup.readSessionEntry(action.sessionId);
+      if (!session) {
+        log(`Skipped releasing session claim for ${action.sessionId}: session lookup missing\n`);
         return;
       }
 
       SessionManager.forProduction(
-        shard.shardDir,
+        session.projectRoot,
         runtime,
-        noopAppendEvents,
+        undefined,
         emitSessionReleased,
-        { isRawShardPath: true },
+        { db: progressStore.getDb() },
       ).releaseJob(action.sessionId, action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {

@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { Runtime, StoragePort } from '../runtime/ports.js';
-import { applyMigrations, assertSupportedStoreSchema, ensureStoreMigrationsDir } from './migrations.js';
+import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
 import { storePaths } from './paths.js';
 
 type ReadonlyStoreOptions = {
@@ -12,7 +12,7 @@ type ReadonlyStoreOptions = {
   readonly storage: StoragePort;
   readonly readonly: true;
   readonly busyTimeoutMs?: number;
-  readonly migrationsDir?: string;
+  readonly schemasDir?: string;
 };
 
 type WritableStoreOptions = {
@@ -20,7 +20,7 @@ type WritableStoreOptions = {
   readonly storage: StoragePort;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
-  readonly migrationsDir: string;
+  readonly schemasDir: string;
 };
 
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
@@ -42,10 +42,10 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
   db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
 
   if (options.readonly !== true) {
-    applyMigrations({
+    applyStoreSchemas({
       db,
       storage: options.storage,
-      migrationsDir: options.migrationsDir,
+      schemasDir: options.schemasDir,
     });
   }
 
@@ -92,7 +92,7 @@ export function openBackendStoreDb(
   return openStoreDatabase({
     path: storeDbPath === ':memory:' ? ':memory:' : existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
     storage: runtime.storage,
-    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 }
 

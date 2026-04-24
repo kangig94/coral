@@ -28,6 +28,10 @@ import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../../src/jobs/job-store.js';
+import { jobsRegistry } from '../../../src/jobs/events.js';
+import { sessionsRegistry } from '../../../src/sessions/events.js';
+import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/store-registry.js';
+import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
 import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/backend-core-types.js';
@@ -37,8 +41,8 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
+import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/store/queries/sessions.js';
-import { createFilesystemSessionLookup, mergeSessionLookups } from '../../../src/sessions/lookup.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
@@ -193,7 +197,7 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
 }
 
 function buildDefaultExecutionOutcome(
-  scenario: FakeProviderScenario | undefined,
+  _scenario: FakeProviderScenario | undefined,
   aborted: boolean,
   exitCode: number | null | undefined,
 ): SimulationTerminalOutcome {
@@ -207,8 +211,8 @@ function buildDefaultExecutionOutcome(
 }
 
 function buildRecoveredArtifactFailureOutcome(
-  scenario: FakeProviderScenario | undefined,
-  message: string,
+  _scenario: FakeProviderScenario | undefined,
+  _message: string,
 ): SimulationTerminalOutcome {
   return { kind: 'failed' };
 }
@@ -426,6 +430,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     {
       eventBus,
       db: storeDb,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     },
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
@@ -487,7 +492,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     createExecutionService: (ctx, deps) =>
       new ExecutionService(ctx, {
         ...deps,
-        sessionLookup: createFilesystemSessionLookup(runtime),
+        sessionLookup: createProjectionSessionLookup(storeDb),
       }),
     createServerFn,
     fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
@@ -565,10 +570,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
-        sessionLookup: mergeSessionLookups(
-          createProjectionSessionLookup(storeDb),
-          createFilesystemSessionLookup(runtime),
-        ),
+        sessionLookup: createProjectionSessionLookup(storeDb),
       });
       assertStartupStillActive();
 

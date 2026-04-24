@@ -13,7 +13,7 @@ import { applyNoteUpdateLocked, update } from '#src/kb/ops/update.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
@@ -162,7 +162,7 @@ async function createHarness(options?: {
   mkdirSync(runtimeDir, { recursive: true });
 
   const db = new Database(':memory:');
-  applyMigrations({
+  applyStoreSchemas({
     db,
     storage: nodeStorage,
   });

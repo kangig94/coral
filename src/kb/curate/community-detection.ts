@@ -3,7 +3,7 @@ import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
 import { compareLocale } from '../validation.js';
 import { communityEntryId, type KbIndex } from '../entry-types.js';
-import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './community-identity.js';
+import { communitySlugFromReference, uniqueSorted } from './community-identity.js';
 import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './community-graph.js';
 import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './community-types.js';
 export {

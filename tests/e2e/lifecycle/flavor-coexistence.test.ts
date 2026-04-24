@@ -10,7 +10,7 @@ import { isProcessAlive } from '#src/infra/node-process.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/store/paths.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
@@ -76,7 +76,7 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
     JSON.stringify({ bundleHash: sourceManifest.bundleHash, flavor }) + '\n',
     'utf-8',
   );
-  cpSync(join(process.cwd(), 'dist', 'store', 'migrations'), join(root, 'dist', 'store', 'migrations'), { recursive: true });
+  cpSync(join(process.cwd(), 'dist', 'store', 'schemas'), join(root, 'dist', 'store', 'schemas'), { recursive: true });
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(join(process.cwd(), 'node_modules', 'better-sqlite3'), join(root, 'node_modules', 'better-sqlite3'), 'dir');
 
@@ -111,7 +111,7 @@ function seedCompletedJob(
   const db = openStoreDatabase({
     path: storePaths(flavor).dbFile,
     storage: runtime.storage,
-    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
   const createdAt = new Date().toISOString();
   const sessionId = `${jobId}-session`;

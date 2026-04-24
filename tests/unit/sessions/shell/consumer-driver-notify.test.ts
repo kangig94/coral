@@ -9,7 +9,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
@@ -27,13 +27,8 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
-function resolveSessionDir(baseDir: string): string {
-  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
-  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-  if (entries.length === 0) {
-    throw new Error(`No session hash-dir found under ${sessionDirBase}`);
-  }
-  return join(sessionDirBase, entries[0].name);
+function resolveSessionDir(projectRoot: string, runtime: ReturnType<typeof createRealRuntime>): string {
+  return join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
 }
 
 afterEach(() => {
@@ -51,7 +46,7 @@ afterEach(() => {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 
@@ -110,7 +105,7 @@ describe('sessions consumer-driver notify', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
-        shard_dir: resolveSessionDir(tempHome),
+        shard_dir: resolveSessionDir(workDir, runtime),
         last_seq: 1,
       });
     } finally {

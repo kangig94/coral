@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
 import { parseExpression } from '#src/workflow/parser.js';
@@ -19,7 +19,7 @@ import {
 } from '#src/workflow/events.js';
 import { buildWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -30,7 +30,7 @@ describe('workflow reducer equivalence (AC4)', () => {
   it('rebuilds projection_workflows.plan rows byte-identically from workflow domain events', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(workflowRegistry);
       const upcasters = createEmptyRegistry();
 

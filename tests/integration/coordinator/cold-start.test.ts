@@ -36,7 +36,7 @@ afterEach(async () => {
 });
 
 describe('coordinator cold-start integration', () => {
-  it('creates discovery and lock files, applies migrations, and remains alive well within the startup deadline', async () => {
+  it('creates discovery and lock files, applies store schemas, and remains alive well within the startup deadline', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected build/coral-backend.cjs to exist before running integration tests');
     }

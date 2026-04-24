@@ -5,7 +5,6 @@ import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type {
   KbInboundSyncOptions,
   KbCachedOramaIndex,
-  KbCorpusLane,
   KbCorpusPublishCallbacks,
   KbCorpusPublication,
   KbCorpusSnapshot,

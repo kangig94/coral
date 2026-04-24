@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   sessionContinuityMutationSchema,
   type SessionContinuityMutation,
-} from '#src/providers/continuity-mutation.js';
+} from '#src/sessions/continuity-mutation.js';
 import {
   compose,
   providerFailureCauseSchema,

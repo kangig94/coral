@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { appendEvents, type AppendInput } from '#src/store/append.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#src/store/queries/jobs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -24,7 +24,7 @@ describe('jobs queries', () => {
 
   beforeEach(() => {
     db = new Database(':memory:');
-    applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+    applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
     const reducers = composeReducers(jobsRegistry);
     const upcasters = createDefaultUpcasterRegistry();

@@ -1,5 +1,4 @@
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { noopAppendEvents } from '../../store/append.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
@@ -46,7 +45,6 @@ export function createExecutionServices({
       eventBus: world.eventBus,
       providerRegistry: world.providerRegistry,
       pluginRegistry: world.pluginRegistry,
-      appendEvents: noopAppendEvents,
     });
     services.set(key, created);
     return created;

@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
-import { ensureStoreMigrationsDir } from '../store/migrations.js';
+import { ensureStoreSchemasDir } from '../store/schema-loader.js';
+import { storePaths } from '../store/paths.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
+import { currentBuildFlavor } from '../infra/paths.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
 import { nowIsoString } from '../infra/time.js';
@@ -20,7 +22,6 @@ import {
   cloneJobTerminal,
   normalizeJobTerminal,
   type JobLaunch,
-  type JobProgress,
   type JobRuntime,
   type JobStatus,
   type JobTerminal,
@@ -78,13 +79,7 @@ export class JobStore implements JobProgressStore {
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
-    this.db =
-      db ??
-      openStoreDatabase({
-        path: this.resolveDefaultDbPath(),
-        storage: this.runtime.storage,
-        migrationsDir: ensureStoreMigrationsDir(this.runtime.storage),
-      });
+    this.db = db ?? this.openDefaultStoreDatabase();
     this.appendEvents =
       appendEvents ??
       ((inputs) => {
@@ -103,7 +98,37 @@ export class JobStore implements JobProgressStore {
     try {
       return this.runtime.paths.coral.store.dbFile;
     } catch {
-      return ':memory:';
+      return storePaths(currentBuildFlavor()).dbFile;
+    }
+  }
+
+  private openDefaultStoreDatabase(): Database {
+    const path = this.resolveDefaultDbPath();
+    try {
+      return openStoreDatabase({
+        path,
+        storage: this.runtime.storage,
+        schemasDir: ensureStoreSchemasDir(this.runtime.storage),
+      });
+    } catch (error: unknown) {
+      if (path === ':memory:' || this.isFlavorSettled()) {
+        throw error;
+      }
+
+      return openStoreDatabase({
+        path: ':memory:',
+        storage: this.runtime.storage,
+        schemasDir: ensureStoreSchemasDir(this.runtime.storage),
+      });
+    }
+  }
+
+  private isFlavorSettled(): boolean {
+    try {
+      void this.runtime.paths.coral.store.dbFile;
+      return true;
+    } catch {
+      return false;
     }
   }
 

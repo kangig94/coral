@@ -7,12 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, type DomainEventRegistry, type Reducer } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
-import { applyTestCounterMigration, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (p: string, opts: { withFileTypes: true }) => fs.readdirSync(p, opts),
   readFileSync: (p: string, enc: 'utf-8') => fs.readFileSync(p, enc),
@@ -22,8 +22,8 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
-      applyTestCounterMigration(db);
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
       const upcasters = createEmptyRegistry();
 
@@ -66,7 +66,7 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
   it('does NOT touch kb_corpus_state (Corpus control state)', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers();
       const upcasters = createEmptyRegistry();
 
@@ -127,7 +127,7 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
   it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
       db.prepare(
         `INSERT INTO events (

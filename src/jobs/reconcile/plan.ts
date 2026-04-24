@@ -13,7 +13,7 @@ import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
  * semantics for orphaned session-claim detection.
  *
  * Invariant — session state crosses namespaces:
- * `listSessionRefs()` / `readSession(...)` enumerate sessions across all shards
+ * `listSessionRefs()` / `readSession(...)` enumerate Journal-projected sessions
  * regardless of `currentNamespace`, matching the current lifecycle session sweep.
  * Terminal and orphaned claims must remain releasable even when the owning job
  * belongs to a foreign namespace.
@@ -29,8 +29,8 @@ export interface JobStoreSnapshot {
   readRuntime(jobId: string): JobRuntime | null;
   readExit(jobId: string): DurableProcessExit | null;
   readTerminalPayload(jobId: string): JobTerminal | null;
-  listSessionRefs(): Array<{ shardDir: string; sessionId: string; provider: string }>;
-  readSession(shardDir: string, provider: string, sessionId: string): SessionEntry | null;
+  listSessionRefs(): Array<{ sessionId: string; provider: string }>;
+  readSession(sessionId: string): SessionEntry | null;
 }
 
 export type RecoveryAction =
@@ -268,7 +268,7 @@ function planSessionClaimReleases(snapshot: JobStoreSnapshot, jobIds: readonly s
   const actions: CleanupAction[] = [];
 
   for (const ref of readSessionRefs(snapshot)) {
-    const session = safeCall(() => snapshot.readSession(ref.shardDir, ref.provider, ref.sessionId), null);
+    const session = safeCall(() => snapshot.readSession(ref.sessionId), null);
     const activeJobId = session?.activeJobId;
     if (!activeJobId) continue;
 
@@ -300,15 +300,14 @@ function readJobIds(snapshot: JobStoreSnapshot): string[] {
   return jobIds.filter((jobId): jobId is string => typeof jobId === 'string');
 }
 
-function readSessionRefs(snapshot: JobStoreSnapshot): Array<{ shardDir: string; sessionId: string; provider: string }> {
+function readSessionRefs(snapshot: JobStoreSnapshot): Array<{ sessionId: string; provider: string }> {
   const refs = safeCall(() => snapshot.listSessionRefs(), []);
   if (!Array.isArray(refs)) return [];
 
   return refs.filter(
-    (ref): ref is { shardDir: string; sessionId: string; provider: string } =>
+    (ref): ref is { sessionId: string; provider: string } =>
       ref !== null &&
       typeof ref === 'object' &&
-      typeof ref.shardDir === 'string' &&
       typeof ref.sessionId === 'string' &&
       typeof ref.provider === 'string',
   );

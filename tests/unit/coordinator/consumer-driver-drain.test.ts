@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver, type JournalApplyContext, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -23,7 +23,7 @@ interface CursorRow {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

@@ -3,16 +3,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
-import {
-  listProductionSourceFiles,
-  toCanonicalSrcPath,
-} from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const SRC_ROOT = join(REPO_ROOT, 'src');
-const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const COORDINATOR_ROOT_PATH = join(REPO_ROOT, 'src/coordinator/coordinator.ts');
 const CONTRACTS_PATH = join(REPO_ROOT, 'src/coordinator/contracts.ts');
+const SESSIONS_API_PATH = join(REPO_ROOT, 'src/sessions/api.ts');
 const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
   'createBackendCore',
   'listInstantiatedExecutionServices',
@@ -30,7 +25,6 @@ const FORBIDDEN_CONTRACT_IMPORTS = [
   '../jobs/job-store.js',
   '../providers/registry.js',
 ];
-const OPEN_SHARD_ALLOWLIST = new Set(['src/sessions/shell/resolve.ts', 'src/jobs/reconcile/snapshot.ts']);
 
 function hasExportModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)
@@ -127,40 +121,10 @@ describe('coordinator api export scope invariant (AC12)', () => {
     ).toEqual([]);
   });
 
-  it('keeps SessionManager.openShard usage inside the recovery/read allowlist', () => {
-    const violations: string[] = [];
+  it('does not re-export SessionManager from sessions/api.ts', () => {
+    const source = readFileSync(SESSIONS_API_PATH, 'utf-8');
 
-    for (const filePath of listProductionSourceFiles(SRC_ROOT)) {
-      const canonicalPath = toCanonicalSrcPath(REPO_ROOT, filePath);
-      const sourceFile = ts.createSourceFile(
-        filePath,
-        readFileSync(filePath, 'utf-8'),
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS,
-      );
-
-      let hasOpenShardCall = false;
-      const visit = (node: ts.Node): void => {
-        if (
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          ts.isIdentifier(node.expression.expression) &&
-          ts.isIdentifier(node.expression.name) &&
-          node.expression.expression.text === 'SessionManager' &&
-          node.expression.name.text === 'openShard'
-        ) {
-          hasOpenShardCall = true;
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
-
-      if (hasOpenShardCall && !OPEN_SHARD_ALLOWLIST.has(canonicalPath)) {
-        violations.push(canonicalPath);
-      }
-    }
-
-    expect(violations, 'Production SessionManager.openShard sites must stay confined to the allowlist.').toEqual([]);
+    expect(source).not.toMatch(/export\s+type\s+\{[^}]*\bSessionManager\b/);
+    expect(source).not.toMatch(/export\s+\{[^}]*\bSessionManager\b/);
   });
 });

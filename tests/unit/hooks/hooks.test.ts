@@ -320,19 +320,6 @@ describe('hooks.json', () => {
 describe('pre-compact.mjs', () => {
   it('exits 0, emits a no-op log line, and does not write snapshots', () => {
     const fixture = createFixture();
-    const jobDir = join(fixture.jobsDir, 'test-job-live');
-    mkdirSync(jobDir, { recursive: true });
-    writeFileSync(
-      join(jobDir, 'status.json'),
-      JSON.stringify({
-        jobId: 'test-job-live',
-        phase: 'running',
-        projectRoot: fixture.projectRoot,
-        provider: 'codex',
-        sessionId: 'sess-1',
-      }),
-      'utf-8',
-    );
 
     const result = runHook(
       PRE_COMPACT_HOOK,

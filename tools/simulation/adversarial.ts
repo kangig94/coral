@@ -16,17 +16,13 @@ import {
 } from './no-real-io.js';
 import { normalizeWorldConfig } from './scenario-normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
-import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './scenario-schema.js';
-import { noopAppendEvents } from '../../src/store/append.js';
+import type { LaunchStep, WaitUntil, WorldConfig } from './scenario-schema.js';
 import type { LaunchDecision } from '../../src/jobs/launch.js';
 import { isTerminalPhase } from '../../src/jobs/phase.js';
 import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { SessionEntry } from '../../src/sessions/entry.js';
 
-const STATUS_FILE = 'status.json';
-const RUNTIME_FILE = 'runtime.json';
-const EXIT_FILE = 'exit.json';
 const RESULT_FILE = 'result.md';
 
 export type LaunchJobOptions = {
@@ -98,17 +94,6 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
     createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };
-}
-
-function parseJsonArtifact<T>(raw: string | null): T | null {
-  if (raw === null) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
 }
 
 function hasRuntimePid(record: unknown): record is { pid: number } {
@@ -340,14 +325,6 @@ export class SimulationWorld {
     this.current.backend.runtime.process.kill(pid, 'SIGTERM');
   }
 
-  corrupt(jobId: string, target: CorruptTarget): void {
-    this.assertUsable();
-    const jobDir = this.current.backend.progressStore.jobDir(jobId);
-    const filePath = this.resolveArtifactPath(jobId, target);
-    this.current.backend.runtime.storage.mkdirSync(jobDir, { recursive: true });
-    this.current.backend.runtime.storage.writeFileSync(filePath, '{invalid-json');
-  }
-
   enqueueHang(delayMs?: number): void {
     this.assertUsable();
     this.current.backend.runtime.spawner.enqueueDurable({
@@ -395,52 +372,23 @@ export class SimulationWorld {
   readArtifact(
     jobId: string,
     kind: SimulationArtifactKind,
-    options: { freshness?: ArtifactFreshness } = {},
+    _options: { freshness?: ArtifactFreshness } = {},
   ): string | JobStatus | JobRuntime | DurableProcessExit | null {
     this.assertUsable();
-    const freshness = options.freshness ?? 'cached';
 
-    if (freshness === 'cached') {
-      switch (kind) {
-        case 'status':
-          return this.current.backend.progressStore.readStatus(jobId);
-        case 'runtime':
-          return this.current.backend.progressStore.readRuntimeRecord(jobId);
-        case 'exit':
-          return this.current.backend.progressStore.readExitRecord(jobId);
-        case 'result':
-          return this.readTextArtifact(this.resolveArtifactPath(jobId, kind));
-        case 'stdout':
-        case 'stderr':
-          return this.readTextArtifact(this.resolveStreamArtifactPath(jobId, kind, 'cached'));
-      }
+    switch (kind) {
+      case 'status':
+        return this.current.backend.progressStore.readStatus(jobId);
+      case 'runtime':
+        return this.current.backend.progressStore.readRuntimeRecord(jobId);
+      case 'exit':
+        return this.current.backend.progressStore.readExitRecord(jobId);
+      case 'result':
+        return this.readTextArtifact(this.resolveResultArtifactPath(jobId));
+      case 'stdout':
+      case 'stderr':
+        return this.readTextArtifact(this.resolveStreamArtifactPath(jobId, kind));
     }
-
-    if (freshness === 'raw') {
-      return this.readTextArtifact(
-        kind === 'stdout' || kind === 'stderr'
-          ? this.resolveStreamArtifactPath(jobId, kind, 'fresh')
-          : this.resolveArtifactPath(jobId, kind),
-      );
-    }
-
-    const raw = this.readTextArtifact(
-      kind === 'stdout' || kind === 'stderr'
-        ? this.resolveStreamArtifactPath(jobId, kind, 'fresh')
-        : this.resolveArtifactPath(jobId, kind),
-    );
-
-    if (kind === 'result' || kind === 'stdout' || kind === 'stderr') {
-      return raw;
-    }
-
-    if (kind === 'status') {
-      return parseJsonArtifact<JobStatus>(raw);
-    }
-    if (kind === 'runtime') {
-      return parseJsonArtifact<JobRuntime>(raw);
-    }
-    return parseJsonArtifact<DurableProcessExit>(raw);
   }
 
   listJobIds(): string[] {
@@ -451,7 +399,13 @@ export class SimulationWorld {
   listSessions(provider: string, projectRoot?: string): SessionEntry[] {
     this.assertUsable();
     const targetRoot = projectRoot ?? this.current.backend.projectRoot;
-    return new SessionManager(targetRoot, this.current.backend.runtime, noopAppendEvents).list(provider);
+    return new SessionManager(
+      targetRoot,
+      this.current.backend.runtime,
+      undefined,
+      () => {},
+      this.current.backend.progressStore.getDb(),
+    ).list(provider);
   }
 
   getHookLog(): SimulationHookLog {
@@ -619,25 +573,12 @@ export class SimulationWorld {
     return true;
   }
 
-  private resolveArtifactPath(jobId: string, kind: Exclude<SimulationArtifactKind, 'stdout' | 'stderr'>): string {
-    const jobDir = this.current.backend.progressStore.jobDir(jobId);
-    switch (kind) {
-      case 'status':
-        return join(jobDir, STATUS_FILE);
-      case 'runtime':
-        return join(jobDir, RUNTIME_FILE);
-      case 'exit':
-        return join(jobDir, EXIT_FILE);
-      case 'result':
-        return join(jobDir, RESULT_FILE);
-    }
+  private resolveResultArtifactPath(jobId: string): string {
+    return join(this.current.backend.progressStore.jobDir(jobId), RESULT_FILE);
   }
 
-  private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr', freshness: 'cached' | 'fresh'): string {
-    const runtimeRecord =
-      freshness === 'cached'
-        ? this.current.backend.progressStore.readRuntimeRecord(jobId)
-        : parseJsonArtifact<DurableCliRuntimeRecord>(this.readTextArtifact(this.resolveArtifactPath(jobId, 'runtime')));
+  private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr'): string {
+    const runtimeRecord = this.current.backend.progressStore.readRuntimeRecord(jobId);
 
     if (kind === 'stdout' && hasRuntimeStreamPath(runtimeRecord, 'stdoutPath')) {
       return runtimeRecord.stdoutPath;

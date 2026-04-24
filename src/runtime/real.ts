@@ -25,15 +25,6 @@ import { composeCoralPaths } from '../infra/coral-paths.js';
 import {
   backendInfoPath,
   backendLockPath,
-  discussBaseDirForSource,
-  discussDiscoveryLockPathForSource,
-  discussDiscoveryPathForSource,
-  discussEventLogPath,
-  discussSessionDirForSource,
-  discussSourcesLockPath,
-  discussSourcesPath,
-  discussStatePath,
-  discussSummaryIndexPathForSource,
   getSettledBuildFlavor,
   installationDirForNamespace,
   jobsDir,
@@ -206,15 +197,6 @@ export function createRealRuntime(): Runtime {
     backendLockPath,
     pluginRootNamespace,
     projectSource: resolveProjectSource,
-    discussSourcesPath,
-    discussSourcesLockPath,
-    discussBaseDirForSource,
-    discussDiscoveryPathForSource,
-    discussDiscoveryLockPathForSource,
-    discussSummaryIndexPathForSource,
-    discussSessionDirForSource,
-    discussStatePath,
-    discussEventLogPath,
     get coral(): CoralPaths {
       if (cachedCoralPaths !== undefined) {
         return cachedCoralPaths;

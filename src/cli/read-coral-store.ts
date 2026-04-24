@@ -6,7 +6,7 @@ import { pluginRootNamespace } from '../infra/paths.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore, openStoreDatabase } from '../store/index.js';
-import { ensureStoreMigrationsDir } from '../store/migrations.js';
+import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { storePaths } from '../store/paths.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
 
@@ -120,7 +120,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
     : openStoreDatabase({
         path: ':memory:',
         storage: runtime.storage,
-        migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+        schemasDir: ensureStoreSchemasDir(runtime.storage),
       });
 
   return {

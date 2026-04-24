@@ -7,15 +7,15 @@ import { describe, expect, it } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import {
-  applyTestCounterMigration,
+  applyTestCounterSchema,
   TEST_COUNTER_SCHEMA,
   testCounterRegistry,
 } from '#tests/unit/store/fixtures/test-counter-registry.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 
 const storageAdapter: Pick<StoragePort, 'readdirSync' | 'readFileSync'> = {
   readdirSync: (path, options) => fs.readdirSync(path, options),
@@ -24,8 +24,8 @@ const storageAdapter: Pick<StoragePort, 'readdirSync' | 'readFileSync'> = {
 
 function setupDb(): Database.Database {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: storageAdapter, migrationsDir: MIGRATIONS_DIR });
-  applyTestCounterMigration(db);
+  applyStoreSchemas({ db, storage: storageAdapter, schemasDir: SCHEMAS_DIR });
+  applyTestCounterSchema(db);
   return db;
 }
 

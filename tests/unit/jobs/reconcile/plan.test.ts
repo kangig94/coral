@@ -23,7 +23,7 @@ type JobFixture = {
 }
 
 type SessionFixture = {
-  shardDir: string
+  shardDir?: string
   sessionId: string
   provider: string
   activeJobId?: string
@@ -45,7 +45,7 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
   readonly jobIds: string[] = []
   readonly currentNamespace: string
   private readonly jobs = new Map<string, StoredJob>()
-  private readonly sessionRefs: Array<{ shardDir: string; sessionId: string; provider: string }> = []
+  private readonly sessionRefs: Array<{ sessionId: string; provider: string }> = []
   private readonly sessions = new Map<string, SessionEntry | null>()
 
   constructor(currentNamespace = CURRENT_NAMESPACE) {
@@ -73,7 +73,6 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
 
   addSession(fixture: SessionFixture): this {
     this.sessionRefs.push({
-      shardDir: fixture.shardDir,
       sessionId: fixture.sessionId,
       provider: fixture.provider,
     })
@@ -87,7 +86,7 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
           })
         : fixture.entry
 
-    this.sessions.set(this.sessionKey(fixture.shardDir, fixture.provider, fixture.sessionId), entry)
+    this.sessions.set(fixture.sessionId, entry)
     return this
   }
 
@@ -123,16 +122,12 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
     return this.jobs.get(jobId)?.terminalPayload ?? null
   }
 
-  listSessionRefs(): Array<{ shardDir: string; sessionId: string; provider: string }> {
+  listSessionRefs(): Array<{ sessionId: string; provider: string }> {
     return this.sessionRefs.map((ref) => ({ ...ref }))
   }
 
-  readSession(shardDir: string, provider: string, sessionId: string): SessionEntry | null {
-    return this.sessions.get(this.sessionKey(shardDir, provider, sessionId)) ?? null
-  }
-
-  private sessionKey(shardDir: string, provider: string, sessionId: string): string {
-    return `${shardDir}::${provider}::${sessionId}`
+  readSession(sessionId: string): SessionEntry | null {
+    return this.sessions.get(sessionId) ?? null
   }
 }
 
@@ -568,7 +563,7 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([])
   })
 
-  it('treats corrupt status reads as incomplete admission when launch exists', () => {
+  it('treats a missing status projection as incomplete admission when launch exists', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'corrupt-status-job',
       status: null,
@@ -583,7 +578,7 @@ describe('planRecovery', () => {
     ])
   })
 
-  it('suppresses queued recovery when launch.json parses as null', () => {
+  it('suppresses queued recovery when the launch projection is unavailable', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'corrupt-launch-job',
       status: makeStatus('corrupt-launch-job', 'queued'),
@@ -597,7 +592,7 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([])
   })
 
-  it('suppresses running recovery when runtime.json parses as null', () => {
+  it('suppresses running recovery when the runtime projection is unavailable', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'corrupt-runtime-job',
       status: makeStatus('corrupt-runtime-job', 'running'),

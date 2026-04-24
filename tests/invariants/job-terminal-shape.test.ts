@@ -15,7 +15,9 @@ describe('job terminal shape invariant', () => {
   it('keeps JobTerminal as terminal content/outcome only', () => {
     const content = readFileSync(RESULT_PATH, 'utf-8');
     const interfaceMatch = content.match(/export interface JobTerminal \{(?<body>[\s\S]*?)\n\}/);
-    const schemaMatch = content.match(/export const jobTerminalSchema = z\s+\.object\(\{(?<body>[\s\S]*?)\n  \}\)\s+\.strict\(\);/);
+    const schemaMatch = content.match(
+      /export const jobTerminalSchema = z\s+\.object\(\{(?<body>[\s\S]*?)\n\s{2}\}\)\s+\.strict\(\);/,
+    );
     expect(interfaceMatch).not.toBeNull();
     expect(schemaMatch).not.toBeNull();
 

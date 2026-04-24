@@ -9,7 +9,7 @@ import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle-backend.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
@@ -192,7 +192,7 @@ describe('Corpus notify crash replay', () => {
 
     const primaryDb = new Database(dbPath);
     createProjectionTable(primaryDb);
-    applyMigrations({
+    applyStoreSchemas({
       db: primaryDb,
       storage: nodeStorage,
     });

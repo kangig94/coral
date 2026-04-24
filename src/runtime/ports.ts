@@ -43,26 +43,14 @@ export interface StoragePort {
   chmodSync(path: string, mode: number): void;
 }
 
-export interface DiscussPathResolver {
-  projectSource(projectRoot: string): string;
-  discussSourcesPath(): string;
-  discussSourcesLockPath(): string;
-  discussBaseDirForSource(source: string): string;
-  discussDiscoveryPathForSource(source: string): string;
-  discussDiscoveryLockPathForSource(source: string): string;
-  discussSummaryIndexPathForSource(source: string): string;
-  discussSessionDirForSource(source: string, sessionId: string): string;
-  discussStatePath(sessionDir: string): string;
-  discussEventLogPath(sessionDir: string): string;
-}
-
-export interface RuntimePaths extends DiscussPathResolver {
+export interface RuntimePaths {
   jobsDir(): string;
   sessionBase(): string;
   installationDirForNamespace(namespace: string): string;
   backendInfoPath(pluginRoot: string): string;
   backendLockPath(pluginRoot: string): string;
   pluginRootNamespace(pluginRoot: string): string;
+  projectSource(projectRoot: string): string;
   readonly coral: CoralPaths;
 }
 

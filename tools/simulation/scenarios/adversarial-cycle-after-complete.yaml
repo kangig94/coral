@@ -1,5 +1,4 @@
-# Adversarial: corrupt all three artifact types (status, runtime, exit) then cycle.
-# Tests whether cycle recovery handles fully corrupted job directories.
+# Adversarial: cycle after a completed job and verify the new generation starts clean.
 world:
   durable:
     - pid: 99002
@@ -15,7 +14,7 @@ world:
 steps:
   - type: boot
   - type: launch
-    prompt: corrupt all artifacts test
+    prompt: completed job before cycle
   - type: wait
     until:
       terminal: true
@@ -27,20 +26,11 @@ steps:
       content: first-gen-result
       outcome:
         kind: completed
-  - type: corrupt
-    jobId: "00000000-0000-0000-0000-000000000003"
-    target: status
-  - type: corrupt
-    jobId: "00000000-0000-0000-0000-000000000003"
-    target: runtime
-  - type: corrupt
-    jobId: "00000000-0000-0000-0000-000000000003"
-    target: exit
   - type: cycle
   - type: expect
     jobCount: 0
   - type: launch
-    prompt: second gen after full corruption
+    prompt: second gen after cycle
   - type: wait
     until:
       terminal: true

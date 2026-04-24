@@ -11,7 +11,6 @@ import type {
 import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
 import type { CoralPaths } from '../../../src/infra/coral-paths.js';
 import { equipmentPaths } from '../../../src/infra/equipment-paths.js';
-import { sourceToSlug } from '../../../src/infra/paths.js';
 import { exportsPaths } from '../../../src/infra/exports-paths.js';
 import { corpusPaths } from '../../../src/infra/corpus-paths.js';
 import type { BuildFlavor } from '../../../src/runtime/flavor.js';
@@ -142,52 +141,8 @@ export class InMemoryPaths implements RuntimePaths {
     return source;
   }
 
-  discussSourcesPath(): string {
-    return join(this.coralRoot(), 'discuss-sources.json');
-  }
-
-  discussSourcesLockPath(): string {
-    return `${this.discussSourcesPath()}.lock`;
-  }
-
-  discussBaseDirForSource(source: string): string {
-    return join(this.projectDataDirForSource(source), 'discuss');
-  }
-
-  discussDiscoveryPathForSource(source: string): string {
-    return join(this.discussBaseDirForSource(source), 'discovery.json');
-  }
-
-  discussDiscoveryLockPathForSource(source: string): string {
-    return join(this.discussBaseDirForSource(source), '.lock');
-  }
-
-  discussSummaryIndexPathForSource(source: string): string {
-    return join(this.discussBaseDirForSource(source), 'summary-index.json');
-  }
-
-  discussSessionDirForSource(source: string, sessionId: string): string {
-    return join(this.discussBaseDirForSource(source), sessionId);
-  }
-
-  discussStatePath(sessionDir: string): string {
-    return join(sessionDir, 'state.json');
-  }
-
-  discussEventLogPath(sessionDir: string): string {
-    return join(sessionDir, 'event-log.jsonl');
-  }
-
   private installationsDir(): string {
     return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
-  }
-
-  private coralRoot(): string {
-    return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
-  }
-
-  private projectDataDirForSource(source: string): string {
-    return join(this.coralRoot(), 'projects', sourceToSlug(source));
   }
 }
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
 import { continuitySnapshotSchema } from './continuity.js';
+import { sessionEntrySchema } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
   sessionCloseReasonSchema,
@@ -13,27 +14,54 @@ import {
   reduceSessionClosed,
   reduceSessionContinuityCheckpointed,
   reduceSessionInterrupted,
+  reduceSessionClaimReleased,
+  reduceSessionClaimed,
   reduceSessionOpened,
   reduceSessionProviderFailed,
 } from './projections.js';
 
 export const sessionOpenedBodySchema = z
   .object({
-    // Session identity is carried by event.stream.id across the journal; the body keeps
-    // only payload fields so session.opened never duplicates sessionId.
+    entry: sessionEntrySchema,
     controller: z.string().min(1),
     provider: z.string().min(1),
     shard_dir: z.string().min(1),
   })
   .strict();
 
-export const sessionContinuityCheckpointedBodySchema = continuitySnapshotSchema;
-export const sessionInterruptedBodySchema = sessionInterruptedFaultSchema;
+export const sessionContinuityCheckpointedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    snapshot: continuitySnapshotSchema,
+  })
+  .strict();
+export const sessionInterruptedBodySchema = z.union([
+  sessionInterruptedFaultSchema,
+  z
+    .object({
+      entry: sessionEntrySchema.optional(),
+      fault: sessionInterruptedFaultSchema,
+    })
+    .strict(),
+]);
 export const sessionProviderFailedBodySchema = sessionProviderFailedFaultSchema;
 export const sessionAdapterUnparseableBodySchema = sessionAdapterUnparseableFaultSchema;
 export const sessionClosedBodySchema = z
   .object({
+    entry: sessionEntrySchema.optional(),
     reason: sessionCloseReasonSchema,
+  })
+  .strict();
+export const sessionClaimedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    jobId: z.string().min(1),
+  })
+  .strict();
+export const sessionClaimReleasedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    jobId: z.string().min(1),
   })
   .strict();
 
@@ -43,11 +71,15 @@ export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema
 export type SessionProviderFailedBody = z.infer<typeof sessionProviderFailedBodySchema>;
 export type SessionAdapterUnparseableBody = z.infer<typeof sessionAdapterUnparseableBodySchema>;
 export type SessionClosedBody = z.infer<typeof sessionClosedBodySchema>;
+export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
+export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;
 
 export const sessionsRegistry: DomainEventRegistry = {
   types: [
     'session.opened',
     'session.continuity.checkpointed',
+    'session.claimed',
+    'session.claim.released',
     'session.interrupted',
     'session.provider_failed',
     'session.adapter_unparseable',
@@ -56,6 +88,8 @@ export const sessionsRegistry: DomainEventRegistry = {
   reducers: {
     'session.opened': reduceSessionOpened as Reducer<unknown>,
     'session.continuity.checkpointed': reduceSessionContinuityCheckpointed as Reducer<unknown>,
+    'session.claimed': reduceSessionClaimed as Reducer<unknown>,
+    'session.claim.released': reduceSessionClaimReleased as Reducer<unknown>,
     'session.interrupted': reduceSessionInterrupted as Reducer<unknown>,
     'session.provider_failed': reduceSessionProviderFailed as Reducer<unknown>,
     'session.adapter_unparseable': reduceSessionAdapterUnparseable as Reducer<unknown>,
@@ -64,6 +98,8 @@ export const sessionsRegistry: DomainEventRegistry = {
   schemas: {
     'session.opened': sessionOpenedBodySchema,
     'session.continuity.checkpointed': sessionContinuityCheckpointedBodySchema,
+    'session.claimed': sessionClaimedBodySchema,
+    'session.claim.released': sessionClaimReleasedBodySchema,
     'session.interrupted': sessionInterruptedBodySchema,
     'session.provider_failed': sessionProviderFailedBodySchema,
     'session.adapter_unparseable': sessionAdapterUnparseableBodySchema,

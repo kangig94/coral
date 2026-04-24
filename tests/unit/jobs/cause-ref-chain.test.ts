@@ -7,10 +7,10 @@ import { describe, expect, it } from 'vitest';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { CoralStore } from '#src/store/index.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { describeCauseRef, describeCauseRefDetailed } from '#src/jobs/read/cause-ref-render.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -23,7 +23,7 @@ const RAW_EVENT_READ_CTX: StoreReadContext = {
 
 function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+  applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 

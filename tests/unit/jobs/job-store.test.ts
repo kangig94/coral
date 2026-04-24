@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { type StoragePort } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/job-store.js';
@@ -28,7 +28,7 @@ afterEach(() => {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   openDbs.add(db);
   return db;
 }

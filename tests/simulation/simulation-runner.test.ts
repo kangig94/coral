@@ -189,7 +189,7 @@ describe('scenario runner', () => {
     expect(run.world.getJobStatus(SECOND_BOOTED_JOB_ID)?.phase).toBe('queued');
   });
 
-  it('supports crash and corrupt fault injection against fresh and raw artifact reads', async () => {
+  it('supports crash fault injection with Journal-backed runtime and exit reads', async () => {
     const run = await runScenario({
       world: {},
       steps: [
@@ -199,7 +199,6 @@ describe('scenario runner', () => {
         { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
         { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
         { type: 'expect', runtimeRecorded: true },
-        { type: 'corrupt', jobId: FIRST_BOOTED_JOB_ID, target: 'runtime' },
       ],
     });
     worlds.push(run.world);
@@ -228,14 +227,6 @@ describe('scenario runner', () => {
         runtimeRecorded: true,
       },
     });
-    expect(run.result.steps[6]).toMatchObject({
-      ok: true,
-      actual: {
-        jobId: FIRST_BOOTED_JOB_ID,
-        target: 'runtime',
-      },
-    });
-
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)).toMatchObject({
       phase: 'error',
       result: {
@@ -244,12 +235,13 @@ describe('scenario runner', () => {
         },
       },
     });
-    expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'exit', { freshness: 'fresh' })).toMatchObject({
+    expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'exit')).toMatchObject({
       exitCode: 9,
       signal: null,
     });
-    expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'runtime', { freshness: 'fresh' })).toBeNull();
-    expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'runtime', { freshness: 'raw' })).toBe('{invalid-json');
+    expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'runtime')).toMatchObject({
+      pid: expect.any(Number),
+    });
   });
 
   it('advances virtual time by the specified milliseconds', async () => {

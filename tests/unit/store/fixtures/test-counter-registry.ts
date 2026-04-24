@@ -21,7 +21,7 @@ export const testCounterRegistry: DomainEventRegistry = {
   schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
 };
 
-export function applyTestCounterMigration(db: Database): void {
+export function applyTestCounterSchema(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS projection_test_counter (
     id       TEXT PRIMARY KEY,
     count    INTEGER NOT NULL DEFAULT 0,

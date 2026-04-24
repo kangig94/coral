@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
 import type * as NodeOs from 'node:os';
 
 let tmpHome = '';
@@ -20,7 +19,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -31,11 +30,8 @@ import { SessionManager } from '#src/sessions/shell/store.js';
 
 const runtime = createRealRuntime();
 
-function resolveSessionDir(baseDir: string): string {
-  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
-  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((e) => e.isDirectory());
-  if (entries.length === 0) throw new Error('No session hash-dir found under ' + sessionDirBase);
-  return join(sessionDirBase, entries[0].name);
+function resolveSessionDir(projectRoot: string): string {
+  return join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
 }
 
 describe('sessions shell store', () => {
@@ -65,7 +61,7 @@ describe('sessions shell store', () => {
     const db = openStoreDatabase({
       path: storePaths(currentBuildFlavor()).dbFile,
       storage: runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+      schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createEmptyRegistry();
@@ -138,12 +134,32 @@ describe('sessions shell store', () => {
         'session.continuity.checkpointed',
       ]);
       expect(rows[0]?.body_version).toBe(1);
-      expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toEqual({
+      expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toMatchObject({
         controller: 'team-a',
+        entry: {
+          sessionId: entry.sessionId,
+          provider: 'codex',
+          name: 'alpha',
+          state: 'pending',
+          version: 1,
+        },
         provider: 'codex',
-        shard_dir: resolveSessionDir(tmpHome),
+        shard_dir: resolveSessionDir(workDir),
       });
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toEqual({
+      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toMatchObject({
+        entry: {
+          sessionId: entry.sessionId,
+          state: 'ready',
+          conversationRef: 'thread-1',
+          version: 2,
+        },
+        snapshot: {
+          conversationRef: 'thread-1',
+          resumable: true,
+          providerContinuity: null,
+        },
+      });
+      expect(JSON.parse(new TextDecoder().decode(rows[1].body)).snapshot).toEqual({
         conversationRef: 'thread-1',
         resumable: true,
         providerContinuity: null,
@@ -250,20 +266,6 @@ describe('sessions shell store', () => {
     });
   });
 
-  it('claimForJobAtomic removes a stale lock before claiming', async () => {
-    const { mgr, workDir } = setup('claim-stale-lock');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const sessionDir = resolveSessionDir(tmpHome);
-    const lockDir = join(sessionDir, `${entry.sessionId}.lock`);
-    const staleAt = new Date(Date.now() - 31_000);
-
-    mkdirSync(lockDir);
-    utimesSync(lockDir, staleAt, staleAt);
-
-    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-1')).resolves.toBe(true);
-    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
-  });
-
   it('releaseJob clears activeJobId and sets lastJobId', () => {
     const { mgr, workDir } = setup('release-job');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
@@ -305,7 +307,7 @@ describe('sessions shell store', () => {
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
   });
 
-  it('restores the persisted entry after append failure and returns it on the next cached read', () => {
+  it('keeps the previous Journal-backed entry after append failure', () => {
     const workDir = join(tmpHome, 'rollback-after-append-failure');
     mkdirSync(workDir, { recursive: true });
 
@@ -317,8 +319,6 @@ describe('sessions shell store', () => {
       }
     });
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const sessionPath = join(resolveSessionDir(tmpHome), `${entry.sessionId}.json`);
-    const persistedBeforeFailure = JSON.parse(readFileSync(sessionPath, 'utf-8')) as unknown;
     const entryBeforeFailure = mgr.readById(entry.sessionId);
 
     if (!entryBeforeFailure) {
@@ -335,7 +335,6 @@ describe('sessions shell store', () => {
       }),
     ).toThrow('append failed');
 
-    expect(JSON.parse(readFileSync(sessionPath, 'utf-8'))).toEqual(persistedBeforeFailure);
     expect(mgr.readById(entry.sessionId)).toEqual(entryBeforeFailure);
   });
 
@@ -461,9 +460,10 @@ describe('sessions shell store', () => {
 
       expect(rows.map((row) => row.type)).toEqual([
         'session.opened',
+        'session.claimed',
         'session.continuity.checkpointed',
       ]);
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toEqual({
+      expect(JSON.parse(new TextDecoder().decode(rows[2].body)).snapshot).toEqual({
         conversationRef: 'thread-1',
         resumable: true,
         providerContinuity: { threadId: 'thread-1' },
@@ -543,7 +543,11 @@ describe('sessions shell store', () => {
         )
         .all(entry.sessionId) as Array<{ type: string }>;
 
-      expect(rows.map((row) => row.type)).toEqual(['session.opened']);
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.claimed',
+        'session.claim.released',
+      ]);
     } finally {
       db.close();
     }
@@ -614,40 +618,4 @@ describe('sessions shell store adversarial', () => {
     expect(claudeSessions).toHaveLength(1);
   });
 
-  it('returns null for a session file missing schemaVersion and leaves it untouched', () => {
-    const { mgr, workDir } = setup('reject-invalid-shape');
-    mgr.allocate('codex', 'sentinel', 'gpt-5', workDir);
-
-    const sessionDir = resolveSessionDir(tmpHome);
-
-    const invalidSessionId = randomUUID();
-    const invalidEntry = {
-      id: invalidSessionId,
-      provider: 'codex',
-      name: 'invalid-session',
-      threadId: 'thread-xyz',
-      model: 'gpt-4',
-      workingDirectory: '/invalid/cwd',
-      createdAt: '2025-01-01T00:00:00.000Z',
-      lastUsedAt: '2025-01-02T00:00:00.000Z',
-    };
-    writeFileSync(join(sessionDir, `${invalidSessionId}.json`), JSON.stringify(invalidEntry), 'utf-8');
-
-    const result = mgr.get('codex', invalidSessionId);
-
-    expect(result).toBeNull();
-    expect(JSON.parse(readFileSync(join(sessionDir, `${invalidSessionId}.json`), 'utf-8'))).toEqual(invalidEntry);
-  });
-
-  it('get() returns null for a corrupt (non-JSON) session file on cache-miss read', () => {
-    const { mgr, workDir } = setup('corrupt-session');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-
-    const sessionDir = resolveSessionDir(tmpHome);
-    writeFileSync(join(sessionDir, `${entry.sessionId}.json`), '{ not valid json }', 'utf-8');
-
-    const freshMgr = SessionManager.openShard(sessionDir, runtime);
-    expect(() => freshMgr.get('codex', entry.sessionId)).not.toThrow();
-    expect(freshMgr.get('codex', entry.sessionId)).toBeNull();
-  });
 });

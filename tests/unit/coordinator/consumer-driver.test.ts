@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import {
   ConsumerDriver,
@@ -21,7 +21,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

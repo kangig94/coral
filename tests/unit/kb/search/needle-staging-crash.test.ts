@@ -10,7 +10,7 @@ import { ConsumerDriver, type ConsumerHandle } from '#src/coordinator/consumer-d
 import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 import { runtimeActivationFromHandle } from '#src/coordinator/equipment/runtime-activation.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { reindex } from '#src/kb/ops/reindex.js';
@@ -167,7 +167,7 @@ const nodeStorage = {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({
+  applyStoreSchemas({
     db,
     storage: nodeStorage,
   });

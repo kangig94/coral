@@ -1,60 +1,28 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  currentBuildFlavor,
-  discussBaseDirForSource,
-  discussDiscoveryPathForSource,
-  discussSourcesPath,
-  discussSummaryIndexPathForSource,
-} from '#src/infra/paths.js';
-import {
-  readDiscussDiscoveryForSource,
-  readDiscussEventLog,
-  readDiscussSnapshot,
-  readDiscussSources,
-  readDiscussState,
-  readDiscussSummaryIndexForSource,
-  readProgressLog,
-  readStatusRecord,
-} from '#tests/helpers/persistence-readers.js';
+
+import { currentBuildFlavor } from '#src/infra/paths.js';
+import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/store/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const originalHome = process.env.HOME;
 
 let testJobId: string;
-let fixtureDir: string;
-let testSource: string;
 let testHomeDir: string;
-let cleanupPaths: string[];
 
 const NOW = '2026-01-01T00:00:00Z';
-
-function writeJsonFixture(filePath: string, value: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(value));
-}
-
-function writeTextFixture(filePath: string, value: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, value);
-}
-
-function fixturePath(name: string): string {
-  return join(fixtureDir, name);
-}
-
 const nodeStoreStorage = createRealRuntime().storage;
 
 function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
   const db = openStoreDatabase({
     path: storePaths(currentBuildFlavor()).dbFile,
     storage: nodeStoreStorage,
-    migrationsDir: ensureStoreMigrationsDir(nodeStoreStorage),
+    schemasDir: ensureStoreSchemasDir(nodeStoreStorage),
   });
 
   try {
@@ -177,110 +145,19 @@ function seedJobProjection(
   });
 }
 
-function makePersistedDiscussState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    session_id: 'session-1',
-    topic: 'Discuss topic',
-    status: 'bidding',
-    step: 1,
-    epoch: 0,
-    max_epochs: 3,
-    quota_per_epoch: 2,
-    cold_start: false,
-    agents: {
-      alice: {
-        persona: 'Analyst',
-        display_name: 'Alice',
-        participation: 'required',
-        quota_remaining: 2,
-        total_speaks: 0,
-        fallback_used: false,
-        banned: false,
-      },
-    },
-    current_bids: { alice: null },
-    current_thoughts: { alice: 'Ready to bid' },
-    pending_bidders: ['alice'],
-    current_speaker: null,
-    speaker_type: null,
-    epoch_summary_written: null,
-    created_at: NOW,
-    last_activity_at: NOW,
-    last_speech_step: 0,
-    pending_since_ts: null,
-    bid_release_step: 0,
-    end_reason_content: null,
-    transcript: [],
-    bid_threshold: 0.5,
-    min_bid_delay_ms: 0,
-    ...overrides,
-  };
-}
-
-function makePersistedDiscussSnapshot(
-  overrides: { state?: Record<string, unknown>; runtime?: Record<string, unknown> } & Record<string, unknown> = {},
-): Record<string, unknown> {
-  const { state, runtime, ...rest } = overrides;
-  return {
-    schemaVersion: 2,
-    sessionId: 'session-1',
-    projectRoot: '/tmp/project',
-    updatedAt: NOW,
-    lastAppliedSeq: 0,
-    state: state ?? makePersistedDiscussState(),
-    runtime: runtime ?? {
-      controlPhase: 'idle',
-      carryForwardMustAnswer: [],
-      followUpQueue: [],
-      agentRuns: {
-        alice: {
-          provider: 'openai',
-          model: 'gpt-5',
-        },
-      },
-    },
-    ...rest,
-  };
-}
-
-function makeDiscoverySession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    sessionId: 'session-1',
-    topic: 'Discuss topic',
-    sessionDir: '/tmp/discuss/session-1',
-    createdAt: NOW,
-    ...overrides,
-  };
-}
-
-function makeSummaryIndexRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    sessionId: 'session-1',
-    projectRoot: '/tmp/project',
-    topic: 'Discuss topic',
-    status: 'bidding',
-    createdAt: NOW,
-    agentCount: 1,
-    updatedAt: NOW,
-    lastSeq: 0,
-    ...overrides,
-  };
-}
-
 beforeEach(() => {
   testJobId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   testHomeDir = mkdtempSync(join(tmpdir(), 'coral-readers-home-'));
   process.env.HOME = testHomeDir;
-  fixtureDir = mkdtempSync(join(tmpdir(), 'coral-readers-'));
-  testSource = `tests/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  cleanupPaths = [fixtureDir, testHomeDir, discussBaseDirForSource(testSource)];
 });
 
 afterEach(() => {
-  for (const cleanupPath of cleanupPaths) {
-    rmSync(cleanupPath, { recursive: true, force: true });
+  rmSync(testHomeDir, { recursive: true, force: true });
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
   }
-  process.env.HOME = originalHome;
 });
 
 describe('readStatusRecord', () => {
@@ -418,266 +295,5 @@ describe('readProgressLog', () => {
         continuity: null,
       },
     ]);
-  });
-});
-
-describe('readDiscussState', () => {
-  it('preserves the lenient boundary for minimal persisted discuss state files', () => {
-    const statePath = fixturePath('lenient-state.json');
-    writeJsonFixture(statePath, {
-      session_id: 'session-1',
-      topic: 'Lenient topic',
-      status: 'prior-status',
-      agents: [],
-      futureField: true,
-    });
-
-    const result = readDiscussState(statePath);
-    expect(result).not.toBeNull();
-    expect(result!.session_id).toBe('session-1');
-    expect(result!.topic).toBe('Lenient topic');
-    expect(result!.status).toBe('prior-status');
-    expect(Array.isArray((result as unknown as { agents: unknown }).agents)).toBe(true);
-    expect(result!).toHaveProperty('futureField', true);
-  });
-
-  it('rejects discuss state files that miss the lenient minimum shape', () => {
-    const statePath = fixturePath('invalid-lenient-state.json');
-    writeJsonFixture(statePath, {
-      session_id: 'session-1',
-      topic: 'Lenient topic',
-      status: 'prior-status',
-      agents: 'not-a-record',
-    });
-
-    expect(readDiscussState(statePath)).toBeNull();
-  });
-});
-
-describe('readDiscussEventLog', () => {
-  it('skips malformed lines and invalid payloads while preserving valid boundary payloads', () => {
-    const logPath = fixturePath('discuss-event-log.jsonl');
-    writeTextFixture(
-      logPath,
-      [
-        JSON.stringify({
-          v: 1,
-          sessionId: 'session-1',
-          projectRoot: '/tmp/project',
-          topic: 'Discuss topic',
-          seq: 1,
-          kind: 'bidding.opened',
-          ts: NOW,
-          payload: [],
-        }),
-        'not json',
-        JSON.stringify({
-          v: 1,
-          sessionId: 'session-1',
-          projectRoot: '/tmp/project',
-          topic: 'Discuss topic',
-          seq: 2,
-          kind: 'bidding.opened',
-          ts: NOW,
-          payload: null,
-        }),
-        JSON.stringify({
-          v: 1,
-          sessionId: 'session-1',
-          projectRoot: '/tmp/project',
-          topic: 'Discuss topic',
-          seq: 3,
-          kind: 'bid.submitted',
-          ts: NOW,
-          payload: {
-            agent: 'alice',
-            score: 10,
-            thought: 'Ready',
-          },
-        }),
-        JSON.stringify({
-          v: 1,
-          sessionId: 'session-1',
-          projectRoot: '/tmp/project',
-          topic: 'Discuss topic',
-          seq: 4,
-          kind: 'bid.submitted',
-          ts: NOW,
-          payload: {
-            agent: 'alice',
-            score: '10',
-            thought: 'Wrong type',
-          },
-        }),
-      ].join('\n'),
-    );
-
-    const result = readDiscussEventLog(logPath);
-    expect(result).toHaveLength(2);
-    expect(result.map((event) => event.kind)).toEqual(['bidding.opened', 'bid.submitted']);
-    expect(Array.isArray((result[0] as unknown as { payload: unknown }).payload)).toBe(true);
-    expect(result[1].payload).toMatchObject({
-      agent: 'alice',
-      score: 10,
-      thought: 'Ready',
-    });
-  });
-});
-
-describe('readDiscussSnapshot', () => {
-  it('accepts a strict persisted discuss snapshot that matches runtime and speaking invariants', () => {
-    const snapshotPath = fixturePath('snapshot-valid.json');
-    writeJsonFixture(
-      snapshotPath,
-      makePersistedDiscussSnapshot({
-        state: makePersistedDiscussState({
-          status: 'speaking',
-          current_speaker: 'alice',
-          speaker_type: 'quota',
-          pending_bidders: [],
-        }),
-      }),
-    );
-
-    const result = readDiscussSnapshot(snapshotPath);
-    expect(result).not.toBeNull();
-    expect(result!.sessionId).toBe('session-1');
-    expect(result!.state.status).toBe('speaking');
-    expect(result!.runtime.agentRuns).toHaveProperty('alice');
-  });
-
-  it('rejects persisted discuss snapshots that violate speaking-state constraints', () => {
-    const snapshotPath = fixturePath('snapshot-invalid-speaking.json');
-    writeJsonFixture(
-      snapshotPath,
-      makePersistedDiscussSnapshot({
-        state: makePersistedDiscussState({
-          status: 'speaking',
-          current_speaker: null,
-          speaker_type: null,
-        }),
-      }),
-    );
-
-    expect(readDiscussSnapshot(snapshotPath)).toBeNull();
-  });
-
-  it('rejects persisted discuss snapshots when snapshot and runtime agent identities drift', () => {
-    const snapshotPath = fixturePath('snapshot-invalid-runtime.json');
-    writeJsonFixture(
-      snapshotPath,
-      makePersistedDiscussSnapshot({
-        runtime: {
-          controlPhase: 'idle',
-          carryForwardMustAnswer: [],
-          followUpQueue: [],
-          agentRuns: {
-            bob: {
-              provider: 'openai',
-              model: 'gpt-5',
-            },
-          },
-        },
-      }),
-    );
-
-    expect(readDiscussSnapshot(snapshotPath)).toBeNull();
-  });
-
-  it('rejects persisted discuss snapshots when state.session_id does not match sessionId', () => {
-    const snapshotPath = fixturePath('snapshot-invalid-session-id.json');
-    writeJsonFixture(
-      snapshotPath,
-      makePersistedDiscussSnapshot({
-        state: makePersistedDiscussState({
-          session_id: 'other-session',
-        }),
-      }),
-    );
-
-    expect(readDiscussSnapshot(snapshotPath)).toBeNull();
-  });
-});
-
-describe('readDiscussDiscoveryForSource', () => {
-  it('accepts discovery metadata with the current source envelope', () => {
-    writeJsonFixture(discussDiscoveryPathForSource(testSource), {
-      source: testSource,
-      updatedAt: NOW,
-      sessions: [makeDiscoverySession()],
-    });
-
-    const result = readDiscussDiscoveryForSource(testSource);
-    expect(result).not.toBeNull();
-    expect(result!.source).toBe(testSource);
-    expect(result!.sessions).toHaveLength(1);
-    expect(result!.sessions[0].sessionId).toBe('session-1');
-  });
-
-  it('rejects discovery metadata without the current source envelope', () => {
-    writeJsonFixture(discussDiscoveryPathForSource(testSource), {
-      projectRoot: '/tmp/project',
-      updatedAt: NOW,
-      sessions: [makeDiscoverySession()],
-    });
-
-    expect(readDiscussDiscoveryForSource(testSource)).toBeNull();
-  });
-
-  it('rejects discovery metadata when a present source mismatches the requested source', () => {
-    writeJsonFixture(discussDiscoveryPathForSource(testSource), {
-      source: 'wrong/source',
-      projectRoot: '/tmp/project',
-      updatedAt: NOW,
-      sessions: [makeDiscoverySession()],
-    });
-
-    expect(readDiscussDiscoveryForSource(testSource)).toBeNull();
-  });
-});
-
-describe('readDiscussSummaryIndexForSource', () => {
-  it('accepts summary index metadata with the current source envelope', () => {
-    writeJsonFixture(discussSummaryIndexPathForSource(testSource), {
-      source: testSource,
-      updatedAt: NOW,
-      sessions: [makeSummaryIndexRow()],
-    });
-
-    const result = readDiscussSummaryIndexForSource(testSource);
-    expect(result).not.toBeNull();
-    expect(result!.source).toBe(testSource);
-    expect(result!.sessions).toHaveLength(1);
-    expect(result!.sessions[0].sessionId).toBe('session-1');
-  });
-
-  it('rejects summary index metadata without the current source envelope', () => {
-    writeJsonFixture(discussSummaryIndexPathForSource(testSource), {
-      projectRoot: '/tmp/project',
-      updatedAt: NOW,
-      sessions: [makeSummaryIndexRow()],
-    });
-
-    expect(readDiscussSummaryIndexForSource(testSource)).toBeNull();
-  });
-});
-
-describe('readDiscussSources', () => {
-  it('accepts the current sources registry and deduplicates sources', () => {
-    writeJsonFixture(discussSourcesPath(), {
-      updatedAt: NOW,
-      sources: [testSource, testSource, 'other/source'],
-    });
-
-    expect(readDiscussSources()).toEqual([testSource, 'other/source']);
-  });
-
-  it('rejects a registry without current sources', () => {
-    writeJsonFixture(discussSourcesPath(), {
-      updatedAt: NOW,
-      projectRoots: ['/tmp/project'],
-    });
-
-    expect(readDiscussSources()).toEqual([]);
   });
 });

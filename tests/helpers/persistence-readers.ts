@@ -1,26 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { z } from 'zod';
 
-import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js';
-import type { DiscussState } from '#src/discuss/session-types.js';
-import { listPersistedDiscussSessionsForSourceWithStorage, readDiscussDiscoveryForSourceWithStorage, readDiscussEventLogWithStorage, readDiscussSnapshotWithStorage, readDiscussSourcesWithStorage, readDiscussSummaryIndexForSourceWithStorage, readJsonFileWithStorage, resolveDiscussSessionDirForSourceWithStorage } from '#src/discuss/shell/discuss-sources-catalog.js';
-import type {
-  DiscussDiscoveryData,
-  DiscussDiscoverySession,
-  DiscussSummaryIndexData,
-} from '#src/discuss/persistence-types.js';
-import type { DiscussPathResolver, StoragePort } from '#src/runtime/ports.js';
-import {
-  discussSourcesPath,
-  discussBaseDirForSource,
-  discussDiscoveryPathForSource,
-  discussEventLogPath,
-  discussSessionDirForSource,
-  discussStatePath,
-  discussSummaryIndexPathForSource,
-  currentBuildFlavor,
-  resolveProjectSource,
-} from '#src/infra/paths.js';
+import type { StoragePort } from '#src/runtime/ports.js';
+import { currentBuildFlavor } from '#src/infra/paths.js';
 import type { JobProgress, JobStatus } from '#src/jobs/records.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/store/paths.js';
@@ -28,30 +9,6 @@ import { loadJobProjectionDetail, readJobProgress } from '#src/store/queries/job
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 
 export { isValidSessionEntry, readSessionEntry } from '#src/sessions/shell/session-read.js';
-export type {
-  DiscussDiscoveryData,
-  DiscussDiscoverySession,
-  DiscussSummaryIndexData,
-  DiscussSummaryIndexRow,
-} from '#src/discuss/persistence-types.js';
-
-/** Test-only persisted state readers for assertions against on-disk discuss and store artifacts. */
-
-function readJsonFile(filePath: string): unknown | null {
-  return readJsonFileWithStorage(nodeDiscussReaderStorage, filePath);
-}
-
-function isValidDiscussState(value: unknown): value is DiscussState {
-  const discussStateSchema = z
-    .object({
-      session_id: z.string(),
-      topic: z.string(),
-      status: z.string(),
-      agents: z.union([z.record(z.string(), z.unknown()), z.array(z.unknown())]),
-    })
-    .passthrough();
-  return discussStateSchema.safeParse(value).success;
-}
 
 const nodeDiscussReaderStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'> = {
   readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
@@ -63,32 +20,6 @@ const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 're
   ...nodeDiscussReaderStorage,
   mkdirSync: (dirPath, options) => mkdirSync(dirPath, options),
 };
-
-const nodeDiscussReaderPaths: Pick<
-  DiscussPathResolver,
-  | 'projectSource'
-  | 'discussSourcesPath'
-  | 'discussBaseDirForSource'
-  | 'discussDiscoveryPathForSource'
-  | 'discussSummaryIndexPathForSource'
-  | 'discussSessionDirForSource'
-  | 'discussStatePath'
-  | 'discussEventLogPath'
-> = {
-  projectSource: resolveProjectSource,
-  discussSourcesPath,
-  discussBaseDirForSource,
-  discussDiscoveryPathForSource,
-  discussSummaryIndexPathForSource,
-  discussSessionDirForSource,
-  discussStatePath,
-  discussEventLogPath,
-};
-
-/**
- * Persisted discuss event log entry.
- */
-export type DiscussEventLogEntry = DiscussDomainEvent;
 
 function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) => T, fallback: T): T {
   const dbPath = storePaths(currentBuildFlavor()).dbFile;
@@ -123,91 +54,4 @@ export function readStatusRecord(jobId: string): JobStatus | null {
  */
 export function readProgressLog(jobId: string): JobProgress[] {
   return withReadonlyStore((db) => readJobProgress(db, jobId, createDefaultStoreReadContext()), []);
-}
-
-/**
- * Reads and minimally validates a persisted discuss state file.
- */
-export function readDiscussState(statePath: string): DiscussState | null {
-  const state = readJsonFile(statePath);
-  if (state === null) return null;
-  return isValidDiscussState(state) ? state : null;
-}
-
-/**
- * Reads and validates a v2 persisted discuss snapshot.
- */
-export function readDiscussSnapshot(statePath: string): PersistedDiscussSnapshot | null {
-  return readDiscussSnapshotWithStorage(nodeDiscussReaderStorage, statePath);
-}
-
-/**
- * Reads and parses a discuss JSONL event log, skipping malformed lines.
- */
-export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
-  return readDiscussEventLogWithStorage(nodeDiscussReaderStorage, logPath);
-}
-
-/**
- * Reads and validates the discuss discovery metadata for a project.
- */
-export function readDiscussDiscoveryForSource(source: string): DiscussDiscoveryData | null {
-  return readDiscussDiscoveryForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source);
-}
-
-/**
- * Reads and validates the discuss discovery metadata for a project.
- */
-export function readDiscussDiscovery(projectRoot: string): DiscussDiscoveryData | null {
-  return readDiscussDiscoveryForSource(resolveProjectSource(projectRoot));
-}
-
-/**
- * Reads and validates the discuss summary index for a project.
- */
-export function readDiscussSummaryIndexForSource(source: string): DiscussSummaryIndexData | null {
-  return readDiscussSummaryIndexForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source);
-}
-
-/**
- * Reads and validates the discuss summary index for a project.
- */
-export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryIndexData | null {
-  return readDiscussSummaryIndexForSource(resolveProjectSource(projectRoot));
-}
-
-export function readDiscussSources(): string[] {
-  return readDiscussSourcesWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths);
-}
-
-export function readDiscussProjectRoots(): string[] {
-  return readDiscussSources();
-}
-
-/**
- * Resolves a discuss session directory using discovery first, then directory scan fallback.
- */
-export function resolveDiscussSessionDirForSource(source: string, sessionId: string): string | null {
-  return resolveDiscussSessionDirForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source, sessionId);
-}
-
-/**
- * Resolves a discuss session directory using discovery first, then directory scan fallback.
- */
-export function resolveDiscussSessionDir(projectRoot: string, sessionId: string): string | null {
-  return resolveDiscussSessionDirForSource(resolveProjectSource(projectRoot), sessionId);
-}
-
-/**
- * Lists persisted discuss sessions using discovery first with state-based fallback repair.
- */
-export function listPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
-  return listPersistedDiscussSessionsForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source);
-}
-
-/**
- * Lists persisted discuss sessions using discovery first with state-based fallback repair.
- */
-export function listPersistedDiscussSessions(projectRoot: string): DiscussDiscoverySession[] {
-  return listPersistedDiscussSessionsForSource(resolveProjectSource(projectRoot));
 }

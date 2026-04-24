@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import type { CoralEvent } from '#src/store/envelope.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { reduceDiscussProjection } from '#src/discuss/projections.js';
 import { toJournalInput } from '#src/discuss/store-registry.js';
 import type { DiscussDomainEvent } from '#src/discuss/events.js';
@@ -14,7 +14,7 @@ import type { DiscussDomainEvent } from '#src/discuss/events.js';
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const FIXTURE_JSON = join(FIXTURE_DIR, 'session-store-golden.json');
 const FIXTURE_EVENTS = join(FIXTURE_DIR, 'session-store-golden.events.jsonl');
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -36,7 +36,7 @@ describe('discuss session-store golden master (AC3)', () => {
     const db = new Database(':memory:');
 
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
       for (const [index, domainEvent] of events.entries()) {
         const input = toJournalInput(domainEvent);

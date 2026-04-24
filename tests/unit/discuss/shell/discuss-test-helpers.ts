@@ -15,15 +15,23 @@ import {
   type DiscussContextRegistry,
 } from '#src/discuss/shell/live-registry.js';
 import type { DiscussContext } from '#src/discuss/shell/context.js';
-import { buildWatchEvents } from '#src/discuss/projections.js';
-import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
+import { buildWatchEvents, listProjectionDiscussSnapshots, readProjectionDiscuss } from '#src/discuss/projections.js';
+import { DiscussSessionStore, type DiscussSessionJournal } from '#src/discuss/shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '#src/discuss/shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '#src/discuss/shell/persistence.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
-import { parseJobStatus } from '#src/jobs/records.js';
+import { ProgressStore } from '#src/jobs/job-store.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/store-registry.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { readDiscussEventLog } from '#src/store/queries/discuss.js';
+import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -79,6 +87,7 @@ export type DiscussHarness = {
   registry: DiscussContextRegistry;
   service: ExecutionService;
   runtime: Runtime;
+  progressStore: ProgressStore;
   cleanup: () => void;
 };
 
@@ -101,21 +110,50 @@ export type CreateDiscussHarnessOptions = {
   runtime?: SimulationRuntime;
 };
 
-function readStatusRecordForRuntime(
-  runtime: Pick<Runtime, 'storage' | 'paths'>,
-  jobId: string,
-) {
-  try {
-    return parseJobStatus(
-      JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
-    );
-  } catch {
-    return null;
-  }
+function snapshotBelongsToSource(
+  resolveProjectSource: (projectRoot: string) => string,
+  snapshot: Pick<PersistedDiscussSnapshot, 'projectRoot'>,
+  source: string,
+): boolean {
+  return snapshot.projectRoot === source || resolveProjectSource(snapshot.projectRoot) === source;
+}
+
+function createProgressStoreDiscussJournal(
+  resolveProjectSource: (projectRoot: string) => string,
+  progressStore: ProgressStore,
+): DiscussSessionJournal {
+  const readCtx = createDefaultStoreReadContext();
+
+  return {
+    append(_source, _snapshot, events) {
+      progressStore.appendEventsWithResult(events.map((event) => toJournalInput(event)));
+    },
+    readSnapshot(sessionId) {
+      return readProjectionDiscuss(progressStore.getDb(), sessionId)?.state ?? null;
+    },
+    readEvents(sessionId) {
+      return readDiscussEventLog(progressStore.getDb(), sessionId, readCtx);
+    },
+    listSnapshots(source) {
+      return listProjectionDiscussSnapshots(progressStore.getDb())
+        .map((row) => row.state)
+        .filter((snapshot) => snapshotBelongsToSource(resolveProjectSource, snapshot, source));
+    },
+    listSources() {
+      return [
+        ...new Set(
+          listProjectionDiscussSnapshots(progressStore.getDb()).map((row) =>
+            resolveProjectSource(row.state.projectRoot),
+          ),
+        ),
+      ].sort();
+    },
+  };
 }
 
 export function createDiscussContextOptions(
-  runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
+  runtime: Pick<Runtime, 'ids' | 'env' | 'time'>,
+  progressStore?: Pick<ProgressStore, 'readStatus'>,
 ): DiscussContextConstructionOptions {
   return {
     runtime: {
@@ -124,13 +162,15 @@ export function createDiscussContextOptions(
       time: runtime.time,
     },
     jobStatusReader: {
-      read: (jobId) => readStatusRecordForRuntime(runtime, jobId),
+      read: (jobId) => progressStore?.readStatus(jobId) ?? null,
     },
   };
 }
 
-export function discussContextOptions(harness: Pick<DiscussHarness, 'runtime'>): DiscussContextConstructionOptions {
-  return createDiscussContextOptions(harness.runtime);
+export function discussContextOptions(
+  harness: Pick<DiscussHarness, 'runtime' | 'progressStore'>,
+): DiscussContextConstructionOptions {
+  return createDiscussContextOptions(harness.runtime, harness.progressStore);
 }
 
 export function createDiscussHarness(
@@ -146,11 +186,20 @@ export function createDiscussHarness(
   const runtime = resolvedOptions.runtime ?? new SimulationRuntime();
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
+  const progressStore = new ProgressStore(
+    runtime.paths.pluginRootNamespace(pluginRoot),
+    runtime,
+    createDefaultUpcasterRegistry(),
+    {
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    },
+  );
   const source = resolvedOptions.source ?? runtime.paths.projectSource(projectRoot);
+  const resolveProjectSource = resolvedOptions.source
+    ? () => resolvedOptions.source as string
+    : runtime.paths.projectSource.bind(runtime.paths);
   const store = new DiscussSessionStore(source, {
-    storage: runtime.storage,
-    time: runtime.time,
-    paths: runtime.paths,
+    journal: createProgressStoreDiscussJournal(resolveProjectSource, progressStore),
   });
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(
@@ -158,7 +207,7 @@ export function createDiscussHarness(
     projectRoot,
     service,
     store,
-    createDiscussContextOptions(runtime),
+    createDiscussContextOptions(runtime, progressStore),
   );
   const ctx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
@@ -172,6 +221,7 @@ export function createDiscussHarness(
     registry,
     service,
     runtime,
+    progressStore,
     cleanup: () => {
       if (cleaned) {
         return;
@@ -265,7 +315,6 @@ export async function persistSession(
     }
   }
 
-  harness.store.flushDirtyIndexes();
 
   if (options.recover ?? false) {
     const attached = harness.store.load(sessionId) ?? snapshot;
@@ -291,6 +340,5 @@ export async function appendPersistedEvents(
   }
 
   const result = await harness.store.append(sessionId, snapshot.lastAppliedSeq, events);
-  harness.store.flushDirtyIndexes();
   return result;
 }

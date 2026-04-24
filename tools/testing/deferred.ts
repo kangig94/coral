@@ -4,6 +4,36 @@ export type Deferred<T> = {
   reject: (reason?: unknown) => void;
 };
 
+function toRejectionError(reason: unknown): Error {
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  if (reason === undefined) {
+    return new Error('Deferred rejected');
+  }
+
+  if (reason === null) {
+    return new Error('Deferred rejected with null');
+  }
+
+  switch (typeof reason) {
+    case 'string':
+      return new Error(reason);
+    case 'number':
+    case 'boolean':
+    case 'bigint':
+    case 'symbol':
+      return new Error(String(reason));
+  }
+
+  try {
+    return new Error(JSON.stringify(reason) ?? 'Deferred rejected with non-serializable reason');
+  } catch {
+    return new Error('Deferred rejected with non-serializable reason');
+  }
+}
+
 export function createDeferred<T = void>(): Deferred<T> {
   let settled = false;
   let resolve!: Deferred<T>['resolve'];
@@ -17,7 +47,7 @@ export function createDeferred<T = void>(): Deferred<T> {
     reject = (reason) => {
       if (settled) return;
       settled = true;
-      rej(reason);
+      rej(toRejectionError(reason));
     };
   });
   return { promise, resolve, reject };

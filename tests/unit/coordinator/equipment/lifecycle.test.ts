@@ -7,7 +7,7 @@ import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '#src/coordinator/equipment/lifecycle.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
 import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/expansion/paths.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
@@ -75,7 +75,7 @@ type CreateHarnessOptions = {
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

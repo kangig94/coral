@@ -22,7 +22,7 @@ type DiscussProjectionBody = Record<string, unknown> & {
   sourceSeq: number;
 };
 
-function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscussRow | null {
+export function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscussRow | null {
   const row = db
     .prepare(
       `SELECT state, last_seq
@@ -44,6 +44,21 @@ function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscu
     state: JSON.parse(row.state) as PersistedDiscussSnapshot,
     lastSeq: row.last_seq,
   };
+}
+
+export function listProjectionDiscussSnapshots(db: Database): ProjectionDiscussRow[] {
+  const rows = db
+    .prepare(
+      `SELECT state, last_seq
+         FROM projection_discuss
+        ORDER BY discuss_id ASC`,
+    )
+    .all() as Array<{ state: string; last_seq: number }>;
+
+  return rows.map((row) => ({
+    state: JSON.parse(row.state) as PersistedDiscussSnapshot,
+    lastSeq: row.last_seq,
+  }));
 }
 
 function topicForEvent(

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -18,27 +18,20 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { currentBuildFlavor } from '#src/infra/paths.js';
 import { storePaths } from '#src/store/paths.js';
 import { createProjectionSessionLookup } from '#src/store/queries/sessions.js';
-import { createFilesystemSessionLookup } from '#src/sessions/lookup.js';
+import { createSessionLookup } from '#src/sessions/lookup.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { getSessionById, listSessionShards, resolveSession } from '#src/sessions/shell/resolve.js';
+import { getSessionById, resolveSession } from '#src/sessions/shell/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
 const runtime = createRealRuntime();
-
-function resolveSessionDir(baseDir: string): string {
-  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
-  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((e) => e.isDirectory());
-  if (entries.length === 0) throw new Error('No session hash-dir found under ' + sessionDirBase);
-  return join(sessionDirBase, entries[0].name);
-}
 
 describe('sessions shell resolve', () => {
   beforeEach(() => {
@@ -60,19 +53,22 @@ describe('sessions shell resolve', () => {
     return openStoreDatabase({
       path: storePaths(currentBuildFlavor()).dbFile,
       storage: runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+      schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
   }
 
-  it('openShard reads an existing shard and listSessionShards enumerates it', () => {
+  it('projection lookup lists and reads allocated sessions', () => {
     const { mgr, workDir } = setup('open-shard');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const shardDir = resolveSessionDir(tmpHome);
+    const lookup = createSessionLookup(runtime);
 
-    expect(listSessionShards(runtime)).toContain(shardDir);
-
-    const shardMgr = SessionManager.openShard(shardDir, runtime);
-    expect(shardMgr.get('codex', entry.sessionId)).toMatchObject({
+    expect(lookup.listSessionRefs()).toContainEqual(
+      expect.objectContaining({
+        sessionId: entry.sessionId,
+        provider: 'codex',
+      }),
+    );
+    expect(lookup.readSessionEntry(entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
       provider: 'codex',
       name: 'alpha',
@@ -82,7 +78,7 @@ describe('sessions shell resolve', () => {
   it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
-    const sessionLookup = createFilesystemSessionLookup(runtime);
+    const sessionLookup = createSessionLookup(runtime);
     const sessionA = alpha.mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -121,25 +117,46 @@ describe('sessions shell resolve', () => {
     expect(getSessionById('missing-session-id', runtime, sessionLookup)).toBeNull();
   });
 
-  it('resolveSession supports direct shard references and provider filtering', () => {
-    const alpha = setup('resolve-shard-a');
-    const beta = setup('resolve-shard-b');
-    const sessionLookup = createFilesystemSessionLookup(runtime);
-    const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
-    const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
-    const shardA = listSessionShards(runtime).find(
-      (dir) => SessionManager.openShard(dir, runtime).readById(sessionA.sessionId, { forceFresh: true }) !== null,
+  it('getSessionById reads projection entries directly when the lookup owns them', () => {
+    const alpha = setup('projection-entry-owner');
+    const entry = alpha.mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: alpha.workDir,
+      projectRoot: alpha.workDir,
+      backendNamespace: 'ns-a',
+    });
+    const readSessionEntry = vi.fn((sessionId: string) =>
+      sessionId === entry.sessionId
+        ? {
+            ...entry,
+            state: 'ready' as const,
+            conversationRef: 'projection-thread',
+          }
+        : null,
     );
 
-    if (!shardA) {
-      throw new Error(`Could not locate shard for ${sessionA.sessionId}`);
-    }
+    expect(getSessionById(entry.sessionId, runtime, { readSessionEntry })).toMatchObject({
+      sessionId: entry.sessionId,
+      provider: 'codex',
+      state: 'ready',
+      conversationRef: 'projection-thread',
+    });
+    expect(readSessionEntry).toHaveBeenCalledWith(entry.sessionId);
+  });
+
+  it('resolveSession supports provider filtering', () => {
+    const alpha = setup('resolve-shard-a');
+    const beta = setup('resolve-shard-b');
+    const sessionLookup = createSessionLookup(runtime);
+    const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
+    const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
 
     expect(
       resolveSession(
         {
           sessionId: sessionA.sessionId,
-          shardDir: shardA,
           provider: 'codex',
         },
         runtime,
@@ -153,7 +170,6 @@ describe('sessions shell resolve', () => {
       resolveSession(
         {
           sessionId: sessionA.sessionId,
-          shardDir: shardA,
           provider: 'claude',
         },
         runtime,
@@ -185,8 +201,7 @@ describe('sessions shell resolve', () => {
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
-    const shard = createFilesystemSessionLookup(runtime).lookupSessionShard(entry.sessionId);
-    expect(shard).not.toBeNull();
+    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(workDir));
     const db = createSessionDb();
 
     try {
@@ -200,9 +215,10 @@ describe('sessions shell resolve', () => {
             refs: { sessionId: entry.sessionId },
             bodyVersion: 1,
             body: {
+              entry,
               controller: 'default',
               provider: 'codex',
-              shard_dir: shard!.shardDir,
+              shard_dir: shardDir,
             },
           },
         ],
@@ -214,8 +230,8 @@ describe('sessions shell resolve', () => {
       );
 
       const sessionLookup = createProjectionSessionLookup(db);
-      expect(sessionLookup.lookupSessionShard(entry.sessionId)).toEqual({
-        shardDir: shard!.shardDir,
+      expect(sessionLookup.readSessionEntry(entry.sessionId)).toMatchObject({
+        sessionId: entry.sessionId,
         provider: 'codex',
       });
     } finally {

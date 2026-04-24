@@ -130,11 +130,11 @@ export const sessionsQueries = {
   resolve(
     runtime: SessionRuntime,
     ref: SessionResolveRef,
-    sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>,
+    sessionLookup: Pick<SessionLookup, 'readSessionEntry'>,
   ): SessionEntry | undefined {
     return resolveSession(ref, runtime, sessionLookup) ?? undefined;
   },
 } as const;
 
 export type { SessionEntry } from './entry.js';
-export type { SessionAllocateOptions, SessionManager } from './shell/store.js';
+export type { SessionAllocateOptions } from './shell/store.js';

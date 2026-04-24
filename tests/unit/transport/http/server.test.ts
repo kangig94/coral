@@ -18,21 +18,21 @@ import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
-import { readDiscussEventLog } from '#tests/helpers/persistence-readers.js';
 import { makeEvent } from '#src/discuss/events.js';
+import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/store-registry.js';
+import { readDiscussEventLog } from '#src/store/queries/discuss.js';
+import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
-import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { appendEvents } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { createFilesystemSessionLookup } from '#src/sessions/lookup.js';
+import { workflowRegistry } from '#src/workflow/events.js';
 import {
-  discussEventLogPath,
-  discussSourcesPath,
   pluginRootNamespace,
   projectDataDir,
   resolveProjectSource,
@@ -104,7 +104,9 @@ function createProgressStore(
   namespace = 'test-ns',
   runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time'> = runtime,
 ): ProgressStore {
-  return new ProgressStore(namespace, runtimeArg, createDefaultUpcasterRegistry());
+  return new ProgressStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+  });
 }
 
 vi.mock('node:os', async () => {
@@ -413,10 +415,7 @@ function stubSessionProjection(
     backendNamespace: string;
   },
 ): void {
-  const shard = createFilesystemSessionLookup(runtime).lookupSessionShard(overrides.sessionId);
-  if (!shard) {
-    throw new Error(`Missing shard for ${overrides.sessionId}`);
-  }
+  const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(overrides.projectRoot));
 
   appendEvents(
     progressStore.getDb(),
@@ -429,9 +428,21 @@ function stubSessionProjection(
         refs: { sessionId: overrides.sessionId },
         bodyVersion: 1,
         body: {
+          entry: {
+            sessionId: overrides.sessionId,
+            provider: overrides.provider,
+            name: 'alpha',
+            state: 'pending',
+            cwd: overrides.projectRoot,
+            projectRoot: overrides.projectRoot,
+            backendNamespace: overrides.backendNamespace,
+            createdAt: new Date(runtime.time.now()).toISOString(),
+            lastUsedAt: new Date(runtime.time.now()).toISOString(),
+            version: 1,
+          },
           controller: 'default',
           provider: overrides.provider,
-          shard_dir: shard.shardDir,
+          shard_dir: shardDir,
         },
       },
     ],
@@ -452,7 +463,6 @@ function parseToolData(result: ToolDomainResult): unknown {
 
 describe('execution backend server', () => {
   let controller: BackendServerController | null = null;
-  const createdDiscussStores: DiscussSessionStore[] = [];
 
   beforeEach(() => {
     runtime = createRealRuntime();
@@ -471,9 +481,6 @@ describe('execution backend server', () => {
       }
     }
     controller = null;
-    for (const store of createdDiscussStores.splice(0)) {
-      store.dispose();
-    }
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
@@ -589,17 +596,6 @@ describe('execution backend server', () => {
     const projectRoot = join(mockState.tmpHome, name);
     mkdirSync(projectRoot, { recursive: true });
     return projectRoot;
-  }
-
-  function createDiscussStore(source: string): DiscussSessionStore {
-    const runtime = createRealRuntime();
-    const store = new DiscussSessionStore(source, {
-      storage: runtime.storage,
-      time: runtime.time,
-      paths: runtime.paths,
-    });
-    createdDiscussStores.push(store);
-    return store;
   }
 
   it('preserves flavored backend info and rejects records without flavor', async () => {
@@ -991,7 +987,7 @@ describe('execution backend server', () => {
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('discuss-only-project');
-    const store = createDiscussStore(resolveProjectSource(projectRoot));
+    const progressStore = createProgressStore();
     const created = decideSessionCreate(
       {
         topic: 'Should the city pedestrianize the downtown core?',
@@ -1012,9 +1008,7 @@ describe('execution backend server', () => {
     if (!created.ok) {
       throw new Error(created.error);
     }
-    await store.append('discuss-only-session', null, created.value);
-    store.flushDirtyIndexes();
-    expect(existsSync(discussSourcesPath())).toBe(true);
+    progressStore.appendEventsWithResult(created.value.map((event) => toJournalInput(event)));
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -1022,6 +1016,7 @@ describe('execution backend server', () => {
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
       discussRegistry,
+      progressStore,
     });
 
     expect(setSpy).toHaveBeenCalledWith(projectRoot, expect.objectContaining({ projectRoot }));
@@ -4552,8 +4547,16 @@ describe('execution backend server', () => {
       const { serverModule } = await loadExecutionModules();
       const topic = 'Should the city pedestrianize the downtown core?';
       const projectRoot = createProjectRoot('startup-shutdown-discuss');
-      const source = resolveProjectSource(projectRoot);
-      const store = createDiscussStore(source);
+      const progressStore = createProgressStore();
+      const readDiscussProjection = (sessionId: string) =>
+        JSON.parse(
+          (
+            progressStore
+              .getDb()
+              .prepare(`SELECT state FROM projection_discuss WHERE discuss_id = ?`)
+              .get(sessionId) as { state: string }
+          ).state,
+        ) as { lastAppliedSeq: number; state: { status: string }; runtime: { controlPhase: string } };
 
       const startupCandidateCreated = decideSessionCreate(
         {
@@ -4571,7 +4574,7 @@ describe('execution backend server', () => {
       if (!startupCandidateCreated.ok) {
         throw new Error(startupCandidateCreated.error);
       }
-      await store.append('startup-candidate', null, startupCandidateCreated.value);
+      progressStore.appendEventsWithResult(startupCandidateCreated.value.map((event) => toJournalInput(event)));
 
       const terminalHistoryCreated = decideSessionCreate(
         {
@@ -4589,8 +4592,9 @@ describe('execution backend server', () => {
       if (!terminalHistoryCreated.ok) {
         throw new Error(terminalHistoryCreated.error);
       }
-      const terminalCreatedSnapshot = await store.append('terminal-history', null, terminalHistoryCreated.value);
-      await store.append('terminal-history', terminalCreatedSnapshot.lastAppliedSeq, [
+      progressStore.appendEventsWithResult(terminalHistoryCreated.value.map((event) => toJournalInput(event)));
+      const terminalCreatedSnapshot = readDiscussProjection('terminal-history');
+      progressStore.appendEventsWithResult([
         makeEvent(
           'terminal-history',
           projectRoot,
@@ -4614,9 +4618,7 @@ describe('execution backend server', () => {
             synthesis: 'done',
           },
         ),
-      ]);
-      store.flushDirtyIndexes();
-      expect(existsSync(discussSourcesPath())).toBe(true);
+      ].map((event) => toJournalInput(event)));
 
       const startupBlocked = createDeferred();
       const releaseStartup = createDeferred();
@@ -4633,6 +4635,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
+        progressStore,
         acquireLockFn: async () => {
           startupBlocked.resolve();
           await releaseStartup.promise;
@@ -4646,19 +4649,23 @@ describe('execution backend server', () => {
       await controller.waitForShutdown();
 
       const startupCandidateEvents = readDiscussEventLog(
-        discussEventLogPath(store.resolveSessionDir('startup-candidate')),
+        progressStore.getDb(),
+        'startup-candidate',
+        createDefaultStoreReadContext(),
       );
       expect(startupCandidateEvents.at(-1)).toMatchObject({
         kind: 'session.ended',
         payload: { force: true, reason: 'abort' },
       });
-      expect(store.load('startup-candidate')).toMatchObject({
+      expect(readDiscussProjection('startup-candidate')).toMatchObject({
         state: { status: 'ended' },
         runtime: { controlPhase: 'synthesize' },
       });
 
       const terminalHistoryEvents = readDiscussEventLog(
-        discussEventLogPath(store.resolveSessionDir('terminal-history')),
+        progressStore.getDb(),
+        'terminal-history',
+        createDefaultStoreReadContext(),
       );
       expect(terminalHistoryEvents.filter((event) => event.kind === 'session.ended')).toHaveLength(1);
       expect(terminalHistoryEvents.at(-1)?.kind).toBe('session.synthesized');
@@ -4671,6 +4678,7 @@ describe('execution backend server', () => {
       const restartRegistry = createDiscussContextRegistry();
       const restarted = await startBackendServer({
         discussRegistry: restartRegistry,
+        progressStore,
       });
       const restartedSessions = [...restartRegistry.contexts.values()].flatMap((context) => [
         ...context.sessions.keys(),
@@ -4916,7 +4924,7 @@ describe('execution backend server', () => {
       expect(recoveredSession?.activeJobId).toBeUndefined();
     });
 
-    it('marks ghost launch jobs as error when runtime.json was never written', async () => {
+    it('marks ghost launch jobs as error when runtime metadata was never recorded', async () => {
       const progressStore = createProgressStore();
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');

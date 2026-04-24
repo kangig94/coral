@@ -40,6 +40,7 @@ const RETIRED_RUNTIME_PORTS = ['src', 'shared', 'runtime-ports.ts'].join('/');
 const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
 const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
 const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
+const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_HTTP_CLIENT = ['src', 'transport', 'http', 'http-client.ts'].join('/');
 const RETIRED_JOBS_INDEX = ['src', 'jobs', 'index.ts'].join('/');
 const RETIRED_SESSIONS_INDEX = ['src', 'sessions', 'index.ts'].join('/');
@@ -78,6 +79,10 @@ const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
 const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
+const RETIRED_STORE_SCHEMA_SQL = ['src', 'store', 'schema.sql'].join('/');
+const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('/');
+const RETIRED_STORE_MIGRATIONS_DIR = ['src', 'store', 'migrations'].join('/');
+const RETIRED_STORE_SCHEMAS_MODULE = ['src', 'store', 'schemas.ts'].join('/');
 const RETIRED_BRIDGE_MANIFEST = ['src', 'infra', 'bridge-manifest.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
@@ -110,6 +115,8 @@ const RETIRED_BOUNDARY_HELPERS = new Set([
   'Recovery' + 'FaultCompat',
 ]);
 const PROVIDERS_ROOT = 'src/providers';
+const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
+const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
@@ -356,6 +363,40 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
+  it('store query modules may not import domain shell modules', () => {
+    const violations = collectViolations(
+      STORE_QUERIES_ROOT,
+      'store/queries must read Journal projections, not domain shells',
+      'move shell reads behind projection tables or a store-owned query helper.',
+      (target) => target.includes('/shell/'),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('providers may not import jobs shell modules', () => {
+    const violations = collectViolations(
+      PROVIDERS_ROOT,
+      'providers must not depend on jobs/shell ownership',
+      'depend on provider-owned ports or lower-level job contracts outside jobs/shell.',
+      (target) => isWithinPath(target, 'src/jobs/shell'),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('session continuity mutation contracts stay under the session owner', () => {
+    const providerShimExists =
+      PRODUCTION_SOURCE_FILES.includes(RETIRED_PROVIDERS_CONTINUITY_MUTATION) ||
+      existsSync(resolve(REPO_ROOT, RETIRED_PROVIDERS_CONTINUITY_MUTATION));
+    const violations = collectViolations(
+      SESSIONS_SHELL_ROOT,
+      'sessions/shell must not import provider-owned continuity mutation types',
+      'keep session continuity mutation contracts under src/sessions.',
+      (target) => target === RETIRED_PROVIDERS_CONTINUITY_MUTATION,
+    );
+
+    expect(providerShimExists).toBe(false);
+    assertNoViolations(violations);
+  });
   it('clean-slate rewrite residue must stay out of production sources', () => {
     expect(collectProductionStringResidue([
       RETIRED_STATUS_SCHEMA_FAULT,
@@ -527,6 +568,10 @@ describe('architecture boundary guard', () => {
       RETIRED_COMMAND_HELPERS,
       RETIRED_STORE_KB_QUERIES,
       RETIRED_STORE_CORPUS_STATE,
+      RETIRED_STORE_SCHEMA_SQL,
+      RETIRED_STORE_MIGRATIONS_MODULE,
+      RETIRED_STORE_MIGRATIONS_DIR,
+      RETIRED_STORE_SCHEMAS_MODULE,
       RETIRED_TRANSPORT_SHARED_CONTEXT,
       RETIRED_COORDINATOR_CALLER_CONTEXT,
       RETIRED_STORE_CORPUS_CONSUMER,
@@ -542,12 +587,10 @@ describe('architecture boundary guard', () => {
   it('unit and invariant tests do not carry quarantine residue', () => {
     expect(collectTestQuarantineResidue()).toEqual([]);
   });
-  it('store schema no longer contains projection_kb residue', () => {
-    const schemaSql = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');
-    const initialMigration = readFileSync(resolve(REPO_ROOT, 'src/store/migrations/001_initial.sql'), 'utf8');
+  it('store schema baseline no longer contains projection_kb residue', () => {
+    const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schemas/001_initial.sql'), 'utf8');
 
-    expect(schemaSql).not.toContain('projection_kb');
-    expect(initialMigration).not.toContain('projection_kb');
+    expect(initialSchema).not.toContain('projection_kb');
   });
   it('public wait contract uses only global journal seq cursors', () => {
     const waitContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait.ts'), 'utf8');

@@ -10,7 +10,7 @@ import { serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/index.js';
-import { ensureStoreMigrationsDir } from '#src/store/migrations.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/store/paths.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format.js';
@@ -149,7 +149,7 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
   const db = openStoreDatabase({
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
-    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {
@@ -335,7 +335,6 @@ describe('cli follow', () => {
     const options = makeOptions();
     const progressEvent = makeProgressEvent('Booting');
     const terminalEvent = makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } }, { seq: 2 });
-    const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
     const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 

@@ -5,13 +5,13 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '#src/store/append.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 
-const MIGRATIONS_DIR = join(process.cwd(), 'src/store/migrations');
+const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
@@ -22,7 +22,7 @@ describe('jobs reducer equivalence (AC1)', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
@@ -161,7 +161,7 @@ describe('jobs reducer equivalence (AC1)', () => {
   it('job.launch.rejected byte-identical after rebuild', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
@@ -263,7 +263,7 @@ describe('jobs reducer equivalence (AC1)', () => {
   it('job.aborted byte-identical after rebuild', () => {
     const db = new Database(':memory:');
     try {
-      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 

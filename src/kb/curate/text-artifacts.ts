@@ -3,9 +3,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { readCurateState, writeCurateState, type PendingRepair } from './state.js';
 import { applyLaneMutation, detectTextArtifactRebuildInfo } from './text-artifacts-drift.js';
 import {
-  areCommunityDocumentsFresh,
   isCommunityStateFreshForIndex,
-  isCommunitySummaryFresh,
   prepareCommunityTopologyRefresh,
 } from './text-artifacts-community.js';
 import {

@@ -1,10 +1,7 @@
 import { z } from 'zod';
 
-import { providerContinuityBlobSchema, type ProviderContinuityBlob } from '../sessions/continuity.js';
+import { providerContinuityBlobSchema, type ProviderContinuityBlob } from './continuity.js';
 
-/**
- * Authoritative provider->session continuity contract.
- */
 export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
   | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }

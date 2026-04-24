@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { appendEvents } from '#src/store/append.js';
-import { applyMigrations } from '#src/store/migrations.js';
+import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { registerJobsConsumer } from '#src/jobs/consumer.js';
@@ -20,7 +20,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  applyMigrations({ db, storage: nodeStorage });
+  applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 

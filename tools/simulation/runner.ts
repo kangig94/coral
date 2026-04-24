@@ -493,17 +493,6 @@ async function executeStep(
         });
       }
 
-      case 'corrupt': {
-        world.corrupt(step.jobId, step.target);
-        return buildStepResult(world, step, stepIndex, startedAt, {
-          ok: true,
-          actual: {
-            jobId: step.jobId,
-            target: step.target,
-          },
-        });
-      }
-
       default: {
         const unhandledStep: never = step;
         return buildStepResult(world, step, stepIndex, startedAt, {
