@@ -1098,18 +1098,16 @@ src/
                                        single-in-flight drain, condition-var waitFreshUntil
     composition/                     — coordinator assembly helpers split out of the former execution root
       backend-control.ts, backend-core-types.ts, backend-defaults.ts,
-      backend-world.ts, create-backend-core.ts, execution-services.ts,
-      runtime-state.ts
+      backend-world.ts, create-backend-core.ts, execution-services.ts
     services/                        — request/repair services factored out of coordinator.ts
       job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
       workflow-execution-service.ts, recovery-service.ts,
       continuity-consumer.ts, execution-shared.ts
     equipment/                       — active equipment slot lifecycle + RPC surface
-      slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts, needle-activation.ts
+      slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts
     corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver
     shutdown/
       mode.ts                        — graceful / drain / immediate
-      network.ts                     — socket/HTTP teardown
       sequence.ts                    — ordered shutdown steps
     live/
       admission.ts                   — launch admission (seat/host pool)

@@ -50,7 +50,6 @@ import { getSharedReadCoralStore } from './read-coral-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
-import { collectCoralEnv } from '../infra/coral-env.js';
 import { UsageError } from './errors.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
@@ -280,6 +279,18 @@ export async function exemptIpcRequest<TResult>(
 
 export function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
+}
+
+function collectCoralEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of Object.keys(process.env)) {
+    const value = process.env[key];
+    if (!key.startsWith('CORAL_') || value === undefined) {
+      continue;
+    }
+    env[key] = value;
+  }
+  return env;
 }
 
 function createDefaultInvocationContext(projectRoot: string): InvocationContext {

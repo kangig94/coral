@@ -20,7 +20,6 @@ import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
-import { resolveClientHost } from './shutdown/network.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './shutdown/sequence.js';
 import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
@@ -186,6 +185,18 @@ export function markJobsAsError(progressStore: ProgressStore, namespace: string,
       // fail-isolated: skip this job, continue with others
     }
   }
+}
+
+function resolveClientHost(bindHost: string, advertiseHost?: string): string {
+  let host = bindHost;
+  if (advertiseHost !== undefined) {
+    host = advertiseHost;
+  } else if (bindHost === '0.0.0.0') {
+    host = '127.0.0.1';
+  } else if (bindHost === '::') {
+    host = '::1';
+  }
+  return host.includes(':') ? `[${host}]` : host;
 }
 
 export async function listen(

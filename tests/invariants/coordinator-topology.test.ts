@@ -25,7 +25,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/backend-world.ts',
   'src/coordinator/composition/create-backend-core.ts',
   'src/coordinator/composition/execution-services.ts',
-  'src/coordinator/composition/runtime-state.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
@@ -33,7 +32,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/corpus-notify.ts',
   'src/coordinator/discovery-api.ts',
   'src/coordinator/equipment/lifecycle.ts',
-  'src/coordinator/equipment/needle-activation.ts',
   'src/coordinator/equipment/rpc.ts',
   'src/coordinator/equipment/runtime-activation.ts',
   'src/coordinator/equipment/slots.ts',
@@ -61,7 +59,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/recovery-service.ts',
   'src/coordinator/services/workflow-execution-service.ts',
   'src/coordinator/shutdown/mode.ts',
-  'src/coordinator/shutdown/network.ts',
   'src/coordinator/shutdown/sequence.ts',
   'src/coordinator/workflow-cleanup.ts',
 ]);

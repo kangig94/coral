@@ -4,8 +4,11 @@ import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
-import { discussQueries } from '../../discuss/queries.js';
-import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
+import {
+  knownDiscussSources,
+  loadDiscussDetail,
+  listDiscussSessions,
+} from '../../discuss/shell/session-read-service.js';
 import { listAttachedSessions } from '../../discuss/shell/live-registry.js';
 import {
   handleDiscussAbort,
@@ -41,6 +44,7 @@ import type { RpcPorts } from '../../transport/rpc-ports.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import {
+  createRuntimeState,
   createLifecycle,
   type LifecycleController,
   type LifecycleDeps,
@@ -53,7 +57,6 @@ import { resolveBackendDefaults } from './backend-defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
-import { createRuntimeState } from './runtime-state.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
@@ -215,9 +218,9 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     discuss: {
       seed: handleDiscussSeed,
       start: (args, ctx) => handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
-      listSessions: () => discussQueries.list(discuss.readHelpersDeps),
+      listSessions: () => listDiscussSessions(discuss.readHelpersDeps),
       loadDetail: (projectRoot, sessionId, view) =>
-        discussQueries.get(discuss.readHelpersDeps, world.resolveProjectSource(projectRoot), sessionId, view),
+        loadDiscussDetail(discuss.readHelpersDeps, world.resolveProjectSource(projectRoot), sessionId, view),
       watch: (args, ctx) => handleDiscussWatch(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       bid: (args, ctx) => handleDiscussBid(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),

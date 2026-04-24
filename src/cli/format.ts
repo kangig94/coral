@@ -1,4 +1,3 @@
-import { MAX_INLINE } from '../infra/text.js';
 import { describeTerminalOutcome, type CauseRef } from '../jobs/outcome.js';
 import type { JobsListResponse } from '../transport/http/client.js';
 import { assertNever } from '../infra/error-format.js';
@@ -34,6 +33,8 @@ import type { AbortResult } from '../jobs/abort-result.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import type { CliErrorEnvelope } from './errors.js';
+
+const MAX_INLINE = 10_000;
 
 type DiscussAbortResult = {
   ok: boolean;

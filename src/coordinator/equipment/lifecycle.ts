@@ -6,6 +6,7 @@ import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-st
 import type { KbRuntime } from '../../kb/contracts.js';
 import {
   closeNeedleBackend,
+  createNeedleBackend,
   NEEDLE_CONSUMER_ID,
   type NeedleBackend,
   type NeedleBackendOptions,
@@ -21,7 +22,6 @@ import {
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { activateNeedle } from './needle-activation.js';
 import { runtimeActivationFromHandle, type RuntimeActivationSnapshot } from './runtime-activation.js';
 import type { SlotRegistry } from './slots.js';
 
@@ -64,6 +64,25 @@ type PreparedActivation = {
   addonPath: string;
 };
 
+interface ActivateNeedleOptions {
+  readonly consumerId?: string;
+  readonly storeFactory?: NeedleBackendOptions['storeFactory'];
+}
+
+type ActivateNeedleFn = (
+  runtime: KbRuntime,
+  addonPath: string,
+  options?: ActivateNeedleOptions,
+) => NeedleBackend;
+
+const activateNeedle: ActivateNeedleFn = (runtime, addonPath, options = {}) => {
+  return createNeedleBackend(runtime, {
+    addonPath,
+    ...(options.consumerId === undefined ? {} : { consumerId: options.consumerId }),
+    ...(options.storeFactory === undefined ? {} : { storeFactory: options.storeFactory }),
+  });
+};
+
 export interface EquipmentLifecycleServiceOptions {
   readonly db: BetterSqlite3.Database;
   readonly consumerDriver: ConsumerDriver;
@@ -73,7 +92,7 @@ export interface EquipmentLifecycleServiceOptions {
   readonly now?: () => Date;
   readonly pathOptions?: EquipmentPathOptions;
   readonly closeNeedleBackend?: typeof closeNeedleBackend;
-  readonly activateNeedle?: typeof activateNeedle;
+  readonly activateNeedle?: ActivateNeedleFn;
   readonly needleBackendOptions?: Pick<NeedleBackendOptions, 'storeFactory'>;
 }
 
@@ -82,7 +101,7 @@ const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'
 export class EquipmentLifecycleService {
   private readonly now: () => Date;
   private readonly closeNeedleBackendFn: typeof closeNeedleBackend;
-  private readonly activateNeedleFn: typeof activateNeedle;
+  private readonly activateNeedleFn: ActivateNeedleFn;
   private readonly descriptors = new Map<string, EquipmentDescriptor>();
   private readonly activeBySlot = new Map<string, ActiveEquipmentEntry>();
   private readonly slotGuardQueues = new Map<string, Array<(release: () => void) => void>>();
