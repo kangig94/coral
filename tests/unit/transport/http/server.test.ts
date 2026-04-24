@@ -4923,7 +4923,7 @@ describe('execution backend server', () => {
 
       const _backend = await startBackendServer({ progressStore });
 
-      // After recovery, the job should be marked as a stale_status_schema fault.
+      // After recovery, the job should be marked as a missing_launch_record fault.
       await vi.waitFor(() => {
         expect(progressStore.readStatus(jobId)?.phase).toBe('error');
       });

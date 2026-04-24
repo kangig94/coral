@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
-import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
+import type { EntityGraph, KbIndex } from './entry-types.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
@@ -44,12 +44,6 @@ export interface KbCorpusPublishCallbacks {
   notifyCorpusMutation(publication: KbCorpusPublication): Promise<void> | void;
   onPublishFailure?(failure: KbCorpusPublishFailure): void;
   onPublishSuccess?(): void;
-}
-
-export interface KbTextArtifactsSnapshot {
-  index: KbIndex;
-  notes: Array<{ entry: NoteEntry; body: string }>;
-  sources: Array<{ entry: SourceEntry; body: string }>;
 }
 
 export interface KbIndexState {
@@ -113,7 +107,6 @@ export interface KbRuntime {
     warnings?: string[];
   }>;
   loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null>;
-  ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot>;
   withMutationLock<T>(fn: (mutation: KbMutationEffects) => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;

@@ -375,7 +375,7 @@ describe('readProgressLog', () => {
   it('skips non-message job progress events that do not surface to the client', () => {
     seedJobProjection({
       phase: 'running',
-      events: [{ type: 'job.progress.emitted', body: { kind: 'stale_status_schema' } }],
+      events: [{ type: 'job.progress.emitted', body: { kind: 'missing_launch_record' } }],
     });
     expect(readProgressLog(testJobId)).toEqual([]);
   });

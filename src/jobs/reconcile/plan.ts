@@ -92,7 +92,7 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
         : {
             type: 'markError',
             jobId: snap.jobId,
-            fault: { kind: 'stale_status_schema' },
+            fault: { kind: 'missing_launch_record' },
             status: snap.status,
           },
     description: 'missing_launch_record',

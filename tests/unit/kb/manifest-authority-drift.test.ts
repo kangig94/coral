@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { KbRuntime } from '#src/kb/contracts.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { deleteFn } from '#src/kb/ops/delete.js';
 import { update } from '#src/kb/ops/update.js';
 import { persistPreparedSource } from '#src/kb/ops/source-store.js';
@@ -491,6 +492,7 @@ describe('manifest authority drift checks (AC2)', () => {
           writeRootNote(root, 'repair-target', renderMalformedEntrySeqNote());
         }, { reindexOnBoot: false });
 
+        const runtime = createRealRuntime();
         await applyDetectedIncidentFixes(
           [
             {
@@ -506,6 +508,11 @@ describe('manifest authority drift checks (AC2)', () => {
             } as DetectedIncident,
           ],
           fixture.kb,
+          {
+            processPort: runtime.process,
+            storagePort: runtime.storage,
+            envPort: runtime.env,
+          },
         );
 
         assertAuthorityMatchesDisk(fixture.kb);

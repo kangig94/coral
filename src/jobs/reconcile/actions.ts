@@ -70,7 +70,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         action.status.jobId,
       );
       switch (action.fault.kind) {
-        case 'stale_status_schema':
+        case 'missing_launch_record':
           log(`Marked live job with missing launch record: ${action.jobId}\n`);
           break;
         case 'ghost_launch':
@@ -132,7 +132,7 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
       return;
     case 'markError':
       switch (action.fault.kind) {
-        case 'stale_status_schema':
+        case 'missing_launch_record':
           log(`Failed to handle live job with missing launch record ${action.jobId}: ${formatError(error)}\n`);
           break;
         case 'ghost_launch':

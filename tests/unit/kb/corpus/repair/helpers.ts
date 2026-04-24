@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
 
 import { createKbRuntime } from '#src/kb/runtime.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { sortedMarkdownEntries } from '#src/kb/corpus/markdown-entries.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
@@ -123,7 +124,12 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     const classifications = detected.map((incident) => classifyIncident(incident));
     expect(classifications).toEqual(testCase.expectedIncidents.map(() => testCase.classification));
 
-    const results = await applyDetectedIncidentFixes(detected, harness.kb);
+    const runtime = createRealRuntime();
+    const results = await applyDetectedIncidentFixes(detected, harness.kb, {
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: runtime.env,
+    });
     expect(results).toHaveLength(testCase.expectedIncidents.length);
     expect(results.map((result) => result.action)).toEqual(
       testCase.expectedIncidents.map(() => (testCase.classification === 'auto-fixable' ? 'fixed' : 'enqueued')),

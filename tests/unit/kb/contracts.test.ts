@@ -17,7 +17,6 @@ describe('kb contracts boundary', () => {
       'KbRuntime',
       'KbIndexState',
       'KbCachedOramaIndex',
-      'KbTextArtifactsSnapshot',
     ]) {
       expect(contractsSource).toMatch(new RegExp(`export interface ${contractName}\\b`));
       expect(runtimeSource).not.toMatch(new RegExp(`export (?:interface|type) ${contractName}\\b`));
@@ -35,7 +34,7 @@ describe('kb contracts boundary', () => {
       const source = readKbFile(fileName);
       expect(source).toContain(contractImport);
       expect(source).not.toMatch(
-        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex|TextArtifactsSnapshot)[^}]*\}\s+from ['"](?:\.\/|\.\.\/)?runtime\.js['"]/,
+        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex)[^}]*\}\s+from ['"](?:\.\/|\.\.\/)?runtime\.js['"]/,
       );
     }
   });

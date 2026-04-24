@@ -124,7 +124,7 @@ function planJobRecoveryFault(
         domainEvents: [],
         immediateOutcome: { kind: 'job_fault', fault },
       };
-    case 'stale_status_schema':
+    case 'missing_launch_record':
     case 'recovery_parse_failed':
       return planFailed(
         options,
@@ -134,7 +134,7 @@ function planJobRecoveryFault(
 }
 
 export function jobRecoveryNeedsDomainEvent(fault: JobRecoveryFault): boolean {
-  return fault.kind === 'stale_status_schema' || fault.kind === 'recovery_parse_failed';
+  return fault.kind === 'missing_launch_record' || fault.kind === 'recovery_parse_failed';
 }
 
 export function materializeJobRecoveryFault(

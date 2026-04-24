@@ -614,29 +614,29 @@ describe('sessions shell store adversarial', () => {
     expect(claudeSessions).toHaveLength(1);
   });
 
-  it('returns null for an old-format session file without version and does not migrate it', () => {
-    const { mgr, workDir } = setup('reject-old-shape');
+  it('returns null for a session file missing schemaVersion and leaves it untouched', () => {
+    const { mgr, workDir } = setup('reject-invalid-shape');
     mgr.allocate('codex', 'sentinel', 'gpt-5', workDir);
 
     const sessionDir = resolveSessionDir(tmpHome);
 
-    const oldSessionId = randomUUID();
-    const oldEntry = {
-      id: oldSessionId,
+    const invalidSessionId = randomUUID();
+    const invalidEntry = {
+      id: invalidSessionId,
       provider: 'codex',
-      name: 'old-session',
+      name: 'invalid-session',
       threadId: 'thread-xyz',
       model: 'gpt-4',
-      workingDirectory: '/old/cwd',
+      workingDirectory: '/invalid/cwd',
       createdAt: '2025-01-01T00:00:00.000Z',
       lastUsedAt: '2025-01-02T00:00:00.000Z',
     };
-    writeFileSync(join(sessionDir, `${oldSessionId}.json`), JSON.stringify(oldEntry), 'utf-8');
+    writeFileSync(join(sessionDir, `${invalidSessionId}.json`), JSON.stringify(invalidEntry), 'utf-8');
 
-    const result = mgr.get('codex', oldSessionId);
+    const result = mgr.get('codex', invalidSessionId);
 
     expect(result).toBeNull();
-    expect(JSON.parse(readFileSync(join(sessionDir, `${oldSessionId}.json`), 'utf-8'))).toEqual(oldEntry);
+    expect(JSON.parse(readFileSync(join(sessionDir, `${invalidSessionId}.json`), 'utf-8'))).toEqual(invalidEntry);
   });
 
   it('get() returns null for a corrupt (non-JSON) session file on cache-miss read', () => {

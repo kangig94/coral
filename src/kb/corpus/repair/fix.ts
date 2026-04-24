@@ -21,8 +21,7 @@ import {
 import { stripMdExt } from '../../paths.js';
 import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
-import type { SpawnCliFn } from '../../curate/types.js';
-import { createRealRuntime } from '../../../runtime/real.js';
+import type { GitSyncRuntimePicks, SpawnCliFn } from '../../curate/types.js';
 import { writeFileAtomic } from '../file-atomic.js';
 import {
   commitIndexUpdate,
@@ -140,14 +139,14 @@ const noopSpawnCli: SpawnCliFn = async () => {
 export async function applyDetectedIncidentFixes(
   incidents: readonly DetectedIncident[],
   kb: KbRuntime,
+  runtime: GitSyncRuntimePicks,
 ): Promise<RepairResult[]> {
-  const runtime = createRealRuntime();
   const gitSync = createGitSyncController({
     kb,
     spawnCli: noopSpawnCli,
-    processPort: runtime.process,
-    storagePort: runtime.storage,
-    envPort: runtime.env,
+    processPort: runtime.processPort,
+    storagePort: runtime.storagePort,
+    envPort: runtime.envPort,
   });
 
   const results: RepairResult[] = [];

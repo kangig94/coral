@@ -18,7 +18,6 @@ import type {
   KbMutationEffects,
   KbRuntimeActivationSnapshot,
   KbRuntime,
-  KbTextArtifactsSnapshot,
 } from './contracts.js';
 import {
   INBOUND_SYNC_ORAMA_DELTA_THRESHOLD,
@@ -52,10 +51,6 @@ import {
   type KbIndex,
 } from './entry-types.js';
 import { createOramaBaseProjection } from './search/orama-backend.js';
-import {
-  captureTextArtifactsSnapshot,
-  textArtifactsSnapshotFromRebuildResult,
-} from './search/text-artifacts-snapshot.js';
 import { diffSearchVisibleEntryIds } from './search/visible-entry-diff.js';
 import { createCorpusStateMirror } from './runtime-state.js';
 import { loadKbNote, loadKbSource } from './read.js';
@@ -427,38 +422,6 @@ class KbRuntimeImpl implements KbRuntime {
 
   async loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null> {
     return this.oramaSnapshotStore.loadIfPresent();
-  }
-
-  async ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot> {
-    let rebuilt: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>> | null = null;
-    if (this.textArtifactsNeedRebuild()) {
-      rebuilt = await rebuildTextArtifactsAndPersistRepairState(
-        this,
-        this.mutationEffects,
-        captureIndexStateSnapshot(this.readIndexState()),
-      );
-    } else if (!this.oramaSnapshotStore.hasCache()) {
-      try {
-        this.oramaSnapshotStore.install(await this.oramaSnapshotStore.load());
-      } catch {
-        rebuilt = await rebuildTextArtifactsAndPersistRepairState(
-          this,
-          this.mutationEffects,
-          captureIndexStateSnapshot(this.readIndexState()),
-        );
-      }
-    }
-
-    if (rebuilt !== null) {
-      return textArtifactsSnapshotFromRebuildResult(this, rebuilt);
-    }
-
-    const stateAfterArtifacts = this.readIndexStateIfPresent();
-    if (!this.oramaSnapshotStore.hasCache() || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
-      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-    }
-
-    return captureTextArtifactsSnapshot(this);
   }
 
   async withMutationLock<T>(

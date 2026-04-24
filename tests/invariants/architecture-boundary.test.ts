@@ -78,6 +78,8 @@ const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
 const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
+const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
+const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
 const RETIRED_COORDINATOR_SHIMS = [
   ['src', 'coordinator', 'discovery.ts'].join('/'),
   ['src', 'coordinator', 'paths.ts'].join('/'),
@@ -309,6 +311,18 @@ function collectRetiredRuntimeAliasResidue(): string[] {
   );
 }
 
+function collectProductionStringResidue(tokens: readonly string[]): string[] {
+  return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
+    const source = readFileSync(filePath, 'utf-8');
+    const matches = tokens.filter((token) => source.includes(token));
+    if (matches.length === 0) {
+      return [];
+    }
+
+    return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${matches.join(', ')}`;
+  });
+}
+
 describe('architecture boundary guard', () => {
   it('workflow/ may only import from providers/catalog (allowlist of exactly one path)', () => {
     // Established by e34d8d8.
@@ -340,6 +354,18 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+  it('clean-slate rewrite residue must stay out of production sources', () => {
+    expect(collectProductionStringResidue([
+      RETIRED_STATUS_SCHEMA_FAULT,
+      RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
+    ])).toEqual([]);
+  });
+  it('kb corpus repair does not construct real runtime ports', () => {
+    const violations = PARSED_IMPORT_EDGES.filter(
+      (edge) => isWithinPath(edge.source, 'src/kb/corpus/repair') && edge.target === 'src/runtime/real.ts',
+    );
+    expect(violations.map((edge) => `${edge.source} -> ${edge.target}`)).toEqual([]);
   });
   it('the removed src client tree must remain deleted', () => {
     const clientFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, CLIENT_ROOT));

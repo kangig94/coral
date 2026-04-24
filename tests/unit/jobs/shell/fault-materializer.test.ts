@@ -66,7 +66,7 @@ describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
   });
 
   it.each([
-    ['stale_status_schema', { kind: 'stale_status_schema' }],
+    ['missing_launch_record', { kind: 'missing_launch_record' }],
     ['recovery_parse_failed', { kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
   ] as const)('appends a canonical job progress cause event for %s', (_label, fault) => {
     const recorder = createAppendRecorder();

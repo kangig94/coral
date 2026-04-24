@@ -32,7 +32,7 @@ export type JobLaunchRejected = {
 };
 
 export type JobProgressFault =
-  | { kind: 'stale_status_schema' }
+  | { kind: 'missing_launch_record' }
   | { kind: 'recovery_parse_failed'; cause: ExternalError };
 
 export type TerminalOutcome =
@@ -80,7 +80,7 @@ export const jobLaunchRejectedSchema = z
   .strict();
 
 export const jobProgressFaultSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('stale_status_schema') }).strict(),
+  z.object({ kind: z.literal('missing_launch_record') }).strict(),
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
 ]);
 
@@ -122,7 +122,7 @@ export function describeLaunchRejected(rejected: JobLaunchRejected): string {
 
 export function describeJobProgressFault(fault: JobProgressFault): string {
   switch (fault.kind) {
-    case 'stale_status_schema':
+    case 'missing_launch_record':
       return 'Job status record is missing its launch record; dropping.';
     case 'recovery_parse_failed':
       return `Provider recovery could not parse resumed state: ${fault.cause.message}.`;

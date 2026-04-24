@@ -21,7 +21,7 @@ type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
 function describeJobRecoveryError(fault: JobRecoveryError): string {
   switch (fault.kind) {
-    case 'stale_status_schema':
+    case 'missing_launch_record':
     case 'recovery_parse_failed':
       return describeJobProgressFault(fault);
     case 'ghost_launch':

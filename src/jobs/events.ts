@@ -56,7 +56,7 @@ export const jobRuntimeStartedBodySchema = z
 
 export const jobProgressBodySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), message: z.string(), ts: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('stale_status_schema') }).strict(),
+  z.object({ kind: z.literal('missing_launch_record') }).strict(),
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
 ]);
 

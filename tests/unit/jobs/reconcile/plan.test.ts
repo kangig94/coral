@@ -306,7 +306,7 @@ describe('planRecovery', () => {
     ])
   })
 
-  it('returns markError with stale_status_schema for live jobs missing launch records', () => {
+  it('returns markError with missing_launch_record for live jobs missing launch records', () => {
     const status = makeStatus('missing-launch-job', 'launching')
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'missing-launch-job',
@@ -320,7 +320,7 @@ describe('planRecovery', () => {
       {
         type: 'markError',
         jobId: 'missing-launch-job',
-        fault: { kind: 'stale_status_schema' },
+        fault: { kind: 'missing_launch_record' },
         status,
       },
     ])
@@ -762,7 +762,7 @@ describe('planRecovery', () => {
     ])
     expect(summarizeActions(plan.cleanup)).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'incomplete' },
-      { type: 'markError', jobId: 'missing-launch', fault: 'stale_status_schema' },
+      { type: 'markError', jobId: 'missing-launch', fault: 'missing_launch_record' },
       { type: 'markError', jobId: 'ghost', fault: 'ghost_launch' },
       {
         type: 'releaseSessionClaim',
