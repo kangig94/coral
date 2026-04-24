@@ -78,6 +78,7 @@ const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
 const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
+const RETIRED_BRIDGE_MANIFEST = ['src', 'infra', 'bridge-manifest.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
 const RETIRED_COORDINATOR_SHIMS = [
@@ -477,6 +478,10 @@ describe('architecture boundary guard', () => {
   it('the retired infra index barrel must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_INFRA_INDEX);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_INFRA_INDEX))).toBe(false);
+  });
+  it('the retired bridge-manifest helper must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_BRIDGE_MANIFEST);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_BRIDGE_MANIFEST))).toBe(false);
   });
   it('the retired simulation index barrel must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_INDEX);

@@ -6,7 +6,7 @@ import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/paths.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
-import { readBuildFlavor } from '#src/infra/bridge-manifest.js';
+import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 
 const mockState = vi.hoisted(() => ({
   execFileSync: vi.fn(),

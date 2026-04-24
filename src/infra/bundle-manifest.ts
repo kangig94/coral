@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { isRecord } from './json.js';
 
-function readBridgeManifest(pluginRoot: string): unknown {
+function readBundleManifest(pluginRoot: string): unknown {
   try {
     const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
     return JSON.parse(raw) as unknown;
@@ -13,7 +13,7 @@ function readBridgeManifest(pluginRoot: string): unknown {
 }
 
 export function readBundleHash(pluginRoot: string): string {
-  const parsed = readBridgeManifest(pluginRoot);
+  const parsed = readBundleManifest(pluginRoot);
   if (isRecord(parsed) && typeof parsed.bundleHash === 'string') {
     return parsed.bundleHash;
   }
@@ -21,6 +21,6 @@ export function readBundleHash(pluginRoot: string): string {
 }
 
 export function readBuildFlavor(pluginRoot: string): 'prod' | 'dev' {
-  const parsed = readBridgeManifest(pluginRoot);
+  const parsed = readBundleManifest(pluginRoot);
   return isRecord(parsed) && parsed.flavor === 'dev' ? 'dev' : 'prod';
 }

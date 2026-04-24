@@ -469,7 +469,7 @@ class KbRuntimeImpl implements KbRuntime {
           captureCorpusFilesystemSnapshot(this),
         );
         if (mutationDiff.lane !== null) {
-          // Generic fallback for inbound sync callers that cannot provide structured path changes.
+          // Full manifest refresh for inbound sync callers that cannot provide structured path changes.
           this.manifestAuthority.seedFromFullCollectors(this);
         }
       }

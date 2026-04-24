@@ -13,7 +13,7 @@ import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { readBuildFlavor, readBundleHash } from '../../infra/bridge-manifest.js';
+import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 
 export const STARTUP_POLL_MS = 200;

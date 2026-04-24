@@ -1,4 +1,5 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import type { BuildFlavor } from '../runtime/flavor.js';
 import { coralRoot, currentBuildFlavor, kbRoot, projectDataDir } from '../infra/paths.js';
 
 /** Strip trailing `.md` extension if present. Idempotent. */
@@ -32,8 +33,8 @@ export function communitiesDir(root: string = kbRoot()): string {
   return join(root, 'communities');
 }
 
-export function kbRuntimeDir(): string {
-  return join(coralRoot(), 'data', currentBuildFlavor() === 'dev' ? 'kb-dev' : 'kb');
+export function kbRuntimeDir(flavor: BuildFlavor = currentBuildFlavor()): string {
+  return join(coralRoot(), 'data', flavor === 'dev' ? 'kb-dev' : 'kb');
 }
 
 export function oramaSnapshotDir(runtimeRoot: string = kbRuntimeDir()): string {

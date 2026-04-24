@@ -1222,7 +1222,7 @@ describe('ExecutionService wait', () => {
     ]);
   });
 
-  it('replayed terminals with invalid or missing ts use the observation-time compatibility rule', async () => {
+  it('replayed terminals with invalid or missing ts use the observation-time rule', async () => {
     const startMs = Date.parse('2026-03-06T00:00:00.000Z');
     const timeoutMs = 100;
 

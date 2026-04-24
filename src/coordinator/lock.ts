@@ -7,7 +7,7 @@ import { backendLog } from '../infra/backend-log.js';
 import { coordinatorPaths } from '../infra/coordinator-paths.js';
 import type { LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { readBuildFlavor } from '../infra/bridge-manifest.js';
+import { readBuildFlavor } from '../infra/bundle-manifest.js';
 
 const RETRY_DELAY_MS = 200;
 const HEALTHCHECK_TIMEOUT_MS = 1_000;

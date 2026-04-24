@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
-import { readBuildFlavor } from '#src/infra/bridge-manifest.js';
+import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { CoralStore, openStoreDatabase } from '#src/store/index.js';
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';

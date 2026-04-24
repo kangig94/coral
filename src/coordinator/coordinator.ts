@@ -1,7 +1,7 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
-import { readBuildFlavor } from '../infra/bridge-manifest.js';
+import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,

@@ -478,7 +478,7 @@ export class DiscussSessionStore {
       }
     }
 
-    // Fallback: read log and replay (crash recovery, snapshots without logByteOffset, stat failure)
+    // Recovery path: read log and replay when snapshot offsets are unavailable or unverifiable.
     const eventLog = readDiscussEventLogWithStorage(this.storage, logPath).filter((event) => event.sessionId === sessionId);
 
     if (snapshot) {

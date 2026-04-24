@@ -107,10 +107,10 @@ export class CoralStore implements StoreReadContext {
 
     this.kb = {
       search: (args) => searchKnowledgeBase(args, { pluginRoot: this.pluginRoot }),
-      diagnose: () => diagnoseKnowledgeBase(),
+      diagnose: () => diagnoseKnowledgeBase({ pluginRoot: this.pluginRoot }),
       read: (selector) => readKnowledgeBaseEntry(selector, { projectRoot: this.projectRoot, pluginRoot: this.pluginRoot }),
-      listPrinciples: (args) => listKnowledgeBasePrinciples(args),
-      listSources: () => listKnowledgeBaseSources(),
+      listPrinciples: (args) => listKnowledgeBasePrinciples(args, { pluginRoot: this.pluginRoot }),
+      listSources: () => listKnowledgeBaseSources({ pluginRoot: this.pluginRoot }),
       listMemos: (args) => listKnowledgeBaseMemos(this.projectRoot ?? process.cwd(), args),
     };
 

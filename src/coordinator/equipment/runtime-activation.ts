@@ -5,7 +5,7 @@ import type { ConsumerHandle } from '../consumer-driver.js';
 /** Re-exports the KB-facing runtime activation shape so coordinator equipment code shares one contract. */
 export type RuntimeActivationSnapshot = KbRuntimeActivationSnapshot;
 
-/** Produces the inactive fallback snapshot readers use before equipment is live. */
+/** Produces the inactive default snapshot readers use before equipment is live. */
 export function emptySnapshot(retrieval: VectorRetrieval): RuntimeActivationSnapshot {
   return {
     retrieval,

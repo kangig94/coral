@@ -301,7 +301,7 @@ function retrievalHitFromDocument(document: KbOramaDocument, score: number, rank
   };
 }
 
-/** Coordinator-facing Orama projection that serves both lexical search and cosine fallback search. */
+/** Coordinator-facing Orama projection that serves both lexical search and base-tier cosine search. */
 export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
   readonly backendKind = 'orama';
   private embeddingProviderPromise: Promise<EmbeddingProvider | null> | null = null;

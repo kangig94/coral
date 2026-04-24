@@ -412,7 +412,7 @@ describe('parseClaudeStdoutLine', () => {
       expect(parseClaudeStdoutLine(line)).not.toBeNull();
     });
 
-    it('handles an object with extra unknown fields without crashing (forward-compat)', () => {
+    it('handles an object with extra unknown fields without crashing', () => {
       const result = parseClaudeStdoutLine(
         validResultLine({
           unknown_future_field: { nested: true },

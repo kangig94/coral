@@ -117,7 +117,7 @@ function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rn
     }
   }
 
-  // Fallback: return first entry if sampling fails to converge
+  // Deterministic default if weighted sampling fails to converge.
   return pool.entries[0][0];
 }
 

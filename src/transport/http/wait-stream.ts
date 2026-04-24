@@ -4,7 +4,7 @@ import { BackendToolHttpError } from './client-errors.js';
 import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { BackendUnreachableError, TransientHttpError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { readBuildFlavor } from '../../infra/bridge-manifest.js';
+import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { HEALTH_TIMEOUT_MS } from './sse.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { parseSerializedWaitCursor, serializeWaitCursor } from '../../jobs/wait.js';
