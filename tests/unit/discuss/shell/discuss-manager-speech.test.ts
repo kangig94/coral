@@ -1,4 +1,3 @@
-// @flaky — parallel shared-state interference; run in isolation with retry
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '#src/discuss/events.js';
@@ -42,7 +41,7 @@ function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSes
   }
 }
 
-describe('Discuss speech collection', { retry: 2 }, () => {
+describe('Discuss speech collection', () => {
   it('records a successful speech and emits a derived speech_done watch event', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({

@@ -553,8 +553,7 @@ describe('ExecutionService', () => {
     vi.restoreAllMocks();
   });
 
-  // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
-  describe('queue admission', { retry: 2 }, () => {
+  describe('queue admission', () => {
     it('resume rejects when the session is missing', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
@@ -2501,8 +2500,7 @@ describe('ExecutionService', () => {
   });
 });
 
-// @flaky — timing-sensitive concurrent fork tests; passes in isolation, retry under parallel suite
-describe('ExecutionService adversarial', { retry: 2 }, () => {
+describe('ExecutionService adversarial', () => {
   let ctx: InvocationContext;
 
   beforeEach(() => {
@@ -2513,12 +2511,23 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
+    eventBus = new TypedEventBus();
+    runtime = createRealRuntime();
+    JOBS_DIR = runtime.paths.jobsDir();
+    launchCoordinator = new LaunchCoordinator({ runtime });
+    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     trackAllJobDirs();
+    terminateAll();
+    for (const jobId of createdJobIds) {
+      cancelQueued(jobId);
+      releaseLaunch(jobId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }

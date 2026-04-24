@@ -7,7 +7,7 @@ Known non-goals: computed import(variableName) and relative require('...') are i
 
 // Phase 1 decision: extracted shared scanning helpers because the reused resolver and AST import scanner exceed the inline duplication threshold.
 import { dirname, resolve } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -190,6 +190,48 @@ function collectRuntimeDeclarationsInTypesFiles(): string[] {
     return runtimeDeclarationPatterns
       .filter(([pattern]) => pattern.test(source))
       .map(([, label]) => `${filePath}: ${label}`);
+  });
+}
+
+function listFilesRecursive(root: string, predicate: (filePath: string) => boolean): string[] {
+  if (!existsSync(root)) {
+    return [];
+  }
+
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const filePath = resolve(root, entry.name);
+    if (entry.isDirectory()) {
+      return listFilesRecursive(filePath, predicate);
+    }
+
+    return predicate(filePath) ? [filePath] : [];
+  });
+}
+
+function collectTestQuarantineResidue(): string[] {
+  const marker = ['@', 'fla', 'ky'].join('');
+  const retryConfig = /\b(?:describe|it|test)\s*\([^)]*,\s*\{\s*retry\s*:/s;
+  const scannedFiles = [
+    ...listFilesRecursive(resolve(REPO_ROOT, 'tests/unit'), (filePath) => filePath.endsWith('.test.ts')),
+    ...listFilesRecursive(resolve(REPO_ROOT, 'tests/invariants'), (filePath) => filePath.endsWith('.test.ts')),
+    resolve(REPO_ROOT, 'scripts/test.mjs'),
+  ];
+
+  return scannedFiles.flatMap((filePath) => {
+    const source = readFileSync(filePath, 'utf8');
+    const violations = [];
+    if (source.includes(marker)) {
+      violations.push('quarantine marker');
+    }
+    if (retryConfig.test(source)) {
+      violations.push('Vitest retry option');
+    }
+
+    if (violations.length === 0) {
+      return [];
+    }
+
+    return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${violations.join(', ')}`;
   });
 }
 
@@ -379,6 +421,9 @@ describe('architecture boundary guard', () => {
   });
   it('production types.ts files remain declaration-only', () => {
     expect(collectRuntimeDeclarationsInTypesFiles()).toEqual([]);
+  });
+  it('unit and invariant tests do not carry quarantine residue', () => {
+    expect(collectTestQuarantineResidue()).toEqual([]);
   });
   it('store schema no longer contains projection_kb residue', () => {
     const schemaSql = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');

@@ -1329,8 +1329,6 @@ describe('ExecutionService launch', () => {
     expect(request.bypassPermissions).toBe(false);
   });
 
-  // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
-
   it('start returns queued when provider launch slots are full', async () => {
     const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
