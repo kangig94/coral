@@ -2505,7 +2505,7 @@ describe('curate', () => {
   });
 
   describe('start with missing index', () => {
-    it('should rebuild index and complete migration when index.json is missing but notes exist', async () => {
+    it('rebuilds index and initializes curate state when index.json is missing but notes exist', async () => {
       writeNote('test-note', { title: 'Test Note', entrySeq: 1 });
 
       // No index written — ensureIndex inside start() should rebuild it

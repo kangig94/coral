@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -37,8 +37,6 @@ import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-
-const RETIRED_PATH = (root: string) => join(root, '.coral', 'curate-state.retired');
 
 function expectPendingRepairEntries(
   pendingRepair: PendingRepair[] | null,
@@ -233,7 +231,7 @@ afterEach(() => {
 });
 
 describe('curate state', () => {
-  it('returns defaults when the curate state file is missing', () => {
+  it('returns defaults before scheduler state is initialized', () => {
     expect(readCurateState(runtime)).toEqual(createCurateState());
   });
 
@@ -332,8 +330,7 @@ describe('curate state', () => {
     );
   });
 
-  it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', () => {
-    const retiredCurateStatePath = join(runtime.runtimeDir, '.coral', 'curate-state.retired');
+  it('writes curate state through SQL tables and round-trips through readCurateState', () => {
     const state = createCurateState({
       processedThrough: cursor('coral-atomic', 7),
       pendingDiscoveries: [
@@ -365,8 +362,6 @@ describe('curate state', () => {
     });
     expect(readCurateDiscoveryBacklog(runtime)).toEqual(state.pendingDiscoveries);
     expect(readCurateRetryQueue(runtime)).toEqual([]);
-    expect(existsSync(retiredCurateStatePath)).toBe(false);
-    expect(existsSync(`${retiredCurateStatePath}.tmp`)).toBe(false);
   });
 
   it('touches at most one row when only discovery progress advances', () => {
@@ -639,7 +634,7 @@ describe('curate state', () => {
     );
   });
 
-  describe('migration phases', () => {
+  describe('bootstrap phases', () => {
     it('scanCorpus returns sorted successes and scan failures', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
       mkdirSync(runtime.sourcesDir(), { recursive: true });
@@ -1030,7 +1025,7 @@ describe('curate state', () => {
     expect(readCurateState(runtime).initialized).toBe(true);
   });
 
-  it('treats recoverable malformed entry sequences as the migration assignment floor', async () => {
+  it('treats recoverable malformed entry sequences as the bootstrap assignment floor', async () => {
     mkdirSync(runtime.notesDir(), { recursive: true });
 
     writeFileSync(
@@ -1082,7 +1077,7 @@ describe('curate state', () => {
     });
   });
 
-  it('records malformed note and source files as pending repair during migration and clamps stale cursors', async () => {
+  it('records malformed note and source files as pending repair during bootstrap and clamps stale cursors', async () => {
     mkdirSync(runtime.notesDir(), { recursive: true });
     mkdirSync(runtime.sourcesDir(), { recursive: true });
 
@@ -1240,13 +1235,13 @@ describe('curate state', () => {
     });
   });
 
-  it('skips migration entirely when the stored migration version is already current', async () => {
+  it('skips bootstrap entirely when curate state is already initialized', async () => {
     mkdirSync(runtime.notesDir(), { recursive: true });
 
-    writeFileSync(join(runtime.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Migration' }), 'utf-8');
+    writeFileSync(join(runtime.notesDir(), 'coral-skip.md'), renderNote({ title: 'Skip Bootstrap' }), 'utf-8');
     runtime.writeIndex({
       entries: createIndexEntries({
-        'coral-skip': createIndexNote('Skip Migration', 4),
+        'coral-skip': createIndexNote('Skip Bootstrap', 4),
       }),
       principles: {},
     entityMeta: {},
@@ -1271,7 +1266,7 @@ describe('curate state', () => {
     ).toBeUndefined();
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
-        'coral-skip': createIndexNote('Skip Migration', 4),
+        'coral-skip': createIndexNote('Skip Bootstrap', 4),
       }),
       principles: {},
     entityMeta: {},
@@ -1289,9 +1284,9 @@ describe('curate state', () => {
     );
   });
 
-  it('recovers malformed community fingerprint fields during migration without changing the migration version contract', async () => {
+  it('infers bootstrap progress from curated metadata after assigning a missing sequence', async () => {
     mkdirSync(runtime.notesDir(), { recursive: true });
-    writeFileSync(join(runtime.notesDir(), 'coral-malformed.md'), renderNote({ title: 'Malformed Fields' }), 'utf-8');
+    writeFileSync(join(runtime.notesDir(), 'coral-curated.md'), renderNote({ title: 'Curated Note' }), 'utf-8');
     runtime.writeIndex({
       entries: {},
       principles: {},
@@ -1302,24 +1297,12 @@ describe('curate state', () => {
       contentSeq: 0,
       metadataSeq: 0,
     });
-    mkdirSync(join(tempDir, '.coral'), { recursive: true });
-    writeFileSync(
-      RETIRED_PATH(tempDir),
-      JSON.stringify({
-        initialized: true,
-        communityGraphHash: 42,
-        communityMembershipFingerprints: {
-          'graph-rag': 17,
-        },
-      }),
-      'utf-8',
-    );
 
     await internals.initializeCurateStateIfNeeded();
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
-        processedThrough: cursor('coral-malformed', 1),
+        processedThrough: cursor('coral-curated', 1),
         initialized: true,
       }),
     );
