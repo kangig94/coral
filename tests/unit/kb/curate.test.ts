@@ -26,7 +26,7 @@ import { readCurateState, writeCurateState, type CurateState } from '#src/kb/cur
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
-import { createDeferred } from '#src/infra/deferred.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 vi.mock('#src/kb/curate/usage-budget.js', () => ({

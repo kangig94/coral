@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { parseBooleanQuery } from '../infra/json.js';
+
 export type {
   KbDeleteInput,
   KbDiagnoseResult,
@@ -24,13 +26,6 @@ export type {
   KbUpdateInput,
   ReindexResult,
 } from './entry-types.js';
-
-function parseBooleanQuery(value: unknown): boolean | undefined {
-  if (value === 'true' || value === '1') return true;
-  if (value === 'false' || value === '0') return false;
-  if (value === undefined || value === '') return undefined;
-  return undefined;
-}
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const slugSchema = z.string().min(1);

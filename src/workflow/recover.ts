@@ -371,3 +371,7 @@ export async function resumeAll(options: {
 
   return resumedWorkflowIds;
 }
+
+export const workflowRecover = {
+  resumeAll,
+} as const;

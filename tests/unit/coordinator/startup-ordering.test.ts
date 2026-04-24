@@ -10,7 +10,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createCoordinatorServer } from '#src/coordinator/coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contracts.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import { workflowRecover } from '#src/workflow/startup.js';
+import { workflowRecover } from '#src/workflow/recover.js';
 
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {

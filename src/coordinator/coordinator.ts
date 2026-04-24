@@ -33,7 +33,7 @@ import { registerSessionsConsumer } from '../sessions/consumer.js';
 import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerWorkflowConsumer } from '../workflow/consumer.js';
-import { workflowRecover } from '../workflow/startup.js';
+import { workflowRecover } from '../workflow/recover.js';
 import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';

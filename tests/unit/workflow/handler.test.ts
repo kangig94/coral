@@ -4,7 +4,9 @@ import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { WorkflowCommand } from '#src/workflow/api.js';
+import type { WorkflowCommand } from '#src/workflow/input.js';
+import { workflowCompiler } from '#src/workflow/compile.js';
+import { workflowCommands } from '#src/workflow/dispatch.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -31,17 +33,11 @@ function createProviderRegistry(): ProviderRegistry {
   return registry;
 }
 
-async function loadWorkflowApi() {
-  vi.resetModules();
-  return import('#src/workflow/api.js');
-}
-
 function compileOrThrow(
-  api: Awaited<ReturnType<typeof loadWorkflowApi>>,
   command: WorkflowCommand,
   providerRegistry: ProviderRegistry,
 ) {
-  const compiled = api.workflowCompiler.compile(command, providerRegistry);
+  const compiled = workflowCompiler.compile(command, providerRegistry);
   if ('status' in compiled) {
     throw new Error(`expected compiled workflow, got ${compiled.status}`);
   }
@@ -51,16 +47,13 @@ function compileOrThrow(
 describe('workflow api', () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('compiles schema-valid input and dispatches it through workflowCommands.execute', async () => {
-    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
 
     const compiled = compileOrThrow(
-      api,
       {
         expression: 'architect -> resolver',
         startPrompt: 'hello',
@@ -69,7 +62,7 @@ describe('workflow api', () => {
       providerRegistry,
     );
 
-    const decision = await api.workflowCommands.execute(executionSvc, compiled, ctx);
+    const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
 
     expect(decision).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
@@ -89,11 +82,9 @@ describe('workflow api', () => {
   });
 
   it('passes workDir separately without mutating projectRoot', async () => {
-    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
     const compiled = compileOrThrow(
-      api,
       {
         expression: 'architect',
         startPrompt: 'hello',
@@ -103,7 +94,7 @@ describe('workflow api', () => {
       providerRegistry,
     );
 
-    await api.workflowCommands.execute(executionSvc, compiled, ctx);
+    await workflowCommands.execute(executionSvc, compiled, ctx);
 
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
       'claude',
@@ -121,10 +112,9 @@ describe('workflow api', () => {
   });
 
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {
-    const api = await loadWorkflowApi();
     const providerRegistry = createProviderRegistry();
 
-    const decision = api.workflowCompiler.compile(
+    const decision = workflowCompiler.compile(
       {
         expression: 'architect@missing-provider',
         startPrompt: 'hello',
@@ -142,11 +132,10 @@ describe('workflow api', () => {
   });
 
   it('throws when duplicate agent names appear in the same parallel step', async () => {
-    const api = await loadWorkflowApi();
     const providerRegistry = createProviderRegistry();
 
     expect(() =>
-      api.workflowCompiler.compile(
+      workflowCompiler.compile(
         {
           expression: '(architect, architect)',
           startPrompt: 'test',
@@ -158,11 +147,9 @@ describe('workflow api', () => {
   });
 
   it('applies owner into the execution context when provided', async () => {
-    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
     const compiled = compileOrThrow(
-      api,
       {
         expression: 'architect',
         startPrompt: 'hello',
@@ -172,7 +159,7 @@ describe('workflow api', () => {
       providerRegistry,
     );
 
-    await api.workflowCommands.execute(executionSvc, compiled, ctx);
+    await workflowCommands.execute(executionSvc, compiled, ctx);
 
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
       'claude',

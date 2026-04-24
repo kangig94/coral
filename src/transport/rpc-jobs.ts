@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { parseBooleanQuery } from '../infra/json.js';
 import { providerIdentPattern } from '../infra/identifiers.js';
 import { jobPhaseSchema } from '../jobs/phase.js';
 import { isWaitCursor, type WaitCursor } from '../jobs/wait.js';
@@ -12,13 +13,6 @@ const waitCursorSchema = z.custom<WaitCursor>(isWaitCursor, {
 const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
-
-function parseBooleanQuery(value: unknown): boolean | undefined {
-  if (value === 'true' || value === '1') return true;
-  if (value === 'false' || value === '0') return false;
-  if (value === undefined || value === '') return undefined;
-  return value as boolean | undefined;
-}
 
 export const jobWaitSchema = z
   .object({

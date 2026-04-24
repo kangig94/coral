@@ -18,7 +18,6 @@ const COORDINATOR_FILE_SET = new Set(COORDINATOR_FILES);
 const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE_PATHS, ALL_PRODUCTION_FILE_PATHS);
 
 const EXPECTED_COORDINATOR_FILES = new Set([
-  'src/coordinator/api.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/composition/backend-control.ts',
   'src/coordinator/composition/backend-core-types.ts',
@@ -68,9 +67,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
 ]);
 
 const DOMAIN_API_TARGETS = new Set([
-  'src/jobs/api.ts',
   'src/sessions/api.ts',
-  'src/workflow/api.ts',
 ]);
 const CONTRACT_TARGETS = new Set([
   'src/kb/contracts.ts',
@@ -85,7 +82,6 @@ const TRANSPORT_TARGETS = new Set([
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
-  'src/coordinator/api.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
   'src/coordinator/event-bus.ts',

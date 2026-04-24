@@ -22,7 +22,6 @@ import type { ProviderInstruction, ProviderRequest } from '#src/providers/contra
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import * as ProviderRequestPolicy from '#src/providers/request-policy.js';
-import * as ToolInputSchemas from '#src/transport/http/tool-input.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
@@ -39,9 +38,6 @@ beforeAll(() => {
   }
   for (const [name, value] of Object.entries(ProviderRequestPolicy)) {
     assertNotMocked(`ProviderRequestPolicy.${name}`, value);
-  }
-  for (const [name, value] of Object.entries(ToolInputSchemas)) {
-    assertNotMocked(`ToolInputSchemas.${name}`, value);
   }
   assertNotMocked('BackendClient.prototype.createSession', BackendClient.prototype.createSession);
 });

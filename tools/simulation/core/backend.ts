@@ -39,7 +39,7 @@ import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
 import { createProjectionSessionLookup } from '../../../src/store/queries/sessions.js';
 import { createFilesystemSessionLookup, mergeSessionLookups } from '../../../src/sessions/lookup.js';
-import { workflowRecover } from '../../../src/workflow/startup.js';
+import { workflowRecover } from '../../../src/workflow/recover.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';

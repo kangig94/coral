@@ -15,9 +15,8 @@ import type * as BackendLockMod from '#src/coordinator/lock.js';
 import type * as LifecycleMod from '#src/coordinator/control.js';
 import type * as InfraPathsMod from '#src/infra/paths.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
-import type * as WorkflowApiMod from '#src/workflow/api.js';
 import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
-import { createDeferred } from '#src/infra/deferred.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 import { readDiscussEventLog } from '#tests/helpers/persistence-readers.js';
 import { makeEvent } from '#src/discuss/events.js';
@@ -73,6 +72,8 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { isWorkflowInputFailure, workflowCompiler } from '#src/workflow/compile.js';
+import { workflowCommands } from '#src/workflow/dispatch.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,
@@ -1271,6 +1272,7 @@ describe('execution backend server', () => {
         scopeCheckJobs?: any['scopeCheckJobs'];
         listDiscussSessions?: any['listDiscussSessions'];
         loadDiscussDetail?: any['loadDiscussDetail'];
+        workflowExecute?: any['workflowExecute'];
       } = {},
     ) {
       const { runtimeState } = createRuntimeStateMock();
@@ -1420,9 +1422,7 @@ describe('execution backend server', () => {
           detail: () => null,
         },
         workflows: {
-          execute: async (request: any, ctx: any) => {
-            const { isWorkflowInputFailure, workflowCommands, workflowCompiler } = await import('#src/workflow/api.js');
-
+          execute: options.workflowExecute ?? (async (request: any, ctx: any) => {
             try {
               const compiled = workflowCompiler.compile(request, providerRegistry);
               if ('status' in compiled) {
@@ -1444,7 +1444,7 @@ describe('execution backend server', () => {
               }
               throw error;
             }
-          },
+          }),
         },
         kb: {
           readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
@@ -3324,28 +3324,14 @@ describe('execution backend server', () => {
     });
 
     it('keeps WorkflowInputError on the plain invalid_request message path', async () => {
-      vi.resetModules();
-      const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
-      workflowError.name = 'WorkflowInputError';
-      vi.doMock('#src/workflow/api.js', async (importOriginal) => {
-        const actual = await importOriginal<typeof WorkflowApiMod>();
-        return {
-          ...actual,
-          workflowCompiler: {
-            compile: vi.fn(() => {
-              throw workflowError;
-            }),
-          },
-          workflowCommands: {
-            execute: vi.fn(),
-          },
-          isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
-        };
+      const { deps } = createHttpHandlerDeps({
+        executionService: createFakeExecutionService(),
+        workflowExecute: async () => ({
+          kind: 'invalid_request' as const,
+          message: "Step 0, atom 'architect' has unsupported namespace 'other'",
+        }),
       });
-
-      const { createHttpHandler } = await import('#src/transport/http/handler.js');
-      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
-      const started = await startHttpHandlerServer(deps, createHttpHandler);
+      const started = await startHttpHandlerServer(deps);
 
       try {
         const response = await fetch(`${started.baseUrl}/workflow`, {
@@ -3367,13 +3353,11 @@ describe('execution backend server', () => {
           message: "Step 0, atom 'architect' has unsupported namespace 'other'",
         });
       } finally {
-        vi.doUnmock('#src/workflow/api.js');
         await _closeHttpServer(started.server);
       }
     });
 
     it('keeps ZodError on the invalid_request + detail.issues path for workflow input failures', async () => {
-      vi.resetModules();
       const workflowError = new ZodError([
         {
           code: ZodIssueCode.custom,
@@ -3381,25 +3365,15 @@ describe('execution backend server', () => {
           message: 'Expression required',
         },
       ]);
-      vi.doMock('#src/workflow/api.js', async (importOriginal) => {
-        const actual = await importOriginal<typeof WorkflowApiMod>();
-        return {
-          ...actual,
-          workflowCompiler: {
-            compile: vi.fn(() => {
-              throw workflowError;
-            }),
-          },
-          workflowCommands: {
-            execute: vi.fn(),
-          },
-          isWorkflowInputFailure: (error: unknown) => error === workflowError,
-        };
+      const { deps } = createHttpHandlerDeps({
+        executionService: createFakeExecutionService(),
+        workflowExecute: async () => ({
+          kind: 'invalid_request' as const,
+          message: 'expression: Expression required',
+          detail: { issues: workflowError.issues },
+        }),
       });
-
-      const { createHttpHandler } = await import('#src/transport/http/handler.js');
-      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
-      const started = await startHttpHandlerServer(deps, createHttpHandler);
+      const started = await startHttpHandlerServer(deps);
 
       try {
         const response = await fetch(`${started.baseUrl}/workflow`, {
@@ -3422,7 +3396,6 @@ describe('execution backend server', () => {
           detail: { issues: workflowError.issues },
         });
       } finally {
-        vi.doUnmock('#src/workflow/api.js');
         await _closeHttpServer(started.server);
       }
     });

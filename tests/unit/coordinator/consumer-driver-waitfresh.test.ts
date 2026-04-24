@@ -5,32 +5,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyMigrations } from '#src/store/migrations.js';
 import { ConsumerDriver, FreshnessTimeout, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
   readdirSync: (path, options) => readdirSync(path, options),
 };
-
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value?: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-}
-
-function createDeferred<T = void>(): Deferred<T> {
-  let resolvePromise!: (value: T | PromiseLike<T>) => void;
-  let reject!: Deferred<T>['reject'];
-  const promise = new Promise<T>((res, rej) => {
-    resolvePromise = res;
-    reject = rej;
-  });
-
-  return {
-    promise,
-    resolve: (value) => resolvePromise(value as T | PromiseLike<T>),
-    reject,
-  };
-}
 
 function createDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');

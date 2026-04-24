@@ -1358,13 +1358,17 @@ tools/
 - `src/bridge/` transport — replaced by `transport/`
 - `recovery-core.ts` — replaced by `jobs/reconcile/` + `store/replay.ts`
 
-### 10.1a Large-module decomposition (source of >500 lines today)
+### 10.1a Large-module decomposition (>500 lines as a review signal)
 
-Current code has several files in the 20K-60K range. §10 names their destinations but real decomposition splits them by responsibility boundaries, not single-file relocation. A §10 file that would exceed 500 lines must be split further per the guidance below.
+Current code has several files in the 20K-60K range. §10 names their destinations but real decomposition splits them by responsibility boundaries, not single-file relocation.
+
+The 500-line mark is a **review trigger, not a hard split rule**. A file over that size is acceptable when it is a cohesive unit: one state machine, one domain algorithm, one controller with shared mutable state, or one implementation whose private helpers are only meaningful inside that flow. Splitting such a file can make the design worse by exporting private state, creating artificial seams, or forcing readers to jump across files to understand one concept.
+
+Split when the file has multiple independent reasons to change: persistence plus scheduling, parsing plus transport, policy plus I/O, unrelated command handlers, or runtime functions whose names no longer share a single owner. Prefer a slightly larger cohesive file over many small files connected by vague exports.
 
 | Current | Size | Decomposed destinations |
 |---|---|---|
-| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/abort.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`, `coordinator/api.ts` (thin public seam). The god-class dissolves into coordinator service helpers plus domain-shell modules. |
+| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
 | `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/http/contracts.ts`, `transport/http/tool-response.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
 | `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts` (see §10 coordinator entry). |
@@ -1379,7 +1383,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
-**Principle**: any §10 file name that would exceed 500 lines in reality decomposes to sub-files named by the responsibility it carries. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility and the file remains declaration-only; runtime functions move to responsibility-named modules.
+**Principle**: file size is an input to review, not the architecture. Decompose only along real responsibility boundaries and name each extracted file after the responsibility it owns. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility and the file remains declaration-only; runtime functions move to responsibility-named modules.
 
 ### 10.2 Layering invariants
 
@@ -1906,7 +1910,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to unequip Y first (internal route `coral-cli expansion unequip Y`; user-facing skill grammar `/equip uninstall Y`).
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
-46. `src/coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
+46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
 
 ---
 

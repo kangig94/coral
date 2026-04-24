@@ -16,7 +16,8 @@ import type { ProviderInstruction, ProviderRequest } from '#src/providers/contra
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
-import { workflowCommands, workflowCompiler } from '#src/workflow/api.js';
+import { workflowCompiler } from '#src/workflow/compile.js';
+import { workflowCommands } from '#src/workflow/dispatch.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 
 type RecordedLaunchRequest = ProviderRequest & {

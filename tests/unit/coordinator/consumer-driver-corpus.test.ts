@@ -7,6 +7,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyMigrations } from '#src/store/migrations.js';
 import { ConsumerDriver, type CorpusConsumerRegistration, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -25,27 +26,6 @@ interface CursorRow {
   content_manifest_hash: string | null;
   metadata_manifest_hash: string | null;
   equipped_at: string;
-}
-
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-}
-
-function createDeferred<T = void>(): Deferred<T> {
-  let resolvePromise!: (value: T | PromiseLike<T>) => void;
-  let reject!: Deferred<T>['reject'];
-  const promise = new Promise<T>((resolve, rejectPromise) => {
-    resolvePromise = resolve;
-    reject = rejectPromise;
-  });
-
-  return {
-    promise,
-    resolve: (value) => resolvePromise(value),
-    reject,
-  };
 }
 
 function buildSnapshot(overrides: Partial<CorpusSnapshot> = {}): CorpusSnapshot {

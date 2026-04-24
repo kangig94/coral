@@ -6,12 +6,8 @@ import {
   sessionForkSchema,
   sessionMessageSchema,
 } from '#src/sessions/api.js';
-import { workflowCommandSchema } from '#src/workflow/api.js';
+import { workflowCommandSchema } from '#src/workflow/input.js';
 import { workflowRequestSchema } from '#src/transport/rpc-workflow.js';
-import {
-  abortInputSchema,
-  waitInputSchema,
-} from '#src/transport/http/tool-input.js';
 
 const AGENT_IDENT_CASES: ReadonlyArray<
   readonly [input: string, accepted: boolean, canonicalForm: string | null]
@@ -425,23 +421,5 @@ describe('workflowRequestSchema', () => {
         effort: 'high',
       }).success,
     ).toBe(false);
-  });
-});
-
-describe('transport HTTP tool input schemas', () => {
-  it('waitInputSchema rejects empty jobs array', () => {
-    expect(() =>
-      waitInputSchema.parse({
-        jobs: [],
-      }),
-    ).toThrow('At least one job required');
-  });
-
-  it('abortInputSchema rejects empty jobs array', () => {
-    expect(() =>
-      abortInputSchema.parse({
-        jobs: [],
-      }),
-    ).toThrow('At least one job required');
   });
 });

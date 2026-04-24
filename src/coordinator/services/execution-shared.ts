@@ -20,7 +20,6 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/shell/agent-resolution.js';
-import { buildCoralInstruction } from '../../jobs/shell/instruction.js';
 import type { SessionAllocateOptions } from '../../sessions/shell/store.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import {
@@ -103,7 +102,10 @@ export function resolveAgentLaunchProfile(
   const ref = parseAgentRef(agentIdent);
   const resolved = resolveAgent(ref, resolutionCtx);
   const meta = parseAgentMeta(resolved.content);
-  const instruction = buildCoralInstruction(stripAgentMetadata(resolved.content));
+  const instruction = {
+    content: stripAgentMetadata(resolved.content),
+    channel: 'system',
+  } satisfies ProviderInstruction;
   const canonicalName = resolved.ref.name;
 
   return {

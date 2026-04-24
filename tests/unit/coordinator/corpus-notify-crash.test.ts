@@ -13,6 +13,7 @@ import { applyMigrations } from '#src/store/migrations.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const BASE_CREATED_AT = '2026-04-19T00:00:00.000Z';
 const BASE_UPDATED_AT = '2026-04-19T00:00:00.000Z';
@@ -26,13 +27,6 @@ const nodeStorage = {
   },
 };
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-  reject(reason?: unknown): void;
-  settled: boolean;
-}
-
 type ProjectionRow = {
   snapshot_id: string;
   content_seq: number;
@@ -41,37 +35,6 @@ type ProjectionRow = {
   metadata_manifest_hash: string;
   applied_by: string;
 };
-
-function createDeferred<T = void>(): Deferred<T> {
-  let settled = false;
-  let resolvePromise!: (value: T | PromiseLike<T>) => void;
-  let rejectPromise!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolvePromise = resolve;
-    rejectPromise = reject;
-  });
-
-  return {
-    promise,
-    resolve(value) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolvePromise(value);
-    },
-    reject(reason) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      rejectPromise(reason);
-    },
-    get settled() {
-      return settled;
-    },
-  };
-}
 
 function renderNote({
   title = 'Alpha',
