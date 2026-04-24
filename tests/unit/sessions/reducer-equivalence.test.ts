@@ -66,7 +66,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         providerContinuity: { threadId: 'thread-1', turnId: 'turn-1' },
         version: 2,
       });
-      const nonResumableEntry = sessionEntry({
+      const sealedEntry = sessionEntry({
         ...readyEntry,
         state: 'non_resumable',
         conversationRef: undefined,
@@ -143,7 +143,7 @@ describe('sessions reducer equivalence (AC2)', () => {
             refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: {
-              entry: nonResumableEntry,
+              entry: sealedEntry,
               snapshot: {
                 conversationRef: null,
                 resumable: false,
@@ -158,7 +158,7 @@ describe('sessions reducer equivalence (AC2)', () => {
             bodyVersion: 1,
             body: {
               entry: {
-                ...nonResumableEntry,
+                ...sealedEntry,
                 version: 4,
               },
               reason: 'non_resumable',

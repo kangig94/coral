@@ -686,7 +686,7 @@ describe('ExecutionService wait', () => {
     const { jobId, progressStore } = createClaimedJob(service, ctx, { initialPhase: 'launching' });
 
     setTimeout(() => {
-      progressStore.writeRuntimeRecord(jobId, {
+      progressStore.appendRuntimeStarted(jobId, {
         transport: 'app-server',
         startTime: isoAt(runtime.time.now()),
         providerMeta: {

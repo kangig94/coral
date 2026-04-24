@@ -37,7 +37,6 @@ export interface JobProgressStore {
   getEventBus(): JobEventBus;
   getDb(): Database;
   jobDir(jobId: string): string;
-  resultPath(jobId: string): string;
   getChangeSeq(): number;
   waitForChange(sinceSeq: number): Promise<void>;
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
@@ -48,13 +47,11 @@ export interface JobProgressStore {
   rollbackJob(jobId: string): void;
   purgeFromCache(jobId: string): void;
   readStatus(jobId: string): JobStatus | null;
-  writeResultMd(jobId: string, text: string): void;
-  writeWorkflowResultMdOrThrow(jobId: string, text: string): void;
   nextEnqueueSequence(): number;
-  writeLaunchRecord(jobId: string, record: JobLaunch): void;
-  readLaunchRecord(jobId: string): JobLaunch | null;
-  writeRuntimeRecord(jobId: string, record: JobRuntime): void;
-  readRuntimeRecord(jobId: string): JobRuntime | null;
+  appendLaunchRequested(jobId: string, launch: JobLaunch): void;
+  readLaunchProjection(jobId: string): JobLaunch | null;
+  appendRuntimeStarted(jobId: string, runtime: JobRuntime): void;
+  readRuntimeProjection(jobId: string): JobRuntime | null;
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCountByNamespace(namespace: string): number;

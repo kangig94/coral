@@ -1,4 +1,4 @@
-import type { Runtime } from '../../runtime/ports.js';
+import type { Runtime } from '../runtime/ports.js';
 
 type ReplacementBackendOwnershipCheckerInstaller = {
   install(): () => void;
@@ -35,7 +35,7 @@ export function createReplacementBackendOwnershipChecker({
             idleTimer.requestDrain('replaced');
           }
         } catch {
-          // read failure — skip this check
+          // read failure: skip this check
         }
       }, 30_000);
       interval.unref?.();

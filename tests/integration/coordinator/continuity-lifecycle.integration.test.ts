@@ -230,7 +230,7 @@ describe('coordinator continuity lifecycle integration', () => {
         content: 'bad',
         outcome: { kind: 'completed' },
         conversationRef: 'thread-extra',
-        nonResumable: true,
+        resumable: true,
       },
       diagnostics: {},
     });
@@ -238,14 +238,14 @@ describe('coordinator continuity lifecycle integration', () => {
       content: 'bad',
       outcome: { kind: 'completed' },
       conversationRef: 'thread-extra',
-      nonResumable: true,
+      resumable: true,
     });
     const recorded = jobTerminalRecordedBodySchema.safeParse({
       content: 'bad',
       durationMs: 1,
       outcome: { kind: 'completed' },
       conversationRef: 'thread-extra',
-      nonResumable: true,
+      resumable: true,
     });
 
     expect(providerTerminal.success).toBe(false);
@@ -390,7 +390,7 @@ describe('coordinator continuity lifecycle integration', () => {
     );
 
     // Recovery continuity flows to session state; terminal bodies never
-    // carry conversationRef / nonResumable per arch §8.3 invariant #5.
+    // carry conversationRef / resumable per arch §8.3 invariant #5.
     // The session assertion below is the load-bearing check that recovered
     // continuity is projected from journal-owned session state.
     expect(sessionManager.get('recovery', explicitSession.sessionId)).toMatchObject({

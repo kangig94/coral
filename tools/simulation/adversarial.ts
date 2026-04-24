@@ -380,9 +380,9 @@ export class SimulationWorld {
       case 'status':
         return this.current.backend.progressStore.readStatus(jobId);
       case 'runtime':
-        return this.current.backend.progressStore.readRuntimeRecord(jobId);
+        return this.current.backend.progressStore.readRuntimeProjection(jobId);
       case 'exit':
-        return this.current.backend.progressStore.readExitRecord(jobId);
+        return this.current.backend.progressStore.readExitProjection(jobId);
       case 'result':
         return this.readTextArtifact(this.resolveResultArtifactPath(jobId));
       case 'stdout':
@@ -511,7 +511,7 @@ export class SimulationWorld {
 
     return {
       phase: status?.phase ?? null,
-      runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
+      runtimeRecorded: this.current.backend.progressStore.readRuntimeProjection(jobId) !== null,
       terminal:
         replayTerminalSeen ||
         Boolean(status?.result) ||
@@ -544,7 +544,7 @@ export class SimulationWorld {
 
     return {
       phase: status?.phase ?? null,
-      runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
+      runtimeRecorded: this.current.backend.progressStore.readRuntimeProjection(jobId) !== null,
       terminal:
         cursor.terminalSeen ||
         Boolean(status?.result) ||
@@ -578,7 +578,7 @@ export class SimulationWorld {
   }
 
   private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr'): string {
-    const runtimeRecord = this.current.backend.progressStore.readRuntimeRecord(jobId);
+    const runtimeRecord = this.current.backend.progressStore.readRuntimeProjection(jobId);
 
     if (kind === 'stdout' && hasRuntimeStreamPath(runtimeRecord, 'stdoutPath')) {
       return runtimeRecord.stdoutPath;

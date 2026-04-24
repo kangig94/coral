@@ -17,7 +17,7 @@ import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
-import { writeWorkflowResult } from './result-artifact.js';
+import { writeResultArtifact } from './result-artifact.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
   AcceptedAdmission,
@@ -98,7 +98,7 @@ export class LaunchOrchestrator {
       return caller;
     }
 
-    const launch = this.deps.progressStore.readLaunchRecord(jobId);
+    const launch = this.deps.progressStore.readLaunchProjection(jobId);
     const status = this.deps.progressStore.readStatus(jobId);
     return {
       namespace: launch?.backendNamespace ?? status?.backendNamespace ?? this.deps.backendNamespace,
@@ -253,7 +253,7 @@ export class LaunchOrchestrator {
     const createdAt = nowIsoString(this.deps.runtime.time);
 
     abortRegistry.register(jobId);
-    progressStore.writeLaunchRecord(jobId, {
+    progressStore.appendLaunchRequested(jobId, {
       jobId,
       sessionId,
       provider: provider.name,
@@ -477,10 +477,9 @@ export class LaunchOrchestrator {
     jobId: string,
     content: string,
   ): Promise<void> {
-    const { abortRegistry, jobPools, progressStore } = this.deps;
+    const { abortRegistry, jobPools } = this.deps;
     try {
-      progressStore.writeResultMd(jobId, content);
-      writeWorkflowResult(this.deps.runtime.storage, jobId, content);
+      writeResultArtifact(this.deps.runtime.storage, jobId, content);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
     } finally {
@@ -556,7 +555,7 @@ export class LaunchOrchestrator {
         pool,
         this.deps.progressStore.jobDir(jobId),
         (record) => {
-          this.deps.progressStore.writeRuntimeRecord(jobId, record);
+          this.deps.progressStore.appendRuntimeStarted(jobId, record);
         },
       ),
       storage: this.deps.runtime.storage,

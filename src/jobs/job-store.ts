@@ -153,10 +153,6 @@ export class JobStore implements JobProgressStore {
     return join(jobsDir(), jobId);
   }
 
-  resultPath(jobId: string): string {
-    return join(this.jobDir(jobId), 'result.md');
-  }
-
   getChangeSeq(): number {
     return this.changeSeq;
   }
@@ -295,7 +291,7 @@ export class JobStore implements JobProgressStore {
 
       if (event.type === 'job.terminal.recorded') {
         this.jobStartedAt.delete(event.stream.id);
-        const result = this.readTerminalPayload(event.stream.id);
+        const result = this.readTerminalProjection(event.stream.id);
         if (result !== null) {
           this.eventBus.emit('job:completed', { jobId: event.stream.id, result });
         }
@@ -320,7 +316,7 @@ export class JobStore implements JobProgressStore {
     this.runtime.storage.mkdirSync(dir, { recursive: true });
     this.jobStartedAt.set(opts.jobId, this.runtime.time.now());
     const createdAt = nowIsoString(this.runtime.time);
-    this.writeLaunchRecord(opts.jobId, {
+    this.appendLaunchRequested(opts.jobId, {
       jobId: opts.jobId,
       sessionId: opts.sessionId,
       provider: opts.provider,
@@ -386,18 +382,6 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId).status;
   }
 
-  writeResultMd(jobId: string, text: string): void {
-    this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
-    this.runtime.storage.writeAtomicSync(this.resultPath(jobId), text, { encoding: 'utf-8' });
-  }
-
-  writeWorkflowResultMdOrThrow(jobId: string, text: string): void {
-    this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
-    if (!this.runtime.storage.writeAtomicSync(this.resultPath(jobId), text, { encoding: 'utf-8' })) {
-      throw new Error(`Failed to write workflow result for ${jobId}`);
-    }
-  }
-
   nextEnqueueSequence(): number {
     this.enqueueSequence += 1;
     return this.enqueueSequence;
@@ -409,46 +393,46 @@ export class JobStore implements JobProgressStore {
     }
   }
 
-  writeLaunchRecord(jobId: string, record: JobLaunch): void {
+  appendLaunchRequested(jobId: string, launch: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
     this.appendEvent({
       type: 'job.launch.requested',
       stream: { kind: 'job', id: jobId },
-      namespace: record.backendNamespace,
-      project: record.projectRoot,
+      namespace: launch.backendNamespace,
+      project: launch.projectRoot,
       refs: {
         jobId,
-        sessionId: record.sessionId,
-        ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
-        ...(record.workflowSlotId ? { workflowSlotId: record.workflowSlotId } : {}),
+        sessionId: launch.sessionId,
+        ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+        ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
       },
       bodyVersion: 1,
       body: {
-        sessionId: record.sessionId,
-        provider: record.provider,
-        projectRoot: record.projectRoot,
-        backendNamespace: record.backendNamespace,
-        bundleHash: record.bundleHash,
-        jobKind: record.jobKind,
-        pool: record.pool,
-        enqueueSequence: record.enqueueSequence,
-        providerAction: record.providerAction,
+        sessionId: launch.sessionId,
+        provider: launch.provider,
+        projectRoot: launch.projectRoot,
+        backendNamespace: launch.backendNamespace,
+        bundleHash: launch.bundleHash,
+        jobKind: launch.jobKind,
+        pool: launch.pool,
+        enqueueSequence: launch.enqueueSequence,
+        providerAction: launch.providerAction,
         request: {
-          ...record.request,
-          coralEnv: { ...record.request.coralEnv },
+          ...launch.request,
+          coralEnv: { ...launch.request.coralEnv },
         },
-        ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
-        ...(record.workflowSlotId ? { workflowSlot: record.workflowSlotId } : {}),
-        createdAt: record.createdAt,
+        ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+        ...(launch.workflowSlotId ? { workflowSlot: launch.workflowSlotId } : {}),
+        createdAt: launch.createdAt,
       },
     });
   }
 
-  readLaunchRecord(jobId: string): JobLaunch | null {
+  readLaunchProjection(jobId: string): JobLaunch | null {
     return this.detail(jobId).launch;
   }
 
-  writeRuntimeRecord(jobId: string, record: JobRuntime): void {
+  appendRuntimeStarted(jobId: string, runtime: JobRuntime): void {
     const detail = this.detail(jobId);
     const status = detail.status;
     this.appendEvent({
@@ -462,29 +446,29 @@ export class JobStore implements JobProgressStore {
       },
       bodyVersion: 1,
       body:
-        record.transport === 'app-server'
+        runtime.transport === 'app-server'
           ? {
               transport: 'app-server',
-              startedAt: record.startTime,
-              providerMeta: record.providerMeta,
+              startedAt: runtime.startTime,
+              providerMeta: runtime.providerMeta,
             }
           : {
-              transport: record.transport,
-              pid: record.pid,
-              stdoutPath: record.stdoutPath,
-              stderrPath: record.stderrPath,
-              startedAt: record.startTime,
-              providerMeta: record.providerMeta,
-              tailWatermark: record.tailWatermark,
+              transport: runtime.transport,
+              pid: runtime.pid,
+              stdoutPath: runtime.stdoutPath,
+              stderrPath: runtime.stderrPath,
+              startedAt: runtime.startTime,
+              providerMeta: runtime.providerMeta,
+              tailWatermark: runtime.tailWatermark,
             },
     });
   }
 
-  readRuntimeRecord(jobId: string): JobRuntime | null {
+  readRuntimeProjection(jobId: string): JobRuntime | null {
     return this.detail(jobId).runtime;
   }
 
-  readExitRecord(jobId: string): DurableProcessExit | null {
+  readExitProjection(jobId: string): DurableProcessExit | null {
     const exit = this.detail(jobId).exit;
     if (!exit) {
       return null;
@@ -496,7 +480,7 @@ export class JobStore implements JobProgressStore {
     };
   }
 
-  readTerminalPayload(jobId: string): JobTerminal | null {
+  readTerminalProjection(jobId: string): JobTerminal | null {
     return toTerminalPayload(this.detail(jobId));
   }
 
@@ -538,18 +522,6 @@ export class JobStore implements JobProgressStore {
     if (Number.isFinite(ts)) {
       this.jobStartedAt.set(jobId, ts);
     }
-  }
-
-  hasLaunchRecord(jobId: string): boolean {
-    return this.readLaunchRecord(jobId) !== null;
-  }
-
-  hasRuntimeRecord(jobId: string): boolean {
-    return this.readRuntimeRecord(jobId) !== null;
-  }
-
-  hasExitRecord(jobId: string): boolean {
-    return this.readExitRecord(jobId) !== null;
   }
 
   appendProgress(jobId: string, sessionId: string, message: string): number {

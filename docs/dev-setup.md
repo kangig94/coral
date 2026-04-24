@@ -12,7 +12,7 @@ This writes the local checkout's `build/manifest.json` with `flavor: "dev"`. To 
 
 ## 2. Register the local hooks in `.claude/settings.local.json`
 
-Use `docs/examples/settings.local.json` as the template for your local settings file. The template points every Coral hook at your local checkout, sets `CLAUDE_PLUGIN_ROOT`, and registers `CORAL_FLAVOR=dev` in the settings `env` block so the dev hooks can coexist with the installed prod plugin hooks.
+Keep `.claude/settings.local.json` machine-local. Point the Coral hooks at your checkout, set `CLAUDE_PLUGIN_ROOT`, and register `CORAL_FLAVOR=dev` in the settings `env` block so the dev hooks can coexist with the installed prod plugin hooks.
 
 ## How it works
 

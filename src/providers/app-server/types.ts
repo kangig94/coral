@@ -14,8 +14,7 @@ export type DriverStepOutcome = {
 export type TurnOutcome =
   | { kind: 'completed'; turn: unknown }
   | { kind: 'failed'; message: string }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'nonResumable'; message: string };
+  | { kind: 'aborted'; reason: AbortReason };
 
 export type AppServerTransportClosed<TClosed = ProviderTransportClose, TUpdate = never> = {
   terminal: ProviderTerminalEventBody;

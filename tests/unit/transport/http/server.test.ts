@@ -387,7 +387,7 @@ function stubLaunchRecord(
     },
     createdAt: new Date().toISOString(),
   };
-  progressStore.writeLaunchRecord(overrides.jobId, record);
+  progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
 function stubRuntimeRecord(
@@ -400,7 +400,7 @@ function stubRuntimeRecord(
     startTime?: string;
   },
 ): void {
-  progressStore.writeRuntimeRecord(overrides.jobId, {
+  progressStore.appendRuntimeStarted(overrides.jobId, {
     pid: overrides.pid ?? process.pid,
     stdoutPath: overrides.stdoutPath ?? join(JOBS_DIR, overrides.jobId, 'stdout.log'),
     stderrPath: overrides.stderrPath ?? join(JOBS_DIR, overrides.jobId, 'stderr.log'),
@@ -4426,7 +4426,7 @@ describe('execution backend server', () => {
         projectRoot: pluginRoot,
         backendNamespace: namespace,
       });
-      progressStore.writeRuntimeRecord(jobId, {
+      progressStore.appendRuntimeStarted(jobId, {
         transport: 'app-server',
         startTime: '2026-03-31T00:00:00.000Z',
         providerMeta: {
@@ -4899,7 +4899,7 @@ describe('execution backend server', () => {
         initialPhase: 'launching',
       });
       new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
-      expect(progressStore.readLaunchRecord(jobId)).not.toBeNull();
+      expect(progressStore.readLaunchProjection(jobId)).not.toBeNull();
 
       const _backend = await startBackendServer({ progressStore });
 

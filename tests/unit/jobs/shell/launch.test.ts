@@ -734,7 +734,7 @@ describe('ExecutionService launch', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const jobDir = join(JOBS_DIR, decision.job);
-    const runtimeRecord = progressStore.readRuntimeRecord(decision.job) as _DurableCliRuntimeRecord | null;
+    const runtimeRecord = progressStore.readRuntimeProjection(decision.job) as _DurableCliRuntimeRecord | null;
     const history = progressStore.readJobProgress(decision.job);
 
     expect(terminal.result.content).toContain('final output');
@@ -803,7 +803,7 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
-    progressStore.writeLaunchRecord(jobId1, {
+    progressStore.appendLaunchRequested(jobId1, {
       jobId: jobId1,
       sessionId: 'session-1',
       provider: 'codex',
@@ -829,7 +829,7 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
-    progressStore.writeLaunchRecord(jobId2, {
+    progressStore.appendLaunchRequested(jobId2, {
       jobId: jobId2,
       sessionId: 'session-2',
       provider: 'codex',
@@ -849,7 +849,7 @@ describe('ExecutionService launch', () => {
     });
 
     const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
-    const firstRuntime = progressStore.readRuntimeRecord(jobId1) as AppServerRuntime;
+    const firstRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -870,7 +870,7 @@ describe('ExecutionService launch', () => {
 
     await Promise.resolve();
 
-    const waitingRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
+    const waitingRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -887,7 +887,7 @@ describe('ExecutionService launch', () => {
     firstLease.release();
     const secondLease = await secondLeasePromise;
 
-    const acquiredRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
+    const acquiredRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
     expect(acquiredRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -942,7 +942,7 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
-    progressStore.writeLaunchRecord(jobId1, {
+    progressStore.appendLaunchRequested(jobId1, {
       jobId: jobId1,
       sessionId: 'session-1',
       provider: 'claude',
@@ -968,7 +968,7 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
-    progressStore.writeLaunchRecord(jobId2, {
+    progressStore.appendLaunchRequested(jobId2, {
       jobId: jobId2,
       sessionId: 'session-2',
       provider: 'claude',
@@ -999,7 +999,7 @@ describe('ExecutionService launch', () => {
     });
     const secondLease = await secondLeasePromise;
 
-    const secondRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
+    const secondRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
     expect(secondRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -1052,7 +1052,7 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
-    progressStore.writeLaunchRecord(jobId, {
+    progressStore.appendLaunchRequested(jobId, {
       jobId,
       sessionId: 'session-1',
       provider: 'codex',
@@ -1070,7 +1070,7 @@ describe('ExecutionService launch', () => {
       },
       createdAt: new Date().toISOString(),
     });
-    progressStore.writeRuntimeRecord(jobId, {
+    progressStore.appendRuntimeStarted(jobId, {
       transport: 'app-server',
       startTime: new Date().toISOString(),
       providerMeta: {

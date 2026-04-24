@@ -13,8 +13,9 @@ import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
-import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
+import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
+import { writeResultArtifact } from '../jobs/shell/result-artifact.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
@@ -169,7 +170,12 @@ export function cleanupStaleJobs(
   }
 }
 
-export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
+export function markJobsAsError(
+  progressStore: ProgressStore,
+  namespace: string,
+  message: string,
+  storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
+): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
       markJobAsError(
@@ -181,6 +187,13 @@ export function markJobsAsError(progressStore: ProgressStore, namespace: string,
         },
         () => {},
       );
+      if (status.jobKind === 'workflow') {
+        try {
+          writeResultArtifact(storage, status.jobId, '');
+        } catch {
+          // best-effort export materialization; Journal terminal state is authoritative
+        }
+      }
     } catch {
       // fail-isolated: skip this job, continue with others
     }

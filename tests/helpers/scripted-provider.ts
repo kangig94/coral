@@ -37,7 +37,7 @@ const scriptedProviderResultSchema = z
     conversationRef: z.string().optional(),
     model: z.string().optional(),
     durationMs: z.number().optional(),
-    nonResumable: z.boolean().optional(),
+    resumable: z.boolean().optional(),
     exitCode: z.number().nullable().optional(),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
@@ -86,7 +86,7 @@ export function createScriptedProvider(spec: ScriptedProviderSpec): ProviderSpec
         emit({
           kind: 'continuity',
           conversationRef,
-          resumable: parsed.result?.nonResumable !== true,
+          resumable: parsed.result?.resumable ?? true,
           providerContinuity: null,
         });
         emit({

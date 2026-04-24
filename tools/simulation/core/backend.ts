@@ -94,7 +94,7 @@ export type FakeProviderScenario = {
     conversationRef?: string;
     model?: string;
     durationMs?: number;
-    nonResumable?: boolean;
+    resumable?: boolean;
     exitCode?: number | null;
     warnings?: string[];
     usage?: JobTerminal['usage'];
@@ -284,11 +284,11 @@ export function createFakeProvider(
             ? `Fake provider exited with code ${exitCode}.`
             : 'Fake provider failed.',
         );
-        if (scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined) {
+        if (scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined) {
           emit({
             kind: 'continuity',
             conversationRef: scenario.result?.conversationRef ?? null,
-            resumable: scenario.result?.nonResumable !== true,
+            resumable: scenario.result?.resumable ?? true,
             providerContinuity: null,
           });
         }
@@ -337,10 +337,10 @@ export function createFakeProvider(
             failureCause,
           }),
           continuity:
-            scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined
+            scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined
               ? {
                   conversationRef: scenario?.result?.conversationRef ?? null,
-                  resumable: scenario?.result?.nonResumable !== true,
+                  resumable: scenario?.result?.resumable ?? true,
                 }
               : undefined,
         };

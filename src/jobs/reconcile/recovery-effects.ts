@@ -1,4 +1,3 @@
-import { formatError } from '../../infra/error-format.js';
 import {
   type JobLifecycleFault,
   type JobProgressFault,
@@ -46,15 +45,14 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 export function markJobAsError(
   progressStore: Pick<
     ProgressStore,
-    'appendEventsWithResult' | 'appendTerminal' | 'hasLaunchRecord' | 'readStatus'
-    | 'writeLaunchRecord' | 'writeWorkflowResultMdOrThrow'
+    'appendEventsWithResult' | 'appendTerminal' | 'readLaunchProjection' | 'readStatus' | 'appendLaunchRequested'
   >,
   status: JobStatus,
   fault: JobRecoveryError,
-  log: (message: string) => void,
+  _log: (message: string) => void,
 ): void {
-  if (jobRecoveryNeedsDomainEvent(fault) && !progressStore.hasLaunchRecord(status.jobId)) {
-    progressStore.writeLaunchRecord(status.jobId, syntheticLaunchRecord(status));
+  if (jobRecoveryNeedsDomainEvent(fault) && progressStore.readLaunchProjection(status.jobId) === null) {
+    progressStore.appendLaunchRequested(status.jobId, syntheticLaunchRecord(status));
   }
 
   const outcome = materializeJobRecoveryFault(progressStore, fault, {
@@ -62,13 +60,6 @@ export function markJobAsError(
     sessionId: status.sessionId,
   });
   const terminalResult: JobTerminalInput = { content: '', outcome };
-  if (status.jobKind === 'workflow') {
-    try {
-      progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
-    } catch (err) {
-      log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
-    }
-  }
   progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
 }
 
@@ -80,7 +71,7 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
     projectRoot: status.projectRoot,
     backendNamespace: status.backendNamespace,
     ...(status.bundleHash === undefined ? {} : { bundleHash: status.bundleHash }),
-    jobKind: status.jobKind ?? 'provider',
+    jobKind: status.jobKind,
     pool: 'default',
     enqueueSequence: 0,
     providerAction: 'exec',

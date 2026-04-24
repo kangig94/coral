@@ -14,7 +14,7 @@ import {
   type JobTerminalInput,
 } from '../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
-import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../infra/time.js';
@@ -251,8 +251,11 @@ export class RecoveryService {
       { content: interruptedReport, outcome },
       'error',
     );
-    this.deps.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
-    writeWorkflowResult(this.deps.runtime.storage, launchRecord.jobId, interruptedReport);
+    try {
+      writeResultArtifact(this.deps.runtime.storage, launchRecord.jobId, interruptedReport);
+    } catch (error: unknown) {
+      backendLog.warn(`Writing terminal artifact failed for ${launchRecord.jobId}: ${String(error)}`);
+    }
     this.deps.abortRegistry.remove(launchRecord.jobId);
     this.deps.launchCoordinator.releaseLaunch(
       launchRecord.jobId,
@@ -330,8 +333,11 @@ export class RecoveryService {
       ...options,
       continuity: options?.continuity ?? null,
     });
-    this.deps.progressStore.writeResultMd(jobId, result.content);
-    writeWorkflowResult(this.deps.runtime.storage, jobId, result.content);
+    try {
+      writeResultArtifact(this.deps.runtime.storage, jobId, result.content);
+    } catch (error: unknown) {
+      backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
+    }
     this.deps.abortRegistry.remove(jobId);
     const pool = this.deps.jobPools.get(jobId) ?? 'default';
     this.deps.launchCoordinator.releaseLaunch(jobId, pool);
@@ -381,7 +387,7 @@ export class RecoveryService {
     providerName: string,
     update: Partial<AppServerRuntime['providerMeta']>,
   ): void {
-    const current = this.deps.progressStore.readRuntimeRecord(jobId);
+    const current = this.deps.progressStore.readRuntimeProjection(jobId);
     const appRuntime = isAppServerRuntime(current) ? current : null;
     const record: AppServerRuntime = {
       transport: 'app-server',
@@ -394,7 +400,7 @@ export class RecoveryService {
         recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
       },
     };
-    this.deps.progressStore.writeRuntimeRecord(jobId, record);
+    this.deps.progressStore.appendRuntimeStarted(jobId, record);
   }
 
   private async finalizeSessionContinuityMutation(

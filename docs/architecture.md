@@ -147,7 +147,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
 | Knowledge base | Search, indexing, memo/source flows, and publication into the corpus authority. |
-| Shared / infra | Low-level helpers, settled path resolution, and the remaining legacy-vocabulary boundary: domain upcasters on read, `legacy-ingest` where runtime canonicalization still needs legacy input. |
+| Shared / infra | Low-level helpers, settled path resolution, and shared adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
 
 ## Dependency Sketch
 
@@ -184,10 +184,9 @@ KB runtime
   -> Corpus publication + notify seam
   -> Coordinator freshness / health bridge
 
-Shared / compat layer
+Shared / infra layer
   -> Shared foundation consumed by all layers
   -> Domain upcasters own read-time body transforms
-  -> `legacy-ingest` is the only production module that still speaks legacy vocabularies
 ```
 
 ## Runtime State
@@ -206,9 +205,7 @@ Shared / compat layer
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 
-## Migration Notes
-
-### TerminalOutcome ADT (Phase 2)
+## Terminal Outcome Model
 
 Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated union owned by the jobs domain:
 
@@ -218,7 +215,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 - `failed { causeRef }` — upstream cause resolvable via the Journal (`CauseRef = { stream, seq }`).
 - `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
-The pre-rewrite `CoralFault` union is retired. Read-time body transforms now live in per-domain upcasters, and `src/jobs/shell/legacy-ingest.ts` is the only production module that still speaks legacy vocabularies.
+Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
 
 CLI wait output surfaces the outcome through five exhaustive headers:
 
@@ -231,5 +228,3 @@ Job <id> coral errored: <sentence> [<kind>]
 ```
 
 The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).
-
-**Upgrade impact**: pre-rewrite `status.json` / `progress.jsonl` records use the legacy shape. On first start after upgrade, the backend validates each record against the new schema and silently discards any record that fails — logging once per job. The job directory is not deleted, and any session claim it owned is released. To upgrade cleanly, drop `<os-tmpdir>/coral-jobs/` before the first restart, or accept that in-flight pre-upgrade jobs will not be recoverable after the version bump.

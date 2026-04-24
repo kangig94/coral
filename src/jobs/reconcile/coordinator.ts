@@ -10,6 +10,7 @@ import type { RecoveryCapableService, LaunchFenceState } from './contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './recovery-effects.js';
+import { writeResultArtifact } from '../shell/result-artifact.js';
 import type { JobEventBus } from '../event-bus.js';
 import {
   applyRecoveryAction,
@@ -192,7 +193,7 @@ export function createRecoveryCoordinator({
 
             if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
               adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
-              progressStore.writeRuntimeRecord(jobId, adoptedRuntimeRecord);
+              progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
             }
 
             if (messages.length === 0) {
@@ -348,6 +349,13 @@ export function createRecoveryCoordinator({
                 },
                 log,
               );
+              if (status.jobKind === 'workflow') {
+                try {
+                  writeResultArtifact(runtime.storage, status.jobId, '');
+                } catch (artifactError: unknown) {
+                  log(`Failed to write result artifact for ${status.jobId}: ${formatError(artifactError)}\n`);
+                }
+              }
             }
           } catch {
             // best-effort

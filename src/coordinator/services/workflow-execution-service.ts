@@ -26,7 +26,7 @@ import {
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
-import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { TerminalWriteError, type LaunchOrchestrator } from '../../jobs/shell/launch.js';
 import { SessionClaimError, rejectLaunch } from '../../jobs/shell/contracts.js';
@@ -100,7 +100,7 @@ export class WorkflowExecutionService {
     }
 
     const workflowLaunchCwd = workDir ?? ctx.projectRoot;
-    this.deps.progressStore.writeLaunchRecord(jobId, {
+    this.deps.progressStore.appendLaunchRequested(jobId, {
       jobId,
       sessionId: session.sessionId,
       provider: providerName,
@@ -154,9 +154,12 @@ export class WorkflowExecutionService {
     markdown: string,
     diagnostics: JobTerminalDiagnostics = {},
   ): void {
-    this.deps.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
-    writeWorkflowResult(this.deps.runtime.storage, jobId, markdown);
     this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, { diagnostics });
+    try {
+      writeResultArtifact(this.deps.runtime.storage, jobId, markdown);
+    } catch (error: unknown) {
+      backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
+    }
     this.deps.sessionManager.setNonResumable(sessionId);
     this.deps.abortRegistry.remove(jobId);
     this.deps.sessionManager.releaseJob(sessionId, jobId);

@@ -94,7 +94,7 @@ const fakeProviderTerminalResultSchema = z.object({
   conversationRef: z.string().optional(),
   model: z.string().optional(),
   durationMs: z.number().optional(),
-  nonResumable: z.boolean().optional(),
+  resumable: z.boolean().optional(),
   exitCode: z.number().nullable().optional(),
   warnings: z.array(z.string()).optional(),
   usage: usageSummarySchema.optional(),

@@ -223,7 +223,7 @@ export function resolveBackendDefaults(
       const markJobsAsErrorFn =
         options.markJobsAsErrorFn ??
         ((currentNamespace: string, message: string) => {
-          markJobsAsError(bindings.progressStore, currentNamespace, message);
+          markJobsAsError(bindings.progressStore, currentNamespace, message, runtime.storage);
         });
       const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());
 

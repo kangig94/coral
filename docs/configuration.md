@@ -139,9 +139,8 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 `<os-tmpdir>/coral-jobs/<jobId>/`
 
-- `status.json`
-- `progress.jsonl`
-- `result.md`
+- `result.md`: durable wait/follow export materialized from Journal terminal state
+- provider runtime scratch files such as stdout/stderr/env artifacts, owned by the runtime transport
 
 ## Runtime Dependencies
 

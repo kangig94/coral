@@ -39,7 +39,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; read-time legacy transforms live in domain upcasters, and runtime canonicalization of pre-rewrite shapes stays isolated in `legacy-ingest`.
+Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
 
 ## Equipment
 
@@ -103,4 +103,4 @@ These are the load-bearing boundaries that must not leak:
 - The Journal read surface (`CoralStore`) is publicly exported; write primitives are internal.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
-- Read-time legacy transforms live in domain upcasters; `legacy-ingest` is the only production module that still speaks legacy vocabularies at runtime.
+- Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

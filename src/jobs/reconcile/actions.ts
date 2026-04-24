@@ -17,6 +17,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from './contracts.js';
 import { markJobAsError, materializeProviderTerminal } from './recovery-effects.js';
 import { materializeJobRecoveryFault } from '../shell/fault-materializer.js';
+import { writeResultArtifact } from '../shell/result-artifact.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
@@ -59,6 +60,13 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       return;
     case 'markError': {
       markJobAsError(progressStore, action.status, action.fault, log);
+      if (action.status.jobKind === 'workflow') {
+        try {
+          writeResultArtifact(runtime.storage, action.status.jobId, '');
+        } catch (error: unknown) {
+          log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
+        }
+      }
       SessionManager.forProduction(
         action.status.projectRoot,
         runtime,
@@ -174,7 +182,7 @@ export function finalizeDeadAdoptedJob({
   progressStore,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
-  const exitRecord = progressStore.readExitRecord(jobId);
+  const exitRecord = progressStore.readExitProjection(jobId);
   if (exitRecord) {
     if (provider) {
       void provider
@@ -225,7 +233,7 @@ export function finalizeDeadAdoptedJob({
       return;
     }
 
-    const persistedPayload = progressStore.readTerminalPayload(jobId);
+    const persistedPayload = progressStore.readTerminalProjection(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
       service.completeRecoveredJob(jobId, launchRecord.sessionId, persistedPayload, phase, {

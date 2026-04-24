@@ -7,7 +7,7 @@ export function resultPathFor(jobId: string): string {
   return join(jobsDir(), jobId, 'result.md');
 }
 
-export function writeWorkflowResult(
+export function writeResultArtifact(
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   jobId: string,
   markdown: string,
@@ -15,7 +15,7 @@ export function writeWorkflowResult(
   const targetPath = resultPathFor(jobId);
   storage.mkdirSync(dirname(targetPath), { recursive: true });
   if (!storage.writeAtomicSync(targetPath, markdown, { encoding: 'utf-8' })) {
-    throw new Error(`Failed to write workflow result for ${jobId}`);
+    throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
 }

@@ -37,7 +37,7 @@ export interface JobStatus {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind?: JobKind;
+  jobKind: JobKind;
   phase: JobPhase;
   updatedAt: string;
   lastSeq?: number;
@@ -51,9 +51,9 @@ export const jobStatusSchema = z
     sessionId: z.string(),
     provider: z.string(),
     projectRoot: z.string(),
-    backendNamespace: z.string().optional(),
+    backendNamespace: z.string(),
     bundleHash: z.string().optional(),
-    jobKind: z.enum(['provider', 'workflow']).optional(),
+    jobKind: z.enum(['provider', 'workflow']),
     phase: jobPhaseSchema,
     updatedAt: z.string(),
     lastSeq: z.number().int().nonnegative().optional(),
@@ -61,7 +61,7 @@ export const jobStatusSchema = z
     diagnostics: jobDiagnosticsSchema.optional(),
     continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
-  .passthrough();
+  .strict();
 
 export function parseJobStatus(value: unknown): JobStatus | null {
   const parsed = jobStatusSchema.safeParse(value);

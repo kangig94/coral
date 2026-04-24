@@ -1491,7 +1491,7 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
@@ -1525,7 +1525,7 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
@@ -1584,7 +1584,7 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.writeLaunchRecord(
+    progressStore.appendLaunchRequested(
       jobId,
       makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
     );
@@ -1612,7 +1612,7 @@ describe('ExecutionService', () => {
       phase: 'launching',
     });
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
-    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
+    expect(existsSync(jobResultPath(jobId))).toBe(false);
     expect(sessionManager.get('codex', session.sessionId)?.state).toBe('pending');
     expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
@@ -1652,7 +1652,7 @@ describe('ExecutionService', () => {
       markdown: '# aborted\n',
     },
   ])(
-    'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
+    'finishWorkflowJob persists %s terminal authority before result.md and marks the session non_resumable afterward',
     ({ phase, result, diagnostics, markdown }) => {
       const service = createService(ctx);
       const { progressStore, sessionManager } =
@@ -1669,26 +1669,27 @@ describe('ExecutionService', () => {
         backendNamespace: 'test-ns',
         jobKind: 'workflow',
       });
-      progressStore.writeLaunchRecord(
+      progressStore.appendLaunchRequested(
         jobId,
         makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
       );
       expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
       const order: string[] = [];
-      const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
       const originalAppendTerminal = progressStore.appendTerminal.bind(progressStore);
       const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
+      const originalWriteAtomic = runtime.storage.writeAtomicSync.bind(runtime.storage);
 
-      vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
-        order.push('artifact');
-        return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+      vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((targetPath, content, options) => {
+        if (targetPath === jobResultPath(jobId)) {
+          order.push('artifact');
+        }
+        return originalWriteAtomic(targetPath, content, options);
       });
       vi.spyOn(progressStore, 'appendTerminal').mockImplementation(
         (targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions) => {
           order.push('terminal');
-          expect(existsSync(jobResultPath(targetJobId))).toBe(true);
-          expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+          expect(existsSync(jobResultPath(targetJobId))).toBe(false);
           expect(new SessionManager(ctx.projectRoot, runtime).get('codex', targetSessionId)?.state).toBe('pending');
           return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions);
         },
@@ -1700,6 +1701,7 @@ describe('ExecutionService', () => {
           phase: persistedPhase,
           result,
         });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
         return originalSetNonResumable(targetSessionId);
       });
 
@@ -1716,13 +1718,13 @@ describe('ExecutionService', () => {
         }
       ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics);
 
-      expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+      expect(order).toEqual(['terminal', 'artifact', 'non_resumable']);
       expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
       expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
     },
   );
 
-  it('finishWorkflowJob writes artifact before terminal append failure and skips non_resumable state', () => {
+  it('finishWorkflowJob skips artifact and non_resumable state when terminal append fails', () => {
     const service = createService(ctx);
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -1745,23 +1747,24 @@ describe('ExecutionService', () => {
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
     });
-    progressStore.writeLaunchRecord(
+    progressStore.appendLaunchRequested(
       jobId,
       makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
     );
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
     const order: string[] = [];
-    const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
+    const originalWriteAtomic = runtime.storage.writeAtomicSync.bind(runtime.storage);
 
-    vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
-      order.push('artifact');
-      return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+    vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((targetPath, content, options) => {
+      if (targetPath === jobResultPath(jobId)) {
+        order.push('artifact');
+      }
+      return originalWriteAtomic(targetPath, content, options);
     });
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation((targetJobId) => {
       order.push('terminal');
-      expect(existsSync(jobResultPath(targetJobId))).toBe(true);
-      expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+      expect(existsSync(jobResultPath(targetJobId))).toBe(false);
       expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
       throw new Error('disk full');
     });
@@ -1782,8 +1785,8 @@ describe('ExecutionService', () => {
       ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics),
     ).toThrow('Failed to append terminal event');
 
-    expect(order).toEqual(['artifact', 'terminal']);
-    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
+    expect(order).toEqual(['terminal']);
+    expect(existsSync(jobResultPath(jobId))).toBe(false);
     expect(setNonResumable).not.toHaveBeenCalled();
     expect(sessionManager.get('codex', session.sessionId)?.state).toBe('pending');
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
@@ -1857,7 +1860,7 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         const recovered = service.recoverQueuedJob(launchRecord);
 
@@ -1887,7 +1890,7 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         service.recoverQueuedJob(launchRecord);
 
@@ -1917,7 +1920,7 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
         // Existing progress no longer requires a per-job counter hydration step.
         const firstProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-1');
         const secondProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-2');
@@ -1955,7 +1958,7 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         service.recoverQueuedJob(launchRecord);
 
@@ -1994,10 +1997,10 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         const runtimeRecord = makeRuntimeRecord();
-        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
         const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
 
@@ -2029,10 +2032,10 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId, pool: 'default' });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         const runtimeRecord = makeRuntimeRecord();
-        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
         const activeIdsBefore = getActiveJobIds();
         expect(activeIdsBefore).not.toContain(jobId);
@@ -2063,10 +2066,10 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         const runtimeRecord = makeRuntimeRecord();
-        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
         const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
 
@@ -2097,8 +2100,8 @@ describe('ExecutionService', () => {
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         const runtimeRecord = makeRuntimeRecord({ pid: 54321 });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
-        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
         const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
 
@@ -2131,7 +2134,7 @@ describe('ExecutionService', () => {
           backendNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
-        progressStore.writeLaunchRecord(
+        progressStore.appendLaunchRequested(
           jobId,
           makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }),
         );
@@ -2202,7 +2205,7 @@ describe('ExecutionService', () => {
             coralEnv: {},
           },
         });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         await service.finalizeInterruptedAppServerJob(
           launchRecord,
@@ -2271,7 +2274,7 @@ describe('ExecutionService', () => {
           backendNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
-        progressStore.writeLaunchRecord(
+        progressStore.appendLaunchRequested(
           jobId,
           makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }),
         );
@@ -2370,7 +2373,7 @@ describe('ExecutionService', () => {
               coralEnv: {},
             },
           });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         await service.finalizeInterruptedAppServerJob(
           launchRecord,
@@ -2463,7 +2466,7 @@ describe('ExecutionService', () => {
               coralEnv: {},
             },
           });
-        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.appendLaunchRequested(jobId, launchRecord);
 
         await service.finalizeInterruptedAppServerJob(
           launchRecord,

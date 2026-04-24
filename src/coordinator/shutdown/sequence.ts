@@ -49,8 +49,8 @@ async function finalizeLiveAppServerJobsForHandoff({
   log,
 }: FinalizeLiveAppServerJobsForHandoffContext): Promise<void> {
   for (const status of listLiveJobs(progressStore, namespace)) {
-    const launchRecord = progressStore.readLaunchRecord(status.jobId);
-    const runtimeRecord = progressStore.readRuntimeRecord(status.jobId);
+    const launchRecord = progressStore.readLaunchProjection(status.jobId);
+    const runtimeRecord = progressStore.readRuntimeProjection(status.jobId);
     if (!launchRecord || !isAppServerRuntime(runtimeRecord)) {
       continue;
     }

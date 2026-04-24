@@ -206,7 +206,7 @@ function stubLaunchRecord(
     },
     createdAt: new Date().toISOString(),
   };
-  progressStore.writeLaunchRecord(overrides.jobId, record);
+  progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
 function stubRuntimeRecord(
@@ -218,7 +218,7 @@ function stubRuntimeRecord(
     startTime?: string;
   },
 ): void {
-  progressStore.writeRuntimeRecord(options.jobId, {
+  progressStore.appendRuntimeStarted(options.jobId, {
     pid: options.pid,
     stdoutPath: join(jobsDir(), options.jobId, 'stdout'),
     stderrPath: join(jobsDir(), options.jobId, 'stderr'),

@@ -201,7 +201,7 @@ function stubLaunchRecord(
     },
     createdAt: new Date().toISOString(),
   };
-  progressStore.writeLaunchRecord(overrides.jobId, record);
+  progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
 function appendQueuedEvent(
@@ -236,7 +236,7 @@ function stubRuntimeRecord(
     startTime?: string;
   },
 ): void {
-  progressStore.writeRuntimeRecord(overrides.jobId, {
+  progressStore.appendRuntimeStarted(overrides.jobId, {
     pid: overrides.pid ?? process.pid,
     stdoutPath: overrides.stdoutPath ?? join(progressStore.jobDir(overrides.jobId), 'stdout'),
     stderrPath: overrides.stderrPath ?? join(progressStore.jobDir(overrides.jobId), 'stderr'),
@@ -250,7 +250,7 @@ function stubAppServerRuntime(
   provider: string,
   startTime = '2026-04-12T00:00:00.000Z',
 ): void {
-  progressStore.writeRuntimeRecord(jobId, {
+  progressStore.appendRuntimeStarted(jobId, {
     transport: 'app-server',
     startTime,
     providerMeta: {
@@ -1038,7 +1038,7 @@ describe('lifecycle recovery', () => {
     // Inline runtime-record write (vs. the shared stubAppServerRuntime helper) is required
     // here because the helper does not accept providerContinuity payload; this test verifies
     // that the threadId field propagates through finalizeInterruptedAppServerJob.
-    progressStore.writeRuntimeRecord('app-server-job', {
+    progressStore.appendRuntimeStarted('app-server-job', {
       transport: 'app-server',
       startTime: '2026-03-31T00:00:00.000Z',
       providerMeta: {

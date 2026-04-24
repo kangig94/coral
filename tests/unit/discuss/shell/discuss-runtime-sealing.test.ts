@@ -398,7 +398,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       backendNamespace: 'runtime-only',
       initialPhase: 'running',
     });
-    harness.progressStore.writeLaunchRecord(jobId, {
+    harness.progressStore.appendLaunchRequested(jobId, {
       jobId,
       sessionId: 'execution-session-1',
       provider: 'codex',

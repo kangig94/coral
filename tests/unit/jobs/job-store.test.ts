@@ -116,7 +116,7 @@ describe('JobStore', () => {
       backendNamespace: 'test-ns',
       bundleHash: 'bundle-a',
     });
-    store.writeLaunchRecord(jobId, launchRecord(jobId, sessionId, 'test-ns', 'bundle-a'));
+    store.appendLaunchRequested(jobId, launchRecord(jobId, sessionId, 'test-ns', 'bundle-a'));
 
     preparedSql.length = 0;
 
@@ -158,7 +158,7 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.writeLaunchRecord('job-alpha', launchRecord('job-alpha', 'session-alpha', 'alpha', 'bundle-a'));
+    store.appendLaunchRequested('job-alpha', launchRecord('job-alpha', 'session-alpha', 'alpha', 'bundle-a'));
 
     store.initJob({
       jobId: 'job-beta',
@@ -168,7 +168,7 @@ describe('JobStore', () => {
       backendNamespace: 'beta',
       bundleHash: 'bundle-a',
     });
-    store.writeLaunchRecord('job-beta', launchRecord('job-beta', 'session-beta', 'beta', 'bundle-a'));
+    store.appendLaunchRequested('job-beta', launchRecord('job-beta', 'session-beta', 'beta', 'bundle-a'));
 
     store.initJob({
       jobId: 'job-override',
@@ -178,7 +178,7 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.writeLaunchRecord('job-override', launchRecord('job-override', 'session-override', 'alpha', 'bundle-a'));
+    store.appendLaunchRequested('job-override', launchRecord('job-override', 'session-override', 'alpha', 'bundle-a'));
     store.rebindNamespace('job-override', 'override', 'bundle-override');
 
     store.initJob({
@@ -189,7 +189,7 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.writeLaunchRecord('job-done', launchRecord('job-done', 'session-done', 'alpha', 'bundle-a'));
+    store.appendLaunchRequested('job-done', launchRecord('job-done', 'session-done', 'alpha', 'bundle-a'));
     store.appendTerminal('job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
 
     store.initJob({

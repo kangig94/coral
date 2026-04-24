@@ -42,8 +42,8 @@ export class JobAbortService {
         continue;
       }
 
-      const runtimeRecord = this.deps.progressStore.readRuntimeRecord(jobId);
-      const launchRecord = this.deps.progressStore.readLaunchRecord(jobId);
+      const runtimeRecord = this.deps.progressStore.readRuntimeProjection(jobId);
+      const launchRecord = this.deps.progressStore.readLaunchProjection(jobId);
       if (launchRecord && isAppServerRuntime(runtimeRecord)) {
         void this.deps.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
           backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
