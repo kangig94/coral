@@ -1,23 +1,21 @@
 import { formatError } from '../../infra/error-format.js';
-import { isTerminalPhase } from '../phase.js';
-import { isAppServerRuntime } from '../records.js';
-import type { JobLaunch, JobRuntime } from '../records.js';
+import { isTerminalPhase } from '../../jobs/phase.js';
+import { isAppServerRuntime } from '../../jobs/records.js';
+import type { JobLaunch, JobRuntime } from '../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type {
-  ProviderRecoveryContract,
-} from '../../providers/contract.js';
-import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
-import type { ProgressStore } from '../job-store.js';
-import type { RecoveryAction } from './plan.js';
-import type { RecoveryRegistry } from './registry.js';
+import type { ProviderRecoveryContract } from '../../providers/contract.js';
+import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
+import type { RecoveryAction } from '../../jobs/reconcile/plan.js';
+import type { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { RecoveryCapableService } from './contracts.js';
-import { markJobAsError, materializeProviderTerminal } from './recovery-effects.js';
-import { materializeJobRecoveryFault } from '../shell/fault-materializer.js';
-import { writeResultArtifact } from '../shell/result-artifact.js';
+import type { RecoveryCapableService } from '../contracts.js';
+import { markJobAsError, materializeProviderTerminal } from '../../jobs/reconcile/recovery-effects.js';
+import { materializeJobRecoveryFault } from '../../jobs/shell/fault-materializer.js';
+import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
@@ -67,16 +65,9 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
           log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
         }
       }
-      SessionManager.forProduction(
-        action.status.projectRoot,
-        runtime,
-        undefined,
-        emitSessionReleased,
-        { db: progressStore.getDb() },
-      ).releaseJob(
-        action.status.sessionId,
-        action.status.jobId,
-      );
+      SessionManager.forProduction(action.status.projectRoot, runtime, undefined, emitSessionReleased, {
+        db: progressStore.getDb(),
+      }).releaseJob(action.status.sessionId, action.status.jobId);
       switch (action.fault.kind) {
         case 'missing_launch_record':
           log(`Marked live job with missing launch record: ${action.jobId}\n`);
@@ -106,7 +97,11 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       } else {
         recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
       }
-      runningRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord, runtimeRecord: action.runtimeRecord });
+      runningRecoverable.push({
+        jobId: action.jobId,
+        launchRecord: action.launchRecord,
+        runtimeRecord: action.runtimeRecord,
+      });
       return;
     case 'releaseSessionClaim': {
       const session = sessionLookup.readSessionEntry(action.sessionId);
@@ -115,13 +110,9 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         return;
       }
 
-      SessionManager.forProduction(
-        session.projectRoot,
-        runtime,
-        undefined,
-        emitSessionReleased,
-        { db: progressStore.getDb() },
-      ).releaseJob(action.sessionId, action.jobId);
+      SessionManager.forProduction(session.projectRoot, runtime, undefined, emitSessionReleased, {
+        db: progressStore.getDb(),
+      }).releaseJob(action.sessionId, action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
         log(`Released terminal session claim: ${action.sessionId}\n`);
@@ -257,13 +248,9 @@ export function finalizeDeadAdoptedJob({
             },
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
-    service.completeRecoveredJob(
-      jobId,
-      launchRecord.sessionId,
-      { content: '', outcome },
-      phaseForOutcome(outcome),
-      { exitCode: exitRecord.exitCode },
-    );
+    service.completeRecoveredJob(jobId, launchRecord.sessionId, { content: '', outcome }, phaseForOutcome(outcome), {
+      exitCode: exitRecord.exitCode,
+    });
     return;
   }
 

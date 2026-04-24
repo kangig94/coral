@@ -88,7 +88,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 
 `GET /jobs` accepts optional `projectRoot`, `phase`, `provider`, and `all=1` query filters. Without `all=1`, the list stays live-only (`queued`, `launching`, `running`) and remains sorted by `updatedAt` descending.
 
-Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / legacy session), 503 (recovering / busy).
+Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / non-resumable or provider-mismatched session), 503 (recovering / busy).
 
 ## Primary Execution Flows
 

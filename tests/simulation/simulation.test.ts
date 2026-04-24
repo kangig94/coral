@@ -351,7 +351,7 @@ describe('deterministic simulation lifecycle replay', () => {
     });
   });
 
-  it('tracks generation snapshots across cycle() and the deprecated restart() alias', async () => {
+  it('tracks generation snapshots across repeated cycle() calls', async () => {
     const world = new SimulationWorld({
       listen: { port: 4_304 },
     });

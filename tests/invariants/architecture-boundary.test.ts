@@ -25,6 +25,7 @@ const SRC_ROOT = resolve(REPO_ROOT, 'src');
 
 const WORKFLOW_ROOT = 'src/workflow';
 const JOBS_ROOT = 'src/jobs';
+const JOBS_RECONCILE_ROOT = 'src/jobs/reconcile';
 const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
 const EXECUTION_ROOT = ['src', 'execution'].join('/');
@@ -352,6 +353,19 @@ describe('architecture boundary guard', () => {
       'jobs/ must stay coordinator-free',
       'move the shared contract into jobs/, store/, runtime/, or another lower-level owner instead.',
       (target) => isWithinPath(target, COORDINATOR_ROOT),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('jobs/reconcile stays session-implementation free', () => {
+    const violations = collectViolations(
+      JOBS_RECONCILE_ROOT,
+      'jobs/reconcile plans recovery but coordinator owns session execution',
+      'pass minimal session facts into the planner and keep SessionManager/SessionLookup usage under coordinator.',
+      (target) =>
+        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        target === 'src/sessions/lookup.ts' ||
+        target === 'src/sessions/entry.ts',
     );
 
     assertNoViolations(violations);

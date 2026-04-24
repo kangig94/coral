@@ -1,7 +1,6 @@
 import { isLivePhase, isTerminalPhase } from '../phase.js';
 import { belongsToNamespace } from '../records.js';
 import type { JobLaunch, JobRuntime, JobStatus } from '../records.js';
-import type { SessionEntry } from '../../sessions/entry.js';
 import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
 
 /**
@@ -27,12 +26,16 @@ export type RecoveryJobFacts = {
   runtimeRecord: JobRuntime | null;
 };
 
+export type RecoverySessionFacts = {
+  activeJobId?: string;
+};
+
 export interface RecoveryProjectionSnapshot {
   readonly jobIds: readonly string[];
   readonly currentNamespace: string;
   readJob(jobId: string): RecoveryJobFacts;
   listSessionRefs(): Array<{ sessionId: string; provider: string }>;
-  readSession(sessionId: string): SessionEntry | null;
+  readSession(sessionId: string): RecoverySessionFacts | null;
 }
 
 export type RecoveryAction =

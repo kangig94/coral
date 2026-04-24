@@ -3,11 +3,9 @@ import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { RecoveryCoordinator } from './reconcile/coordinator.js';
 import type { SessionLookup } from '../sessions/lookup.js';
 
-export type JobsStartupDeps = {
-  recoveryCoordinator: RecoveryCoordinator;
+export type JobsStartupContext = {
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
@@ -21,10 +19,15 @@ export type JobsStartupDeps = {
   sessionLookup: SessionLookup;
 };
 
-export async function runJobsStartup({
-  recoveryCoordinator,
-  ...deps
-}: JobsStartupDeps): Promise<void> {
+export interface JobsRecoveryCoordinator {
+  runStartupRecovery(ctx: JobsStartupContext): Promise<void>;
+}
+
+export type JobsStartupDeps = JobsStartupContext & {
+  recoveryCoordinator: JobsRecoveryCoordinator;
+};
+
+export async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<void> {
   await recoveryCoordinator.runStartupRecovery(deps);
 }
 

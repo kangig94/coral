@@ -12,7 +12,7 @@ import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
-import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
+import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery-coordinator.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/shell/result-artifact.js';

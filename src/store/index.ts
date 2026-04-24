@@ -1,4 +1,4 @@
-// Public read-only surface for the Journal.
+// Public read-only CoralStore surface across Journal and Corpus authority.
 // Write-side primitives (appendEvents, rebuildProjections) are NOT exported here —
 // coordinator code imports them directly from src/store/append.js and src/store/rebuild.js.
 

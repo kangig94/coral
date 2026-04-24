@@ -1,25 +1,25 @@
 import { formatError } from '../../infra/error-format.js';
-import { isAppServerRuntime } from '../records.js';
+import { isAppServerRuntime } from '../../jobs/records.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
-import type { ProgressStore } from '../job-store.js';
-import { planRecovery } from './plan.js';
-import { RecoveryRegistry } from './registry.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
+import { planRecovery } from '../../jobs/reconcile/plan.js';
+import { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService, LaunchFenceState } from './contracts.js';
-import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
-import { StartupInterruptedError } from './errors.js';
-import { markJobAsError } from './recovery-effects.js';
-import { writeResultArtifact } from '../shell/result-artifact.js';
-import type { JobEventBus } from '../event-bus.js';
+import type { RecoveryCapableService } from '../contracts.js';
+import { adoptOrphanedCrossNamespaceJobs } from '../../jobs/reconcile/cross-namespace-adoption.js';
+import { StartupInterruptedError } from '../../jobs/reconcile/errors.js';
+import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
+import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
+import type { JobEventBus } from '../../jobs/event-bus.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,
   logRecoveryActionFailure,
   type QueuedRecoverableJob,
   type RunningRecoverableJob,
-} from './actions.js';
-import { buildRecoverySnapshot } from './snapshot.js';
+} from './recovery-actions.js';
+import { buildRecoverySnapshot } from './recovery-snapshot.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
@@ -42,7 +42,7 @@ export interface RecoveryCoordinator {
 type RecoveryCoordinatorContext = {
   progressStore: ProgressStore;
   runtime: Runtime;
-  runtimeState: LaunchFenceState;
+  runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
   providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -272,15 +272,7 @@ export function createRecoveryCoordinator({
 
   return {
     async runStartupRecovery(ctx: StartupRecoveryContext): Promise<void> {
-      const {
-        namespace,
-        bundleHash,
-        runtime,
-        progressStore,
-        assertStartupStillActive,
-        log,
-        cleanupStaleJobs,
-      } = ctx;
+      const { namespace, bundleHash, runtime, progressStore, assertStartupStillActive, log, cleanupStaleJobs } = ctx;
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);
       const recoveryRegistry = new RecoveryRegistry(runtime.process);
