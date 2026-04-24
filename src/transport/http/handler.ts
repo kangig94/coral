@@ -289,11 +289,11 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const lastEventIdHeader = Array.isArray(req.headers['last-event-id'])
+  const serializedCursorHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
-  const headerCursor = parseSerializedWaitCursor(lastEventIdHeader);
-  if (lastEventIdHeader && !headerCursor) {
+  const headerCursor = parseSerializedWaitCursor(serializedCursorHeader);
+  if (serializedCursorHeader && !headerCursor) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Invalid Last-Event-ID cursor' });
     return;
   }

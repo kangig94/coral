@@ -27,10 +27,6 @@ export type InitJobOptions = {
   initialPhase?: JobStatus['phase'];
 };
 
-export type ReplayCursor = {
-  lastEventId: number;
-};
-
 export type TerminalWriteOptions = {
   continuity?: JobContinuitySnapshot | null;
   diagnostics?: JobTerminalDiagnostics;
@@ -65,7 +61,6 @@ export interface JobProgressStore {
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCountByNamespace(namespace: string): number;
-  hydrateEventCounter(jobId: string): void;
   hydrateJobStartedAt(jobId: string, startTime: string): void;
   appendProgress(jobId: string, sessionId: string, message: string): number;
   appendTerminal(
@@ -81,5 +76,4 @@ export interface JobProgressStore {
     phase: JobPhase,
     options?: TerminalWriteOptions,
   ): void;
-  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgress[];
 }

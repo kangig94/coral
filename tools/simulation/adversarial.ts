@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { createReplayCursor, type ReplayCursor } from '../../src/jobs/job-store.js';
 import { SessionManager } from '../../src/sessions/shell/store.js';
 import type { BackendServerInfo, LifecycleState } from '../../src/coordinator/control.js';
 import { backendInfoPath } from '../../src/infra/backend-discovery.js';
@@ -75,6 +74,15 @@ type WorldGenerationState = {
   startedInfo: BackendServerInfo | null;
   phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
 };
+
+type ProgressCursor = {
+  afterSeq: number;
+  terminalSeen: boolean;
+};
+
+function createProgressCursor(): ProgressCursor {
+  return { afterSeq: 0, terminalSeen: false };
+}
 
 function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
   return {
@@ -222,7 +230,7 @@ export class SimulationWorld {
     this.assertUsable();
     this.assertBooted('wait');
     const startedAt = this.getVirtualElapsedMs();
-    const cursor = createReplayCursor();
+    const cursor = createProgressCursor();
     const accumulatedProgress: string[] = [];
     let steps = 0;
     let actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
@@ -379,9 +387,9 @@ export class SimulationWorld {
     };
   }
 
-  replay(jobId: string, afterEventId = 0): JobProgress[] {
+  replay(jobId: string, afterSeq = 0): JobProgress[] {
     this.assertUsable();
-    return this.current.backend.progressStore.replayFrom(jobId, afterEventId, createReplayCursor());
+    return this.current.backend.progressStore.readJobProgress(jobId).filter((event) => event.seq > afterSeq);
   }
 
   readArtifact(
@@ -564,17 +572,19 @@ export class SimulationWorld {
     };
   }
 
-  private observeJobIncremental(jobId: string, cursor: ReplayCursor, accumulatedProgress: string[]): WaitObservation {
+  private observeJobIncremental(jobId: string, cursor: ProgressCursor, accumulatedProgress: string[]): WaitObservation {
     const status = this.current.backend.progressStore.readStatus(jobId);
-    const newEvents = this.current.backend.progressStore.replayFrom(jobId, 0, cursor);
-    let terminalSeen = false;
+    const newEvents = this.current.backend.progressStore
+      .readJobProgress(jobId)
+      .filter((event) => event.seq > cursor.afterSeq);
 
     for (const event of newEvents) {
+      cursor.afterSeq = Math.max(cursor.afterSeq, event.seq);
       if (event.type === 'progress' && event.message !== undefined) {
         accumulatedProgress.push(event.message);
       }
       if (event.type === 'terminal') {
-        terminalSeen = true;
+        cursor.terminalSeen = true;
       }
     }
 
@@ -582,7 +592,7 @@ export class SimulationWorld {
       phase: status?.phase ?? null,
       runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
       terminal:
-        terminalSeen ||
+        cursor.terminalSeen ||
         Boolean(status?.result) ||
         (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
       progress: accumulatedProgress,

@@ -390,6 +390,11 @@ describe('architecture boundary guard', () => {
   it('public wait contract uses only global journal seq cursors', () => {
     const waitContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait.ts'), 'utf8');
     const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
+    const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
+    const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
+    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/progress-store-contract.ts'), 'utf8');
+    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/store/queries/jobs.ts'), 'utf8');
+    const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
 
     expect(waitContract).toContain('afterSeq: number');
     expect(waitContract).toContain('seq: number');
@@ -397,6 +402,17 @@ describe('architecture boundary guard', () => {
     expect(waitContract).not.toContain('eventId');
     expect(waitEventSchema).toContain('seq: z.number().int().nonnegative()');
     expect(waitEventSchema).not.toContain('eventId');
+    expect(jobRecords).not.toContain('eventId');
+    expect(jobStore).not.toContain('ReplayCursor');
+    expect(jobStore).not.toContain('replayFrom');
+    expect(jobStore).not.toContain('eventId');
+    expect(jobStoreContract).not.toContain('ReplayCursor');
+    expect(jobStoreContract).not.toContain('replayFrom');
+    expect(jobQueries).not.toContain('per_job_index');
+    expect(jobQueries).not.toContain('eventId');
+    expect(simulationWorld).not.toContain('ReplayCursor');
+    expect(simulationWorld).not.toContain('createReplayCursor');
+    expect(simulationWorld).not.toContain('replayFrom');
   });
   it('production keeps store/index.ts as the only remaining index barrel', () => {
     const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));

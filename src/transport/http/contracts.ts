@@ -109,7 +109,7 @@ export interface HealthSnapshotPort {
 export interface EventStreamHandlers {
   onJobCreated: (payload: { jobId: string; sessionId: string; provider: string; projectRoot: string }) => void;
   onPhaseChanged: (payload: { jobId: string; phase: JobPhase; previousPhase: JobPhase }) => void;
-  onProgress: (payload: { jobId: string; eventId: number; message: string }) => void;
+  onProgress: (payload: { jobId: string; seq: number; message: string }) => void;
   onCompleted: (payload: {
     jobId: string;
     result: JobTerminal;

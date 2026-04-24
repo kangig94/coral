@@ -346,7 +346,7 @@ describe('readProgressLog', () => {
     expect(result).toHaveLength(1);
     expect(result[0].jobId).toBe(testJobId);
     expect(result[0].sessionId).toBe('s1');
-    expect(result[0].eventId).toBe(1);
+    expect(result[0].seq).toBe(2);
     expect(result[0].type).toBe('progress');
     expect(result[0].ts).toBe(NOW);
     expect(result[0].message).toBe('working');
@@ -408,7 +408,6 @@ describe('readProgressLog', () => {
         jobId: testJobId,
         sessionId: 's1',
         seq: 2,
-        eventId: 1,
         type: 'terminal',
         ts: NOW,
         result: {

@@ -28,7 +28,7 @@ const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
 type FollowLaunchDecision = AcceptedLaunchResponse;
-type WaitCursorRef = { lastEventId?: string };
+type WaitCursorRef = { serializedCursor?: string };
 type BackoffScheduler = (delayMs: number) => Promise<void>;
 
 type FollowOptions = {
@@ -232,8 +232,8 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
 
       try {
         let reconnect = false;
-        const inputCursor = parseSerializedWaitCursor(cursorRef.lastEventId);
-        if (cursorRef.lastEventId && !inputCursor) {
+        const inputCursor = parseSerializedWaitCursor(cursorRef.serializedCursor);
+        if (cursorRef.serializedCursor && !inputCursor) {
           throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
             code: 'invalid_request',
             message: 'Invalid Last-Event-ID cursor',
@@ -259,10 +259,10 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           for await (const event of subscription) {
             if (event.type === 'progress' || event.type === 'terminal') {
               currentCursor.afterSeq = event.seq;
-              cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+              cursorRef.serializedCursor = serializeWaitCursor(currentCursor);
             }
 
-            const cursor = cursorRef.lastEventId ?? null;
+            const cursor = cursorRef.serializedCursor ?? null;
             emitWaitEvent(event, cursor, renderContext, causeRenderer.render);
 
             if (event.type === 'waiting') {

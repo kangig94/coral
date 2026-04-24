@@ -280,7 +280,6 @@ export class RecoveryService {
     const jobId = launchRecord.jobId;
 
     this.deps.jobPools.set(jobId, pool);
-    this.deps.progressStore.hydrateEventCounter(jobId);
 
     const queuedHandle = this.deps.launchCoordinator.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
     this.deps.abortRegistry.register(jobId, () => {
@@ -306,7 +305,6 @@ export class RecoveryService {
     }
 
     this.deps.jobPools.set(jobId, pool);
-    this.deps.progressStore.hydrateEventCounter(jobId);
     this.deps.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
     this.deps.launchCoordinator.restoreActiveLaunch(jobId, launchRecord.provider, pool);

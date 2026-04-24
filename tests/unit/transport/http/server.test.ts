@@ -3747,12 +3747,12 @@ describe('execution backend server', () => {
     });
     expect(detailBody.events).toHaveLength(2);
     expect(detailBody.events[0]).toMatchObject({
-      eventId: 1,
+      seq: expect.any(Number),
       type: 'progress',
     });
     expect(String(detailBody.events[0].message)).toContain('working');
     expect(detailBody.events[1]).toMatchObject({
-      eventId: 2,
+      seq: expect.any(Number),
       type: 'terminal',
       result: { content: 'done', outcome: { kind: 'completed' } },
     });
@@ -3955,7 +3955,7 @@ describe('execution backend server', () => {
       });
       expect(detailBody.events).toEqual([
         expect.objectContaining({
-          eventId: 1,
+          seq: expect.any(Number),
           type: 'terminal',
           result: expect.objectContaining({ content: 'done', outcome: { kind: 'completed' } }),
         }),

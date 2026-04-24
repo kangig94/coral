@@ -605,7 +605,6 @@ function makeTerminalReplay(
   jobId: string,
   options: {
     seq?: number;
-    eventId?: number;
     sessionId?: string;
     ts?: string;
     result?: TestJobTerminal;
@@ -614,8 +613,7 @@ function makeTerminalReplay(
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
-    seq: options.seq ?? options.eventId ?? 1,
-    eventId: options.eventId ?? 1,
+    seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
@@ -808,7 +806,6 @@ describe('ExecutionService wait', () => {
         jobId: 'job-1',
         sessionId: 'session-1',
         seq: 1,
-        eventId: 1,
         type: 'progress',
         ts: '2026-03-06T00:00:01.000Z',
         message: 'step 1',
@@ -817,7 +814,6 @@ describe('ExecutionService wait', () => {
         jobId: 'job-1',
         sessionId: 'session-1',
         seq: 2,
-        eventId: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1270,7 +1266,6 @@ describe('ExecutionService wait', () => {
       jobId: 'job-1',
       sessionId: 'job-1-session',
       seq: 1,
-      eventId: 1,
       type: 'terminal',
       result: { content: 'done' },
     } as JobProgress;
@@ -1562,13 +1557,12 @@ describe('ExecutionService wait', () => {
         const [jid] = args as [string];
         void jid;
         return [
-          { jobId, sessionId: 'session-1', seq: 1, eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
-          { jobId, sessionId: 'session-1', seq: 2, eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
+          { jobId, sessionId: 'session-1', seq: 1, type: 'progress' as const, ts: '', message: 'event-1' },
+          { jobId, sessionId: 'session-1', seq: 2, type: 'progress' as const, ts: '', message: 'event-2' },
           {
             jobId,
             sessionId: 'session-1',
             seq: 3,
-            eventId: 3,
             type: 'terminal' as const,
             ts: '',
             result: { content: 'done', outcome: { kind: 'completed' as const } },

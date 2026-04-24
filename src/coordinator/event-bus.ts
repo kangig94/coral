@@ -6,7 +6,7 @@ import { backendLog } from '../infra/backend-log.js';
 export type EventBusEvents = {
   'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };
   'job:phase_changed': { jobId: string; phase: JobPhase; previousPhase: JobPhase };
-  'job:progress': { jobId: string; eventId: number; message: string };
+  'job:progress': { jobId: string; seq: number; message: string };
   'job:completed': {
     jobId: string;
     result: JobTerminal;

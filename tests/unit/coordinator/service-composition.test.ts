@@ -1888,7 +1888,7 @@ describe('ExecutionService', () => {
         expect(status?.backendNamespace).not.toBe('old-backend-ns');
       });
 
-      it('hydrates event counter before new appends', () => {
+      it('recovers queued jobs without hydrating retired progress counters', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
@@ -1911,14 +1911,13 @@ describe('ExecutionService', () => {
 
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         progressStore.writeLaunchRecord(jobId, launchRecord);
-        // Write some progress so the counter has something to hydrate
+        // Existing progress no longer requires a per-job counter hydration step.
         progressStore.appendProgress(jobId, sessionId, 'step-1');
         progressStore.appendProgress(jobId, sessionId, 'step-2');
 
-        const hydrateSpy = vi.spyOn(progressStore, 'hydrateEventCounter');
         service.recoverQueuedJob(launchRecord);
 
-        expect(hydrateSpy).toHaveBeenCalledWith(jobId);
+        expect(progressStore.readJobProgress(jobId).map((event) => event.seq)).toEqual([2, 3]);
       });
 
       it('job eventually executes when queue capacity opens', async () => {

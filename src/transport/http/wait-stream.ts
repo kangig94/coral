@@ -11,7 +11,7 @@ import { parseSerializedWaitCursor, serializeWaitCursor } from '../../jobs/wait.
 import { createIpcClient } from '../ipc/client.js';
 import { throwBackendCommunicationError } from './backend-communication.js';
 
-export type WaitCursorRef = { lastEventId?: string };
+export type WaitCursorRef = { serializedCursor?: string };
 
 function resolvePluginRoot(): string {
   if (typeof __PLUGIN_ROOT__ === 'string') {
@@ -57,13 +57,13 @@ export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
   backendInfo: { host: string; port: number; token: string; socketPath?: string },
-  lastEventId?: string,
+  serializedCursor?: string,
   signal?: AbortSignal,
   projectRoot?: string,
   cursorRef?: WaitCursorRef,
 ): AsyncGenerator<WaitStreamEvent> {
-  const inputCursor = parseSerializedWaitCursor(lastEventId);
-  if (lastEventId && !inputCursor) {
+  const inputCursor = parseSerializedWaitCursor(serializedCursor);
+  if (serializedCursor && !inputCursor) {
     throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
       code: 'invalid_request',
       message: 'Invalid Last-Event-ID cursor',
@@ -100,11 +100,11 @@ export async function* streamWait(
         if (event.type === 'progress') {
           currentCursor.afterSeq = event.seq;
           if (cursorRef) {
-            cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+            cursorRef.serializedCursor = serializeWaitCursor(currentCursor);
           }
         } else if (event.type === 'terminal' && cursorRef) {
           currentCursor.afterSeq = event.seq;
-          cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+          cursorRef.serializedCursor = serializeWaitCursor(currentCursor);
         }
 
         yield event;

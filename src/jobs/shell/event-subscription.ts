@@ -34,7 +34,6 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
       jobId: event.stream.id,
       sessionId,
       seq: event.seq,
-      eventId: event.seq,
       type: 'progress',
       ts: event.ts,
       message: body.message ?? '',
@@ -56,7 +55,6 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     jobId: event.stream.id,
     sessionId,
     seq: event.seq,
-    eventId: event.seq,
     type: 'terminal',
     ts: event.ts,
     result: {

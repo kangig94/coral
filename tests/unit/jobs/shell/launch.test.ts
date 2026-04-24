@@ -578,7 +578,6 @@ function _makeTerminalReplay(
   jobId: string,
   options: {
     seq?: number;
-    eventId?: number;
     sessionId?: string;
     ts?: string;
     result?: TestJobTerminal;
@@ -587,8 +586,7 @@ function _makeTerminalReplay(
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
-    seq: options.seq ?? options.eventId ?? 1,
-    eventId: options.eventId ?? 1,
+    seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),

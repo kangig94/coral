@@ -89,7 +89,6 @@ type JobProgressProjection = {
   jobId: string;
   sessionId: string;
   seq: number;
-  eventId: number;
   type: 'progress' | 'terminal';
   ts: string;
   message?: string;
@@ -698,7 +697,6 @@ export function readJobProgress(
     ts: string;
     type: string;
     body_version: number;
-    per_job_index: number;
     body: Uint8Array | Buffer;
   }>(
     db,
@@ -707,7 +705,6 @@ export function readJobProgress(
        ts,
        type,
        body_version,
-       ROW_NUMBER() OVER (ORDER BY seq) AS per_job_index,
        body
      FROM events
      WHERE stream_kind = 'job'
@@ -720,7 +717,6 @@ export function readJobProgress(
       ts: string;
       type: string;
       body_version: number;
-      per_job_index: number;
       body: Uint8Array | Buffer;
     }>;
 
@@ -738,7 +734,6 @@ export function readJobProgress(
           jobId,
           sessionId,
           seq: row.seq,
-          eventId: row.per_job_index,
           type: 'progress' as const,
           ts: row.ts,
           message: body.message,
@@ -762,7 +757,6 @@ export function readJobProgress(
         jobId,
         sessionId,
         seq: row.seq,
-        eventId: row.per_job_index,
         type: 'terminal' as const,
         ts: row.ts,
         result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },

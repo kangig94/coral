@@ -4,7 +4,7 @@ import type { JobTerminal } from './records.js';
 export type JobEventBusEvents = {
   'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };
   'job:phase_changed': { jobId: string; phase: JobPhase; previousPhase: JobPhase };
-  'job:progress': { jobId: string; eventId: number; message: string };
+  'job:progress': { jobId: string; seq: number; message: string };
   'job:completed': {
     jobId: string;
     result: JobTerminal;

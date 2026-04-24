@@ -101,7 +101,7 @@ function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: 
 }
 
 describe('JobStore', () => {
-  it('keeps appendProgress on the cached progress-tail path and preserves non-message event numbering', () => {
+  it('returns journal seqs from progress and terminal appends', () => {
     const backingDb = createDb();
     const { db, preparedSql } = createTrackedDb(backingDb);
     const { store } = createStore(db);
@@ -142,9 +142,9 @@ describe('JobStore', () => {
       outcome: { kind: 'completed' },
     };
 
-    expect(tails).toEqual([1, 2, 3, 4, 5]);
-    expect(store.appendTerminal(jobId, sessionId, terminalResult, 'completed')).toBe(7);
-    expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER (ORDER BY seq) AS per_job_index'))).toEqual([]);
+    expect(tails).toEqual([2, 3, 4, 5, 6]);
+    expect(store.appendTerminal(jobId, sessionId, terminalResult, 'completed')).toBe(8);
+    expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER'))).toEqual([]);
   });
 
   it('matches legacy live count semantics for projections, drafts, and namespace overrides', () => {

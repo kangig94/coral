@@ -937,7 +937,6 @@ describe('transport/http http-client', () => {
           jobId: 'job-1',
           sessionId: 'session-1',
           seq: 1,
-          eventId: 1,
           type: 'progress' as const,
           ts: '2026-04-08T00:00:00.000Z',
           message: 'working',

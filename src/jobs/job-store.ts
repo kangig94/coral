@@ -15,7 +15,7 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
-import type { InitJobOptions, JobProgressStore, ReplayCursor, TerminalWriteOptions } from './progress-store-contract.js';
+import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './progress-store-contract.js';
 import {
   cloneJobTerminal,
   normalizeJobTerminal,
@@ -34,12 +34,6 @@ export type ProgressStoreOptions = {
   appendEvents?: AppendEventsFn;
   reducers?: ComposedReducers;
 };
-
-export function createReplayCursor(): ReplayCursor {
-  return { lastEventId: 0 };
-}
-
-export type { ReplayCursor } from './progress-store-contract.js';
 
 function formatProgressMessage(startedAt: number | undefined, nowMs: number, message: string): string {
   const elapsed = startedAt === undefined ? 0 : nowMs - startedAt;
@@ -65,7 +59,6 @@ export class JobStore implements JobProgressStore {
   private readonly appendEvents: AppendEventsFn;
   private readonly drafts = new Map<string, JobStatus>();
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
-  private readonly progressEventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
@@ -309,26 +302,24 @@ export class JobStore implements JobProgressStore {
       }
     }
 
-    for (const input of inputs) {
-      if (input.stream.kind !== 'job') {
+    for (const event of appended) {
+      if (event.stream.kind !== 'job') {
         continue;
       }
 
-      if (input.type === 'job.progress.emitted') {
-        const eventId = this.advanceProgressTail(input.stream.id);
-        const body = input.body as { kind?: string; message?: string };
+      if (event.type === 'job.progress.emitted') {
+        const body = event.body as { kind?: string; message?: string };
         if (body.kind === 'message' && typeof body.message === 'string') {
-          this.eventBus.emit('job:progress', { jobId: input.stream.id, eventId, message: body.message });
+          this.eventBus.emit('job:progress', { jobId: event.stream.id, seq: event.seq, message: body.message });
         }
         continue;
       }
 
-      if (input.type === 'job.terminal.recorded') {
-        this.advanceProgressTail(input.stream.id);
-        this.jobStartedAt.delete(input.stream.id);
-        const result = this.readTerminalPayload(input.stream.id);
+      if (event.type === 'job.terminal.recorded') {
+        this.jobStartedAt.delete(event.stream.id);
+        const result = this.readTerminalPayload(event.stream.id);
         if (result !== null) {
-          this.eventBus.emit('job:completed', { jobId: input.stream.id, result });
+          this.eventBus.emit('job:completed', { jobId: event.stream.id, result });
         }
       }
     }
@@ -384,7 +375,6 @@ export class JobStore implements JobProgressStore {
   purgeFromCache(jobId: string): void {
     this.drafts.delete(jobId);
     this.namespaceOverrides.delete(jobId);
-    this.progressEventCounters.delete(jobId);
     this.jobStartedAt.delete(jobId);
   }
 
@@ -582,13 +572,6 @@ export class JobStore implements JobProgressStore {
     );
   }
 
-  hydrateEventCounter(jobId: string): void {
-    const maxEventId = this.readProgressTailFromDb(jobId);
-    if (maxEventId > 0) {
-      this.progressEventCounters.set(jobId, maxEventId);
-    }
-  }
-
   hydrateJobStartedAt(jobId: string, startTime: string): void {
     const ts = Date.parse(startTime);
     if (Number.isFinite(ts)) {
@@ -612,7 +595,7 @@ export class JobStore implements JobProgressStore {
     const stamped = formatProgressMessage(this.jobStartedAt.get(jobId), this.runtime.time.now(), message);
     const detail = this.detail(jobId);
     const status = detail.status ?? this.drafts.get(jobId);
-    this.appendEvent({
+    const [appended] = this.appendEventsWithResult([{
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
       namespace: status?.backendNamespace ?? this.namespace,
@@ -627,8 +610,8 @@ export class JobStore implements JobProgressStore {
         message: stamped,
         ts: nowIsoString(this.runtime.time),
       },
-    });
-    return this.readProgressTail(jobId);
+    }]);
+    return appended?.seq ?? 0;
   }
 
   appendTerminal(
@@ -644,7 +627,7 @@ export class JobStore implements JobProgressStore {
     const continuity = options.continuity ?? null;
     const terminal = normalizeJobTerminal(result);
     const diagnostics = options.diagnostics;
-    this.appendEvent({
+    const [appended] = this.appendEventsWithResult([{
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: jobId },
       namespace: status?.backendNamespace ?? this.namespace,
@@ -671,7 +654,7 @@ export class JobStore implements JobProgressStore {
             }
           : {}),
       },
-    });
+    }]);
     if (!hasLaunchProjection) {
       const draft = this.drafts.get(jobId);
       if (draft) {
@@ -701,7 +684,7 @@ export class JobStore implements JobProgressStore {
         }
       }
     }
-    return this.readProgressTail(jobId);
+    return appended?.seq ?? 0;
   }
 
   markTerminalStatus(
@@ -711,28 +694,6 @@ export class JobStore implements JobProgressStore {
     options: TerminalWriteOptions = {},
   ): void {
     this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase, options);
-  }
-
-  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgress[] {
-    const floor = Math.max(fromEventId, cursor.lastEventId);
-    const events = this.readJobProgress(jobId).filter((event) => event.eventId > floor);
-    if (events.length > 0) {
-      cursor.lastEventId = events[events.length - 1].eventId;
-    }
-    return events;
-  }
-
-  private readProgressTail(jobId: string): number {
-    const cached = this.progressEventCounters.get(jobId);
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    const eventId = this.readProgressTailFromDb(jobId);
-    if (eventId > 0) {
-      this.progressEventCounters.set(jobId, eventId);
-    }
-    return eventId;
   }
 
   private countLiveDraftJobs(predicate: (status: JobStatus) => boolean): number {
@@ -809,34 +770,6 @@ export class JobStore implements JobProgressStore {
     return row?.count ?? 0;
   }
 
-  private readProgressTailFromDb(jobId: string): number {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS event_id
-           FROM events
-          WHERE stream_kind = 'job'
-            AND stream_id = ?
-            AND type IN ('job.progress.emitted', 'job.terminal.recorded')`,
-      )
-      .get(jobId) as { event_id: number } | undefined;
-
-    return row?.event_id ?? 0;
-  }
-
-  private advanceProgressTail(jobId: string): number {
-    const cached = this.progressEventCounters.get(jobId);
-    if (cached !== undefined) {
-      const next = cached + 1;
-      this.progressEventCounters.set(jobId, next);
-      return next;
-    }
-
-    const next = this.readProgressTailFromDb(jobId);
-    if (next > 0) {
-      this.progressEventCounters.set(jobId, next);
-    }
-    return next;
-  }
 }
 
 export { JobStore as ProgressStore };

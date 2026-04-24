@@ -135,7 +135,6 @@ export interface JobProgress {
   jobId: string;
   sessionId: string;
   seq: number;
-  eventId: number;
   type: 'progress' | 'terminal';
   ts: string;
   message?: string;
