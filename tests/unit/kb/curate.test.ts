@@ -55,7 +55,6 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     initialized: false,
-    migrationVersion: 0,
     ...overrides,
   };
 }
@@ -1964,7 +1963,6 @@ describe('curate', () => {
       writeCurateState(runtime, {
         ...readCurateState(runtime),
         initialized: true,
-        migrationVersion: curateState.CURATE_STATE_MIGRATION_VERSION,
       });
       useScheduler(spawn);
 
@@ -2042,7 +2040,6 @@ describe('curate', () => {
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
-        migrationVersion: curateState.CURATE_STATE_MIGRATION_VERSION,
       }));
       useScheduler(spawn);
 
@@ -2171,7 +2168,6 @@ describe('curate', () => {
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
-        migrationVersion: curateState.CURATE_STATE_MIGRATION_VERSION,
       }));
       useScheduler(async () => ({
         stdout: '[',

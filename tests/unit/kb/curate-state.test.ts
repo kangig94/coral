@@ -14,7 +14,6 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
-  CURATE_STATE_MIGRATION_VERSION,
   detectRepairs,
   extractMalformedEntryRepair,
   isClaimStale,
@@ -85,7 +84,6 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     initialized: false,
-    migrationVersion: 0,
     ...overrides,
   };
 }
@@ -288,7 +286,6 @@ describe('curate state', () => {
       communityTopologyHash: 'graph-hash',
       communitySummaryTopologyHash: 'graph-hash',
       initialized: true,
-      migrationVersion: 0,
     });
     expect(readCurateDiscoveryBacklog(runtime)).toEqual(persisted.pendingDiscoveries);
     expectPendingRepairEntries(readCurateRetryQueue(runtime), [
@@ -325,7 +322,6 @@ describe('curate state', () => {
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       initialized: true,
-      migrationVersion: 0,
     });
 
     expect(readCurateState(runtime)).toEqual(
@@ -366,7 +362,6 @@ describe('curate state', () => {
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       initialized: true,
-      migrationVersion: 0,
     });
     expect(readCurateDiscoveryBacklog(runtime)).toEqual(state.pendingDiscoveries);
     expect(readCurateRetryQueue(runtime)).toEqual([]);
@@ -770,10 +765,10 @@ describe('curate state', () => {
       ]);
       expect(warn).toHaveBeenCalledTimes(2);
       expect(String(warn.mock.calls[0]?.[0])).toContain(
-        'Skipping malformed KB note coral-malformed-note during state migration',
+        'Skipping malformed KB note coral-malformed-note during curate bootstrap',
       );
       expect(String(warn.mock.calls[1]?.[0])).toContain(
-        'Skipping malformed KB source coral-malformed-source during state migration',
+        'Skipping malformed KB source coral-malformed-source during curate bootstrap',
       );
     });
 
@@ -966,7 +961,6 @@ describe('curate state', () => {
         processedThrough: cursor('coral-processed', 4),
         discoveryOffset: 3,
         initialized: true,
-        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
       });
       expectPendingRepairEntries(state.pendingRepair, [
         {
@@ -1007,7 +1001,7 @@ describe('curate state', () => {
     writeCurateState(runtime, createCurateState());
     const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).entrySeq,
@@ -1071,7 +1065,7 @@ describe('curate state', () => {
     });
     writeCurateState(runtime, createCurateState());
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
@@ -1155,7 +1149,7 @@ describe('curate state', () => {
       }),
     );
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     const state = readCurateState(runtime);
     expect(state).toMatchObject({
@@ -1164,7 +1158,6 @@ describe('curate state', () => {
       discoveryHighSeq: 0,
       discoveryOffset: 0,
       initialized: true,
-      migrationVersion: CURATE_STATE_MIGRATION_VERSION,
     });
     expectPendingRepairEntries(state.pendingRepair, [
       {
@@ -1220,7 +1213,7 @@ describe('curate state', () => {
     });
     writeCurateState(runtime, createCurateState());
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).entrySeq,
@@ -1267,12 +1260,11 @@ describe('curate state', () => {
       runtime,
       createCurateState({
         initialized: true,
-        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
       }),
     );
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).entrySeq,
@@ -1292,7 +1284,6 @@ describe('curate state', () => {
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
         initialized: true,
-        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
       }),
     );
@@ -1324,13 +1315,12 @@ describe('curate state', () => {
       'utf-8',
     );
 
-    await internals.migrateCurateStateIfNeeded();
+    await internals.initializeCurateStateIfNeeded();
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
         processedThrough: cursor('coral-malformed', 1),
         initialized: true,
-        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
       }),
     );
   });

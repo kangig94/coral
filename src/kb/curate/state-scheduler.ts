@@ -17,7 +17,6 @@ type CurateSchedulerState = {
   communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   initialized: boolean;
-  migrationVersion: number;
 };
 
 const schedulerRowSchema = z.object({
@@ -37,7 +36,6 @@ const schedulerRowSchema = z.object({
   community_topology_hash: z.string().nullable(),
   community_summary_topology_hash: z.string().nullable(),
   initialized: z.union([z.literal(0), z.literal(1)]),
-  migration_version: z.number().int().nonnegative(),
 });
 
 function defaultCurateSchedulerState(): CurateSchedulerState {
@@ -53,7 +51,6 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     initialized: false,
-    migrationVersion: 0,
   };
 }
 
@@ -113,7 +110,6 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
     communityTopologyHash: parsed.community_topology_hash ?? undefined,
     communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
     initialized: parsed.initialized === 1,
-    migrationVersion: parsed.migration_version,
   };
 }
 
@@ -136,8 +132,7 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
        consecutive_community_batch_failures,
        community_topology_hash,
        community_summary_topology_hash,
-       initialized,
-       migration_version
+       initialized
      FROM kb_curate_scheduler
      WHERE id = 1`,
   ).get();
@@ -167,7 +162,6 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
       string | null,
       string | null,
       0 | 1,
-      number,
     ]
   >(
     target,
@@ -186,8 +180,7 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
             consecutive_community_batch_failures = ?,
             community_topology_hash = ?,
             community_summary_topology_hash = ?,
-            initialized = ?,
-            migration_version = ?
+            initialized = ?
       WHERE id = 1`,
   ).run(
     state.processedThrough?.entrySeq ?? null,
@@ -205,7 +198,6 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     state.communityTopologyHash ?? null,
     state.communitySummaryTopologyHash ?? null,
     state.initialized ? 1 : 0,
-    state.migrationVersion,
   );
 }
 

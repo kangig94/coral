@@ -10,7 +10,6 @@ import {
   type KbEntryId,
 } from '../entry-types.js';
 
-export const CURATE_STATE_MIGRATION_VERSION = 4;
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
@@ -64,7 +63,6 @@ export type CurateState = {
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
   initialized: boolean;
-  migrationVersion: number;
 };
 
 export type CurateRepairFrontier =
@@ -105,7 +103,6 @@ export function defaultCurateState(): CurateState {
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     initialized: false,
-    migrationVersion: 0,
   };
 }
 

@@ -392,7 +392,6 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     initialized: true,
-    migrationVersion: 1,
   });
 }
 

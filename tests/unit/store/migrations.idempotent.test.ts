@@ -181,13 +181,12 @@ describe('migrations idempotency', () => {
         'community_topology_hash',
         'community_summary_topology_hash',
         'initialized',
-        'migration_version',
       ]);
       expect(curateSchedulerColumnsB).toEqual(curateSchedulerColumnsA);
 
       const curateSchedulerA = dbFromSchema
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM kb_curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized FROM kb_curate_scheduler',
         )
         .get() as {
         id: number;
@@ -206,11 +205,10 @@ describe('migrations idempotency', () => {
         community_topology_hash: string | null;
         community_summary_topology_hash: string | null;
         initialized: number;
-        migration_version: number;
       };
       const curateSchedulerB = dbFromMigration
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM kb_curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized FROM kb_curate_scheduler',
         )
         .get() as {
         id: number;
@@ -229,7 +227,6 @@ describe('migrations idempotency', () => {
         community_topology_hash: string | null;
         community_summary_topology_hash: string | null;
         initialized: number;
-        migration_version: number;
       };
       expect(curateSchedulerA).toEqual({
         id: 1,
@@ -248,7 +245,6 @@ describe('migrations idempotency', () => {
         community_topology_hash: null,
         community_summary_topology_hash: null,
         initialized: 0,
-        migration_version: 0,
       });
       expect(curateSchedulerB).toEqual(curateSchedulerA);
 

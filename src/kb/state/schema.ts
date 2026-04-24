@@ -25,7 +25,6 @@ export interface KbCurateSchedulerRow {
   community_topology_hash: string | null;
   community_summary_topology_hash: string | null;
   initialized: number;
-  migration_version: number;
 }
 
 export interface KbCurateActiveClaimRow {

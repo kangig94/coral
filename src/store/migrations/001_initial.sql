@@ -128,8 +128,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
   community_topology_hash    TEXT,
   community_summary_topology_hash TEXT,
-  initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
-  migration_version          INTEGER NOT NULL DEFAULT 0
+  initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS kb_curate_active_claim (
@@ -211,7 +210,6 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   consecutive_community_batch_failures,
   community_topology_hash,
   community_summary_topology_hash,
-  initialized,
-  migration_version
+  initialized
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, 0, 0);
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, 0);

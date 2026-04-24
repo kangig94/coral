@@ -8,7 +8,7 @@ import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/cu
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
-import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '#src/kb/curate/state.js';
+import { readCurateState, writeCurateState } from '#src/kb/curate/state.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
@@ -399,7 +399,6 @@ describe('curate AC6/AC8', () => {
       consecutiveClaimFailures: 0,
       consecutiveCommunityBatchFailures: 0,
       initialized: true,
-      migrationVersion: CURATE_STATE_MIGRATION_VERSION,
     });
 
     useScheduler(async () => ({

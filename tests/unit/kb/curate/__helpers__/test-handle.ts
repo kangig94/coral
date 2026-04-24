@@ -11,7 +11,7 @@ import {
 } from '#src/kb/curate/principles.js';
 import { claimCurateRun, runClassificationBatches } from '#src/kb/curate/runner.js';
 import { calculateCommunityBatchBackoffTicks } from '#src/kb/curate/scheduler.js';
-import { migrateCurateStateIfNeeded, type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state.js';
+import { initializeCurateStateIfNeeded, type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state.js';
 import type { ClassificationAssignment, CurateClaim, MetadataTarget, SpawnCliFn } from '#src/kb/curate/types.js';
 
 export type CurateTestHandle = {
@@ -26,7 +26,7 @@ export type CurateTestHandle = {
   removePendingDiscovery(entry: PendingDiscovery): Promise<void>;
   runCommunitySubphase(): Promise<boolean>;
   calculateCommunityBatchBackoffTicks(failureCount: number): number;
-  migrateCurateStateIfNeeded(): Promise<void>;
+  initializeCurateStateIfNeeded(): Promise<void>;
 };
 
 export function createCurateTestHandle({
@@ -72,8 +72,8 @@ export function createCurateTestHandle({
       return runCommunitySubphase(kb, spawnCli, { shouldStop });
     },
     calculateCommunityBatchBackoffTicks,
-    async migrateCurateStateIfNeeded() {
-      await migrateCurateStateIfNeeded(kb);
+    async initializeCurateStateIfNeeded() {
+      await initializeCurateStateIfNeeded(kb);
     },
   };
 }

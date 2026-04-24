@@ -22,7 +22,7 @@ import {
 } from './runner.js';
 import {
   isClaimStale,
-  migrateCurateStateIfNeeded,
+  initializeCurateStateIfNeeded,
   readCurateState,
   writeCurateState,
   type CurateCursor,
@@ -316,7 +316,7 @@ export function createCurateScheduler({
 
     gitSync.ensureKbGitignore();
     await kb.ensureIndex();
-    await migrateCurateStateIfNeeded(kb);
+    await initializeCurateStateIfNeeded(kb);
     const state = readCurateState(kb);
     pendingCommunitySkipTicks =
       state.consecutiveCommunityBatchFailures > 0
