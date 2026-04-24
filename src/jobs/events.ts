@@ -27,7 +27,6 @@ import {
   type JobTerminalDiagnostics,
 } from './result.js';
 import { jobContinuitySnapshotSchema } from './continuity.js';
-import { workflowResultMetaSchema } from './result.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -71,7 +70,6 @@ export const jobTerminalRecordedBodySchema = z
     note: z.string().optional(),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
-    workflow: workflowResultMetaSchema.optional(),
     continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .strict();
@@ -122,13 +120,6 @@ function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagno
   return {
     ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
     ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
-    ...(body.workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: body.workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
   };
 }
 
@@ -140,13 +131,6 @@ function mergeDiagnostics(
     progressFaults: [...(current?.progressFaults ?? [])],
     ...(patch.warnings === undefined ? {} : { warnings: [...patch.warnings] }),
     ...(patch.usage === undefined ? {} : { usage: { ...patch.usage } }),
-    ...(patch.workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: patch.workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
   };
 }
 
@@ -341,13 +325,6 @@ function reducerForProgress(): Reducer<JobProgressBody> {
       progressFaults: [...(previous?.diagnostics.progressFaults ?? []), event.body as JobProgressFault],
       ...(previous?.diagnostics.warnings === undefined ? {} : { warnings: [...previous.diagnostics.warnings] }),
       ...(previous?.diagnostics.usage === undefined ? {} : { usage: { ...previous.diagnostics.usage } }),
-      ...(previous?.diagnostics.workflow === undefined
-        ? {}
-        : {
-            workflow: {
-              steps: previous.diagnostics.workflow.steps.map((step) => ({ ...step })),
-            },
-          }),
     };
 
     upsertProjectionJob(db, event, { diagnostics });

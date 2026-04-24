@@ -9,7 +9,6 @@ import type { EffortLevel } from '../../providers/request-policy.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
-import type { WorkflowResultMeta } from '../../jobs/result.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -191,33 +190,19 @@ export function isProviderContinuityBlob(value: unknown): value is ProviderConti
 
 export function serializeWorkflowResult(details: StepDetail[]): {
   markdown: string;
-  workflow: WorkflowResultMeta;
 } {
   const lines: string[] = [];
-  const steps: WorkflowResultMeta['steps'] = [];
 
   for (const detail of details) {
     lines.push(`# Step ${detail.stepIndex}.${detail.atomIndex}: ${detail.label}`);
     lines.push('');
-    const start = lines.length + 1;
     const contentLines = detail.output.split('\n');
     lines.push(...contentLines);
-    const end = lines.length;
     lines.push('');
-
-    steps.push({
-      agent: detail.label,
-      step: detail.stepIndex,
-      atom: detail.atomIndex,
-      provider: detail.provider,
-      start,
-      end,
-    });
   }
 
   return {
     markdown: lines.join('\n'),
-    workflow: { steps },
   };
 }
 

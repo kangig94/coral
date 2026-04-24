@@ -30,6 +30,18 @@ describe('job terminal shape invariant', () => {
     }
   });
 
+  it('keeps workflow metadata out of job terminal diagnostics', () => {
+    const content = readFileSync(RESULT_PATH, 'utf-8');
+    const diagnosticsMatch = content.match(/export interface JobTerminalDiagnostics \{(?<body>[\s\S]*?)\n\}/);
+    const diagnosticsSchemaMatch = content.match(
+      /export const jobDiagnosticsSchema = z\s+\.object\(\{(?<body>[\s\S]*?)\n\s{2}\}\)\s+\.strict\(\);/,
+    );
+    expect(diagnosticsMatch).not.toBeNull();
+    expect(diagnosticsSchemaMatch).not.toBeNull();
+    expect(diagnosticsMatch?.groups?.body ?? '').not.toContain('workflow');
+    expect(diagnosticsSchemaMatch?.groups?.body ?? '').not.toContain('workflow');
+  });
+
   it('does not read terminal metadata from JobTerminal instances in the jobs layer', () => {
     const violations: string[] = [];
     const forbidden = /\b(?:result|status\.result)\.(?:exitCode|warnings|usage|workflow)\b/;

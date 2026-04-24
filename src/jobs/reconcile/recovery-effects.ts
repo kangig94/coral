@@ -46,7 +46,7 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 export function markJobAsError(
   progressStore: Pick<
     ProgressStore,
-    'appendEventsWithResult' | 'appendTerminal' | 'hasLaunchRecord' | 'markTerminalStatus' | 'readStatus'
+    'appendEventsWithResult' | 'appendTerminal' | 'hasLaunchRecord' | 'readStatus'
     | 'writeLaunchRecord' | 'writeWorkflowResultMdOrThrow'
   >,
   status: JobStatus,
@@ -62,8 +62,6 @@ export function markJobAsError(
     sessionId: status.sessionId,
   });
   const terminalResult: JobTerminalInput = { content: '', outcome };
-  const diagnostics: JobTerminalDiagnostics | undefined =
-    status.jobKind === 'workflow' ? { workflow: { steps: [] } } : undefined;
   if (status.jobKind === 'workflow') {
     try {
       progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
@@ -71,11 +69,7 @@ export function markJobAsError(
       log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
     }
   }
-  try {
-    progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error', { diagnostics });
-  } catch {
-    progressStore.markTerminalStatus(status.jobId, terminalResult, 'error', { diagnostics });
-  }
+  progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
 }
 
 function syntheticLaunchRecord(status: JobStatus): JobLaunch {

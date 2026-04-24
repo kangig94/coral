@@ -605,7 +605,6 @@ export class JobStore implements JobProgressStore {
         signal: options.signal,
         warnings: diagnostics?.warnings,
         usage: diagnostics?.usage,
-        workflow: diagnostics?.workflow,
         continuity,
         ...(terminal.outcome.kind === 'provider_exit'
           ? {
@@ -616,15 +615,6 @@ export class JobStore implements JobProgressStore {
       },
     }]);
     return appended?.seq ?? 0;
-  }
-
-  markTerminalStatus(
-    jobId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions = {},
-  ): void {
-    this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase, options);
   }
 
   private countLiveOverrideJobs(predicate: (status: JobStatus) => boolean): number {

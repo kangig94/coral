@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
@@ -18,6 +19,7 @@ import {
   workflowRegistry,
 } from '#src/workflow/events.js';
 import { buildWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
+import { readWorkflowView } from '#src/workflow/projections.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -95,6 +97,92 @@ describe('workflow reducer equivalence (AC4)', () => {
         .get('workflow-1');
 
       expect(after).toStrictEqual(before);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('builds WorkflowView slot outcomes from child job projections', () => {
+    const db = new Database(':memory:');
+    try {
+      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      const reducers = composeReducers(jobsRegistry, workflowRegistry);
+      const upcasters = createEmptyRegistry();
+      const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
+        createJobId: (() => {
+          const ids = ['job-1', 'job-2'];
+          let index = 0;
+          return () => ids[index++] ?? `job-${index}`;
+        })(),
+        defaultProvider: 'codex',
+      });
+      const causeRef = { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 };
+
+      appendEvents(
+        db,
+        [
+          workflowPlanDeclaredEvent('workflow-1', plan),
+          ...plan.slots.map((slot) => ({
+            type: 'job.launch.requested' as const,
+            stream: { kind: 'job' as const, id: slot.jobId },
+            refs: { sessionId: `session-${slot.jobId}`, parentJobId: plan.workflowId, workflowSlotId: slot.slotId },
+            bodyVersion: 1,
+            body: {
+              sessionId: `session-${slot.jobId}`,
+              provider: slot.provider,
+              providerAction: 'exec' as const,
+              projectRoot: '/workspace/coral',
+              backendNamespace: 'tests',
+              jobKind: 'provider' as const,
+              pool: 'default',
+              enqueueSequence: slot.stepIndex + 1,
+              request: {
+                prompt: slot.instruction,
+                cwd: '/workspace/coral',
+                bypassPermissions: false,
+                coralEnv: {},
+              },
+              parentJobId: plan.workflowId,
+              workflowSlot: slot.slotId,
+              createdAt: '2026-04-19T00:00:00.000Z',
+            },
+          })),
+          {
+            type: 'job.terminal.recorded',
+            stream: { kind: 'job' as const, id: 'job-1' },
+            refs: { sessionId: 'session-job-1', parentJobId: plan.workflowId, workflowSlotId: plan.slots[0].slotId },
+            bodyVersion: 1,
+            body: {
+              outcome: { kind: 'completed' as const },
+              durationMs: 1,
+              content: 'done',
+            },
+          },
+          {
+            type: 'job.terminal.recorded',
+            stream: { kind: 'job' as const, id: 'job-2' },
+            refs: { sessionId: 'session-job-2', parentJobId: plan.workflowId, workflowSlotId: plan.slots[1].slotId },
+            bodyVersion: 1,
+            body: {
+              outcome: { kind: 'failed' as const, causeRef },
+              durationMs: 2,
+              content: '',
+            },
+          },
+          workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef }),
+        ],
+        { now: () => NOW, reducers, upcasters },
+      );
+
+      expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, upcasters })).toMatchObject({
+        workflowId: 'workflow-1',
+        outcome: 'failed',
+        causeRef,
+        slotOutcomes: {
+          [plan.slots[0].slotId]: { jobId: 'job-1', phase: 'completed', causeRef: null },
+          [plan.slots[1].slotId]: { jobId: 'job-2', phase: 'error', causeRef },
+        },
+      });
     } finally {
       db.close();
     }

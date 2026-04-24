@@ -740,7 +740,7 @@ describe('execution backend server', () => {
       projectRoot: projectRootA,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.markTerminalStatus(jobIdA, { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(jobIdA, 'session-a', { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
 
     progressStore.initJob({
       jobId: jobIdB,
@@ -757,7 +757,7 @@ describe('execution backend server', () => {
       projectRoot: projectRootB,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.markTerminalStatus(jobIdB, { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(jobIdB, 'session-b', { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
 
     const services = new Map<string, InstanceType<typeof ExecutionService>>();
     const capturedManagers: unknown[] = [];
@@ -4230,7 +4230,7 @@ describe('execution backend server', () => {
     expect(body).toContain('event: terminal');
     expect(body).toContain(`"resultPath":"${jobResultPath(jobId)}"`);
     expect(body).not.toContain('"workflow":{"steps":[]}');
-    expect(detail.exit?.diagnostics.workflow).toEqual({ steps: [] });
+    expect(detail.exit?.diagnostics).toEqual({ progressFaults: [] });
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('');
     expect(status).toMatchObject({
       phase: 'error',

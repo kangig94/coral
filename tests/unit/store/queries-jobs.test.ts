@@ -101,9 +101,6 @@ describe('jobs queries', () => {
             outputTokens: 34,
             costUsd: 0.56,
           },
-          workflow: {
-            steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
-          },
           continuity: {
             conversationRef: 'thread-completed',
             resumable: true,
@@ -236,9 +233,6 @@ describe('jobs queries', () => {
             inputTokens: 12,
             outputTokens: 34,
             costUsd: 0.56,
-          },
-          workflow: {
-            steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
           },
         },
         continuity: {

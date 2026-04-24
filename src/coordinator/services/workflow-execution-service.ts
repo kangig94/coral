@@ -28,7 +28,7 @@ import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
 import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
+import { TerminalWriteError, type LaunchOrchestrator } from '../../jobs/shell/launch.js';
 import { SessionClaimError, rejectLaunch } from '../../jobs/shell/contracts.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import {
@@ -186,20 +186,26 @@ export class WorkflowExecutionService {
     })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
-        this.finishWorkflowJob(
-          sessionId,
-          jobId,
-          'completed',
-          {
-            content: result.finalOutput,
-            outcome: { kind: 'completed' },
-          },
-          serialized.markdown,
-          { workflow: serialized.workflow },
-        );
-      })
-      .catch((err: unknown) => {
-        this.handleWorkflowError(err, signal, sessionId, jobId);
+        try {
+          this.finishWorkflowJob(
+            sessionId,
+            jobId,
+            'completed',
+            {
+              content: result.finalOutput,
+              outcome: { kind: 'completed' },
+            },
+            serialized.markdown,
+          );
+        } catch (error: unknown) {
+          this.handleWorkflowFinalizationError(jobId, error);
+        }
+      }, (err: unknown) => {
+        try {
+          this.handleWorkflowError(err, signal, sessionId, jobId);
+        } catch (error: unknown) {
+          this.handleWorkflowFinalizationError(jobId, error);
+        }
       });
   }
 
@@ -214,21 +220,19 @@ export class WorkflowExecutionService {
         ? { kind: 'aborted', reason: 'signal_abort' }
         : { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message } } });
 
-    try {
-      const serialized = serializeWorkflowResult(stepDetails);
-      const terminalResult: JobTerminalInput = {
-        content: '',
-        outcome,
-      };
-      this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown, {
-        workflow: serialized.workflow,
-      });
-    } catch {
-      const emptyResult: JobTerminalInput = {
-        content: '',
-        outcome,
-      };
-      this.finishWorkflowJob(sessionId, jobId, 'error', emptyResult, '', { workflow: { steps: [] } });
+    const serialized = serializeWorkflowResult(stepDetails);
+    const terminalResult: JobTerminalInput = {
+      content: '',
+      outcome,
+    };
+    this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
+  }
+
+  private handleWorkflowFinalizationError(jobId: string, error: unknown): void {
+    if (error instanceof TerminalWriteError) {
+      backendLog.error(error.message, error.cause);
+      return;
     }
+    backendLog.error(`Failed to finalize workflow job ${jobId}: ${errorMessage(error)}`, error);
   }
 }

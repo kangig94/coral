@@ -37,9 +37,16 @@ import { createSessionLookup } from '#src/sessions/lookup.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { discussRegistry } from '#src/discuss/store-registry.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { createDefaultStoreReadContext } from '#src/store/read-context.js';
+import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { readWorkflowView } from '#src/workflow/projections.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -89,7 +96,10 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): ProgressStore {
-  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    eventBus,
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+  });
 }
 
 function jobResultPath(jobId: string): string {
@@ -183,6 +193,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
+    appendEvents: (inputs) => progressStore.appendEventsWithResult(inputs),
     sessionLookup: createSessionLookup(runtime),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
@@ -1177,7 +1188,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
-    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
+    const workflow = readWorkflowView(progressStore.getDb(), decision.job, createDefaultStoreReadContext());
 
     expect(existsSync(terminal.resultPath)).toBe(true);
     expect(markdownAtTerminal).toBe(
@@ -1188,25 +1199,14 @@ describe('ExecutionService', () => {
       durationMs: 0,
       outcome: { kind: 'completed' },
     });
-    expect(workflow).toEqual({
-      steps: [
-        {
-          agent: 'architect',
-          step: 0,
-          atom: 0,
-          provider: 'codex',
-          start: 3,
-          end: 3,
-        },
-        {
-          agent: 'resolver',
-          step: 1,
-          atom: 0,
-          provider: 'codex',
-          start: 7,
-          end: 7,
-        },
-      ],
+    expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
+    expect(workflow).toMatchObject({
+      workflowId: decision.job,
+      outcome: 'completed',
+      slotOutcomes: {
+        [`${decision.job}:0:0`]: { phase: 'completed', causeRef: null },
+        [`${decision.job}:1:0`]: { phase: 'completed', causeRef: null },
+      },
     });
     expect(status).toMatchObject({
       phase: 'completed',
@@ -1350,7 +1350,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
-    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
+    const workflow = readWorkflowView(progressStore.getDb(), decision.job, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toMatchObject({
@@ -1359,17 +1359,13 @@ describe('ExecutionService', () => {
         kind: 'job_fault',
       },
     });
+    expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
     expect(workflow).toMatchObject({
-      steps: [
-        {
-          agent: 'architect',
-          step: 0,
-          atom: 0,
-          provider: 'codex',
-          start: 3,
-          end: 3,
-        },
-      ],
+      workflowId: decision.job,
+      outcome: 'failed',
+      slotOutcomes: {
+        [`${decision.job}:0:0`]: { phase: 'completed', causeRef: null },
+      },
     });
     expect(status).toMatchObject({
       phase: 'error',
@@ -1421,7 +1417,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
-    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
+    const workflow = readWorkflowView(progressStore.getDb(), decision.job, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toMatchObject({
@@ -1430,17 +1426,13 @@ describe('ExecutionService', () => {
         kind: 'job_fault',
       },
     });
+    expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
     expect(workflow).toMatchObject({
-      steps: [
-        {
-          agent: 'architect',
-          step: 0,
-          atom: 0,
-          provider: 'codex',
-          start: 3,
-          end: 3,
-        },
-      ],
+      workflowId: decision.job,
+      outcome: 'failed',
+      slotOutcomes: {
+        [`${decision.job}:0:0`]: { phase: 'completed', causeRef: null },
+      },
     });
     expect(status).toMatchObject({
       phase: 'error',
@@ -1452,18 +1444,17 @@ describe('ExecutionService', () => {
     expect(session?.state).toBe('non_resumable');
   });
 
-  it('does not synthesize status-only terminal persistence when appendTerminal throws', async () => {
+  it('leaves provider jobs unterminated when authoritative terminal append throws', async () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
 
     const service = createService(ctx);
-    const { progressStore } =
+    const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -1472,183 +1463,165 @@ describe('ExecutionService', () => {
     trackJob(decision.job);
 
     const deadline = Date.now() + 2_000;
-    while (markTerminalStatus.mock.calls.length === 0 && Date.now() < deadline) {
+    while (appendTerminal.mock.calls.length === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const status = progressStore.readStatus(decision.job);
 
     expect(appendTerminal).toHaveBeenCalled();
-    expect(markTerminalStatus).toHaveBeenCalledWith(
-      decision.job,
-      expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
-      'completed',
-      { continuity: null, diagnostics: {} },
-    );
     expect(status).toMatchObject({
       phase: 'launching',
     });
     expect(status?.result).toBeUndefined();
+    expect(sessionManager.get('codex', decision.session)?.activeJobId).toBe(decision.job);
   });
 
-  it('does not synthesize status-only terminal persistence for finishQueuedAbort when appendTerminal throws', () => {
+  it('propagates terminal append failure for finishQueuedAbort without releasing ownership', () => {
     const service = createService(ctx);
-    const { progressStore } =
+    const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
+    const session = sessionManager.allocate('codex', 'queued-abort', 'gpt-5', ctx.projectRoot);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
       jobId,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: 'session-1', projectRoot: ctx.projectRoot }));
+    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
 
-    (
-      service as unknown as {
-        finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
-      }
-    ).finishQueuedAbort(jobId, 'session-1', 'queue_shutdown');
+    expect(() =>
+      (
+        service as unknown as {
+          finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
+        }
+      ).finishQueuedAbort(jobId, session.sessionId, 'queue_shutdown'),
+    ).toThrow('Failed to append terminal event');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(
-      jobId,
-      { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
-      'aborted',
-      {},
-    );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
+    expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
 
-  it('does not synthesize status-only terminal persistence for failJob when appendTerminal throws', () => {
+  it('propagates terminal append failure for failJob before cleanup', () => {
     const service = createService(ctx);
-    const { progressStore } =
+    const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
+    const session = sessionManager.allocate('codex', 'fail-job', 'gpt-5', ctx.projectRoot);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
       jobId,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: 'session-1', projectRoot: ctx.projectRoot }));
+    progressStore.writeLaunchRecord(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
 
-    (
-      service as unknown as {
-        launchOrchestrator: {
-          failJob(
-            jobId: string,
-            sessionId: string,
-            terminal: {
-              content: string;
-              outcome: {
-                kind: 'failed';
-                causeRef: {
-                  stream: { kind: 'session'; id: string };
-                  seq: number;
+    expect(() =>
+      (
+        service as unknown as {
+          launchOrchestrator: {
+            failJob(
+              jobId: string,
+              sessionId: string,
+              terminal: {
+                content: string;
+                outcome: {
+                  kind: 'failed';
+                  causeRef: {
+                    stream: { kind: 'session'; id: string };
+                    seq: number;
+                  };
                 };
-              };
-            },
-          ): void;
-        };
-      }
-    ).launchOrchestrator.failJob(jobId, 'session-1', {
-      content: '',
-      outcome: {
-        kind: 'failed',
-        causeRef: {
-          stream: {
-            kind: 'session',
-            id: 'session-1',
-          },
-          seq: 1,
-        },
-      },
-    });
-
-    expect(markTerminalStatus).toHaveBeenCalledWith(
-      jobId,
-      {
+              },
+            ): void;
+          };
+        }
+      ).launchOrchestrator.failJob(jobId, session.sessionId, {
         content: '',
         outcome: {
           kind: 'failed',
           causeRef: {
             stream: {
               kind: 'session',
-              id: 'session-1',
+              id: session.sessionId,
             },
             seq: 1,
           },
         },
-      },
-      'error',
-      {},
-    );
+      }),
+    ).toThrow('Failed to append terminal event');
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
+    expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
 
-  it('does not synthesize status-only terminal persistence for finishWorkflowJob when appendTerminal throws', () => {
+  it('propagates terminal append failure for finishWorkflowJob before session finalization', () => {
     const service = createService(ctx);
-    const { progressStore } =
+    const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
+    const session = sessionManager.allocate('codex', 'workflow-terminal', 'workflow', ctx.projectRoot);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
       jobId,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
     progressStore.writeLaunchRecord(
       jobId,
-      makeLaunchRecord({ jobId, sessionId: 'session-1', projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
+      makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
     );
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
     const result = { content: 'done', outcome: { kind: 'completed' as const } };
 
-    (
-      service as unknown as {
-        finishWorkflowJob(
-          sessionId: string,
-          jobId: string,
-          phase: 'completed' | 'error' | 'aborted',
-          result: { content: string },
-          markdown: string,
-        ): void;
-      }
-    ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
+    expect(() =>
+      (
+        service as unknown as {
+          finishWorkflowJob(
+            sessionId: string,
+            jobId: string,
+            phase: 'completed' | 'error' | 'aborted',
+            result: { content: string },
+            markdown: string,
+          ): void;
+        }
+      ).finishWorkflowJob(session.sessionId, jobId, 'completed', result, '# workflow\n'),
+    ).toThrow('Failed to append terminal event');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed', { diagnostics: {} });
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'launching',
     });
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
+    expect(sessionManager.get('codex', session.sessionId)?.state).toBe('pending');
+    expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
 
   it.each([
     {
       phase: 'completed' as const,
       result: { content: 'done', outcome: { kind: 'completed' as const } },
-      diagnostics: { workflow: { steps: [] } },
+      diagnostics: {},
       markdown: '# completed\n',
     },
     {
@@ -1666,7 +1639,7 @@ describe('ExecutionService', () => {
           },
         },
       },
-      diagnostics: { workflow: { steps: [] } },
+      diagnostics: {},
       markdown: '# failed\n',
     },
     {
@@ -1675,7 +1648,7 @@ describe('ExecutionService', () => {
         content: '',
         outcome: { kind: 'aborted', reason: 'signal_abort' as const },
       },
-      diagnostics: { workflow: { steps: [] } },
+      diagnostics: {},
       markdown: '# aborted\n',
     },
   ])(
@@ -1749,19 +1722,19 @@ describe('ExecutionService', () => {
     },
   );
 
-  it('finishWorkflowJob still orders artifact write before best-effort terminal fallback and non_resumable state', () => {
+  it('finishWorkflowJob writes artifact before terminal append failure and skips non_resumable state', () => {
     const service = createService(ctx);
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
-    const jobId = `workflow-fallback-order-${randomUUID()}`;
+    const session = sessionManager.allocate('codex', 'workflow-terminal-failure', 'workflow', ctx.projectRoot);
+    const jobId = `workflow-terminal-failure-order-${randomUUID()}`;
     const phase = 'error' as const;
     const result = {
       content: '',
       outcome: { kind: 'aborted', reason: 'signal_abort' as const },
     };
-    const diagnostics = { workflow: { steps: [] } };
+    const diagnostics = {};
     const markdown = '# fallback\n';
     trackJob(jobId);
     progressStore.initJob({
@@ -1780,48 +1753,40 @@ describe('ExecutionService', () => {
 
     const order: string[] = [];
     const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
-    const originalMarkTerminalStatus = progressStore.markTerminalStatus.bind(progressStore);
-    const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
 
     vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
       order.push('artifact');
       return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
     });
-    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
-      throw new Error('disk full');
-    });
-    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase, terminalOptions) => {
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation((targetJobId) => {
       order.push('terminal');
       expect(existsSync(jobResultPath(targetJobId))).toBe(true);
       expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
       expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
-      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase, terminalOptions);
+      throw new Error('disk full');
     });
-    vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
-      order.push('non_resumable');
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'launching',
-      });
-      expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
-      return originalSetNonResumable(targetSessionId);
-    });
+    const setNonResumable = vi.spyOn(sessionManager, 'setNonResumable');
 
-    (
-      service as unknown as {
-        finishWorkflowJob(
-          sessionId: string,
-          jobId: string,
-          terminalPhase: 'completed' | 'error' | 'aborted',
-          terminalResult: typeof result,
-          persistedMarkdown: string,
-          terminalDiagnostics: typeof diagnostics,
-        ): void;
-      }
-    ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics);
+    expect(() =>
+      (
+        service as unknown as {
+          finishWorkflowJob(
+            sessionId: string,
+            jobId: string,
+            terminalPhase: 'completed' | 'error' | 'aborted',
+            terminalResult: typeof result,
+            persistedMarkdown: string,
+            terminalDiagnostics: typeof diagnostics,
+          ): void;
+        }
+      ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics),
+    ).toThrow('Failed to append terminal event');
 
-    expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+    expect(order).toEqual(['artifact', 'terminal']);
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
-    expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+    expect(setNonResumable).not.toHaveBeenCalled();
+    expect(sessionManager.get('codex', session.sessionId)?.state).toBe('pending');
+    expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
   });
 
   describe('recovery adoption APIs', () => {

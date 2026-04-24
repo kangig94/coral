@@ -726,7 +726,7 @@ describe('ExecutionService wait', () => {
       );
 
       await Promise.resolve();
-      progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+      progressStore.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
       await flushMicrotasks();
       expect(outcome).toBe('pending');
 
@@ -765,7 +765,7 @@ describe('ExecutionService wait', () => {
         if (!injected) {
           injected = true;
           suppressWakeups = true;
-          progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+          progressStore.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
           sessionManager.releaseJob(sessionId, jobId);
           suppressWakeups = false;
         }

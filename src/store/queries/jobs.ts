@@ -440,13 +440,6 @@ function diagnosticsFromTerminalBody(body: ReturnType<typeof jobTerminalRecorded
   return {
     ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
     ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
-    ...(body.workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: body.workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
   };
 }
 
@@ -456,18 +449,10 @@ function mergeDiagnostics(
 ): JobDiagnostics {
   const warnings = patch.warnings ?? base.warnings;
   const usage = patch.usage ?? base.usage;
-  const workflow = patch.workflow ?? base.workflow;
   return {
     progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
     ...(warnings === undefined ? {} : { warnings: [...warnings] }),
     ...(usage === undefined ? {} : { usage: { ...usage } }),
-    ...(workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
   };
 }
 

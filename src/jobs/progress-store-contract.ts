@@ -67,10 +67,4 @@ export interface JobProgressStore {
     phase: JobPhase,
     options?: TerminalWriteOptions,
   ): number;
-  markTerminalStatus(
-    jobId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options?: TerminalWriteOptions,
-  ): void;
 }

@@ -416,8 +416,9 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       },
       createdAt: '2035-04-15T01:02:05.000Z',
     });
-    harness.progressStore.markTerminalStatus(
+    harness.progressStore.appendTerminal(
       jobId,
+      'execution-session-1',
       {
         content: 'Recovered content from runtime storage',
         outcome: { kind: 'completed' },

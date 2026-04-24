@@ -8,36 +8,6 @@ import {
 } from './outcome.js';
 import { usageSummarySchema, type UsageSummary } from '../providers/contract.js';
 
-export interface WorkflowStepMeta {
-  agent: string;
-  step: number;
-  atom: number;
-  provider: string;
-  start: number;
-  end: number;
-}
-
-export interface WorkflowResultMeta {
-  steps: WorkflowStepMeta[];
-}
-
-const workflowStepMetaSchema = z
-  .object({
-    agent: z.string(),
-    step: z.number(),
-    atom: z.number(),
-    provider: z.string(),
-    start: z.number(),
-    end: z.number(),
-  })
-  .strict();
-
-export const workflowResultMetaSchema = z
-  .object({
-    steps: z.array(workflowStepMetaSchema),
-  })
-  .strict();
-
 export interface JobTerminal {
   content: string;
   outcome: TerminalOutcome;
@@ -49,7 +19,6 @@ export type JobTerminalInput = JobTerminal;
 export interface JobTerminalDiagnostics {
   warnings?: string[];
   usage?: UsageSummary;
-  workflow?: WorkflowResultMeta;
 }
 
 export interface JobDiagnostics extends JobTerminalDiagnostics {
@@ -69,7 +38,6 @@ export const jobDiagnosticsSchema = z
     progressFaults: z.array(jobProgressFaultSchema),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
-    workflow: workflowResultMetaSchema.optional(),
   })
   .strict();
 

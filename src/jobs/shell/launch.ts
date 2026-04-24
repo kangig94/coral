@@ -51,6 +51,16 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+export class TerminalWriteError extends Error {
+  constructor(
+    readonly jobId: string,
+    readonly cause: unknown,
+  ) {
+    super(`Failed to append terminal event for ${jobId}: ${errorMessage(cause)}`);
+    this.name = 'TerminalWriteError';
+  }
+}
+
 function runProviderExecution(
   provider: ProviderSpec,
   request: ProviderRequest,
@@ -320,7 +330,19 @@ export class LaunchOrchestrator {
         launchCoordinator.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, request, jobId, sessionId, signal, pool);
       } catch (error: unknown) {
-        this.handleProviderJobError(jobId, sessionId, signal, error);
+        if (error instanceof TerminalWriteError) {
+          backendLog.error(error.message, error.cause);
+          return;
+        }
+        try {
+          this.handleProviderJobError(jobId, sessionId, signal, error);
+        } catch (finalizeError: unknown) {
+          if (finalizeError instanceof TerminalWriteError) {
+            backendLog.error(finalizeError.message, finalizeError.cause);
+            return;
+          }
+          throw finalizeError;
+        }
       } finally {
         if (permitAcquired) {
           launchCoordinator.releaseLaunch(jobId, pool);
@@ -358,7 +380,19 @@ export class LaunchOrchestrator {
         launchCoordinator.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
       } catch (error: unknown) {
-        this.handleProviderJobError(jobId, sessionId, signal, error);
+        if (error instanceof TerminalWriteError) {
+          backendLog.error(error.message, error.cause);
+          return;
+        }
+        try {
+          this.handleProviderJobError(jobId, sessionId, signal, error);
+        } catch (finalizeError: unknown) {
+          if (finalizeError instanceof TerminalWriteError) {
+            backendLog.error(finalizeError.message, finalizeError.cause);
+            return;
+          }
+          throw finalizeError;
+        }
       } finally {
         launchCoordinator.releaseLaunch(jobId, pool);
       }
@@ -387,16 +421,12 @@ export class LaunchOrchestrator {
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions = {},
-  ): void {
+  ): number {
     const { progressStore } = this.deps;
     try {
-      progressStore.appendTerminal(jobId, sessionId, result, phase, options);
-    } catch {
-      try {
-        progressStore.markTerminalStatus(jobId, result, phase, options);
-      } catch {
-        /* best-effort terminal write */
-      }
+      return progressStore.appendTerminal(jobId, sessionId, result, phase, options);
+    } catch (error: unknown) {
+      throw new TerminalWriteError(jobId, error);
     }
   }
 
@@ -408,41 +438,37 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
   ): Promise<void> {
-    try {
-      const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
-      let latestContinuity: JobContinuitySnapshot | null = null;
-      const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
-      const consumed = await consumeJobStream({
-        jobId,
-        sessionId,
-        initialVersion,
-        stream: runProviderExecution(provider, request, runtime),
-        sessionApi: {
-          checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
-            const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
-            if (result.ok) {
-              latestContinuity = {
-                conversationRef: options.snapshot.conversationRef,
-                resumable: options.snapshot.resumable,
-                ...(options.snapshot.providerContinuity === null || options.snapshot.providerContinuity === undefined
-                  ? {}
-                  : { providerContinuity: options.snapshot.providerContinuity }),
-              };
-            }
-            return result;
-          },
+    const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
+    let latestContinuity: JobContinuitySnapshot | null = null;
+    const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
+    const consumed = await consumeJobStream({
+      jobId,
+      sessionId,
+      initialVersion,
+      stream: runProviderExecution(provider, request, runtime),
+      sessionApi: {
+        checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
+          const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
+          if (result.ok) {
+            latestContinuity = {
+              conversationRef: options.snapshot.conversationRef,
+              resumable: options.snapshot.resumable,
+              ...(options.snapshot.providerContinuity === null || options.snapshot.providerContinuity === undefined
+                ? {}
+                : { providerContinuity: options.snapshot.providerContinuity }),
+            };
+          }
+          return result;
         },
-        appendProgress: (message) => {
-          this.appendProgressEvent(jobId, sessionId, message);
-        },
-        appendTerminal: (event) => {
-          this.appendProviderTerminal(jobId, sessionId, request.cwd, event, latestContinuity);
-        },
-      });
-      await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
-    } catch (error: unknown) {
-      this.handleProviderJobError(jobId, sessionId, signal, error);
-    }
+      },
+      appendProgress: (message) => {
+        this.appendProgressEvent(jobId, sessionId, message);
+      },
+      appendTerminal: (event) => {
+        this.appendProviderTerminal(jobId, sessionId, request.cwd, event, latestContinuity);
+      },
+    });
+    await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
   }
 
   private async handleConsumedJobCompletion(

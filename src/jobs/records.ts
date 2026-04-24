@@ -148,13 +148,10 @@ export type {
   JobTerminal,
   JobTerminalDiagnostics,
   JobTerminalInput,
-  WorkflowResultMeta,
-  WorkflowStepMeta,
 } from './result.js';
 export {
   cloneJobTerminal,
   jobDiagnosticsSchema,
   jobTerminalSchema,
   normalizeJobTerminal,
-  workflowResultMetaSchema,
 } from './result.js';
