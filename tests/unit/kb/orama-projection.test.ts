@@ -31,8 +31,9 @@ import {
   buildSourceIndexEntry,
   cloneKbIndex,
 } from '#src/kb/corpus/index-records.js';
-import { createKbRuntime, captureKbCorpusSnapshot } from '#src/kb/runtime.js';
+import { createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/kb/search/orama-backend.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const TOP_K = 10;
 const QUERY_PANEL = ['graph retrieval', 'sqlite planner', 'community summary', 'metadata tags'];
@@ -398,13 +399,14 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
 async function installCurrentFullSnapshot(runtime: ReturnType<typeof createKbRuntime>): Promise<void> {
   const projection = createOramaBaseProjection(runtime);
   const preparedProjection = await projection.prepareFullSnapshotForCurrentCorpus(runtime.readIndexOrEmpty());
-  await projection.installFullSnapshotInWriteLock(captureKbCorpusSnapshot(runtime), preparedProjection);
+  await projection.installFullSnapshotInWriteLock(runtime.captureCorpusSnapshot(), preparedProjection);
 }
 
 async function createSeededRuntime(root: string): Promise<ReturnType<typeof createKbRuntime>> {
   const runtime = createKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
+    db: createKbTestDb(join(root, '.runtime')),
   });
   seedCorpus(runtime);
   await installCurrentFullSnapshot(runtime);
@@ -418,7 +420,7 @@ async function applyScenarioAndInstall(
 ): Promise<void> {
   const projection = createOramaBaseProjection(runtime);
   const { changedEntryIds, deletedEntryIds } = await scenario.apply(runtime);
-  const snapshot = captureKbCorpusSnapshot(runtime);
+  const snapshot = runtime.captureCorpusSnapshot();
 
   if (installMode === 'delta') {
     const preparedDelta = await projection.prepareDeltaForCurrentCorpusEntries(

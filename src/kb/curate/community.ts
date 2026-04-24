@@ -1,8 +1,7 @@
 import { nowIsoString } from '../../infra/time.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbCorpusSnapshot, KbRuntime } from '../contracts.js';
 import { recordMetadataMutation } from '../corpus/index-mutations.js';
 import { buildCommunityIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
-import { captureKbCorpusSnapshot } from '../runtime.js';
 import { createOramaBaseProjection, type PreparedOramaProjection } from '../search/orama-backend.js';
 import { compareLocale } from '../validation.js';
 import { parseKbEntryId, type KbIndex } from '../entry-types.js';
@@ -30,7 +29,7 @@ export type RunCommunitySubphaseOptions = {
 };
 
 type CommunityPreparedPayload = {
-  capturedBaselineSnapshot: ReturnType<typeof captureKbCorpusSnapshot>;
+  capturedBaselineSnapshot: KbCorpusSnapshot;
   capturedBaselineState: ReturnType<typeof readCurateState>;
   capturedBaselineSummaryFingerprints: Record<string, string> | undefined;
   priorGeneratedCommunities: ExistingGeneratedCommunity[];
@@ -171,8 +170,8 @@ function buildCommunityTargetIndex(baseIndex: KbIndex, generatedCommunityDocs: r
 }
 
 function sameSnapshot(
-  left: ReturnType<typeof captureKbCorpusSnapshot>,
-  right: ReturnType<typeof captureKbCorpusSnapshot>,
+  left: KbCorpusSnapshot,
+  right: KbCorpusSnapshot,
 ): boolean {
   return (
     left.snapshotId === right.snapshotId &&
@@ -194,7 +193,7 @@ async function prepareCommunityPayload(
   }
 
   const today = nowIsoString().slice(0, 10);
-  const capturedBaselineSnapshot = captureKbCorpusSnapshot(kb);
+  const capturedBaselineSnapshot = kb.captureCorpusSnapshot();
   const capturedBaselineState = readCurateState(kb);
   const capturedFinalIndex = kb.readIndexOrEmpty();
   const graph = buildEntityRelationshipGraph({
@@ -316,12 +315,12 @@ export async function runCommunitySubphase(
   let wroteCommunityFiles = false;
   let shouldInstallPreparedProjection = false;
 
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     if (shouldStop() || signal?.aborted) {
       return;
     }
 
-    const currentSnapshot = captureKbCorpusSnapshot(kb);
+    const currentSnapshot = kb.captureCorpusSnapshot();
     if (!sameSnapshot(prepared.capturedBaselineSnapshot, currentSnapshot)) {
       onFreshnessMismatch?.();
       return;
@@ -341,7 +340,7 @@ export async function runCommunitySubphase(
         JSON.stringify(nextState.communitySummaryInputFingerprints ?? {}) ||
       prepared.capturedBaselineState.consecutiveCommunityBatchFailures !== 0;
 
-    if (generateCommunityFiles(kb, prepared.generatedCommunityDocs, prepared.priorGeneratedCommunities)) {
+    if (generateCommunityFiles(kb, mutation, prepared.generatedCommunityDocs, prepared.priorGeneratedCommunities)) {
       wroteCommunityFiles = true;
     }
     if (shouldWriteState) {

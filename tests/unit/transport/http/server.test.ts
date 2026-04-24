@@ -4902,14 +4902,14 @@ describe('execution backend server', () => {
   });
 
   describe('recovery scan', () => {
-    it('classifies old-format jobs as incompatible', async () => {
+    it('marks live jobs missing launch records as stale status records', async () => {
       const progressStore = createProgressStore();
-      const jobId = 'old-format-job';
-      const projectRoot = createProjectRoot('old-format-project');
+      const jobId = 'missing-launch-job';
+      const projectRoot = createProjectRoot('missing-launch-project');
       const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
-      // Create a job with live phase (running) but NO launch.json — old format
+      // Create a job with live phase (running) but no launch record.
       progressStore.initJob({
         jobId,
         sessionId: session.sessionId,
@@ -4918,12 +4918,12 @@ describe('execution backend server', () => {
         backendNamespace: testBackendNamespace,
         initialPhase: 'running',
       });
-      // Do NOT write launch.json — this is the old-format marker
+      // Do not write a launch record; recovery should mark the job as unrecoverable.
       new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
       const _backend = await startBackendServer({ progressStore });
 
-      // After recovery, the old-format job should be marked as a stale_status_schema fault
+      // After recovery, the job should be marked as a stale_status_schema fault.
       await vi.waitFor(() => {
         expect(progressStore.readStatus(jobId)?.phase).toBe('error');
       });

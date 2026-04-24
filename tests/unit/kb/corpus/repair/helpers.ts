@@ -23,6 +23,7 @@ import {
   type CorpusMarkdownKind,
   type DetectedIncident,
 } from '#src/kb/corpus/repair/corpus-scan.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 const DETECTORS = [
@@ -69,6 +70,7 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
   const kb = createKbRuntime({
     markdownRoot,
     runtimeDir,
+    db: createKbTestDb(runtimeDir),
   });
 
   return {

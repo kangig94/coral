@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '#src/kb/curate/state.js';
@@ -170,6 +171,7 @@ describe('curate AC6/AC8', () => {
     runtime = createKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
+      db: createKbTestDb(tempDir),
     });
     gitSyncRuntime = createRealRuntime();
     useScheduler(async () => ({
@@ -339,6 +341,7 @@ describe('curate AC6/AC8', () => {
     runtime = createKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: join(tempDir, 'data'),
+      db: createKbTestDb(join(tempDir, 'data')),
     });
     mkdirSync(runtime.notesDir(), { recursive: true });
     mkdirSync(runtime.principlesDir(), { recursive: true });

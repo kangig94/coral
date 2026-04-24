@@ -13,6 +13,7 @@ import {
   equipmentViewResolvers,
   seedNeedleRouteState,
 } from '#tests/unit/kb/equipment-test-helpers.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -74,7 +75,6 @@ async function loadKbModules() {
     searchKb,
     reindex,
     createKbRuntime: runtime.createKbRuntime,
-    captureKbCorpusSnapshot: runtime.captureKbCorpusSnapshot,
     paths,
   };
 }
@@ -94,6 +94,7 @@ function createRuntime(
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
+    db: createKbTestDb(paths.kbRuntimeDir()),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -178,7 +179,7 @@ describe('kb search AC8 mode branching', () => {
     mockState.createRouter = asUnknownHandler(createRouterSpy);
     mockState.createEmbeddingProvider = asUnknownHandler(createEmbeddingProviderSpy);
 
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     writeNote(paths.notesDir(), 'vector-note', {
@@ -199,7 +200,7 @@ describe('kb search AC8 mode branching', () => {
             db: kb.db,
             invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
           },
-          captureKbCorpusSnapshot(kb),
+          kb.captureCorpusSnapshot(),
         ),
       ),
     );
@@ -219,7 +220,7 @@ describe('kb search AC8 mode branching', () => {
       actualRouter.createRouter(...args),
     );
 
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     writeNote(paths.notesDir(), 'rendering-guides', {
@@ -258,7 +259,7 @@ describe('kb search AC8 mode branching', () => {
             db: kb.db,
             invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
           },
-          captureKbCorpusSnapshot(kb),
+          kb.captureCorpusSnapshot(),
         ),
       ),
     );

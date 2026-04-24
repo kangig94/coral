@@ -34,15 +34,22 @@ async function seedKbSearchSnapshot(): Promise<void> {
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
   ]);
+  const realRuntime = createRealRuntime();
   const kb = runtime.createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbPaths.kbRuntimeDir(),
+    db: openStoreDatabase({
+      path: join(kbPaths.kbRuntimeDir(), 'store.db'),
+      storage: realRuntime.storage,
+      migrationsDir: ensureStoreMigrationsDir(realRuntime.storage),
+    }),
   });
 
   try {
     await reindex(kb);
   } finally {
     await closeNeedleBackend(kb);
+    kb.db.close();
   }
 }
 

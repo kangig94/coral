@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
@@ -61,6 +62,7 @@ describe('KbRuntime base vector surface stability', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
+      db: createKbTestDb(join(root, '.runtime')),
     });
     openDatabases.push(kb.db);
 
@@ -78,6 +80,7 @@ describe('KbRuntime base vector surface stability', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
+      db: createKbTestDb(join(root, '.runtime')),
     });
     openDatabases.push(kb.db);
 

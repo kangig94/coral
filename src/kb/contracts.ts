@@ -4,6 +4,7 @@ import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
+import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 export type {
   ConsumerApplyError,
@@ -73,6 +74,12 @@ export interface KbInboundSyncOptions {
   structuredDiff?: boolean;
 }
 
+export interface KbMutationEffects {
+  queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void;
+  writeEntityGraph(graph: EntityGraph): void;
+  forceFullProjectionInstall(): void;
+}
+
 export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
@@ -96,6 +103,7 @@ export interface KbRuntime {
     externalMutation?: KbIndexMutationLane | null,
   ): KbIndexState;
   getCorpusStateSnapshot(): KbCorpusSnapshot;
+  captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;
   ensureIndex(): Promise<KbIndex>;
   ensureOramaIndex(): Promise<{
@@ -106,7 +114,7 @@ export interface KbRuntime {
   }>;
   loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null>;
   ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot>;
-  withMutationLock<T>(fn: () => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
+  withMutationLock<T>(fn: (mutation: KbMutationEffects) => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;
   invalidateKbCache(): void;

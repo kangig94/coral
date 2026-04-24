@@ -21,6 +21,7 @@ import {
   type SpawnCliFn,
 } from '#src/kb/curate/scheduler.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
@@ -236,6 +237,7 @@ beforeEach(() => {
   runtime = createKbRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
+    db: createKbTestDb(tempDir),
   });
   gitSyncRuntime = createRealRuntime();
   useScheduler();
@@ -1902,6 +1904,7 @@ describe('curate', () => {
       const secondRuntime = createKbRuntime({
         markdownRoot: tempDir,
         runtimeDir: tempDir,
+        db: createKbTestDb(tempDir),
       });
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,

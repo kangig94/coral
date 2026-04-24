@@ -5,15 +5,19 @@ import type { ReindexResult } from '../entry-types.js';
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const startedAt = Date.now();
 
-  const textResult = await kb.withMutationLock(async () => {
+  const textResult = await kb.withMutationLock(async (mutation) => {
     const startState = kb.readIndexState();
     let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
 
     try {
-      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(kb, {
-        contentSeq: startState.contentSeq,
-        metadataSeq: startState.metadataSeq,
-      });
+      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(
+        kb,
+        mutation,
+        {
+          contentSeq: startState.contentSeq,
+          metadataSeq: startState.metadataSeq,
+        },
+      );
     } catch (error: unknown) {
       if (error instanceof TextSnapshotRebuildError) {
         return {

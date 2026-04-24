@@ -11,6 +11,7 @@ import type { KbRuntime } from '#src/kb/contracts.js';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import { createHybridFusion } from '#src/kb/search/hybrid.js';
 import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from '#src/kb/search/contract.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const equipmentViewResolvers = new WeakMap<KbRuntime, () => ReturnType<typeof runtimeActivationFromHandle> | null>();
 type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
@@ -54,7 +55,6 @@ async function loadKbModules() {
     searchKb,
     reindex,
     createKbRuntime: runtime.createKbRuntime,
-    captureKbCorpusSnapshot: runtime.captureKbCorpusSnapshot,
     paths,
   };
 }
@@ -68,6 +68,7 @@ function createRuntime(
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
+    db: createKbTestDb(paths.kbRuntimeDir()),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -411,7 +412,7 @@ describe('hybrid reciprocal rank fusion', () => {
   });
 
   it('keeps graph participation in explicit hybrid mode through the router-backed fusion path', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -443,7 +444,7 @@ describe('hybrid reciprocal rank fusion', () => {
     await reindex(kb);
     installMockHybridSearch(
       kb,
-      seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)),
+      seedNeedleRouteState(kb, kb.captureCorpusSnapshot()),
       vi.fn().mockResolvedValue([
         { chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 },
       ]),

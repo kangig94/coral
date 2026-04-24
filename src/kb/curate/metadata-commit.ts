@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../contracts.js';
 import {
   captureNoteManifestDeltas,
   captureSourceManifestDeltas,
@@ -21,7 +21,6 @@ import {
   cloneEntityRelationship,
   cloneKbIndex,
 } from '../corpus/index-records.js';
-import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../runtime-effects.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -194,6 +193,7 @@ function rewriteMetadataTargetEntities(target: MetadataTarget, replacementMap: E
 
 export async function commitMetadataTargetsLocked(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   targets: MetadataTarget[],
   state: CurateState,
   plan: MetadataCommitPlan = {},
@@ -219,7 +219,7 @@ export async function commitMetadataTargetsLocked(
 
   if (graphChanged) {
     try {
-      writeEntityGraphLocked(kb, desiredGraph);
+      mutation.writeEntityGraph(desiredGraph);
     } catch (error: unknown) {
       failure ??= error;
     }
@@ -277,7 +277,7 @@ export async function commitMetadataTargetsLocked(
       const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
       writeFileAtomic(notePath, nextRaw);
-      queueManifestAuthorityDelta(kb, captureNoteManifestDeltas(target.slug, nextRaw));
+      mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(target.slug, nextRaw));
       wroteMarkdown = true;
 
       const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
@@ -337,7 +337,7 @@ export async function commitMetadataTargetsLocked(
     const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
     writeFileAtomic(sourcePath, nextRaw);
-    queueManifestAuthorityDelta(kb, captureSourceManifestDeltas(target.slug, nextRaw));
+    mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(target.slug, nextRaw));
     wroteMarkdown = true;
 
     const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];
@@ -388,8 +388,8 @@ export async function commitMetadataTargets(
   targets: MetadataTarget[],
   plan: MetadataCommitPlan = {},
 ): Promise<void> {
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     const state = readCurateState(kb);
-    await commitMetadataTargetsLocked(kb, targets, state, plan);
+    await commitMetadataTargetsLocked(kb, mutation, targets, state, plan);
   });
 }

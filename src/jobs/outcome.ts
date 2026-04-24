@@ -123,7 +123,7 @@ export function describeLaunchRejected(rejected: JobLaunchRejected): string {
 export function describeJobProgressFault(fault: JobProgressFault): string {
   switch (fault.kind) {
     case 'stale_status_schema':
-      return 'Job status record uses an incompatible schema; dropping.';
+      return 'Job status record is missing its launch record; dropping.';
     case 'recovery_parse_failed':
       return `Provider recovery could not parse resumed state: ${fault.cause.message}.`;
     default:

@@ -4,14 +4,13 @@ import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.j
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { assertNoteSlug } from '../validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
   const note = assertNoteSlug(input.note, 'note');
   const notePath = rt.notePath(note);
 
-  return rt.withMutationLock(async () => {
+  return rt.withMutationLock(async (mutation) => {
     try {
       rmSync(notePath);
     } catch (error: unknown) {
@@ -20,7 +19,7 @@ export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ d
       }
       throw error;
     }
-    queueManifestAuthorityDelta(rt, captureRemovedNoteManifestDeltas(note));
+    mutation.queueManifestAuthorityDelta(captureRemovedNoteManifestDeltas(note));
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_delete.');
 
     commitIndexUpdate(rt, (index) => {

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -40,6 +41,7 @@ function createRuntime(
   return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
+    db: createKbTestDb(paths.kbRuntimeDir()),
   });
 }
 

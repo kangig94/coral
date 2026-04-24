@@ -15,6 +15,7 @@ import type {
   KbCorpusSnapshot,
   KbIndexMutationLane,
   KbIndexState,
+  KbMutationEffects,
   KbRuntimeActivationSnapshot,
   KbRuntime,
   KbTextArtifactsSnapshot,
@@ -28,9 +29,8 @@ import {
 import {
   captureEntityGraphManifestDelta,
   createManifestAuthority,
-  type ManifestAuthorityDelta,
-  type ManifestAuthorityLane,
 } from './corpus/manifest-authority.js';
+import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from './corpus/index-records.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
@@ -59,7 +59,6 @@ import {
 import { diffSearchVisibleEntryIds } from './search/visible-entry-diff.js';
 import { createCorpusStateMirror } from './runtime-state.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import { createStandaloneKbDb } from './runtime-db.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import {
   applyMutationLane,
@@ -99,7 +98,7 @@ type MutationLockContext = KbMutationLockContext<
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
-  db?: BetterSqlite3.Database;
+  db: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   readOnlyOrama?: boolean;
@@ -130,6 +129,17 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly equipmentViewResolver?: () => KbRuntimeActivationSnapshot | null;
   private readonly emptyEquipmentView: KbRuntimeActivationSnapshot;
   private activeMutationContext: MutationLockContext | null = null;
+  private readonly mutationEffects: KbMutationEffects = {
+    queueManifestAuthorityDelta: (deltas) => {
+      this.queueManifestAuthorityDelta(deltas);
+    },
+    writeEntityGraph: (graph) => {
+      this.writeEntityGraphLocked(graph);
+    },
+    forceFullProjectionInstall: () => {
+      this.forceFullProjectionInstall();
+    },
+  };
   private readonly mutationLockController = createKbMutationLock<
     KbIndex,
     KbCorpusPublication,
@@ -162,7 +172,7 @@ class KbRuntimeImpl implements KbRuntime {
   constructor({ markdownRoot, runtimeDir, db, corpusPublishCallbacks, getEquipmentView, readOnlyOrama }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
-    this.db = db ?? createStandaloneKbDb(runtimeDir);
+    this.db = db;
     this.readOnlyOrama = readOnlyOrama === true;
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.oramaSnapshotStore = new OramaSnapshotStore(this.runtimeDir);
@@ -250,15 +260,15 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async writeEntityGraph(graph: EntityGraph): Promise<void> {
-    await this.withMutationLock(() => {
-      this.writeEntityGraphLocked(graph);
+    await this.withMutationLock((mutation) => {
+      mutation.writeEntityGraph(graph);
     });
   }
 
-  writeEntityGraphLocked(graph: EntityGraph): void {
+  private writeEntityGraphLocked(graph: EntityGraph): void {
     const { normalized, raw } = writeEntityGraphFile(this.entityGraphPath(), graph);
     this.queueManifestAuthorityDelta(captureEntityGraphManifestDelta(raw));
-    this.setMutationLockProjectionDispatchMode('full');
+    this.forceFullProjectionInstall();
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 
     const currentIndex = this.readIndex();
@@ -376,13 +386,13 @@ class KbRuntimeImpl implements KbRuntime {
 
   async ensureIndex(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
-      await this.withMutationLock(async () => {
+      await this.withMutationLock(async (mutation) => {
         const state = this.readIndexStateIfPresent();
         if (!this.textArtifactsNeedRebuild(state)) {
           return;
         }
 
-        await rebuildTextArtifactsAndPersistRepairState(this, captureIndexStateSnapshot(state));
+        await rebuildTextArtifactsAndPersistRepairState(this, mutation, captureIndexStateSnapshot(state));
       });
     }
 
@@ -424,6 +434,7 @@ class KbRuntimeImpl implements KbRuntime {
     if (this.textArtifactsNeedRebuild()) {
       rebuilt = await rebuildTextArtifactsAndPersistRepairState(
         this,
+        this.mutationEffects,
         captureIndexStateSnapshot(this.readIndexState()),
       );
     } else if (!this.oramaSnapshotStore.hasCache()) {
@@ -432,6 +443,7 @@ class KbRuntimeImpl implements KbRuntime {
       } catch {
         rebuilt = await rebuildTextArtifactsAndPersistRepairState(
           this,
+          this.mutationEffects,
           captureIndexStateSnapshot(this.readIndexState()),
         );
       }
@@ -449,8 +461,11 @@ class KbRuntimeImpl implements KbRuntime {
     return captureTextArtifactsSnapshot(this);
   }
 
-  async withMutationLock<T>(fn: () => Promise<T> | T, options: KbMutationLockOptions = {}): Promise<T> {
-    return this.mutationLockController.withMutationLock(fn, options);
+  async withMutationLock<T>(
+    fn: (mutation: KbMutationEffects) => Promise<T> | T,
+    options: KbMutationLockOptions = {},
+  ): Promise<T> {
+    return this.mutationLockController.withMutationLock(() => fn(this.mutationEffects), options);
   }
 
   async retryPendingCorpusPublication(): Promise<void> {
@@ -498,7 +513,7 @@ class KbRuntimeImpl implements KbRuntime {
 
       if (mutationDiff.lane !== null) {
         if (mutationDiff.manifestDeltas.length > 0) {
-          this.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
+          this.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
         }
         if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
           this.writeIndex(this.buildInboundSyncIndexDelta(mutationDiff.changedEntryIds));
@@ -539,21 +554,15 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  setMutationLockProjectionDispatchMode(mode: 'delta' | 'full'): void {
+  private forceFullProjectionInstall(): void {
     if (this.activeMutationContext === null) {
       throw new Error('KB mutation-lock projection mode can only change while the mutation lock is held.');
     }
-    if (mode === 'full') {
-      this.activeMutationContext.projectionDispatchMode = 'full';
-    }
+    this.activeMutationContext.projectionDispatchMode = 'full';
   }
 
-  captureCurrentCorpusSnapshot(): KbCorpusPublication['snapshot'] {
+  captureCorpusSnapshot(): KbCorpusPublication['snapshot'] {
     return this.buildCurrentCorpusSnapshot(captureIndexStateSnapshot(this.readIndexState()));
-  }
-
-  getCurrentManifestAuthorityHash(lane: ManifestAuthorityLane): string {
-    return this.manifestAuthority.getCurrentManifestHash(lane);
   }
 
   private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
@@ -747,7 +756,7 @@ class KbRuntimeImpl implements KbRuntime {
 
     if (this.textArtifactsNeedRebuild(state)) {
       try {
-        await rebuildTextArtifactsAndPersistRepairState(this, startState);
+        await rebuildTextArtifactsAndPersistRepairState(this, this.mutationEffects, startState);
       } catch (error: unknown) {
         throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
       }
@@ -810,7 +819,7 @@ class KbRuntimeImpl implements KbRuntime {
     const currentIndex = this.readIndex();
     if (currentIndex === null) {
       try {
-        await rebuildTextArtifactsAndPersistRepairState(this, startState);
+        await rebuildTextArtifactsAndPersistRepairState(this, this.mutationEffects, startState);
         return;
       } catch (error: unknown) {
         throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
@@ -819,7 +828,7 @@ class KbRuntimeImpl implements KbRuntime {
 
     try {
       const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(currentIndex);
-      await this.baseProjection.installFullSnapshotInWriteLock(this.captureCurrentCorpusSnapshot(), preparedProjection);
+      await this.baseProjection.installFullSnapshotInWriteLock(this.captureCorpusSnapshot(), preparedProjection);
     } catch (error: unknown) {
       throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
     }
@@ -879,33 +888,3 @@ class KbRuntimeImpl implements KbRuntime {
 export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {
   return new KbRuntimeImpl(opts);
 }
-
-// KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
-// write method without widening the public interface.
-export function captureKbCorpusSnapshot(kb: KbRuntime): KbCorpusPublication['snapshot'] {
-  const runtime = kb as KbRuntime & {
-    captureCurrentCorpusSnapshot?: () => KbCorpusPublication['snapshot'];
-  };
-  if (typeof runtime.captureCurrentCorpusSnapshot !== 'function') {
-    throw new Error('KB runtime does not expose corpus snapshot capture.');
-  }
-  return runtime.captureCurrentCorpusSnapshot();
-}
-
-// KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
-// write method without widening the public interface.
-export function setMutationLockProjectionDispatchMode(kb: KbRuntime, mode: 'delta' | 'full'): void {
-  const runtime = kb as KbRuntime & {
-    setMutationLockProjectionDispatchMode?: (nextMode: 'delta' | 'full') => void;
-  };
-  if (typeof runtime.setMutationLockProjectionDispatchMode !== 'function') {
-    throw new Error('KB runtime does not expose mutation-lock projection dispatch control.');
-  }
-  runtime.setMutationLockProjectionDispatchMode(mode);
-}
-
-export {
-  getManifestAuthorityHash,
-  queueManifestAuthorityDelta,
-  writeEntityGraphLocked,
-} from './runtime-effects.js';

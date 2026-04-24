@@ -2,14 +2,14 @@ import { readFileSync } from 'node:fs';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
-import type { KbRuntime } from '../../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
 import {
   captureCommunityManifestDelta,
-  type ManifestAuthorityDelta,
   captureNoteManifestDeltas,
   capturePrincipleManifestDelta,
   captureSourceManifestDeltas,
 } from '../manifest-authority.js';
+import type { ManifestAuthorityDelta } from '../manifest-types.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -23,7 +23,6 @@ import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
 import type { SpawnCliFn } from '../../curate/types.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../../runtime-effects.js';
 import { writeFileAtomic } from '../file-atomic.js';
 import {
   commitIndexUpdate,
@@ -125,12 +124,12 @@ export const REPAIR_HINTS = {
 } as const satisfies Readonly<Record<RepairIncidentId, string>>;
 
 const AUTO_FIX_HANDLERS: Readonly<
-  Partial<Record<RepairIncidentId, (kb: KbRuntime, incident: DetectedIncident) => LockedAutoFixOutcome>>
+  Partial<Record<RepairIncidentId, (kb: KbRuntime, mutation: KbMutationEffects, incident: DetectedIncident) => LockedAutoFixOutcome>>
 > = {
-  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]: (kb: KbRuntime, incident: DetectedIncident) =>
-    applyEntrySeqFormatFixLocked(kb, incident),
-  [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS]: (kb: KbRuntime) =>
-    applyOrphanEntityGraphFixLocked(kb),
+  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]: (kb: KbRuntime, mutation: KbMutationEffects, incident: DetectedIncident) =>
+    applyEntrySeqFormatFixLocked(kb, mutation, incident),
+  [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS]: (kb: KbRuntime, mutation: KbMutationEffects) =>
+    applyOrphanEntityGraphFixLocked(kb, mutation),
 };
 
 const noopSpawnCli: SpawnCliFn = async () => {
@@ -159,7 +158,7 @@ export async function applyDetectedIncidentFixes(
     try {
       const classification = resolveRepairClassification(incident);
       if (classification === 'auto-fixable') {
-        const outcome = await kb.withMutationLock(() => applyAutoFixLocked(kb, incident));
+        const outcome = await kb.withMutationLock((mutation) => applyAutoFixLocked(kb, mutation, incident));
         if (outcome.kind === 'fixed') {
           gitSync.scheduleDeferredCommit();
           result = createRepairResult(incident, 'fixed');
@@ -240,12 +239,20 @@ function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
   return reasons.length >= 1 && reasons.every((reason) => reason === 'quoted-decimal' || reason === 'leading-zeros');
 }
 
-function applyAutoFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {
+function applyAutoFixLocked(
+  kb: KbRuntime,
+  mutation: KbMutationEffects,
+  incident: DetectedIncident,
+): LockedAutoFixOutcome {
   const handler = AUTO_FIX_HANDLERS[incident.canonical];
-  return handler === undefined ? { kind: 'manual' } : handler(kb, incident);
+  return handler === undefined ? { kind: 'manual' } : handler(kb, mutation, incident);
 }
 
-function applyEntrySeqFormatFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {
+function applyEntrySeqFormatFixLocked(
+  kb: KbRuntime,
+  mutation: KbMutationEffects,
+  incident: DetectedIncident,
+): LockedAutoFixOutcome {
   if (!isNormalizableEntrySeqIncident(incident)) {
     return { kind: 'manual' };
   }
@@ -275,11 +282,11 @@ function applyEntrySeqFormatFixLocked(kb: KbRuntime, incident: DetectedIncident)
     return { kind: 'manual' };
   }
 
-  applyPreparedMarkdownFixLocked(kb, target, prepared, 'metadata', 'KB metadata snapshot is stale after kb_repair.');
+  applyPreparedMarkdownFixLocked(kb, mutation, target, prepared, 'metadata', 'KB metadata snapshot is stale after kb_repair.');
   return { kind: 'fixed' };
 }
 
-function applyOrphanEntityGraphFixLocked(kb: KbRuntime): LockedAutoFixOutcome {
+function applyOrphanEntityGraphFixLocked(kb: KbRuntime, mutation: KbMutationEffects): LockedAutoFixOutcome {
   const currentGraph = kb.readEntityGraph();
   if (currentGraph === null) {
     return { kind: 'skipped' };
@@ -320,7 +327,7 @@ function applyOrphanEntityGraphFixLocked(kb: KbRuntime): LockedAutoFixOutcome {
     return { kind: 'skipped' };
   }
 
-  writeEntityGraphLocked(kb, {
+  mutation.writeEntityGraph({
     entityMeta: currentGraph.entityMeta,
     relationships: nextRelationships,
   });
@@ -387,13 +394,14 @@ function buildIndexUpdater(target: MarkdownRepairTarget, content: string): (inde
 
 function applyPreparedMarkdownFixLocked(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   target: MarkdownRepairTarget,
   prepared: PreparedMarkdownFix,
-  mutation: 'both' | 'metadata',
+  mutationLane: 'both' | 'metadata',
   reason: string,
 ): void {
   writeFileAtomic(target.path, prepared.content);
-  queueManifestAuthorityDelta(kb, captureRepairTargetManifestDeltas(target, prepared.content));
+  mutation.queueManifestAuthorityDelta(captureRepairTargetManifestDeltas(target, prepared.content));
   commitIndexUpdate(kb, prepared.updateIndex);
 
   const queueEntryId = parseKbEntryId(target.entryId);
@@ -401,7 +409,7 @@ function applyPreparedMarkdownFixLocked(
     deleteCurateRetryEntry(kb, queueEntryId);
   }
 
-  if (mutation === 'metadata') {
+  if (mutationLane === 'metadata') {
     recordMetadataMutation(kb, reason);
   } else {
     recordContentAndMetadataMutation(kb, reason);

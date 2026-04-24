@@ -95,7 +95,7 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
             fault: { kind: 'stale_status_schema' },
             status: snap.status,
           },
-    description: 'incompatible',
+    description: 'missing_launch_record',
   },
   {
     match: (snap, snapshot) =>
@@ -183,7 +183,7 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
     const registerRunning: RegisterAction[] = [];
     const registerQueued: Array<Extract<RecoveryAction, { type: 'registerQueued' }>> = [];
     const deleteIncomplete: CleanupAction[] = [];
-    const markIncompatible: CleanupAction[] = [];
+    const markMissingLaunchRecord: CleanupAction[] = [];
     const markStaleRunning: CleanupAction[] = [];
 
     for (const jobId of jobIds) {
@@ -202,8 +202,8 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
         case 'incomplete admission':
           deleteIncomplete.push(classified.action as CleanupAction);
           break;
-        case 'incompatible':
-          markIncompatible.push(classified.action as CleanupAction);
+        case 'missing_launch_record':
+          markMissingLaunchRecord.push(classified.action as CleanupAction);
           break;
         case 'stale_running':
           markStaleRunning.push(classified.action as CleanupAction);
@@ -217,7 +217,12 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
 
     return {
       register: [...registerRunning, ...registerQueued],
-      cleanup: [...deleteIncomplete, ...markIncompatible, ...markStaleRunning, ...planSessionClaimReleases(snapshot, jobIds)],
+      cleanup: [
+        ...deleteIncomplete,
+        ...markMissingLaunchRecord,
+        ...markStaleRunning,
+        ...planSessionClaimReleases(snapshot, jobIds),
+      ],
     };
   } catch {
     return { register: [], cleanup: [] };

@@ -21,19 +21,21 @@ import {
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { stripMdExt } from '../paths.js';
-import { loadKbNote, loadKbSource } from '../read.js';
-import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime-effects.js';
-import { compareLocale, stripMarkdownCodeFences } from '../validation.js';
+import type { KbMutationEffects, KbRuntime } from '../contracts.js';
+import { compareLocale } from '../validation.js';
 import {
   communityEntryId,
-  parseKbEntryId,
   isNoteEntry,
   isSourceEntry,
-  type CuratableEntry,
   type EntityGraph,
   type KbIndex,
 } from '../entry-types.js';
+import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './community-identity.js';
+export {
+  computeCommunitySummaryInputFingerprintForCommunity,
+  computeCommunitySummaryInputFingerprints,
+  generateCommunitySummary,
+} from './community-summary.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };
@@ -116,28 +118,6 @@ type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug' | 'parent' | 'childr
   parentMembershipFingerprint?: string;
 };
 
-type RepresentativeDocument = {
-  kind: 'note' | 'source';
-  slug: string;
-  title: string;
-  overlapTags: string[];
-  excerpt: string;
-};
-
-type RepresentativeDocumentCandidate = Omit<RepresentativeDocument, 'excerpt'>;
-
-type ChildCommunitySummary = {
-  slug: string;
-  title: string;
-  members: string[];
-  summary: string;
-};
-
-type SummaryFingerprintCommunity = Pick<
-  ExistingGeneratedCommunity,
-  'slug' | 'title' | 'level' | 'members' | 'children' | 'summary'
->;
-
 type PartitionGroup = {
   id: number;
   nodeIndices: number[];
@@ -158,8 +138,6 @@ type ResolutionEvaluation = {
 };
 
 const COMMUNITY_SLUG_TAG_LIMIT = 3;
-const COMMUNITY_SUMMARY_DOCUMENT_LIMIT = 3;
-const COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS = 800;
 const COMMUNITY_LOUVAIN_SEED = 0x5eed1234;
 const COMMUNITY_RESOLUTION_MIN = 0.5;
 const COMMUNITY_RESOLUTION_MAX = 5;
@@ -168,10 +146,6 @@ const COMMUNITY_RESOLUTION_TARGET_MAX = 30;
 const COMMUNITY_RESOLUTION_TARGET_MIDPOINT =
   (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
-
-function uniqueSorted(values: string[]): string[] {
-  return [...new Set(values)].sort(compareLocale);
-}
 
 function edgeKey(left: string, right: string): string {
   return left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`;
@@ -183,18 +157,6 @@ function parseEdgeKey(key: string): [string, string] {
     throw new Error(`Invalid tag graph edge key: ${key}`);
   }
   return [left, right];
-}
-
-function computeTextFingerprint(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function communitySlugFromReference(reference: string): string {
-  const parsed = parseKbEntryId(reference);
-  if (parsed !== null && parsed.startsWith('community:')) {
-    return parsed.slice('community:'.length);
-  }
-  return reference;
 }
 
 function internalWeightedDegree(
@@ -901,6 +863,7 @@ export function buildCommunityDocuments(
 
 export function generateCommunityFiles(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   documents: CommunityDocument[],
   priorGeneratedCommunities: ExistingGeneratedCommunity[],
   onWrite?: () => void,
@@ -914,318 +877,17 @@ export function generateCommunityFiles(
     }
 
     unlinkIfExists(communityPath);
-    queueManifestAuthorityDelta(kb, captureRemovedCommunityManifestDelta(community.slug));
+    mutation.queueManifestAuthorityDelta(captureRemovedCommunityManifestDelta(community.slug));
     onWrite?.();
     wroteFiles = true;
   }
 
   for (const document of documents) {
     writeFileAtomic(kb.communityPath(document.slug), document.content);
-    queueManifestAuthorityDelta(kb, captureCommunityManifestDelta(document.slug, document.content));
+    mutation.queueManifestAuthorityDelta(captureCommunityManifestDelta(document.slug, document.content));
     onWrite?.();
     wroteFiles = true;
   }
 
   return wroteFiles;
-}
-
-function trimSummaryExcerpt(body: string, maxChars: number): string {
-  const normalized = body.trim().replace(/\s+/g, ' ');
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-
-  return normalized.slice(0, maxChars).trimEnd();
-}
-
-function selectRepresentativeDocuments(
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
-  index: KbIndex,
-  members: string[],
-): RepresentativeDocument[] {
-  const memberSet = new Set(members);
-  const candidates = Object.values(index.entries)
-    .filter((entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry))
-    .map((entry) => {
-      const overlapTags = uniqueSorted(entry.tags.filter((tag) => memberSet.has(tag)));
-      if (overlapTags.length === 0) {
-        return null;
-      }
-
-      return {
-        kind: entry.kind,
-        slug: entry.slug,
-        title: entry.title,
-        overlapTags,
-      };
-    })
-    .filter((entry): entry is RepresentativeDocumentCandidate => entry !== null)
-    .sort((left, right) => {
-      const overlapDiff = right.overlapTags.length - left.overlapTags.length;
-      if (overlapDiff !== 0) {
-        return overlapDiff;
-      }
-
-      if (left.kind !== right.kind) {
-        return left.kind === 'note' ? -1 : 1;
-      }
-
-      const titleCompare = compareLocale(left.title, right.title);
-      if (titleCompare !== 0) {
-        return titleCompare;
-      }
-
-      return compareLocale(left.slug, right.slug);
-    })
-    .slice(0, COMMUNITY_SUMMARY_DOCUMENT_LIMIT);
-
-  return candidates.map((candidate) => {
-    const loaded =
-      candidate.kind === 'note' ? loadKbNote(kb.notePath(candidate.slug)) : loadKbSource(kb.sourcePath(candidate.slug));
-
-    return {
-      kind: candidate.kind,
-      slug: candidate.slug,
-      title: loaded.title,
-      overlapTags: candidate.overlapTags,
-      excerpt: trimSummaryExcerpt(loaded.body, COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS),
-    };
-  });
-}
-
-function representativeDocumentFingerprint(document: RepresentativeDocument): string {
-  return computeTextFingerprint(
-    JSON.stringify({
-      kind: document.kind,
-      slug: document.slug,
-      overlapTags: document.overlapTags,
-      excerpt: document.excerpt,
-    }),
-  );
-}
-
-function leafSummaryFingerprintPayload(
-  community: Pick<DetectedCommunity, 'members'>,
-  index: KbIndex,
-  documents: RepresentativeDocument[],
-): string {
-  const entityMeta = index.entityMeta;
-
-  return JSON.stringify({
-    kind: 'leaf',
-    members: uniqueSorted(community.members),
-    entityMeta: uniqueSorted(community.members).map((member) => {
-      const meta = entityMeta[member];
-      return {
-        member,
-        type: meta?.type ?? '',
-        description: meta?.description ?? '',
-        aliases: [...(meta?.aliases ?? [])].sort(compareLocale),
-      };
-    }),
-    excerpts: documents.map((document) => ({
-      kind: document.kind,
-      slug: document.slug,
-      fingerprint: representativeDocumentFingerprint(document),
-    })),
-  });
-}
-
-function summaryTextFingerprint(summary: string | undefined): string {
-  return computeTextFingerprint((summary ?? '').trim());
-}
-
-function childCommunitiesForCommunity(
-  community: Pick<SummaryFingerprintCommunity, 'children'>,
-  communitiesBySlug: ReadonlyMap<string, SummaryFingerprintCommunity>,
-): ChildCommunitySummary[] {
-  const childReferences = [...(community.children ?? [])].sort((left, right) =>
-    compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)),
-  );
-
-  return childReferences.map((reference) => {
-    const slug = communitySlugFromReference(reference);
-    const child = communitiesBySlug.get(slug);
-    if (child === undefined) {
-      throw new Error(`Missing child community ${reference} while computing parent summary dependencies.`);
-    }
-    if (child.summary === undefined) {
-      throw new Error(`Missing child summary for ${reference} while computing parent summary dependencies.`);
-    }
-
-    return {
-      slug: child.slug,
-      title: child.title,
-      members: child.members,
-      summary: child.summary,
-    };
-  });
-}
-
-function parentSummaryFingerprintPayload(
-  community: Pick<DetectedCommunity, 'members'>,
-  childCommunities: ChildCommunitySummary[],
-): string {
-  return JSON.stringify({
-    kind: 'parent',
-    members: uniqueSorted(community.members),
-    children: childCommunities.map((child) => ({
-      slug: child.slug,
-      summaryFingerprint: summaryTextFingerprint(child.summary),
-    })),
-  });
-}
-
-export function computeCommunitySummaryInputFingerprintForCommunity(
-  community: SummaryFingerprintCommunity,
-  communitiesBySlug: ReadonlyMap<string, SummaryFingerprintCommunity>,
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
-  index: KbIndex,
-): string {
-  if (community.children === undefined || community.children.length === 0) {
-    return computeTextFingerprint(
-      leafSummaryFingerprintPayload(community, index, selectRepresentativeDocuments(kb, index, community.members)),
-    );
-  }
-
-  return computeTextFingerprint(
-    parentSummaryFingerprintPayload(community, childCommunitiesForCommunity(community, communitiesBySlug)),
-  );
-}
-
-export function computeCommunitySummaryInputFingerprints(
-  communities: SummaryFingerprintCommunity[],
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
-  index: KbIndex,
-): Record<string, string> {
-  const communitiesBySlug = new Map(communities.map((community) => [community.slug, community] as const));
-  const orderedCommunities = [...communities].sort((left, right) => {
-    if (left.level !== right.level) {
-      return left.level - right.level;
-    }
-    return compareLocale(left.slug, right.slug);
-  });
-
-  return Object.fromEntries(
-    orderedCommunities.map((community) => [
-      community.slug,
-      computeCommunitySummaryInputFingerprintForCommunity(community, communitiesBySlug, kb, index),
-    ]),
-  );
-}
-
-function buildLeafCommunitySummaryPrompt(
-  community: Pick<DetectedCommunity, 'members'>,
-  index: KbIndex,
-  documents: RepresentativeDocument[],
-): string {
-  const entityMeta = index.entityMeta;
-  const entityLines = uniqueSorted(community.members).map((member) => {
-    const meta = entityMeta[member];
-    const typeSegment = meta?.type === undefined ? '' : ` (${meta.type})`;
-    const description = meta?.description ?? 'No stored description.';
-    return `- ${member}${typeSegment}: ${description}`;
-  });
-  const excerptBlocks = documents.map((document) =>
-    [
-      `## ${document.kind}:${document.slug}`,
-      `Title: ${document.title}`,
-      `Overlap entities: ${document.overlapTags.join(', ')}`,
-      'Excerpt:',
-      document.excerpt,
-    ].join('\n'),
-  );
-
-  return [
-    'Return plain text only. No heading, bullets, or code fences.',
-    'Write a concise KB community summary in 2-3 sentences.',
-    'Base it only on the entity descriptions and representative excerpts below.',
-    'If the excerpts are mixed, describe the shared thread conservatively and do not invent unsupported claims.',
-    '',
-    'Entity descriptions:',
-    ...entityLines,
-    '',
-    'Representative excerpts:',
-    ...excerptBlocks,
-  ].join('\n');
-}
-
-function buildParentCommunitySummaryPrompt(
-  community: Pick<DetectedCommunity, 'members'>,
-  childCommunities: ChildCommunitySummary[],
-): string {
-  const childBlocks = childCommunities.map((child) =>
-    [
-      `## ${child.slug}`,
-      `Title: ${child.title}`,
-      `Members: ${child.members.join(', ')}`,
-      'Summary:',
-      child.summary,
-    ].join('\n'),
-  );
-
-  return [
-    'Return plain text only. No heading, bullets, or code fences.',
-    'Write a concise KB community summary in 2-3 sentences.',
-    'Base it only on the child community summaries below.',
-    'Synthesize the shared abstraction across the children without inventing unsupported details.',
-    '',
-    'Parent members:',
-    ...community.members.map((member) => `- ${member}`),
-    '',
-    'Child community summaries:',
-    ...childBlocks,
-  ].join('\n');
-}
-
-function normalizeGeneratedSummary(raw: string): string | undefined {
-  const normalized = stripMarkdownCodeFences(raw).replace(/\s+/g, ' ').trim();
-  return normalized ? normalized : undefined;
-}
-
-export async function generateCommunitySummary(options: {
-  community: DetectedCommunity;
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>;
-  index: KbIndex;
-  childCommunities?: ChildCommunitySummary[];
-  priorCommunity?: ExistingGeneratedCommunity;
-  priorSummaryInputFingerprint?: string;
-  runClaude: (prompt: string, extraArgs?: string[], signal?: AbortSignal) => Promise<string>;
-  signal?: AbortSignal;
-}): Promise<string | undefined> {
-  const childCommunities = options.childCommunities?.length ? [...options.childCommunities] : undefined;
-  const summaryInputFingerprint =
-    childCommunities === undefined
-      ? computeTextFingerprint(
-          leafSummaryFingerprintPayload(
-            options.community,
-            options.index,
-            selectRepresentativeDocuments(options.kb, options.index, options.community.members),
-          ),
-        )
-      : computeTextFingerprint(parentSummaryFingerprintPayload(options.community, childCommunities));
-
-  if (
-    options.priorCommunity?.summary !== undefined &&
-    options.priorSummaryInputFingerprint === summaryInputFingerprint
-  ) {
-    return options.priorCommunity.summary;
-  }
-
-  const prompt =
-    childCommunities === undefined
-      ? buildLeafCommunitySummaryPrompt(
-          options.community,
-          options.index,
-          selectRepresentativeDocuments(options.kb, options.index, options.community.members),
-        )
-      : buildParentCommunitySummaryPrompt(options.community, childCommunities);
-
-  const rawSummary = await options.runClaude(prompt, undefined, options.signal);
-  const summary = normalizeGeneratedSummary(rawSummary);
-  if (summary === undefined) {
-    throw new Error(`Community summary returned empty text for ${options.community.slug}.`);
-  }
-
-  return summary;
 }

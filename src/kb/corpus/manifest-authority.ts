@@ -17,14 +17,7 @@ import {
   computeMetadataSurfaceHash,
   type CanonicalFrontmatterRecord,
 } from './snapshot.js';
-
-export type ManifestAuthorityLane = 'content' | 'metadata';
-
-export type ManifestAuthorityDelta = {
-  lane: ManifestAuthorityLane;
-  manifestId: string;
-  surfaceHash: string | null;
-};
+import type { ManifestAuthorityDelta, ManifestAuthorityLane } from './manifest-types.js';
 
 export type FullManifestSurfaceHashes = {
   content: Map<string, string>;

@@ -306,10 +306,10 @@ describe('planRecovery', () => {
     ])
   })
 
-  it('returns markError with stale_status_schema for incompatible live jobs', () => {
-    const status = makeStatus('incompatible-job', 'launching')
+  it('returns markError with stale_status_schema for live jobs missing launch records', () => {
+    const status = makeStatus('missing-launch-job', 'launching')
     const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'incompatible-job',
+      jobId: 'missing-launch-job',
       status,
       hasLaunch: false,
     })
@@ -319,7 +319,7 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([
       {
         type: 'markError',
-        jobId: 'incompatible-job',
+        jobId: 'missing-launch-job',
         fault: { kind: 'stale_status_schema' },
         status,
       },
@@ -692,8 +692,8 @@ describe('planRecovery', () => {
           hasLaunch: true,
         })
         .addJob({
-          jobId: 'incompatible',
-          status: makeStatus('incompatible', 'launching'),
+          jobId: 'missing-launch',
+          status: makeStatus('missing-launch', 'launching'),
           hasLaunch: false,
         })
         .addJob({
@@ -762,7 +762,7 @@ describe('planRecovery', () => {
     ])
     expect(summarizeActions(plan.cleanup)).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'incomplete' },
-      { type: 'markError', jobId: 'incompatible', fault: 'stale_status_schema' },
+      { type: 'markError', jobId: 'missing-launch', fault: 'stale_status_schema' },
       { type: 'markError', jobId: 'ghost', fault: 'ghost_launch' },
       {
         type: 'releaseSessionClaim',

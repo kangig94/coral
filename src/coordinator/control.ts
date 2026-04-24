@@ -362,6 +362,7 @@ async function runLifecycleStartup({
     registerBuiltInProvidersFn(providerRegistry);
     try {
       const kbSub = await createKbSubsystemFn({
+        db: progressStore.getDb(),
         pluginRoot,
         spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
         processPort: runtime.process,

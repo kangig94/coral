@@ -14,6 +14,7 @@ import {
   equipmentViewResolvers,
   seedNeedleRouteState,
 } from '#tests/unit/kb/equipment-test-helpers.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -74,7 +75,6 @@ async function loadKbModules() {
     searchKb,
     reindex,
     createKbRuntime: runtime.createKbRuntime,
-    captureKbCorpusSnapshot: runtime.captureKbCorpusSnapshot,
     paths,
   };
 }
@@ -94,6 +94,7 @@ function createRuntime(
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
+    db: createKbTestDb(paths.kbRuntimeDir()),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -778,7 +779,7 @@ describe('kb search', () => {
   });
 
   it('fuses Orama and vector ranks with RRF for note and source entries', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.sourcesDir(), { recursive: true });
@@ -797,7 +798,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'beta:0', entryId: 'note:beta-archive', score: 0.99 },
         { chunkId: 'gamma:0', entryId: 'source:gamma-reference', score: 0.98 },
@@ -878,7 +879,7 @@ describe('kb search', () => {
   });
 
   it('routes explicit vector search through needle when equipment content manifests match', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -892,7 +893,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'needle:0', entryId: 'note:needle-beta', score: 0.99 },
         { chunkId: 'needle:1', entryId: 'note:needle-alpha', score: 0.97 },
@@ -907,7 +908,7 @@ describe('kb search', () => {
   });
 
   it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -921,7 +922,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    const routeState = seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
+    const routeState = seedNeedleRouteState(kb, kb.captureCorpusSnapshot());
 
     const searchVector = vi.fn().mockImplementation(async (_query: Float32Array, candidateK: number) => {
       if (candidateK === 2) {
@@ -964,7 +965,7 @@ describe('kb search', () => {
     routerMockState.resolveVectorRoute = asUnknownHandler(resolveVectorRouteSpy);
     routerMockState.createRouter = asUnknownHandler(createRouterSpy);
 
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -974,7 +975,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-note', score: 0.99 }]),
     });
 
@@ -993,7 +994,7 @@ describe('kb search', () => {
   });
 
   it('filters vector-only hits to the requested source scope', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.sourcesDir(), { recursive: true });
@@ -1008,7 +1009,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'note:0', entryId: 'note:vector-note', score: 0.99 },
         { chunkId: 'source:0', entryId: 'source:vector-source', score: 0.97 },
@@ -1024,7 +1025,7 @@ describe('kb search', () => {
   });
 
   it('keeps communities text-only in all scope while allowing vector-backed note results', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.communitiesDir(), { recursive: true });
@@ -1044,7 +1045,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
     });
 
@@ -1058,7 +1059,7 @@ describe('kb search', () => {
   });
 
   it('keeps community-only searches in pure text mode even when vector search is configured', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.communitiesDir(), { recursive: true });
 
@@ -1073,7 +1074,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([]),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     });
@@ -1086,7 +1087,7 @@ describe('kb search', () => {
   });
 
   it('keeps hybrid search enabled when only metadataSeq advances beyond the vector snapshot', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -1096,7 +1097,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    const snapshot = captureKbCorpusSnapshot(kb);
+    const snapshot = kb.captureCorpusSnapshot();
     const routeState = seedNeedleRouteState(
       kb,
       {
@@ -1122,7 +1123,7 @@ describe('kb search', () => {
   });
 
   it('falls back to text mode when the vector snapshot lags behind contentSeq', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -1132,7 +1133,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    const snapshot = captureKbCorpusSnapshot(kb);
+    const snapshot = kb.captureCorpusSnapshot();
     const routeState = seedNeedleRouteState(
       kb,
       {
@@ -1158,7 +1159,7 @@ describe('kb search', () => {
   });
 
   it('falls back to text mode when vector query embedding fails', async () => {
-    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -1168,7 +1169,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi
         .fn()
         .mockResolvedValue([{ chunkId: 'rendering:0', entryId: 'note:rendering-guides', score: 0.99 }]),

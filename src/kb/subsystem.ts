@@ -17,7 +17,7 @@ export type KnowledgeBaseRuntime = {
 };
 
 export type CreateKbSubsystemOptions = {
-  db?: Database;
+  db: Database;
   pluginRoot: string;
   spawnCli: SpawnCliFn;
   getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
@@ -43,8 +43,8 @@ export async function createKbSubsystem({
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
+    db,
     ...(getEquipmentView === undefined ? {} : { getEquipmentView }),
-    ...(db === undefined ? {} : { db }),
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {
     kb.register({

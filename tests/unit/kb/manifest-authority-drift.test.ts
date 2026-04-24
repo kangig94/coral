@@ -8,7 +8,7 @@ import { update } from '#src/kb/ops/update.js';
 import { persistPreparedSource } from '#src/kb/ops/source-store.js';
 import { promote } from '#src/kb/ops/promote.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime, getManifestAuthorityHash, writeEntityGraphLocked } from '#src/kb/runtime.js';
+import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
@@ -22,6 +22,7 @@ import { applyDetectedIncidentFixes } from '#src/kb/corpus/repair/fix.js';
 import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '#src/kb/corpus/repair/incident-ids.js';
 import type { DetectedIncident } from '#src/kb/corpus/repair/corpus-scan.js';
 import type { SpawnCliFn } from '#src/kb/curate/types.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
@@ -125,6 +126,7 @@ async function createRuntimeFixture(
   const kb = createKbRuntime({
     markdownRoot: root,
     runtimeDir: root,
+    db: createKbTestDb(root),
   });
   openDatabases.push(kb.db);
 
@@ -148,8 +150,9 @@ function setProcessedThrough(kb: KbRuntime, slug: string, entrySeq: number): voi
 }
 
 function assertAuthorityMatchesDisk(kb: KbRuntime): void {
-  expect(getManifestAuthorityHash(kb, 'content')).toBe(computeFullCollectorManifestHash(kb, 'content'));
-  expect(getManifestAuthorityHash(kb, 'metadata')).toBe(computeFullCollectorManifestHash(kb, 'metadata'));
+  const snapshot = kb.captureCorpusSnapshot();
+  expect(snapshot.contentManifestHash).toBe(computeFullCollectorManifestHash(kb, 'content'));
+  expect(snapshot.metadataManifestHash).toBe(computeFullCollectorManifestHash(kb, 'metadata'));
 }
 
 function discoverySpawn(stdout: string): SpawnCliFn {
@@ -217,7 +220,7 @@ describe('manifest authority drift checks (AC2)', () => {
       },
     },
     {
-      name: 'writeEntityGraphLocked',
+      name: 'writeEntityGraph',
       run: async () => {
         const fixture = await createRuntimeFixture((root) => {
           writeRootNote(
@@ -248,8 +251,8 @@ describe('manifest authority drift checks (AC2)', () => {
           ],
         };
 
-        await fixture.kb.withMutationLock(() => {
-          writeEntityGraphLocked(fixture.kb, graph);
+        await fixture.kb.withMutationLock((mutation) => {
+          mutation.writeEntityGraph(graph);
         });
 
         assertAuthorityMatchesDisk(fixture.kb);
@@ -364,9 +367,10 @@ describe('manifest authority drift checks (AC2)', () => {
       run: async () => {
         const fixture = await createRuntimeFixture(() => {}, { reindexOnBoot: false });
 
-        await fixture.kb.withMutationLock(() => {
+        await fixture.kb.withMutationLock((mutation) => {
           generateCommunityFiles(
             fixture.kb,
+            mutation,
             [
               {
                 slug: 'retrieval-community',

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -68,6 +69,7 @@ describe('kb detection and paths', () => {
     const kb = createKbRuntime({
       markdownRoot: infraPaths.kbRoot(),
       runtimeDir: paths.kbRuntimeDir(),
+      db: createKbTestDb(paths.kbRuntimeDir()),
     });
 
     expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
@@ -109,6 +111,7 @@ describe('kb detection and paths', () => {
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
+      db: createKbTestDb(paths.kbRuntimeDir()),
     });
     const pluginRoot = join(mockState.tmpHome, 'plugin');
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
@@ -124,6 +127,7 @@ describe('kb detection and paths', () => {
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
+      db: createKbTestDb(paths.kbRuntimeDir()),
     });
 
     try {
@@ -148,6 +152,7 @@ describe('kb detection and paths', () => {
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
+      db: createKbTestDb(paths.kbRuntimeDir()),
     });
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });

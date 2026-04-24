@@ -202,6 +202,7 @@ async function createHarness(options?: {
   const kb = createKbRuntime({
     markdownRoot: vaultDir,
     runtimeDir,
+    db,
     corpusPublishCallbacks: {
       async persistCorpusState(snapshot) {
         persistAttempt += 1;
@@ -562,8 +563,8 @@ describe('Corpus notify E2E', () => {
         firstMutationReady = resolve;
       });
 
-      const first = harness.kb.withMutationLock(async () => {
-        await applyNoteUpdateLocked(harness.kb, {
+      const first = harness.kb.withMutationLock(async (mutation) => {
+        await applyNoteUpdateLocked(harness.kb, mutation, {
           note: 'coral-alpha',
           content: 'First lock mutation.',
         });
@@ -573,9 +574,10 @@ describe('Corpus notify E2E', () => {
 
       await firstMutationStarted;
       const updatedAt = readNoteUpdatedAt(harness);
-      const second = harness.kb.withMutationLock(async () => {
+      const second = harness.kb.withMutationLock(async (mutation) => {
         await commitMetadataTargetsLocked(
           harness.kb,
+          mutation,
           [
             {
               kind: 'note',

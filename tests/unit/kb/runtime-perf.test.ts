@@ -30,6 +30,7 @@ import type * as MetadataCommitModule from '#src/kb/curate/metadata-commit.js';
 import type * as PrinciplesModule from '#src/kb/curate/principles.js';
 import type * as GitSyncModule from '#src/kb/curate/git-sync.js';
 import type * as ReindexModule from '#src/kb/ops/reindex.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 type LoadedPerfModules = {
   runtime: typeof RuntimeModule;
@@ -189,6 +190,7 @@ describe('runtime hot-path perf regressions (AC2/AC6)', () => {
     const kb = runtime.createKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
+      db: createKbTestDb(tempRoot),
     });
     await reindex.reindex(kb);
     await kb.ensureOramaIndex();
@@ -246,6 +248,7 @@ describe('runtime hot-path perf regressions (AC2/AC6)', () => {
     const kb = runtime.createKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
+      db: createKbTestDb(tempRoot),
     });
     kb.readIndex();
     clearFsObservability();

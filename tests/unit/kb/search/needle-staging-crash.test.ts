@@ -14,7 +14,7 @@ import { applyMigrations } from '#src/store/migrations.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime, captureKbCorpusSnapshot } from '#src/kb/runtime.js';
+import { createKbRuntime } from '#src/kb/runtime.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import {
   __setNeedleBackendStagingHookForTests,
@@ -348,7 +348,7 @@ describe('needle staging crash replay', () => {
 
     try {
       await reindex(firstRuntime);
-      const publishedSnapshot = captureKbCorpusSnapshot(firstRuntime);
+      const publishedSnapshot = firstRuntime.captureCorpusSnapshot();
       const persistedPublication = persistCorpusState(db, publishedSnapshot, {
         now: () => FIXED_NOW,
       });

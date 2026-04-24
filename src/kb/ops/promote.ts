@@ -9,7 +9,6 @@ import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import { buildNoteIndexEntry } from '../corpus/index-records.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { currentEntrySeq } from '../index-state.js';
 
 export async function promote(
@@ -37,7 +36,7 @@ export async function promote(
     throw new Error(`Memo file not found: ${memoPath}`);
   }
 
-  const result = await rt.withMutationLock(async () => {
+  const result = await rt.withMutationLock(async (mutation) => {
     if (existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
@@ -58,7 +57,7 @@ export async function promote(
     const noteContent = serializeNote(noteMeta, title, content);
 
     writeFileAtomic(notePath, noteContent);
-    queueManifestAuthorityDelta(rt, captureNoteManifestDeltas(note, noteContent));
+    mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(note, noteContent));
 
     commitIndexUpdate(rt, (index) => {
       setEntry(

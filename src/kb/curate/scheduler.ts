@@ -29,7 +29,6 @@ import {
   type CurateState,
 } from './state.js';
 import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './types.js';
-import { createRealRuntime } from '../../runtime/real.js';
 
 export type {
   ClassificationAssignment,
@@ -87,9 +86,9 @@ export function createCurateScheduler({
 }: {
   kb: KbRuntime;
   spawnCli: SpawnCliFn;
-  processPort?: GitSyncRuntimePicks['processPort'];
-  storagePort?: GitSyncRuntimePicks['storagePort'];
-  envPort?: GitSyncRuntimePicks['envPort'];
+  processPort: GitSyncRuntimePicks['processPort'];
+  storagePort: GitSyncRuntimePicks['storagePort'];
+  envPort: GitSyncRuntimePicks['envPort'];
   scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
@@ -101,21 +100,12 @@ export function createCurateScheduler({
   let debounceTimer: NodeJS.Timeout | null = null;
   let pendingCommunitySkipTicks = 0;
 
-  const ports = ((): GitSyncRuntimePicks => {
-    if (processPort && storagePort && envPort) {
-      return { processPort, storagePort, envPort };
-    }
-    const fallback = createRealRuntime();
-    return {
-      processPort: processPort ?? fallback.process,
-      storagePort: storagePort ?? fallback.storage,
-      envPort: envPort ?? fallback.env,
-    };
-  })();
   const gitSync = createGitSyncController({
     kb,
     spawnCli,
-    ...ports,
+    processPort,
+    storagePort,
+    envPort,
   });
 
   function clearRetryWake(): void {

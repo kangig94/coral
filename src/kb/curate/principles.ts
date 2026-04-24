@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../contracts.js';
 import {
   capturePrincipleManifestDelta,
   captureRemovedPrincipleManifestDelta,
@@ -12,7 +12,6 @@ import { markTextIndexStale, recordMetadataMutation } from '../corpus/index-muta
 import { cloneKbIndex } from '../corpus/index-records.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
-import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,
@@ -151,6 +150,7 @@ export async function removePendingDiscovery(kb: KbRuntime, entry: PendingDiscov
 
 function ensurePrincipleDocumentLocked(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   entry: PendingDiscovery,
   state: CurateState,
 ): EnsurePrincipleDocumentResult {
@@ -179,7 +179,7 @@ function ensurePrincipleDocumentLocked(
   recordMetadataMutation(kb, CURATE_STALE_REASON);
   const principleDocument = serializePrincipleDocument(entry.statement, entry.createdAt);
   writeFileAtomic(principlePath, principleDocument);
-  queueManifestAuthorityDelta(kb, capturePrincipleManifestDelta(entry.principle, principleDocument));
+  mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, principleDocument));
   nextIndex.principles[entry.principle] = entry.statement;
   kb.writeIndex(nextIndex);
   return {
@@ -208,12 +208,12 @@ function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, proce
 }
 
 async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCursor): Promise<void> {
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     let state = readCurateState(kb);
     const pendingDiscoveries = state.pendingDiscoveries;
 
     for (const entry of pendingDiscoveries) {
-      const principleDocument = ensurePrincipleDocumentLocked(kb, entry, state);
+      const principleDocument = ensurePrincipleDocumentLocked(kb, mutation, entry, state);
       state = principleDocument.state;
 
       if (principleDocument.status === 'conflict') {
@@ -228,7 +228,7 @@ async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCu
         processedThrough,
       );
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
       }
 
       if (pendingDiscoverySatisfied(kb, entry, processedThrough)) {
@@ -269,7 +269,7 @@ export async function runPrincipleDiscovery(
   }
   const proposals = validateDiscoveryProposals(parsed.proposals, eligibleNotes, currentIndex.principles);
 
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     const refreshedState = readCurateState(kb);
     const refreshedIndex = kb.readIndexOrEmpty();
     const refreshedBatch = prepareDiscoveryBatch(refreshedIndex, refreshedState, processedThrough);
@@ -297,7 +297,7 @@ export async function runPrincipleDiscovery(
 
       state = addPendingDiscoveryLocked(kb, state, entry);
       const isRefineProposal = index.principles[proposal.slug] !== undefined && (proposal.absorbs?.length ?? 0) === 0;
-      const principleDocument = ensurePrincipleDocumentLocked(kb, entry, state);
+      const principleDocument = ensurePrincipleDocumentLocked(kb, mutation, entry, state);
       state = principleDocument.state;
       index = kb.readIndexOrEmpty();
 
@@ -332,7 +332,7 @@ export async function runPrincipleDiscovery(
           '',
         ].join('\n');
         writeFileAtomic(principlePath, nextRaw);
-        queueManifestAuthorityDelta(kb, capturePrincipleManifestDelta(entry.principle, nextRaw));
+        mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, nextRaw));
         recordMetadataMutation(kb, CURATE_STALE_REASON);
         const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());
         nextIndex.principles[entry.principle] = entry.statement;
@@ -350,7 +350,7 @@ export async function runPrincipleDiscovery(
         repairFrontier,
       ).map(({ target }) => target);
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
         index = kb.readIndexOrEmpty();
       }
 
@@ -373,7 +373,7 @@ export async function runPrincipleDiscovery(
         }
 
         unlinkIfExists(kb.principlePath(absorbSlug));
-        queueManifestAuthorityDelta(kb, captureRemovedPrincipleManifestDelta(absorbSlug));
+        mutation.queueManifestAuthorityDelta(captureRemovedPrincipleManifestDelta(absorbSlug));
         delete nextIndex.principles[absorbSlug];
       }
       recordMetadataMutation(kb, CURATE_STALE_REASON);
@@ -409,7 +409,7 @@ export async function runPrincipleDiscovery(
       }
 
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
         index = kb.readIndexOrEmpty();
       }
     }

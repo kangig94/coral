@@ -71,7 +71,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       );
       switch (action.fault.kind) {
         case 'stale_status_schema':
-          log(`Marked incompatible old-format job: ${action.jobId}\n`);
+          log(`Marked live job with missing launch record: ${action.jobId}\n`);
           break;
         case 'ghost_launch':
           log(`Marked ghost launch job: ${action.jobId}\n`);
@@ -133,7 +133,7 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
     case 'markError':
       switch (action.fault.kind) {
         case 'stale_status_schema':
-          log(`Failed to handle incompatible job ${action.jobId}: ${formatError(error)}\n`);
+          log(`Failed to handle live job with missing launch record ${action.jobId}: ${formatError(error)}\n`);
           break;
         case 'ghost_launch':
           log(`Failed to handle ghost launch job ${action.jobId}: ${formatError(error)}\n`);

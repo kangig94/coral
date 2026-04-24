@@ -10,7 +10,6 @@ import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/i
 import { buildSourceIndexEntry } from '../corpus/index-records.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import {
   deleteEntry,
   isSourceEntry,
@@ -46,7 +45,7 @@ export async function persistPreparedSource(
 ): Promise<{ slug: string; path: string }> {
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
-  return kb.withMutationLock(async () => {
+  return kb.withMutationLock(async (mutation) => {
     const filePath = kb.sourcePath(normalizedSlug);
     const principlePath = kb.principlePath(normalizedSlug);
     const stagedCandidate = assertWithin(kb.sourceImportStageDir(), stagedPath, 'KB source staged markdown path');
@@ -71,7 +70,7 @@ export async function persistPreparedSource(
       const persistedSource = replaceSourceFrontmatter(renderedSource, persistedMeta);
 
       writeFileAtomic(filePath, persistedSource);
-      queueManifestAuthorityDelta(kb, captureSourceManifestDeltas(normalizedSlug, persistedSource));
+      mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(normalizedSlug, persistedSource));
 
       commitIndexUpdate(kb, (index) => {
         setEntry(
@@ -96,7 +95,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
   const slug = assertSourceSlug(input.slug, 'source');
   const sourcePath = rt.sourcePath(slug);
 
-  return rt.withMutationLock(async () => {
+  return rt.withMutationLock(async (mutation) => {
     try {
       rmSync(sourcePath);
     } catch (error: unknown) {
@@ -106,7 +105,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
       throw error;
     }
 
-    queueManifestAuthorityDelta(rt, captureRemovedSourceManifestDeltas(slug));
+    mutation.queueManifestAuthorityDelta(captureRemovedSourceManifestDeltas(slug));
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_source_delete.');
     commitIndexUpdate(rt, (index) => {
       deleteEntry(index, sourceEntryId(slug));

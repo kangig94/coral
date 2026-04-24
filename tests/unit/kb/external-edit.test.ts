@@ -19,8 +19,9 @@ vi.mock('#src/kb/search/embedding.js', () => ({
 
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
-import { captureKbCorpusSnapshot, createKbRuntime } from '#src/kb/runtime.js';
+import { createKbRuntime } from '#src/kb/runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 type StoredOramaDocument = {
   title: string;
@@ -63,6 +64,7 @@ function createRegisteredRuntime(root: string): KbRuntime {
   const kb = createKbRuntime({
     markdownRoot: root,
     runtimeDir: root,
+    db: createKbTestDb(root),
   });
   openDatabases.push(kb.db);
   kb.register({
@@ -81,7 +83,7 @@ async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
 }
 
 function persistCurrentSnapshot(kb: KbRuntime): void {
-  persistCorpusState(kb.db, captureKbCorpusSnapshot(kb));
+  persistCorpusState(kb.db, kb.captureCorpusSnapshot());
   kb.invalidateCorpusStateSnapshot();
 }
 

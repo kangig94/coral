@@ -40,7 +40,7 @@ import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
 import { loadKbNote } from '../read.js';
 import { assertCommunitySlug, assertSourceSlug } from '../validation.js';
 import { createOramaDb, toOramaDocument } from '../orama-factory.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../contracts.js';
+import type { KbIndexMutationLane, KbIndexState, KbMutationEffects, KbRuntime } from '../contracts.js';
 import {
   communityEntryId,
   isCommunityEntry,
@@ -433,6 +433,7 @@ function normalizedCommunitySummaryFingerprints(
 
 function prepareCommunityTopologyRefresh(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   index: KbIndex,
 ): {
   topologyHash: string;
@@ -465,7 +466,7 @@ function prepareCommunityTopologyRefresh(
     priorGeneratedCommunities,
     today: new Date().toISOString().slice(0, 10),
   });
-  generateCommunityFiles(kb, communityDocuments, priorGeneratedCommunities);
+  generateCommunityFiles(kb, mutation, communityDocuments, priorGeneratedCommunities);
 
   return {
     topologyHash,
@@ -729,6 +730,7 @@ function persistPendingRepair(kb: KbRuntime, pendingRepair: PendingRepair[] | nu
  */
 export async function rebuildTextArtifacts(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
 ): Promise<{
   notes: KbReindexNoteRecord[];
@@ -748,7 +750,7 @@ export async function rebuildTextArtifacts(
   const pendingRepair = [...malformedNotes, ...malformedSources];
   const rebuildInfo = detectTextArtifactRebuildInfo(kb);
   const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
-  const topologyRefresh = prepareCommunityTopologyRefresh(kb, topologyIndex);
+  const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   const communities = loadCommunities(kb);
   const index = buildKbIndex(kb, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
@@ -826,10 +828,11 @@ export async function rebuildTextArtifacts(
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
 ): Promise<Awaited<ReturnType<typeof rebuildTextArtifacts>>> {
   try {
-    const result = await rebuildTextArtifacts(kb, startState);
+    const result = await rebuildTextArtifacts(kb, mutation, startState);
     persistPendingRepair(kb, result.pendingRepair);
     return result;
   } catch (error: unknown) {

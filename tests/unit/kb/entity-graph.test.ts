@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
+import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 function createGraph(): EntityGraph {
   return {
@@ -41,6 +42,7 @@ describe('entity-graph', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
+      db: createKbTestDb(root),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn');
 
@@ -60,6 +62,7 @@ describe('entity-graph', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
+      db: createKbTestDb(root),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
@@ -101,6 +104,7 @@ describe('entity-graph', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
+      db: createKbTestDb(root),
     });
 
     kb.writeIndex({
@@ -135,6 +139,7 @@ describe('entity-graph', () => {
     const kb = createKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
+      db: createKbTestDb(root),
     });
 
     writeFileSync(

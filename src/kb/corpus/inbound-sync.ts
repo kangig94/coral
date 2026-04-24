@@ -25,8 +25,8 @@ import {
   captureSourceManifestDeltas,
   collectFullManifestSurfaceHashes,
   type ManifestAuthority,
-  type ManifestAuthorityDelta,
 } from './manifest-authority.js';
+import type { ManifestAuthorityDelta } from './manifest-types.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import {
   type CanonicalFrontmatterRecord,
