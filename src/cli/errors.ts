@@ -1,6 +1,6 @@
 import { CommanderError } from 'commander';
 
-import { BackendToolHttpError } from '../transport/http/client-errors.js';
+import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';

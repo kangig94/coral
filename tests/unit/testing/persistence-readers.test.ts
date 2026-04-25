@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { currentBuildFlavor } from '#src/infra/paths.js';
+import { currentBuildFlavor } from '#src/infra/build-flavor.js';
 import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';

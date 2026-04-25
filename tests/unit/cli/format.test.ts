@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BackendToolHttpError } from '#src/transport/http/client-errors.js';
+import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import type { BackendStatusFull } from '#src/transport/http/backend-status.js';
 import type { ShutdownResult } from '#src/transport/http/backend-shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/transport/http/client.js';

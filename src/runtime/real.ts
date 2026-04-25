@@ -22,10 +22,8 @@ import {
 import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/coral-paths.js';
-import {
-  getSettledBuildFlavor,
-  resolveProjectSource,
-} from '../infra/paths.js';
+import { resolveProjectSource } from '../infra/paths.js';
+import { getSettledBuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/coral-paths.js';
 import type {
   ChildProcessLike,

@@ -1,14 +1,25 @@
+import { join } from 'node:path';
+
 import type { BuildFlavor } from './build-flavor.js';
-import type { StorePaths } from './store-paths.js';
-import { storePaths } from './store-paths.js';
-import type { CorpusPaths } from './corpus-paths.js';
-import { corpusPaths } from './corpus-paths.js';
 import type { CoordinatorPaths } from './coordinator-paths.js';
 import { coordinatorPaths } from './coordinator-paths.js';
-import type { ExportsPaths } from './exports-paths.js';
-import { exportsPaths } from './exports-paths.js';
 import type { EquipmentPaths } from './equipment-paths.js';
 import { equipmentPaths } from './equipment-paths.js';
+import { coralRoot, kbRoot } from './paths.js';
+import type { StorePaths } from './store-paths.js';
+import { storePaths } from './store-paths.js';
+
+export interface CorpusPaths {
+  kbRoot: string;
+  notesDir: string;
+  sourcesDir: string;
+  principlesDir: string;
+  communitiesDir: string;
+}
+
+export interface ExportsPaths {
+  jobsRoot: string;
+}
 
 export type CoralPaths = {
   readonly store: StorePaths;
@@ -17,6 +28,32 @@ export type CoralPaths = {
   readonly exports: ExportsPaths;
   readonly equipment: EquipmentPaths;
 };
+
+export interface CorpusPathOptions {
+  readonly baseDir?: string;
+}
+
+export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
+  const kbRootDir = kbRoot(flavor, opts?.baseDir);
+  return {
+    kbRoot: kbRootDir,
+    notesDir: join(kbRootDir, 'notes'),
+    sourcesDir: join(kbRootDir, 'sources'),
+    principlesDir: join(kbRootDir, 'principles'),
+    communitiesDir: join(kbRootDir, 'communities'),
+  };
+}
+
+export interface ExportsPathOptions {
+  readonly baseDir?: string;
+}
+
+export function exportsPaths(flavor: BuildFlavor, opts?: ExportsPathOptions): ExportsPaths {
+  const base = flavor === 'dev' ? 'exports-dev' : 'exports';
+  return {
+    jobsRoot: join(coralRoot(opts?.baseDir), base, 'jobs'),
+  };
+}
 
 export function composeCoralPaths(flavor: BuildFlavor): CoralPaths {
   return Object.freeze({

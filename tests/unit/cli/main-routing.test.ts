@@ -78,7 +78,7 @@ const mockHttpErrors = vi.hoisted(() => {
   return { BackendToolHttpError };
 });
 
-vi.mock('#src/transport/http/client-errors.js', () => mockHttpErrors);
+vi.mock('#src/transport/http/errors.js', () => mockHttpErrors);
 
 vi.mock('#src/transport/http/client.js', () => ({
   BackendToolHttpError: mockHttpErrors.BackendToolHttpError,

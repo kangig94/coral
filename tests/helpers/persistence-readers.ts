@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { currentBuildFlavor } from '#src/infra/paths.js';
+import { currentBuildFlavor } from '#src/infra/build-flavor.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { JobProgress, JobStatus } from '#src/jobs/records.js';
 import { sessionEntrySchema, type SessionEntry } from '#src/sessions/entry.js';

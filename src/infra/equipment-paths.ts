@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { BuildFlavor } from './build-flavor.js';
-import { resolveBuildFlavor } from './build-flavor.js';
-import { coralRoot, getSettledBuildFlavor } from './paths.js';
+import { getSettledBuildFlavor, resolveBuildFlavor } from './build-flavor.js';
+import { coralRoot } from './paths.js';
 
 export interface EquipmentPaths {
   equipmentRoot: string;

@@ -76,7 +76,8 @@ describe('coordinator discovery', () => {
 
   it('probeCoordinator returns the record when pid and process start time match', async () => {
     makeHome();
-    const { probeCoordinator, probeProcessStartedAtSeconds, writeDiscoveryRecord } = await importDiscovery();
+    const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
+    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
 
     writeDiscoveryRecord('dev', {
       pid: process.pid,
@@ -102,7 +103,8 @@ describe('coordinator discovery', () => {
 
   it('probeCoordinator rejects a record when processStartedAt does not match the live process', async () => {
     makeHome();
-    const { probeCoordinator, probeProcessStartedAtSeconds, writeDiscoveryRecord } = await importDiscovery();
+    const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
+    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
 
     writeDiscoveryRecord('prod', {
       pid: process.pid,

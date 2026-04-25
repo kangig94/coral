@@ -14,7 +14,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { currentBuildFlavor, pluginRootNamespace } from '#src/infra/paths.js';
+import { currentBuildFlavor } from '#src/infra/build-flavor.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';

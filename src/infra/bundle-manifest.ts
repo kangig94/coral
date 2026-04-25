@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { BuildFlavor } from './build-flavor.js';
 import { isRecord } from './json.js';
 
 function readBundleManifest(pluginRoot: string): unknown {
@@ -20,7 +21,7 @@ export function readBundleHash(pluginRoot: string): string {
   return 'unknown';
 }
 
-export function readBuildFlavor(pluginRoot: string): 'prod' | 'dev' {
+export function readBuildFlavor(pluginRoot: string): BuildFlavor {
   const parsed = readBundleManifest(pluginRoot);
   return isRecord(parsed) && parsed.flavor === 'dev' ? 'dev' : 'prod';
 }

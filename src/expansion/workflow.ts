@@ -2,7 +2,7 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { EquipmentView } from './equipment-contract.js';
-import { currentBuildFlavor } from '../infra/paths.js';
+import { currentBuildFlavor } from '../infra/build-flavor.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { readEquipmentStatus, activateExpansion, deactivateExpansion, type ActivationDeps } from './activate.js';
 import {

@@ -13,7 +13,7 @@ import type * as ServerMod from '#src/coordinator/coordinator.js';
 import type * as ServerTestDepsMod from '#tests/unit/coordinator/server-test-deps.js';
 import type * as BackendLockMod from '#src/coordinator/lock.js';
 import type * as LifecycleMod from '#src/coordinator/control.js';
-import type * as InfraPathsMod from '#src/infra/paths.js';
+import type * as BuildFlavorMod from '#src/infra/build-flavor.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -342,7 +342,7 @@ async function loadExecutionModules(): Promise<{
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
-  infraPaths: typeof InfraPathsMod;
+  infraPaths: typeof BuildFlavorMod;
 }> {
   vi.resetModules();
   const [serverModule, backendInfo, backendLock, lifecycleModule, infraPaths] = await Promise.all([
@@ -350,7 +350,7 @@ async function loadExecutionModules(): Promise<{
     import('#tests/unit/coordinator/server-test-deps.js').then((module) => module.backendDiscovery),
     import('#src/coordinator/lock.js'),
     import('#src/coordinator/control.js'),
-    import('#src/infra/paths.js'),
+    import('#src/infra/build-flavor.js'),
   ]);
   return { serverModule, backendInfo, backendLock, lifecycleModule, infraPaths };
 }

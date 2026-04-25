@@ -160,3 +160,20 @@ export function composeChildEnv(
     CORAL_CHILD: '1',
   };
 }
+
+/**
+ * Convenience wrapper that reads the live `process.env` and applies the same
+ * sanitization pipeline. Used at provider call sites that don't have an
+ * explicit env captured by the runtime layer.
+ */
+export function buildChildEnv(extraEnv?: Record<string, string>): Record<string, string> {
+  const base = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+  return composeChildEnv(
+    base,
+    extraEnv ?? {},
+    resolveEnvBudgetBytes(),
+    parsePassthrough(process.env.CORAL_ENV_PASSTHROUGH),
+  );
+}

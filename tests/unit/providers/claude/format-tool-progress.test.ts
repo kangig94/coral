@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatToolProgress, shortPath } from '#src/infra/format-progress.js';
+import { formatToolProgress } from '#src/providers/claude/progress.js';
 import { truncate } from '#src/infra/text.js';
 
 const projectRoot = '/repo';
@@ -12,20 +12,6 @@ describe('truncate', () => {
 
   it('truncates text and appends ellipsis when over max length', () => {
     expect(truncate('a'.repeat(81))).toBe(`${'a'.repeat(80)}...`);
-  });
-});
-
-describe('shortPath', () => {
-  it('returns a relative path for absolute files inside projectRoot', () => {
-    expect(shortPath('/repo/src/main.ts', projectRoot)).toBe('src/main.ts');
-  });
-
-  it('returns an absolute path for absolute files outside projectRoot', () => {
-    expect(shortPath('/tmp/src/main.ts', projectRoot)).toBe('/tmp/src/main.ts');
-  });
-
-  it('resolves relative file paths against projectRoot', () => {
-    expect(shortPath('src/main.ts', projectRoot)).toBe('src/main.ts');
   });
 });
 

@@ -2,7 +2,7 @@ import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, typ
 import type { BackendHealth } from './backend-health.js';
 import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-communication.js';
-import { BackendToolHttpError } from './client-errors.js';
+import { BackendToolHttpError } from './errors.js';
 import type { AbortResult } from '../../jobs/abort-result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
@@ -160,7 +160,7 @@ type WorkflowOptions = {
 
 export { isBackendHealth };
 export type { BackendHealth };
-export { BackendToolHttpError } from './client-errors.js';
+export { BackendToolHttpError } from './errors.js';
 export type { InvocationContext } from '../../runtime/invocation-context.js';
 
 export class BackendClient {

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { BackendToolHttpError } from '../transport/http/client-errors.js';
+import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../transport/http/client.js';
 import { createCauseRefRenderer } from '../causality/render.js';
 import { defaultEventDescribers } from '../read-model/event-describers.js';

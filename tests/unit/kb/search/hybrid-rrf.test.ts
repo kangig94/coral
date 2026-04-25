@@ -6,8 +6,23 @@ import type * as NodeOs from 'node:os';
 import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type { ConsumerHandle, ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
-import { runtimeActivationFromHandle } from '#src/coordinator/equipment/runtime-activation.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+
+function runtimeActivationFromHandle(
+  retrieval: VectorRetrieval,
+  handle: ConsumerHandle,
+): KbRuntimeActivationSnapshot {
+  const status = handle.status();
+  if (status.authority !== 'corpus') {
+    return { retrieval, snapshotId: null, contentSeq: 0, contentManifestHash: null };
+  }
+  return {
+    retrieval,
+    snapshotId: status.snapshotId,
+    contentSeq: status.contentSeq,
+    contentManifestHash: status.contentManifestHash,
+  };
+}
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import { createHybridFusion } from '#src/kb/search/hybrid.js';
 import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from '#src/kb/search/contract.js';

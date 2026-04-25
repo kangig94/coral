@@ -9,10 +9,8 @@ import type {
   SpawnListener,
 } from '../../../src/runtime/ports.js';
 import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
-import type { CoralPaths } from '../../../src/infra/coral-paths.js';
+import { corpusPaths, exportsPaths, type CoralPaths } from '../../../src/infra/coral-paths.js';
 import { equipmentPaths } from '../../../src/infra/equipment-paths.js';
-import { exportsPaths } from '../../../src/infra/exports-paths.js';
-import { corpusPaths } from '../../../src/infra/corpus-paths.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
 import { storePaths } from '../../../src/infra/store-paths.js';
 import { cloneSpawnEvent } from '../../../src/runtime/spawn.js';

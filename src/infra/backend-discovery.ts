@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './coral-paths.js';
 import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
-import { probeProcessStartedAtSeconds as sharedProbeProcessStartedAtSeconds } from './node-process.js';
+import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { readBuildFlavor } from './bundle-manifest.js';
 import { coordinatorPaths } from './coordinator-paths.js';
@@ -48,7 +48,6 @@ type ResolvedDiscoveryRuntime = {
 };
 
 const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
-export const probeProcessStartedAtSeconds = sharedProbeProcessStartedAtSeconds;
 
 function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | null {
   if (!value || typeof value !== 'object') {

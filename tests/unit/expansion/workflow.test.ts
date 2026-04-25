@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setBuildFlavor } from '#src/infra/paths.js';
+import { setBuildFlavor } from '#src/infra/build-flavor.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';

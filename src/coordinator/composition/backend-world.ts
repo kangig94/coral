@@ -2,7 +2,8 @@ declare const __VERSION__: string;
 
 import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
-import { pluginRootNamespace, setBuildFlavor } from '../../infra/paths.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
+import { setBuildFlavor } from '../../infra/build-flavor.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';

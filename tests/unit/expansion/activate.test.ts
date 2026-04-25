@@ -133,7 +133,7 @@ describe('expansion activation (AC6)', () => {
     try {
       const [{ setBuildFlavor }, { writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
         await Promise.all([
-          import('#src/infra/paths.js'),
+          import('#src/infra/build-flavor.js'),
           import('#src/infra/backend-discovery.js'),
           import('#src/cli/expansion-activation.js'),
         ]);

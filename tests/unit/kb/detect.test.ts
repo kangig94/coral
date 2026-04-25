@@ -19,15 +19,16 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths, infraPaths] = await Promise.all([
+  const [runtime, paths, infraPaths, buildFlavor] = await Promise.all([
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
     import('#src/infra/paths.js'),
+    import('#src/infra/build-flavor.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
-    infraPaths,
+    infraPaths: { ...infraPaths, ...buildFlavor },
   };
 }
 

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { type BuildFlavor, currentBuildFlavor } from './build-flavor.js';
 import { hashToken } from './hash.js';
 
 export function jobsDir(): string {
@@ -10,8 +11,6 @@ export function jobsDir(): string {
 
 const namespaceCache = new Map<string, string>();
 const projectSourceCache = new Map<string, string>();
-let _buildFlavor: 'prod' | 'dev' = 'prod';
-let _settledBuildFlavor: 'prod' | 'dev' | null = null;
 
 function localProjectSource(projectRoot: string): string {
   return `local/${basename(projectRoot)}`;
@@ -46,30 +45,11 @@ export function coralRoot(baseDir?: string): string {
   return baseDir ?? join(homedir(), '.coral');
 }
 
-export function setBuildFlavor(flavor: 'prod' | 'dev'): void {
-  if (_settledBuildFlavor !== null) {
-    if (_settledBuildFlavor !== flavor) {
-      throw new Error(`Build flavor already set to ${_settledBuildFlavor}; cannot change to ${flavor}`);
-    }
-    return;
-  }
-  _settledBuildFlavor = flavor;
-  _buildFlavor = flavor;
-}
-
-export function currentBuildFlavor(): 'prod' | 'dev' {
-  return _buildFlavor;
-}
-
-export function getSettledBuildFlavor(): 'prod' | 'dev' | null {
-  return _settledBuildFlavor;
-}
-
 /**
  * Returns the KB markdown root. The directory may not exist — callers are
  * responsible for creation.
  */
-export function kbRoot(flavor: 'prod' | 'dev' = currentBuildFlavor(), baseDir?: string): string {
+export function kbRoot(flavor: BuildFlavor = currentBuildFlavor(), baseDir?: string): string {
   if (baseDir !== undefined) {
     return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
   }

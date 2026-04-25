@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { buildChildEnv } from '../../infra/child-env.js';
-import { formatToolProgress } from '../../infra/format-progress.js';
+import { buildChildEnv } from '../../infra/env-sanitize.js';
 import { raceTimeout } from '../../infra/async.js';
 import {
   claudeControlRequestSubtypes,
@@ -17,7 +16,7 @@ import {
   type SDKResultMessage,
   type SDKSystemMessage,
 } from '../claude/control-protocol.js';
-import { extractClaudeProgressMessage } from '../claude/progress.js';
+import { extractClaudeProgressMessage, formatToolProgress } from '../claude/progress.js';
 import type { PermissionMode } from '../claude/control-protocol.js';
 import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/request-prep.js';
 import {

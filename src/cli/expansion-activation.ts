@@ -8,8 +8,7 @@ import {
 import { installResultSchema } from '../expansion/contracts.js';
 import type { ActivationDeps, EquipmentStatus } from '../expansion/activate.js';
 import { readDiscoveryRecord } from '../infra/backend-discovery.js';
-import { getSettledBuildFlavor } from '../infra/paths.js';
-import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { getSettledBuildFlavor, resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 

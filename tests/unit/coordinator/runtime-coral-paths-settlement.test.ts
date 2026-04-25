@@ -22,7 +22,7 @@ describe('Runtime.paths.coral lazy getter seal', () => {
   });
 
   it('returns frozen CoralPaths after setBuildFlavor(dev) and caches the result', async () => {
-    const paths = await import('#src/infra/paths.js');
+    const paths = await import('#src/infra/build-flavor.js');
     paths.setBuildFlavor('dev');
     const { createRealRuntime } = await import('#src/runtime/real.js');
     const rt = createRealRuntime();
@@ -36,7 +36,7 @@ describe('Runtime.paths.coral lazy getter seal', () => {
   });
 
   it('returns frozen CoralPaths after setBuildFlavor(prod)', async () => {
-    const paths = await import('#src/infra/paths.js');
+    const paths = await import('#src/infra/build-flavor.js');
     paths.setBuildFlavor('prod');
     const { createRealRuntime } = await import('#src/runtime/real.js');
     const rt = createRealRuntime();

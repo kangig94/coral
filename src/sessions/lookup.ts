@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { Runtime } from '../runtime/ports.js';
-import { currentBuildFlavor } from '../infra/paths.js';
+import { currentBuildFlavor } from '../infra/build-flavor.js';
 import { openBackendStoreDb } from '../store/db.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntry } from './projections.js';

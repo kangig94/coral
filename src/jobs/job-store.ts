@@ -9,10 +9,10 @@ import { storePaths } from '../infra/store-paths.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
-import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
+import { jobsDir } from '../infra/paths.js';
+import { currentBuildFlavor } from '../infra/build-flavor.js';
 import { ensureResultMarkdownArtifact } from './result-export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
-import { formatElapsed } from '../infra/format-progress.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
@@ -34,6 +34,19 @@ export type ProgressStoreOptions = {
   appendEvents?: AppendEventsFn;
   reducers?: ComposedReducers;
 };
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const s = String(seconds).padStart(2, ' ');
+  const m = String(minutes).padStart(2, ' ');
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+  }
+  return `${m}m ${s}s`;
+}
 
 function formatProgressMessage(startedAt: number | undefined, nowMs: number, message: string): string {
   const elapsed = startedAt === undefined ? 0 : nowMs - startedAt;

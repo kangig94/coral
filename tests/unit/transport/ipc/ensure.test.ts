@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/paths.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/backend-discovery.js';
+import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 

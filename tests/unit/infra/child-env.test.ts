@@ -5,7 +5,7 @@ vi.mock('#src/infra/backend-log.js', () => ({
   backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
 
-import { buildChildEnv } from '#src/infra/child-env.js';
+import { buildChildEnv } from '#src/infra/env-sanitize.js';
 import { measureEnv, resolveEnvBudgetBytes as envBudgetBytes } from '#src/infra/env-sanitize.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
