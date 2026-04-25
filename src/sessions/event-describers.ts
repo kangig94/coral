@@ -49,7 +49,7 @@ const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
   // sessionInterruptedBodySchema is a union of two shapes; both expose a
   // `trigger` and `continuity` reachable through the fault, so normalize first.
   const fault = 'fault' in body ? body.fault : body;
-  const continuity = (fault.continuity ?? 'unavailable') as SessionContinuityState;
+  const continuity = fault.continuity ?? 'unavailable';
   const triggerText =
     fault.trigger === 'restart'
       ? 'App-server restarted during the turn'

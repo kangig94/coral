@@ -23,9 +23,9 @@ export type EventDescriberMap = ReadonlyMap<string, EventDescriber>;
  * trust their bodies — the journal append/rebuild paths parse each body
  * through the registered schema before the renderer ever sees it.
  *
- * Pass the same schema that the matching `defineDomainEvent` entry uses;
- * mismatch is caught at compile time because the describer signature is
- * derived from `z.output<S>`.
+ * Pass the same schema that the matching `defineDomainEvent` entry uses.
+ * The helper type-checks the callback against that schema; the event-type key
+ * remains the owning domain's responsibility.
  */
 export function typedDescriber<S extends z.ZodTypeAny>(
   _schema: S,
