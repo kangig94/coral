@@ -22,7 +22,7 @@ export type ProjectionSessionRow = {
   provider: string;
   resumable: boolean;
   conversationRef: string | null;
-  shardDir: string;
+  scopeKey: string;
   entry: SessionEntry;
   lastSeq: number;
 };
@@ -31,7 +31,7 @@ type SessionOpenedBody = {
   entry: SessionEntry;
   controller: string;
   provider: string;
-  shard_dir: string;
+  scope_key: string;
 };
 
 type SessionContinuityCheckpointedBody = {
@@ -62,7 +62,7 @@ type SessionProjectionPatch = {
   provider?: string;
   resumable?: boolean;
   conversationRef?: string | null;
-  shardDir?: string;
+  scopeKey?: string;
 };
 
 export function readProjectionSession(
@@ -71,7 +71,7 @@ export function readProjectionSession(
 ): ProjectionSessionRow | null {
   const row = db
     .prepare(
-      `SELECT controller, provider, resumable, conversation_ref, shard_dir, entry, last_seq
+      `SELECT controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
         WHERE session_id = ?`,
     )
@@ -81,7 +81,7 @@ export function readProjectionSession(
         provider: string;
         resumable: number;
         conversation_ref: string | null;
-        shard_dir: string;
+        scope_key: string;
         entry: string;
         last_seq: number;
       }
@@ -98,7 +98,7 @@ export function readProjectionSession(
     provider: row.provider,
     resumable: row.resumable === 1,
     conversationRef: row.conversation_ref,
-    shardDir: row.shard_dir,
+    scopeKey: row.scope_key,
     entry: parsed,
     lastSeq: row.last_seq,
   };
@@ -175,8 +175,8 @@ function upsertProjectionSession(
   }
   assertEventEntryMatchesStream(event, entry);
 
-  const shardDir = patch.shardDir ?? previous?.shardDir;
-  if (shardDir === undefined) {
+  const scopeKey = patch.scopeKey ?? previous?.scopeKey;
+  if (scopeKey === undefined) {
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   const next = {
@@ -190,7 +190,7 @@ function upsertProjectionSession(
     conversationRef: hasConversationRefPatch(patch)
       ? patch.conversationRef
       : (entry.conversationRef ?? previous?.conversationRef ?? null),
-    shardDir,
+    scopeKey,
     entry,
   };
 
@@ -203,7 +203,7 @@ function upsertProjectionSession(
       provider: next.provider,
       resumable: next.resumable ? 1 : 0,
       conversation_ref: next.conversationRef,
-      shard_dir: next.shardDir,
+      scope_key: next.scopeKey,
       entry: JSON.stringify(next.entry),
     },
     lastSeq: event.seq,
@@ -217,7 +217,7 @@ export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {
     provider: event.body.provider,
     resumable: false,
     conversationRef: null,
-    shardDir: event.body.shard_dir,
+    scopeKey: event.body.scope_key,
   });
 };
 
@@ -269,16 +269,16 @@ export function readProjectionSessionEntry(db: Database, sessionId: string): Ses
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
-export function listProjectionSessionEntries(db: Database, provider?: string, shardDir?: string): SessionEntry[] {
+export function listProjectionSessionEntries(db: Database, provider?: string, scopeKey?: string): SessionEntry[] {
   const clauses: string[] = [];
   const params: string[] = [];
   if (provider !== undefined) {
     clauses.push('provider = ?');
     params.push(provider);
   }
-  if (shardDir !== undefined) {
-    clauses.push('shard_dir = ?');
-    params.push(shardDir);
+  if (scopeKey !== undefined) {
+    clauses.push('scope_key = ?');
+    params.push(scopeKey);
   }
 
   const rows = db

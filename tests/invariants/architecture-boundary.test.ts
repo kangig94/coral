@@ -614,6 +614,7 @@ describe('architecture boundary guard', () => {
   });
   it('public wait contract uses only global journal seq cursors', () => {
     const waitContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait.ts'), 'utf8');
+    const waitShell = readFileSync(resolve(REPO_ROOT, 'src/jobs/shell/wait.ts'), 'utf8');
     const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
     const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
     const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
@@ -625,6 +626,9 @@ describe('architecture boundary guard', () => {
     expect(waitContract).toContain('seq: number');
     expect(waitContract).not.toContain('jobs: Record');
     expect(waitContract).not.toContain('eventId');
+    expect(waitShell).not.toContain('JOURNAL_WAIT_POLL_MS');
+    expect(waitShell).not.toContain('poll-journal');
+    expect(waitShell).not.toContain('POLL_JOURNAL');
     expect(waitEventSchema).toContain('seq: z.number().int().nonnegative()');
     expect(waitEventSchema).not.toContain('eventId');
     expect(jobRecords).not.toContain('eventId');
@@ -638,6 +642,33 @@ describe('architecture boundary guard', () => {
     expect(simulationWorld).not.toContain('ReplayCursor');
     expect(simulationWorld).not.toContain('createReplayCursor');
     expect(simulationWorld).not.toContain('replayFrom');
+  });
+  it('retired install-scoped path helpers stay out of infra/paths.ts', () => {
+    const pathsSource = readFileSync(resolve(REPO_ROOT, 'src/infra/paths.ts'), 'utf8');
+
+    expect(pathsSource).not.toContain('installationDirForNamespace');
+    expect(pathsSource).not.toContain('installationDir(');
+    expect(pathsSource).not.toContain('backendInfoPath(');
+    expect(pathsSource).not.toContain('backendLockPath(');
+    expect(pathsSource).not.toContain('sessionBase(');
+    expect(pathsSource).not.toContain('.claude');
+  });
+  it('production homedir imports remain confined to path authority modules', () => {
+    const allowed = new Set([
+      'src/infra/backend-discovery.ts',
+      'src/infra/paths.ts',
+      'src/infra/plugin-registry.ts',
+      'src/runtime/real.ts',
+    ]);
+    const offenders = PRODUCTION_SOURCE_FILES.filter((filePath) => {
+      if (allowed.has(filePath)) {
+        return false;
+      }
+      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+      return /import\s*\{[^}]*\bhomedir\b[^}]*\}\s*from ['"]node:os['"]/u.test(source);
+    });
+
+    expect(offenders).toEqual([]);
   });
   it('production keeps store/index.ts as the only remaining index barrel', () => {
     const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));

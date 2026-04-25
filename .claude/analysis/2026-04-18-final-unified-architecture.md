@@ -234,7 +234,8 @@ CREATE TABLE projection_sessions (
   provider         TEXT NOT NULL,
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
-  shard_dir        TEXT NOT NULL,
+  scope_key        TEXT NOT NULL,
+  entry            TEXT NOT NULL,       -- JSON SessionEntry projection body
   last_seq         INTEGER NOT NULL
 );
 
@@ -464,7 +465,7 @@ Terminal wait is event-driven via `session:released` + `job.terminal.recorded` s
 
 ### 5.2 `session/<id>`
 Events about a provider session: opened, continuity checkpointed (full snapshots), interrupted, closed.
-Projection: `SessionView` / `projection_sessions` (controller, provider, resumable, conversationRef, shardDir, lastSeq).
+Projection: `SessionView` / `projection_sessions` (controller, provider, resumable, conversationRef, scopeKey, lastSeq).
 
 ### 5.3 `discuss/<id>`
 Events about a multi-agent discussion: existing vocabulary preserved (seed, speak, bid, synthesis, etc.).
@@ -528,7 +529,7 @@ The child launch event's **body** is identical to any other job launch (`{ instr
 ### 6.2 Sessions (`stream.kind = 'session'`)
 
 ```ts
-session.opened                   { controller, provider, shard_dir }
+session.opened                   { controller, provider, scope_key }
 session.continuity.checkpointed  { conversationRef, resumable, providerContinuity }
 session.closed                   { reason }
 ```
@@ -539,7 +540,7 @@ Today's design would have us emit "conversationRef changed from X to Y". A futur
 **What `providerContinuity: unknown` is**:
 Each provider stores opaque continuation data — Codex stores a `threadId`, Claude stores an `appServerSessionId` and control cursor. The coordinator does not interpret this; it round-trips it. The `unknown` type is intentional: it is the provider's private state.
 
-Session shard lookup is O(1) via `projection_sessions`, populated by the reducer.
+Session scope lookup is O(1) via `projection_sessions`, populated by the reducer.
 
 ### 6.3 Discuss (`stream.kind = 'discuss'`)
 
@@ -1031,7 +1032,7 @@ type SessionView = {
   provider: 'claude' | 'codex';
   resumable: boolean;
   conversationRef: string | null;
-  shardDir: string;
+  scopeKey: string;
   lastSeq: number;
 };
 
@@ -1132,6 +1133,7 @@ src/
       job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
       kb-source-import-service.ts, kb-reindex-service.ts,
       workflow-execution-service.ts, recovery-service.ts,
+      recovery-actions.ts, recovery-coordinator.ts, recovery-snapshot.ts,
       continuity-consumer.ts, execution-policies.ts
     equipment/                       — active equipment slot lifecycle + RPC surface
       slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts
@@ -1206,33 +1208,31 @@ src/
   jobs/                              ← domain: jobs events + projections + shell
     consumer.ts                      — Journal projection consumer registration for jobs
     job-store.ts                     — journal query/read-through seam with draft fallback for recovery
-    events.ts                        — jobs event body schemas
+    events.ts                        — jobs event body schemas + projection_jobs reducers
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef + describers
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
     result.ts                        — JobTerminal + JobDiagnostics
     wait.ts                          — WaitCursor + wait body types
     records.ts                       — job record DTOs shared across readers and shells
-    projections.ts                   — JobView reducer (SQL reducers for projection_jobs)
     exports/
       result-artifact.ts             — canonical `<os-tmpdir>/coral-jobs/<jobId>/result.md` path + atomic writes
       result-markdown.ts             — materialize/rebuild result.md from terminal events
     reconcile/                       — imperative reconciliation (not pure replay)
+      contracts.ts                   — recovery plan contracts shared by recovery services
       plan.ts                        — classify world-state divergence
       registry.ts                    — known classifications
-      snapshot.ts                    — world-state capture
-      actions.ts                     — reconciliation actions (append recovery events)
-      coordinator.ts                 — orchestrate reconciliation phases
       cross-namespace-adoption.ts    — cross-ns orphan adoption
-      ownership-checker.ts           — ownership verification
       recovery-effects.ts            — recovery-only job transitions + terminal materialization
       errors.ts                      — reconciliation-local error types
+      (world snapshot/actions/orchestration live under coordinator/services/recovery-*.ts)
     shell/                           — imperative I/O over jobs domain
       abort-registry.ts              — in-memory abort signal registry
       agent-resolution.ts            — resolve agent by id
-      instruction.ts                 — instruction parsing
+      continuity-consumer.ts         — wait continuity consumer wiring
+      contracts.ts                   — shell wait/launch contracts
+      fault-materializer.ts          — lifecycle fault event materialization
       launch.ts                      — launch job helper
-      abort.ts                       — abort job helper
       event-subscription.ts          — journal-backed wait/reconnect event streaming
       wait.ts                        — wait stream helper
 

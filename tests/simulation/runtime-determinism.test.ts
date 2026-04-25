@@ -24,8 +24,6 @@ const EVENT_COUNT = 1_000;
 const SIM_EPOCH_MS = Date.parse('2026-04-18T00:00:00.000Z');
 const SIM_ROOTS = {
   jobsDir: '/tmp/sim/jobs',
-  sessionBase: '/tmp/sim/sessions',
-  installationsDir: '/tmp/sim/installations',
   coralRoot: '/tmp/sim/coral',
 } as const;
 

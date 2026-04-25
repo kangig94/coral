@@ -20,7 +20,7 @@ import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
+import { currentBuildFlavor, pluginRootNamespace } from '#src/infra/paths.js';
 import { storePaths } from '#src/store/paths.js';
 import { createProjectionSessionLookup } from '#src/store/queries/sessions.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
@@ -191,7 +191,7 @@ describe('sessions shell resolve', () => {
     });
   });
 
-  it('projection lookup reads the canonical session.opened shard mapping deterministically', () => {
+  it('projection lookup reads the canonical session.opened scope mapping deterministically', () => {
     const { mgr, workDir } = setup('canonical-lookup');
     const entry = mgr.allocate({
       provider: 'codex',
@@ -201,7 +201,7 @@ describe('sessions shell resolve', () => {
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
-    const shardDir = join(sessionBase(), pluginRootNamespace(workDir));
+    const scopeKey = pluginRootNamespace(workDir);
     const db = createSessionDb();
 
     try {
@@ -218,7 +218,7 @@ describe('sessions shell resolve', () => {
               entry,
               controller: 'default',
               provider: 'codex',
-              shard_dir: shardDir,
+              scope_key: scopeKey,
             },
           },
         ],

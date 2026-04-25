@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, rmSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
@@ -182,8 +181,8 @@ function geminiModelPath(model: string): string {
   return `models/${model}`;
 }
 
-function localModelPath(model: SupportedLocalOnnxModel): string {
-  return join(homedir(), '.coral', 'models', `${model}.onnx`);
+function localModelPath(runtimeDir: string, model: SupportedLocalOnnxModel): string {
+  return join(dirname(dirname(runtimeDir)), 'models', `${model}.onnx`);
 }
 
 function isSupportedLocalOnnxModel(model: string): model is SupportedLocalOnnxModel {
@@ -277,8 +276,8 @@ async function downloadFile(url: string, destinationPath: string): Promise<void>
   }
 }
 
-async function ensureLocalModel(model: SupportedLocalOnnxModel): Promise<string> {
-  const modelPath = localModelPath(model);
+async function ensureLocalModel(runtimeDir: string, model: SupportedLocalOnnxModel): Promise<string> {
+  const modelPath = localModelPath(runtimeDir, model);
   if (existsSync(modelPath)) {
     return modelPath;
   }
@@ -675,10 +674,10 @@ export async function createEmbeddingProvider(
     const model = resolvedConfig.model as SupportedLocalOnnxModel;
     let modelPath: string;
     try {
-      modelPath = await ensureLocalModel(model);
+      modelPath = await ensureLocalModel(runtimeDir, model);
     } catch (error: unknown) {
       return warnAndReturnNull(
-        `Failed to download local ONNX model "${resolvedConfig.model}" to ${localModelPath(model)}: ${
+        `Failed to download local ONNX model "${resolvedConfig.model}" to ${localModelPath(runtimeDir, model)}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../../store/append.js';
@@ -7,7 +7,7 @@ import type { ProviderInstruction } from '../../providers/contract.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
-import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '../../infra/paths.js';
+import { currentBuildFlavor, pluginRootNamespace } from '../../infra/paths.js';
 import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
@@ -89,7 +89,7 @@ function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'provid
   };
 }
 
-function sessionOpenedEvent(entry: SessionEntry, shardDir: string): CoralEventInput {
+function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventInput {
   return {
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
@@ -99,7 +99,7 @@ function sessionOpenedEvent(entry: SessionEntry, shardDir: string): CoralEventIn
       entry,
       controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
       provider: entry.provider,
-      shard_dir: shardDir,
+      scope_key: scopeKey,
     },
   };
 }
@@ -191,7 +191,7 @@ export class SessionManager {
   private readonly ids: RuntimeIdsPort;
   private readonly appendEvents: AppendEventsFn;
   private readonly releaseEmitter: SessionReleasedEmitter;
-  private readonly sessionDir: string;
+  private readonly scopeKey: string;
   private readonly db: Database;
   private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
@@ -208,7 +208,7 @@ export class SessionManager {
     this.db = db ?? openBackendStoreDb(runtime, currentBuildFlavor());
     this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
-    this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory, this.ids));
+    this.scopeKey = toSessionNamespace(workingDirectory, this.ids);
   }
 
   static forProduction(
@@ -239,7 +239,7 @@ export class SessionManager {
     }
 
     const projected = readProjectionSession(this.db, sessionId);
-    if (projected === null || projected.shardDir !== this.sessionDir) {
+    if (projected === null || projected.scopeKey !== this.scopeKey) {
       this.cache.delete(sessionId);
       this.knownSessionIds.delete(sessionId);
       return null;
@@ -295,7 +295,7 @@ export class SessionManager {
       version: 1,
     };
 
-    return this.appendEntryEvent(entry, sessionOpenedEvent(entry, this.sessionDir));
+    return this.appendEntryEvent(entry, sessionOpenedEvent(entry, this.scopeKey));
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
@@ -604,7 +604,7 @@ export class SessionManager {
 
   /** List all sessions for a provider. */
   list(provider: string): SessionEntry[] {
-    const entries = listProjectionSessionEntries(this.db, provider, this.sessionDir);
+    const entries = listProjectionSessionEntries(this.db, provider, this.scopeKey);
     this.knownSessionIds.clear();
     for (const entry of entries) {
       this.populateCache(entry.sessionId, entry);

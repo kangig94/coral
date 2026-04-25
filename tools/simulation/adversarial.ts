@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 import { SessionManager } from '../../src/sessions/shell/store.js';
 import type { BackendServerInfo, LifecycleState } from '../../src/coordinator/control.js';
-import { backendInfoPath } from '../../src/infra/backend-discovery.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
@@ -433,7 +432,7 @@ export class SimulationWorld {
 
   backendInfoExists(): boolean {
     this.assertUsable();
-    return this.current.backend.runtime.storage.existsSync(backendInfoPath(this.current.backend.pluginRoot));
+    return this.current.backend.runtime.storage.existsSync(this.current.backend.runtime.paths.coral.coordinator.infoFile);
   }
 
   hasProjectSourceCache(projectRoot: string): boolean {

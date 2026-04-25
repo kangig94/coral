@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
-import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '#src/infra/paths.js';
+import { tmpdir } from 'node:os';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { readBuildFlavor, readBundleHash } from '#src/infra/bundle-manifest.js';
 
 const tempRoots: string[] = [];
@@ -25,14 +25,6 @@ afterEach(() => {
 });
 
 describe('infra namespace isolation', () => {
-  it('isolates backend discovery files by plugin root', () => {
-    const rootA = createPluginRoot('coral-plugin-a');
-    const rootB = createPluginRoot('coral-plugin-b');
-
-    expect(backendInfoPath(rootA)).not.toBe(backendInfoPath(rootB));
-    expect(backendLockPath(rootA)).not.toBe(backendLockPath(rootB));
-  });
-
   it('isolates bundle hash cache entries by plugin root', () => {
     const rootA = createPluginRoot('coral-bundle-a', 'bundle-a');
     const rootB = createPluginRoot('coral-bundle-b', 'bundle-b');
@@ -108,62 +100,5 @@ describe('infra namespace isolation', () => {
     const wrongBytesHex = createHash('sha256').update(path).digest().slice(0, 12).toString('hex');
     expect(pluginRootNamespace(root)).toHaveLength(12);
     expect(pluginRootNamespace(root)).not.toBe(wrongBytesHex);
-  });
-
-  // ── installationDir path structure ────────────────────────────────────────
-
-  it('installationDir returns path under ~/.claude/coral/installations/', () => {
-    const root = createPluginRoot('coral-instdir');
-    const result = installationDir(root);
-    const expectedBase = join(homedir(), '.claude', 'coral', 'installations');
-    expect(result.startsWith(expectedBase)).toBe(true);
-  });
-
-  it('installationDir path ends with the 12-char namespace hash', () => {
-    const root = createPluginRoot('coral-instdir-hash');
-    const ns = pluginRootNamespace(root);
-    const instDir = installationDir(root);
-    expect(instDir.endsWith(ns)).toBe(true);
-  });
-
-  it('installationDir is different for different plugin roots', () => {
-    const rootA = createPluginRoot('coral-instdir-a');
-    const rootB = createPluginRoot('coral-instdir-b');
-    expect(installationDir(rootA)).not.toBe(installationDir(rootB));
-  });
-
-  // ── backendInfoPath / backendLockPath structure ───────────────────────────
-
-  it('backendInfoPath result is under the namespaced installation directory', () => {
-    const root = createPluginRoot('coral-info-under-inst');
-    const infoPath = backendInfoPath(root);
-    const instDir = installationDir(root);
-    expect(infoPath.startsWith(instDir)).toBe(true);
-  });
-
-  it('backendInfoPath is NOT under the retired ~/.claude/coral/backend.json location', () => {
-    const root = createPluginRoot('coral-info-not-retired');
-    const infoPath = backendInfoPath(root);
-    const retiredPath = join(homedir(), '.claude', 'coral', 'backend.json');
-    expect(infoPath).not.toBe(retiredPath);
-  });
-
-  it('backendInfoPath ends with backend.json', () => {
-    const root = createPluginRoot('coral-info-suffix');
-    expect(backendInfoPath(root)).toMatch(/backend\.json$/);
-  });
-
-  it('backendLockPath ends with backend.lock', () => {
-    const root = createPluginRoot('coral-lock-suffix');
-    expect(backendLockPath(root)).toMatch(/backend\.lock$/);
-  });
-
-  it('backendLockPath and backendInfoPath share the same parent directory', () => {
-    const root = createPluginRoot('coral-shared-parent');
-    const infoPath = backendInfoPath(root);
-    const lockPath = backendLockPath(root);
-    const infoParent = join(infoPath, '..');
-    const lockParent = join(lockPath, '..');
-    expect(lockParent).toBe(infoParent);
   });
 });

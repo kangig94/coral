@@ -1,6 +1,6 @@
 import { dirname, normalize } from 'node:path';
 import type { RuntimeDirentLike, StorageData, StoragePort, TimePort } from '../../../src/runtime/ports.js';
-import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
+import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
 type FileNode = {
   kind: 'file';
@@ -30,8 +30,6 @@ export type InMemoryStorageSnapshot = {
 
 export type InMemoryRoots = {
   jobsDir?: string;
-  sessionBase?: string;
-  installationsDir?: string;
   coralRoot?: string;
 };
 
@@ -112,8 +110,6 @@ export class InMemoryStorage implements StoragePort {
     this.directories.set('/', { kind: 'dir', mtimeMs: this.nextStamp() });
     this.childIndex.set('/', new Set());
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
-    this.mkdirSync(this.sessionBaseRoot(), { recursive: true });
-    this.mkdirSync(this.installationsDirRoot(), { recursive: true });
     this.mkdirSync(this.coralRoot(), { recursive: true });
   }
 
@@ -526,14 +522,6 @@ export class InMemoryStorage implements StoragePort {
 
   private jobsDirRoot(): string {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
-  }
-
-  private sessionBaseRoot(): string {
-    return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
-  }
-
-  private installationsDirRoot(): string {
-    return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
   }
 
   private coralRoot(): string {

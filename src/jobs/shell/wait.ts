@@ -12,8 +12,7 @@ import { resultPathFor as defaultResultPathFor } from '../exports/result-artifac
 import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = 'wait-aborted' as const;
-const JOURNAL_WAIT_POLL_MS = 100;
-const POLL_JOURNAL = 'poll-journal' as const;
+const TIMED_OUT = 'wait-timed-out' as const;
 
 function compareProgressSeq(left: JobProgress, right: JobProgress): number {
   if (left.seq !== right.seq) {
@@ -86,6 +85,33 @@ function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<
       signal.addEventListener('abort', onAbort, { once: true });
     }),
     dispose,
+  };
+}
+
+function createTimeoutWaiter(
+  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  timeoutMs: number,
+): { promise: Promise<typeof TIMED_OUT>; dispose(): void } {
+  let settled = false;
+  let timeoutHandle: ReturnType<RuntimeTimePort['setTimeout']> | null = null;
+  const promise = new Promise<typeof TIMED_OUT>((resolve) => {
+    timeoutHandle = time.setTimeout(() => {
+      settled = true;
+      timeoutHandle = null;
+      resolve(TIMED_OUT);
+    }, Math.max(0, timeoutMs));
+  });
+
+  return {
+    promise,
+    dispose() {
+      if (settled || timeoutHandle === null) {
+        return;
+      }
+      time.clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+      settled = true;
+    },
   };
 }
 
@@ -249,6 +275,7 @@ export class WaitCoordinator {
     // Prime the live tail before reading the catch-up snapshot so terminal events
     // cannot land in the gap between the snapshot and subscriber registration.
     let pendingNext: Promise<IteratorResult<JobProgress>> | null = iterator.next();
+    let timeoutWaiter: ReturnType<typeof createTimeoutWaiter> | null = null;
 
     try {
       const catchUpMaxSeq = getCurrentJournalSeq();
@@ -289,29 +316,10 @@ export class WaitCoordinator {
       }
       observedSeq = Math.max(observedSeq, catchUpMaxSeq);
 
-      const readContinuity = (jobId: string) => this.readQueryContinuity(jobId);
-      const resultPathForJob = (jobId: string) => this.resultPathFor(jobId);
-      const catchUpFromJournal = function* (
-        maxSeq: number,
-      ): Generator<WaitStreamEvent, 'terminal' | 'progress' | 'empty'> {
-        let emitted = false;
-        const history = [...pending]
-          .flatMap((jobId) => readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
-          .sort(compareProgressSeq);
-
-        for (const event of history) {
-          emitted = true;
-          observedSeq = Math.max(observedSeq, event.seq);
-          if (event.type === 'progress') {
-            yield toProgressWaitEvent(event);
-            continue;
-          }
-
-          yield toTerminalWaitEvent(event, pending, resultPathForJob(event.jobId), readContinuity(event.jobId));
-          return 'terminal';
-        }
-        return emitted ? 'progress' : 'empty';
-      };
+      timeoutWaiter = createTimeoutWaiter(
+        this.deps.time,
+        Math.max(0, deadlineMs - this.deps.time.now()),
+      );
 
       while (pending.size > 0) {
         const now = this.deps.time.now();
@@ -320,12 +328,10 @@ export class WaitCoordinator {
           return;
         }
 
-        const remainingMs = deadlineMs - now;
         const abortWaiter = createAbortWaiter(abortSignal);
-        const pollMs = Math.min(remainingMs, JOURNAL_WAIT_POLL_MS);
         const next = await Promise.race([
           pendingNext,
-          this.deps.time.sleep(pollMs).then(() => POLL_JOURNAL),
+          timeoutWaiter.promise,
           ...(abortWaiter ? [abortWaiter.promise] : []),
         ]);
         abortWaiter?.dispose();
@@ -334,19 +340,9 @@ export class WaitCoordinator {
           return;
         }
 
-        if (next === POLL_JOURNAL) {
-          const maxSeq = getCurrentJournalSeq();
-          if (maxSeq > observedSeq) {
-            const replay = catchUpFromJournal(maxSeq);
-            for (const event of replay) {
-              yield event;
-              if (event.type === 'terminal') {
-                return;
-              }
-            }
-            observedSeq = Math.max(observedSeq, maxSeq);
-          }
-          continue;
+        if (next === TIMED_OUT) {
+          yield { type: 'waiting', waitingJobIds: [...pending] };
+          return;
         }
 
         if (next.done || !next.value) {
@@ -369,6 +365,7 @@ export class WaitCoordinator {
         return;
       }
     } finally {
+      timeoutWaiter?.dispose();
       abortSignal?.removeEventListener('abort', onExternalAbort);
       controller.abort();
       await pendingNext?.catch(() => undefined);

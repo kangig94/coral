@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
-import type { RuntimeEnvPort, RuntimeStoragePort } from '../runtime/ports.js';
+import type { RuntimeEnvPort, RuntimePaths, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeProcessStartedAtSeconds as sharedProbeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { readBuildFlavor } from './bundle-manifest.js';
@@ -33,10 +34,16 @@ type DiscoveryStorage = Pick<
   RuntimeStoragePort,
   'chmodSync' | 'mkdirSync' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
 >;
-type DiscoveryEnv = Pick<RuntimeEnvPort, 'platform'>;
+type DiscoveryEnv = Pick<RuntimeEnvPort, 'platform'> & Partial<Pick<RuntimeEnvPort, 'fullSnapshot' | 'homedir'>>;
 type DiscoveryRuntime = {
   storage: DiscoveryStorage;
   env?: DiscoveryEnv;
+  paths?: Pick<RuntimePaths, 'coral'>;
+};
+type ResolvedDiscoveryRuntime = {
+  storage: DiscoveryStorage;
+  env: DiscoveryEnv;
+  paths?: Pick<RuntimePaths, 'coral'>;
 };
 
 const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
@@ -142,18 +149,46 @@ function defaultStorage(): DiscoveryStorage {
 }
 
 function defaultEnv(): DiscoveryEnv {
-  return { platform: () => process.platform };
-}
-
-function resolveDiscoveryRuntime(runtime?: DiscoveryRuntime): Required<DiscoveryRuntime> {
   return {
-    storage: runtime?.storage ?? defaultStorage(),
-    env: runtime?.env ?? defaultEnv(),
+    fullSnapshot: () =>
+      Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    homedir,
+    platform: () => process.platform,
   };
 }
 
-function discoveryFilePath(flavor: BuildFlavor): string {
-  return coordinatorPaths(flavor).infoFile;
+function resolveDiscoveryRuntime(runtime?: DiscoveryRuntime): ResolvedDiscoveryRuntime {
+  return {
+    storage: runtime?.storage ?? defaultStorage(),
+    env: runtime?.env ?? defaultEnv(),
+    ...(runtime?.paths === undefined ? {} : { paths: runtime.paths }),
+  };
+}
+
+function isFlavorNotSettledError(error: unknown): boolean {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'E_FLAVOR_NOT_SETTLED'
+  );
+}
+
+function discoveryFilePath(flavor: BuildFlavor, runtime?: Pick<ResolvedDiscoveryRuntime, 'env' | 'paths'>): string {
+  if (runtime?.paths !== undefined) {
+    try {
+      return runtime.paths.coral.coordinator.infoFile;
+    } catch (error: unknown) {
+      if (!isFlavorNotSettledError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const env = runtime?.env ?? defaultEnv();
+  const envSnapshot = env.fullSnapshot?.() ?? process.env;
+  const baseDir = env.homedir === undefined ? undefined : join(env.homedir(), '.coral');
+  return coordinatorPaths(flavor, envSnapshot, baseDir === undefined ? undefined : { baseDir }).infoFile;
 }
 
 function flavorForPluginRoot(pluginRoot: string): BuildFlavor {
@@ -170,7 +205,7 @@ export function writeDiscoveryRecord(
   runtime?: DiscoveryRuntime,
 ): void {
   const deps = resolveDiscoveryRuntime(runtime);
-  const infoPath = discoveryFilePath(flavor);
+  const infoPath = discoveryFilePath(flavor, deps);
   const payload = JSON.stringify({
     ...record,
     processStartedAt:
@@ -199,7 +234,7 @@ export function readDiscoveryRecord(
   const deps = resolveDiscoveryRuntime(runtime);
 
   try {
-    const raw = deps.storage.readFileSync(discoveryFilePath(flavor), 'utf-8');
+    const raw = deps.storage.readFileSync(discoveryFilePath(flavor, deps), 'utf-8');
     return normalizeDiscoveryRecord(JSON.parse(raw));
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) {
@@ -229,7 +264,7 @@ export function removeDiscoveryRecordIfOwner(
   }
 
   try {
-    deps.storage.unlinkSync(discoveryFilePath(flavor));
+    deps.storage.unlinkSync(discoveryFilePath(flavor, deps));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return;

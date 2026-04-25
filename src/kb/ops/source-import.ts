@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { basename, delimiter, extname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { nowIsoString } from '../../infra/time.js'
@@ -11,8 +11,6 @@ import type { KbSourceFrontmatter } from '../entry-types.js'
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js'
 
 const execFileP = promisify(execFile)
-const LOCAL_BIN_DIR = join(homedir(), '.local', 'bin')
-
 const LEADING_ATX_H1 = /^#(?!#)\s+(.+?)\s*#*\s*(?:\r?\n+|$)/
 const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/
 const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i
@@ -57,9 +55,11 @@ export interface Converter {
 }
 
 function commandEnv(): NodeJS.ProcessEnv {
+  const homeDir = process.env.HOME ?? process.env.USERPROFILE
+  const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin')
   return {
     ...process.env,
-    PATH: [LOCAL_BIN_DIR, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
+    PATH: [localBinDir, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
   }
 }
 

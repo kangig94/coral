@@ -23,7 +23,7 @@ type JobFixture = {
 }
 
 type SessionFixture = {
-  shardDir?: string
+  scopeKey?: string
   sessionId: string
   provider: string
   activeJobId?: string
@@ -477,7 +477,7 @@ describe('planRecovery', () => {
         status: makeStatus('terminal-claimed-job', 'error'),
       })
       .addSession({
-        shardDir: '/sessions/a',
+        scopeKey: '/sessions/a',
         sessionId: 'terminal-claim',
         provider: 'fakeprovider',
         activeJobId: 'terminal-claimed-job',
@@ -496,7 +496,7 @@ describe('planRecovery', () => {
 
   it('returns releaseSessionClaim for orphaned active job claims', () => {
     const snapshot = new InMemoryRecoverySnapshot().addSession({
-      shardDir: '/sessions/a',
+      scopeKey: '/sessions/a',
       sessionId: 'orphan-claim',
       provider: 'fakeprovider',
       activeJobId: 'missing-job',
@@ -520,7 +520,7 @@ describe('planRecovery', () => {
         status: makeStatus('foreign-terminal-job', 'completed', { backendNamespace: FOREIGN_NAMESPACE }),
       })
       .addSession({
-        shardDir: '/sessions/foreign',
+        scopeKey: '/sessions/foreign',
         sessionId: 'foreign-terminal-claim',
         provider: 'fakeprovider',
         activeJobId: 'foreign-terminal-job',
@@ -548,7 +548,7 @@ describe('planRecovery', () => {
         hasRuntimeStart: true,
       })
       .addSession({
-        shardDir: '/sessions/live',
+        scopeKey: '/sessions/live',
         sessionId: 'live-claim',
         provider: 'fakeprovider',
         activeJobId: 'live-job',
@@ -650,7 +650,7 @@ describe('planRecovery', () => {
         hasRuntimeStart: false,
       })
       .addSession({
-        shardDir: '/sessions/deterministic',
+        scopeKey: '/sessions/deterministic',
         sessionId: 'deterministic-claim',
         provider: 'fakeprovider',
         activeJobId: 'missing-d',
@@ -738,13 +738,13 @@ describe('planRecovery', () => {
           hasTerminalRecord: true,
         })
         .addSession({
-          shardDir: '/sessions/order',
+          scopeKey: '/sessions/order',
           sessionId: 'terminal-claim',
           provider: 'fakeprovider',
           activeJobId: 'terminal',
         })
         .addSession({
-          shardDir: '/sessions/order',
+          scopeKey: '/sessions/order',
           sessionId: 'orphan-claim',
           provider: 'fakeprovider',
           activeJobId: 'missing-job',

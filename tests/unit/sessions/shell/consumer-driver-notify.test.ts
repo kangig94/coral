@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
@@ -28,8 +28,8 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
-function resolveSessionDir(projectRoot: string): string {
-  return join(sessionBase(), pluginRootNamespace(projectRoot));
+function resolveScopeKey(projectRoot: string): string {
+  return pluginRootNamespace(projectRoot);
 }
 
 afterEach(() => {
@@ -93,7 +93,7 @@ describe('sessions consumer-driver notify', () => {
       await driver.drainAll();
       const row = db
         .prepare(
-          `SELECT controller, provider, resumable, conversation_ref, shard_dir, last_seq
+          `SELECT controller, provider, resumable, conversation_ref, scope_key, last_seq
              FROM projection_sessions
             WHERE session_id = ?`,
         )
@@ -106,7 +106,7 @@ describe('sessions consumer-driver notify', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
-        shard_dir: resolveSessionDir(workDir),
+        scope_key: resolveScopeKey(workDir),
         last_seq: 1,
       });
     } finally {

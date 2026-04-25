@@ -1,10 +1,10 @@
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { catalogEntrySchema } from '#src/expansion/contracts.js';
 import { EQUIPMENT_ADDON_FILENAMES } from '#src/expansion/paths.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import {
   CATALOG,
   getCatalogEntry,
@@ -39,8 +39,10 @@ describe('expansion catalog (AC3)', () => {
       needleVersion: '0.2.0',
       addonFilename: EQUIPMENT_ADDON_FILENAMES.needle,
       postInstall: ['register_equipment'],
+    });
+    expect(needle?.resolveConfig({ env: { homedir: () => '/tmp/coral-home' } } as unknown as Runtime)).toMatchObject({
       onboarding: {
-        envPath: join(homedir(), '.coral', '.env'),
+        envPath: join('/tmp/coral-home', '.coral', '.env'),
         requiredEnv: [
           {
             provider: 'local-onnx',
@@ -56,7 +58,7 @@ describe('expansion catalog (AC3)', () => {
         apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
         securityNotice: 'Store CORAL_EMBEDDING_API_KEY in ~/.coral/.env directly, NOT in settings.json.',
         localRuntime: {
-          targetDir: join(homedir(), '.coral', 'data', 'kb'),
+          targetDir: join('/tmp/coral-home', '.coral', 'data', 'kb'),
           bootstrapPackageJson: true,
           packageManager: 'npm',
           packageName: 'onnxruntime-node',

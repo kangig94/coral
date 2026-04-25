@@ -18,7 +18,7 @@ import { storePaths } from '../../../src/store/paths.js';
 import { cloneSpawnEvent } from '../../../src/runtime/spawn.js';
 import { hashToken } from '../../../src/infra/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
-import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
+import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
 const DEFAULT_RUNTIME_ROOT = `/tmp/sim/${process.pid}`;
 const DEFAULT_HOME = join(DEFAULT_RUNTIME_ROOT, 'home');
@@ -103,22 +103,6 @@ export class InMemoryPaths implements RuntimePaths {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
 
-  sessionBase(): string {
-    return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
-  }
-
-  backendInfoPath(pluginRoot: string): string {
-    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.json');
-  }
-
-  backendLockPath(pluginRoot: string): string {
-    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.lock');
-  }
-
-  installationDirForNamespace(namespace: string): string {
-    return join(this.installationsDir(), namespace);
-  }
-
   pluginRootNamespace(pluginRoot: string): string {
     const normalized = normalizePathForStorage(pluginRoot);
     const cached = this.namespaceCache.get(normalized);
@@ -141,9 +125,6 @@ export class InMemoryPaths implements RuntimePaths {
     return source;
   }
 
-  private installationsDir(): string {
-    return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
-  }
 }
 
 export class SequentialIds implements IdPort {

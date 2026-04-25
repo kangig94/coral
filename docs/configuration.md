@@ -109,17 +109,12 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/coral/backend.json` | Backend connection info (host, port, token, namespace, bundle hash, flavor) |
-| `~/.claude/coral/backend.lock` | Install-scoped singleton lock record; flavor participates in reuse/replacement decisions |
+| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record |
+| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 
 ### Session state
 
-`~/.claude/coral/sessions/<project-hash>/<session-uuid>.json`
-
-- Created by `SessionManager`
-- Scoped by normalized project root hash
-- Stores provider-aware `SessionEntry` records
-- Updated atomically on create, use, or delete
+Sessions are Journal events projected into `projection_sessions`. `SessionManager` scopes lookups with `scope_key`, derived from the project root namespace; it no longer owns JSON session files.
 
 ### Discuss state
 
@@ -177,9 +172,9 @@ bridge/coral-cli.cjs                           -> CLI bundle
 bridge/coral-claude-appserver.cjs              -> Claude appserver helper bundle
 bridge/manifest.json                           -> backend bundle hash + build flavor
 
-~/.claude/coral/backend.json                   -> live backend connection info including flavor
-~/.claude/coral/backend.lock                   -> backend singleton lock including flavor checks
-~/.claude/coral/sessions/<project-hash>/*.json -> persisted provider sessions
+~/.coral/run*/coordinator.json                 -> active coordinator discovery record
+~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock
+projection_sessions in store.db                -> projected provider session continuity and scope
 <os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
 ~/.coral/projects/<source-slug>/discuss/       -> discuss storage
 ~/.coral/.env                                  -> embedding config

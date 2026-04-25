@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { z } from 'zod';
@@ -131,7 +130,6 @@ function buildCatalogBinding(entry: CatalogSourceEntry): CatalogBinding<Equipmen
     const config: EquipmentAddonConfig = {
       ...entry.config,
       addonFilename: EQUIPMENT_ADDON_FILENAMES.needle,
-      onboarding: buildNeedleOnboarding(homedir()),
     };
     return {
       entry: catalogEntrySchema.parse({

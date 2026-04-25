@@ -14,7 +14,7 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
+import { currentBuildFlavor, pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -30,8 +30,8 @@ import { SessionManager } from '#src/sessions/shell/store.js';
 
 const runtime = createRealRuntime();
 
-function resolveSessionDir(projectRoot: string): string {
-  return join(sessionBase(), pluginRootNamespace(projectRoot));
+function resolveScopeKey(projectRoot: string): string {
+  return pluginRootNamespace(projectRoot);
 }
 
 describe('sessions shell store', () => {
@@ -144,7 +144,7 @@ describe('sessions shell store', () => {
           version: 1,
         },
         provider: 'codex',
-        shard_dir: resolveSessionDir(workDir),
+        scope_key: resolveScopeKey(workDir),
       });
       expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toMatchObject({
         entry: {

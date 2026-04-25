@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
-import { pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -268,7 +268,7 @@ function appendSessionOpenedEvent(
     provider: string;
     backendNamespace: string;
     projectRoot: string;
-    shardDir: string;
+    scopeKey: string;
   },
 ): void {
   appendEvents(
@@ -296,7 +296,7 @@ function appendSessionOpenedEvent(
           },
           controller: 'default',
           provider: overrides.provider,
-          shard_dir: overrides.shardDir,
+          scope_key: overrides.scopeKey,
         },
       },
     ],
@@ -914,7 +914,7 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shardDir = join(sessionBase(), pluginRootNamespace(projectRoot));
+    const scopeKey = pluginRootNamespace(projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -937,7 +937,7 @@ describe('lifecycle recovery', () => {
       provider: 'fakeprovider',
       backendNamespace: namespace,
       projectRoot,
-      shardDir,
+      scopeKey,
     });
     appendTerminalEvent(progressStore, {
       jobId: 'terminal-job',
@@ -979,7 +979,7 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shardDir = join(sessionBase(), pluginRootNamespace(projectRoot));
+    const scopeKey = pluginRootNamespace(projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();
 
     appendSessionOpenedEvent(progressStore, {
@@ -987,7 +987,7 @@ describe('lifecycle recovery', () => {
       provider: 'fakeprovider',
       backendNamespace: namespace,
       projectRoot,
-      shardDir,
+      scopeKey,
     });
     sessionManager.claimForJobSync(session.sessionId, 'missing-job');
 

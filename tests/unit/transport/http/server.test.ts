@@ -37,7 +37,6 @@ import {
   pluginRootNamespace,
   projectDataDir,
   resolveProjectSource,
-  sessionBase,
 } from '#src/infra/paths.js';
 import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
@@ -416,7 +415,7 @@ function stubSessionProjection(
     backendNamespace: string;
   },
 ): void {
-  const shardDir = join(sessionBase(), pluginRootNamespace(overrides.projectRoot));
+  const scopeKey = pluginRootNamespace(overrides.projectRoot);
 
   appendEvents(
     progressStore.getDb(),
@@ -443,7 +442,7 @@ function stubSessionProjection(
           },
           controller: 'default',
           provider: overrides.provider,
-          shard_dir: shardDir,
+          scope_key: scopeKey,
         },
       },
     ],

@@ -10,7 +10,6 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
-import { sessionBase } from '#src/infra/paths.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 
@@ -53,7 +52,7 @@ describe('sessions reducer equivalence (AC2)', () => {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
-      const shardDir = join(sessionBase(), createHash('sha1').update('session-1').digest('hex').slice(0, 12));
+      const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
       const openedEntry = sessionEntry({
         sessionId: 'session-1',
         provider: 'codex',
@@ -86,7 +85,7 @@ describe('sessions reducer equivalence (AC2)', () => {
               entry: openedEntry,
               controller: 'team-a',
               provider: 'codex',
-              shard_dir: shardDir,
+              scope_key: scopeKey,
             },
           },
           {
@@ -182,7 +181,7 @@ describe('sessions reducer equivalence (AC2)', () => {
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
+          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -195,7 +194,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
-        shard_dir: shardDir,
+        scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
       expect(v1OpenEvent?.body_version).toBe(1);
@@ -209,7 +208,7 @@ describe('sessions reducer equivalence (AC2)', () => {
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
+          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -222,13 +221,13 @@ describe('sessions reducer equivalence (AC2)', () => {
     }
   });
 
-  it('round-trips canonical session.opened rows without rewriting shard_dir or body_version', () => {
+  it('round-trips canonical session.opened rows without rewriting scope_key or body_version', () => {
     const db = new Database(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
-      const shardDir = join(sessionBase(), 'canonical-shard');
+      const scopeKey = 'canonical-scope';
       const openedEntry = sessionEntry({
         sessionId: 'session-2',
         provider: 'claude',
@@ -254,7 +253,7 @@ describe('sessions reducer equivalence (AC2)', () => {
               entry: openedEntry,
               controller: 'team-b',
               provider: 'claude',
-              shard_dir: shardDir,
+              scope_key: scopeKey,
             },
           },
           {
@@ -289,7 +288,7 @@ describe('sessions reducer equivalence (AC2)', () => {
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
+          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -302,7 +301,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         provider: 'claude',
         resumable: 1,
         conversation_ref: 'thread-2',
-        shard_dir: shardDir,
+        scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
       expect(openedEvent?.body_version).toBe(1);
@@ -316,7 +315,7 @@ describe('sessions reducer equivalence (AC2)', () => {
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
+          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,

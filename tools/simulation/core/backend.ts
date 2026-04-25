@@ -516,7 +516,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     writeBackendInfoFn: (bootPluginRoot, info) => {
       hooks.writeBackendInfoCalls.push({ pluginRoot: bootPluginRoot, info });
-      runtime.storage.mkdirSync(dirname(runtime.paths.backendInfoPath(bootPluginRoot)), { recursive: true });
+      runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
       writeBackendInfo(bootPluginRoot, info, runtime);
     },
     removeBackendInfoIfOwnerFn: (bootPluginRoot, instanceId) => {

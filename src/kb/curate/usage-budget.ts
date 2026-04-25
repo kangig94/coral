@@ -1,14 +1,21 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
 
-export function isUsageBudgetExhausted(): boolean {
+function defaultHomeDir(): string | undefined {
+  return process.env.HOME ?? process.env.USERPROFILE;
+}
+
+export function isUsageBudgetExhausted(homeDir = defaultHomeDir()): boolean {
+  if (homeDir === undefined) {
+    return false;
+  }
+
   try {
-    const cachePath = join(homedir(), '.claude', 'hud', '.coral-cache.json');
+    const cachePath = join(homeDir, '.claude', 'hud', '.coral-cache.json');
     const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
     const entry = raw.claude as
       | { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean }

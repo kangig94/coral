@@ -205,7 +205,7 @@ Shared / infra layer
 | `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record |
 | `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 | `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db` | Journal authority and projection tables |
-| `~/.claude/coral/execution/sessions/<working-dir-hash>/*.json` | Persisted provider sessions / continuation profiles |
+| `projection_sessions` in `store.db` | Projected provider sessions, continuation profiles, and project `scope_key` |
 | `<os-tmpdir>/coral-jobs/<jobId>/` | Job runtime scratch dir; `result.md` remains the durable wait/follow artifact |
 | `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |

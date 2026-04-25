@@ -25,7 +25,7 @@ export const sessionOpenedBodySchema = z
     entry: sessionEntrySchema,
     controller: z.string().min(1),
     provider: z.string().min(1),
-    shard_dir: z.string().min(1),
+    scope_key: z.string().min(1),
   })
   .strict();
 
