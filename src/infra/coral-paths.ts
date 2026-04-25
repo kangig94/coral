@@ -72,12 +72,17 @@ export function exportsPaths(flavor: BuildFlavor, opts?: ExportsPathOptions): Ex
   };
 }
 
-export function composeCoralPaths(flavor: BuildFlavor): CoralPaths {
+export interface ComposeCoralPathOptions {
+  readonly baseDir?: string;
+}
+
+export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
+  const familyOpts = opts?.baseDir === undefined ? undefined : { baseDir: opts.baseDir };
   return Object.freeze({
-    store: storePaths(flavor),
-    corpus: corpusPaths(flavor),
-    coordinator: coordinatorPaths(flavor),
-    exports: exportsPaths(flavor),
-    equipment: equipmentPaths(flavor),
+    store: storePaths(flavor, familyOpts),
+    corpus: corpusPaths(flavor, familyOpts),
+    coordinator: coordinatorPaths(flavor, undefined, familyOpts),
+    exports: exportsPaths(flavor, familyOpts),
+    equipment: equipmentPaths(flavor, familyOpts),
   }) as CoralPaths;
 }

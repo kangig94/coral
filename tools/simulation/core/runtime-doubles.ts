@@ -8,11 +8,8 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../../src/runtime/ports.js';
-import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
-import { corpusPaths, exportsPaths, type CoralPaths } from '../../../src/infra/coral-paths.js';
-import { equipmentPaths } from '../../../src/infra/equipment-paths.js';
+import { composeCoralPaths, type CoralPaths } from '../../../src/infra/coral-paths.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
-import { storePaths } from '../../../src/infra/store-paths.js';
 import { cloneSpawnEvent } from '../../../src/runtime/spawn.js';
 import { hashToken } from '../../../src/infra/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
@@ -31,21 +28,7 @@ export type InMemoryPathsSnapshot = {
 };
 
 function buildInMemoryCoralPaths(roots: InMemoryRoots, flavor: BuildFlavor = 'prod'): CoralPaths {
-  const coralRoot = roots.coralRoot ?? DEFAULT_CORAL_ROOT;
-  const opts = { baseDir: coralRoot };
-  const store = storePaths(flavor, opts);
-  const corpus = corpusPaths(flavor, opts);
-  const coordinator = coordinatorPaths(flavor, undefined, opts);
-  const exports = exportsPaths(flavor, opts);
-  const equipment = equipmentPaths(flavor, opts);
-
-  return Object.freeze({
-    store,
-    corpus,
-    coordinator,
-    exports,
-    equipment,
-  });
+  return composeCoralPaths(flavor, { baseDir: roots.coralRoot ?? DEFAULT_CORAL_ROOT });
 }
 
 export class InMemoryObserver implements RuntimeObserver {
