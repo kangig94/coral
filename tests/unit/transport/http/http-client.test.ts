@@ -522,7 +522,19 @@ describe('transport/http http-client', () => {
       .mockResolvedValueOnce(jsonResponse({ path: '/tmp/project/notes/contracts-overview.md' }, 201, 'Created'))
       .mockResolvedValueOnce(jsonResponse({ path: '/tmp/project/notes/contracts-overview.md' }))
       .mockResolvedValueOnce(jsonResponse({ deleted: 'contracts/overview' }))
-      .mockResolvedValueOnce(jsonResponse({ slug: 'bridge-removal-plan', path: '/tmp/project/sources/bridge.md' }, 201, 'Created'))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            status: 'completed',
+            job: 'kb-import-job',
+            readiness: 'base-search',
+            slug: 'bridge-removal-plan',
+            path: '/tmp/project/sources/bridge.md',
+          },
+          201,
+          'Created',
+        ),
+      )
       .mockResolvedValueOnce(jsonResponse({ deleted: 'bridge-removal-plan' }))
       .mockResolvedValueOnce(
         jsonResponse({ filename: '20260408-routing.md', path: '/tmp/project/.coral/memos/20260408-routing.md' }, 201, 'Created'),
@@ -546,16 +558,14 @@ describe('transport/http http-client', () => {
     });
     await expect(
       client.kbSourceImport({
+        filePath: '/tmp/source.pdf',
         slug: 'bridge-removal-plan',
-        stagedPath: '/tmp/staged.md',
-        meta: {
-          title: 'Bridge Removal Plan',
-          type: 'markdown',
-          tags: ['plan'],
-          importedAt: '2026-04-08T00:00:00.000Z',
-        },
+        readiness: 'base-search',
       }),
     ).resolves.toEqual({
+      status: 'completed',
+      job: 'kb-import-job',
+      readiness: 'base-search',
       slug: 'bridge-removal-plan',
       path: '/tmp/project/sources/bridge.md',
     });
@@ -621,14 +631,9 @@ describe('transport/http http-client', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
+          filePath: '/tmp/source.pdf',
           slug: 'bridge-removal-plan',
-          stagedPath: '/tmp/staged.md',
-          meta: {
-            title: 'Bridge Removal Plan',
-            type: 'markdown',
-            tags: ['plan'],
-            importedAt: '2026-04-08T00:00:00.000Z',
-          },
+          readiness: 'base-search',
           projectRoot: '/tmp/project',
           owner: 'team-a',
           effort: 'high',

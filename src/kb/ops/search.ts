@@ -65,7 +65,7 @@ export async function searchKb(
   const oramaTerm = normalizeOramaTerm(rawQuery);
   const topK = Number.isInteger(top_k) && top_k > 0 ? top_k : 20;
   const { db, tokenizer, index, warnings: oramaWarnings } = await rt.ensureOramaIndex();
-  if (oramaWarnings?.includes('orama_snapshot_absent')) {
+  if (oramaWarnings?.includes('orama_snapshot_absent') || oramaWarnings?.includes('orama_snapshot_stale')) {
     return {
       mode: 'text',
       results: [],

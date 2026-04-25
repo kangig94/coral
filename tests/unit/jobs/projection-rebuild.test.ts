@@ -55,8 +55,6 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
                 bypassPermissions: false,
                 coralEnv: {},
               },
-              parentJobId: 'job-parent',
-              workflowSlot: 'workflow-slot-1',
               createdAt: NOW.toISOString(),
             },
           },
@@ -80,6 +78,18 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
             refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: { transport: 'durable-cli', pid: 4242, startedAt: NOW.toISOString() },
+          },
+          {
+            type: 'job.progress.emitted',
+            stream: { kind: 'job', id: 'job-1' },
+            refs: { sessionId: 'session-1', kbRefs: [{ entryId: 'note:eng-routing' }] },
+            bodyVersion: 1,
+            body: {
+              kind: 'domain',
+              stage: 'kb_operation_failed',
+              message: 'KB promote failed: index unavailable',
+              detail: { operation: 'promote', code: 'kb_error' },
+            },
           },
           {
             type: 'job.progress.emitted',

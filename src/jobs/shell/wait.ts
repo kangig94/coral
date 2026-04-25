@@ -6,7 +6,9 @@ import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
-import { resultPathFor } from './result-artifact.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { resultPathFor as defaultResultPathFor } from '../exports/result-artifact.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = 'wait-aborted' as const;
@@ -101,6 +103,7 @@ export interface WaitCoordinatorDeps {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobProgress>;
   getCurrentJournalSeq: () => number;
+  ensureResultArtifact?: (jobId: string) => string;
 }
 
 export class WaitCoordinator {
@@ -112,6 +115,19 @@ export class WaitCoordinator {
 
   private readQueryContinuity(jobId: string): JobContinuitySnapshot | null {
     return this.readQueryStatus(jobId)?.continuity ?? null;
+  }
+
+  private resultPathFor(jobId: string): string {
+    if (!this.deps.ensureResultArtifact) {
+      return defaultResultPathFor(jobId);
+    }
+
+    try {
+      return this.deps.ensureResultArtifact(jobId);
+    } catch (error: unknown) {
+      backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
+      return defaultResultPathFor(jobId);
+    }
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
@@ -272,12 +288,13 @@ export class WaitCoordinator {
           continue;
         }
 
-        yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
+        yield toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
         return;
       }
       observedSeq = Math.max(observedSeq, catchUpMaxSeq);
 
       const readContinuity = (jobId: string) => this.readQueryContinuity(jobId);
+      const resultPathForJob = (jobId: string) => this.resultPathFor(jobId);
       const catchUpFromJournal = function* (
         maxSeq: number,
       ): Generator<WaitStreamEvent, 'terminal' | 'progress' | 'empty'> {
@@ -294,7 +311,7 @@ export class WaitCoordinator {
             continue;
           }
 
-          yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), readContinuity(event.jobId));
+          yield toTerminalWaitEvent(event, pending, resultPathForJob(event.jobId), readContinuity(event.jobId));
           return 'terminal';
         }
         return emitted ? 'progress' : 'empty';
@@ -352,7 +369,7 @@ export class WaitCoordinator {
           continue;
         }
 
-        yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
+        yield toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
         return;
       }
     } finally {

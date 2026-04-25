@@ -38,7 +38,8 @@ import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { createOramaBaseProjection } from '../kb/search/orama-backend.js';
+import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama-backend.js';
+import { NEEDLE_CONSUMER_ID } from '../kb/search/needle-backend.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
@@ -185,7 +186,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       currentKbRuntime = kbSubsystem.kb;
       const vectorSlot = createEquipmentSlot<VectorRetrieval>({
         id: 'kb.vector',
-        defaultOwner: () => createOramaBaseProjection(kbSubsystem.kb),
+        defaultOwner: () => kbSubsystem.kb.getBaseRetrievalSurface(),
       });
       equipmentSlots.declare(vectorSlot);
       if (kbSubsystem.curateScheduler) {
@@ -197,13 +198,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       }
       // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
       await kbSubsystem.kb.retryPendingCorpusPublication();
-      // Boot step 2: rebuild the local text surface before exposing coordinator-owned read paths.
-      await kbSubsystem.kb.withMutationLock(async () => {
-        await kbSubsystem.kb.ensureOramaIndex();
-      });
+      // Boot step 2: absorb external markdown edits into the Corpus state before replaying consumers.
+      await kbSubsystem.kb.ensureIndex();
       const driver = getConsumerDriver();
+      driver.register(kbSubsystem.kb.getBaseRetrievalSurface());
       // Boot step 3: replay the persisted corpus snapshot into downstream consumers.
-      driver.notifyCorpus(kbSubsystem.kb.getCorpusStateSnapshot());
+      const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
+      driver.notifyCorpus(corpusSnapshot);
+      await driver.waitFreshUntil('corpus', corpusSnapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
       if (kbSubsystem.curateScheduler) {
         // Boot step 4: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();
@@ -223,6 +225,33 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       return providedCreateExecutionService
         ? providedCreateExecutionService(ctx, wiredDeps)
         : new ExecutionService(ctx, wiredDeps);
+    },
+    waitForKbSourceImportReadiness: async ({ kb, readiness, snapshot }) => {
+      if (readiness === 'commit') {
+        return;
+      }
+
+      const driver = getConsumerDriver();
+      const waitForOrama = () =>
+        driver.waitFreshUntil('corpus', snapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
+      const waitForNeedle = () =>
+        driver.waitFreshUntil('corpus', snapshot, NEEDLE_CONSUMER_ID, bootFreshnessTimeoutMs);
+
+      if (readiness === 'base-search') {
+        await waitForOrama();
+        return;
+      }
+
+      if (readiness === 'active-vector') {
+        const activeKind = (kb.getActiveVectorSurface() as { backendKind?: string }).backendKind;
+        await (activeKind === 'needle' ? waitForNeedle() : waitForOrama());
+        return;
+      }
+
+      await waitForOrama();
+      if ((kb.getActiveVectorSurface() as { backendKind?: string }).backendKind === 'needle') {
+        await waitForNeedle();
+      }
     },
     runStartupRecoveryFn: async ({
       identity,
@@ -251,10 +280,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const currentMaxSeq = getCurrentJournalSeq();
       driver.notify('journal', currentMaxSeq);
       await Promise.all([
-        driver.waitFreshUntil(currentMaxSeq, 'jobs', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil(currentMaxSeq, 'sessions', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil(currentMaxSeq, 'discuss', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil(currentMaxSeq, 'workflow', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil('journal', currentMaxSeq, 'jobs', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil('journal', currentMaxSeq, 'sessions', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil('journal', currentMaxSeq, 'discuss', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil('journal', currentMaxSeq, 'workflow', bootFreshnessTimeoutMs),
       ]);
       assertStartupStillActive();
 

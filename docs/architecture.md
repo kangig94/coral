@@ -75,7 +75,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `PUT /kb/notes/:slug` | 200 | Update a note by slug |
 | `DELETE /kb/notes/:slug` | 200 | Delete a note by slug |
 | `GET /kb/sources` | 200 | List imported KB sources |
-| `POST /kb/sources` | 201 | Import a KB source |
+| `POST /kb/sources` | 201 | Start a job-backed KB source import |
 | `DELETE /kb/sources/:slug` | 200 | Delete an imported KB source |
 | `GET /kb/memos` | 200 | List project-scoped memos |
 | `POST /kb/memos` | 201 | Create a project-scoped memo |
@@ -89,6 +89,8 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 `GET /jobs` accepts optional `projectRoot`, `phase`, `provider`, and `all=1` query filters. Without `all=1`, the list stays live-only (`queued`, `launching`, `running`) and remains sorted by `updatedAt` descending.
 
 Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / non-resumable or provider-mismatched session), 503 (recovering / busy).
+
+`POST /kb/sources` accepts `{ filePath, slug?, readiness?, async? }`. It does not accept pre-staged markdown paths from clients. Source conversion, staging, persistence, progress, terminal outcome, and failure causes are coordinator-owned as an internal `kb.source_import` job. `readiness` defaults to `base-search` and may be `commit`, `base-search`, `active-vector`, or `all-equipped`; `async: true` returns the job id immediately, while the default waits for the requested readiness before returning the completed import.
 
 ## Primary Execution Flows
 
@@ -128,7 +130,8 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
-- KB is self-contained and publishes corpus changes through the coordinator notify seam
+- KB markdown is the Corpus authority for notes, sources, principles, communities, and memos. Source import is job-owned by the coordinator because conversion can be long-running; lightweight KB reads and note/memo mutations stay direct commands.
+- Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer; Needle is optional equipment for the `kb.vector` slot. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling equipment status.
 
 ## Module Map
 
@@ -146,7 +149,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
-| Knowledge base | Search, indexing, memo/source flows, and publication into the corpus authority. |
+| Knowledge base | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers. |
 | Shared / infra | Low-level helpers, settled path resolution, and shared adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
 
 ## Dependency Sketch
@@ -169,11 +172,14 @@ Coordinator glue (`api.ts` + `bootstrap.ts` + `composition/**`)
 
 Coordinator startup
   -> Open Journal
-  -> Register projection consumers
+  -> Register Journal projection consumers
   -> Drain freshness to the current Journal head
   -> jobsReconcile.runStartup
   -> discussReconcile.runStartup
   -> workflowRecover.resumeAll
+  -> Absorb KB Corpus edits into text artifacts
+  -> Register KB CorpusConsumers
+  -> Replay Corpus snapshot and wait for Orama base freshness
   -> expose steady-state transport
 
 Discuss shell
@@ -181,8 +187,9 @@ Discuss shell
   -> Journal append via the discuss store-registry
 
 KB runtime
-  -> Corpus publication + notify seam
-  -> Coordinator freshness / health bridge
+  -> Corpus authority + publication state
+  -> Coordinator notify seam
+  -> CorpusConsumer freshness / health bridge
 
 Shared / infra layer
   -> Shared foundation consumed by all layers
@@ -201,7 +208,7 @@ Shared / infra layer
 | `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
-| `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB text/vector state and imported sources |
+| `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 

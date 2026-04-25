@@ -10,7 +10,7 @@ import type { RecoveryCapableService } from '../contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../jobs/reconcile/cross-namespace-adoption.js';
 import { StartupInterruptedError } from '../../jobs/reconcile/errors.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
-import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 import type { JobEventBus } from '../../jobs/event-bus.js';
 import {
   applyRecoveryAction,

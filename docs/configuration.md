@@ -134,6 +134,9 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 - Markdown root defaults: `~/.coral/kb/` for prod, `~/.coral/kb-dev/` for dev
 - Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data/kb-dev/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
+- `~/.coral/data/kb/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
+- `~/.coral/data/kb/needle/` and `~/.coral/data/kb/needle-staging/` are optional Needle equipment artifacts, created only when Needle is equipped
+- Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
 
 ### Job state
 
@@ -141,13 +144,14 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 - `result.md`: durable wait/follow export materialized from Journal terminal state
 - provider runtime scratch files such as stdout/stderr/env artifacts, owned by the runtime transport
+- KB source imports are internal jobs in the Journal/store, not provider jobs; they may still appear in job list/detail output with provider-like display value `kb`
 
 ## Runtime Dependencies
 
 | Package | Purpose |
 | --- | --- |
 | `zod` | Schema validation |
-| `@orama/orama` | Full-text search |
+| `@orama/orama` | Base KB retrieval projection and fallback vector search |
 | `graphology` | Graph data structures for KB community analysis |
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
@@ -180,7 +184,7 @@ bridge/manifest.json                           -> backend bundle hash + build fl
 ~/.coral/projects/<source-slug>/discuss/       -> discuss storage
 ~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data/kb-dev/     -> KB runtime storage by flavor
+~/.coral/data/kb/ or ~/.coral/data/kb-dev/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

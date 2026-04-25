@@ -34,6 +34,16 @@ const transportContextFieldsShape = {
   owner: z.string().optional(),
   effort: z.string().optional(),
   claudeModelCap: z.string().optional(),
+  jobId: z.string().optional(),
+  sessionId: z.string().optional(),
+} satisfies z.ZodRawShape;
+const optionalTransportContextFieldsShape = {
+  projectRoot: projectRootSchema.optional(),
+  owner: z.string().optional(),
+  effort: z.string().optional(),
+  claudeModelCap: z.string().optional(),
+  jobId: z.string().optional(),
+  sessionId: z.string().optional(),
 } satisfies z.ZodRawShape;
 
 export const kbSearchSchema = z
@@ -84,18 +94,15 @@ export const kbDeleteSchema = z
   })
   .strict();
 
+export const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vector', 'all-equipped']);
+export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
+
 export const kbSourceImportSchema = z
   .object({
-    slug: z.string().min(1),
-    stagedPath: z.string().min(1),
-    meta: z
-      .object({
-        title: z.string(),
-        type: z.string(),
-        tags: z.array(z.string()),
-        importedAt: z.string(),
-      })
-      .strict(),
+    filePath: z.string().min(1),
+    slug: z.string().min(1).optional(),
+    readiness: sourceImportReadinessSchema.default('base-search'),
+    async: z.boolean().default(false),
   })
   .strict();
 
@@ -157,6 +164,8 @@ export const kbMemoDeleteQuerySchema = z
     pattern: z.string().optional(),
     owner: z.string().optional(),
     all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
+    jobId: z.string().optional(),
+    sessionId: z.string().optional(),
   })
   .strict()
   .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
@@ -206,8 +215,8 @@ export const kbNoteUpdateRequestSchema = kbUpdateSchema
     ...transportContextFieldsShape,
   })
   .strict();
-export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
+export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema, ...optionalTransportContextFieldsShape }).strict();
+export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema, ...optionalTransportContextFieldsShape }).strict();
 export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
 export const kbDiagnoseSchema = z.object({}).strict();
 export const kbDiagnoseRequestSchema = kbDiagnoseSchema;

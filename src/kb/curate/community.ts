@@ -1,10 +1,8 @@
 import { nowIsoString } from '../../infra/time.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../contracts.js';
 import { recordMetadataMutation } from '../corpus/index-mutations.js';
-import { buildCommunityIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
-import { createOramaBaseProjection, type PreparedOramaProjection } from '../search/orama-backend.js';
 import { compareLocale } from '../validation.js';
-import { parseKbEntryId, type KbIndex } from '../entry-types.js';
+import { parseKbEntryId } from '../entry-types.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,
@@ -37,8 +35,6 @@ type CommunityPreparedPayload = {
   generatedCommunityDocs: CommunityDocument[];
   summaryFingerprints: Record<string, string> | undefined;
   topologyHash: string;
-  preparedBaseProjection: PreparedOramaProjection;
-  capturedFinalIndex: KbIndex;
 };
 
 function communitySlugFromReference(reference: string): string {
@@ -141,32 +137,6 @@ function renderExistingCommunityDocument(community: ExistingGeneratedCommunity):
       updatedAt: community.updatedAt,
     }),
   };
-}
-
-function buildCommunityTargetIndex(baseIndex: KbIndex, generatedCommunityDocs: readonly CommunityDocument[]): KbIndex {
-  const nextIndex = cloneKbIndex(baseIndex);
-
-  for (const entryId of Object.keys(nextIndex.entries)) {
-    if (entryId.startsWith('community:')) {
-      delete nextIndex.entries[entryId];
-    }
-  }
-
-  for (const document of generatedCommunityDocs) {
-    nextIndex.entries[`community:${document.slug}`] = buildCommunityIndexEntry({
-      slug: document.slug,
-      title: document.title,
-      level: document.level,
-      members: document.members,
-      ...(document.parent === undefined ? {} : { parent: document.parent }),
-      ...(document.children === undefined ? {} : { children: document.children }),
-      ...(document.summary === undefined ? {} : { summary: document.summary }),
-      createdAt: document.createdAt,
-      updatedAt: document.updatedAt,
-    });
-  }
-
-  return nextIndex;
 }
 
 function sameSnapshot(
@@ -280,12 +250,6 @@ async function prepareCommunityPayload(
   const generatedCommunityDocs = [...communitiesBySlug.values()]
     .sort((left, right) => compareLocale(left.slug, right.slug))
     .map(renderExistingCommunityDocument);
-  const targetIndex = buildCommunityTargetIndex(capturedFinalIndex, generatedCommunityDocs);
-  const preparedBaseProjection = await createOramaBaseProjection(kb).prepareFullSnapshotForProjectedIndex({
-    index: targetIndex,
-    generatedCommunityDocs,
-    forceCommunityFresh: true,
-  });
 
   return {
     capturedBaselineSnapshot,
@@ -296,8 +260,6 @@ async function prepareCommunityPayload(
     generatedCommunityDocs,
     summaryFingerprints: normalizedCommunitySummaryFingerprints(summaryInputFingerprints, generatedCommunityDocs),
     topologyHash,
-    preparedBaseProjection,
-    capturedFinalIndex,
   };
 }
 
@@ -313,7 +275,6 @@ export async function runCommunitySubphase(
 
   const { signal, shouldStop = () => false, onFreshnessMismatch } = options;
   let wroteCommunityFiles = false;
-  let shouldInstallPreparedProjection = false;
 
   await kb.withMutationLock(async (mutation) => {
     if (shouldStop() || signal?.aborted) {
@@ -349,17 +310,7 @@ export async function runCommunitySubphase(
 
     if (wroteCommunityFiles || shouldWriteState) {
       recordMetadataMutation(kb, CURATE_STALE_REASON);
-      shouldInstallPreparedProjection = true;
     }
-  }, {
-    preReleaseInstallProjection: async (snapshot) => {
-      if (!shouldInstallPreparedProjection) {
-        return false;
-      }
-
-      await createOramaBaseProjection(kb).installFullSnapshotInWriteLock(snapshot, prepared.preparedBaseProjection);
-      return true;
-    },
   });
 
   return wroteCommunityFiles;

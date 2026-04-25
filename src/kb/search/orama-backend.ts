@@ -1,7 +1,13 @@
-import { insertMultiple, removeMultiple, search as oramaSearch } from '@orama/orama';
+import { insertMultiple, search as oramaSearch } from '@orama/orama';
 import { readFileSync } from 'node:fs';
 
-import type { KbCorpusSnapshot, KbRuntime } from '../contracts.js';
+import type {
+  ConsumerApplyError,
+  CorpusConsumerApplyContext,
+  CorpusConsumerRegistration,
+  KbCorpusSnapshot,
+  KbRuntime,
+} from '../contracts.js';
 import {
   buildRetrievalAuthorityText,
   computeContentSurfaceHash,
@@ -53,6 +59,8 @@ const ORAMA_SEARCH_BOOST = {
   body: 1,
 } as const;
 
+export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
+
 type ProjectionRecord =
   | {
       kind: 'note';
@@ -70,13 +78,6 @@ type ProjectionRecord =
       body: string;
       rawContent: string;
     };
-
-export interface PreparedOramaDelta {
-  index: KbIndex;
-  changedEntryIds: string[];
-  deletedEntryIds: string[];
-  documents: KbOramaDocument[];
-}
 
 export interface PreparedOramaProjection {
   index: KbIndex;
@@ -302,11 +303,23 @@ function retrievalHitFromDocument(document: KbOramaDocument, score: number, rank
 }
 
 /** Coordinator-facing Orama projection that serves both lexical search and base-tier cosine search. */
-export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
+export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, CorpusConsumerRegistration {
+  readonly id = ORAMA_BASE_CONSUMER_ID;
+  readonly authority = 'corpus';
+  readonly corpusInterest = 'content';
+  readonly registrationKind = 'base';
   readonly backendKind = 'orama';
+  onApplyFailure?: (error: ConsumerApplyError) => void;
   private embeddingProviderPromise: Promise<EmbeddingProvider | null> | null = null;
 
   constructor(private readonly runtime: KbRuntime) {}
+
+  async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
+    await this.runtime.ensureIndex();
+    const preparedProjection = await this.prepareFullSnapshotForCurrentCorpus();
+    await this.installFullSnapshot(ctx.snapshot, preparedProjection);
+    this.runtime.recordIndexSyncSuccess();
+  }
 
   /** Loads the current Orama index artifacts from the runtime. */
   async ensureLoaded(): Promise<OramaLoadedIndex> {
@@ -367,33 +380,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     return { hits } as VectorRetrievalResult;
   }
 
-  /** Prepares the document delta needed to bring Orama in sync with a changed corpus subset. */
-  async prepareDeltaForCurrentCorpusEntries(
-    index: KbIndex,
-    changedEntryIds: readonly string[],
-    deletedEntryIds: readonly string[],
-  ): Promise<PreparedOramaDelta> {
-    const nextIndex = cloneKbIndex(index);
-    const actualChangedEntryIds = new Set(changedEntryIds);
-    const hasCommunityEntries = Object.values(nextIndex.entries).some(isCommunityEntry);
-    if (hasCommunityEntries && changedEntryIds.some((entryId) => entryId.startsWith('note:') || entryId.startsWith('source:'))) {
-      for (const entry of Object.values(nextIndex.entries)) {
-        if (isCommunityEntry(entry)) {
-          actualChangedEntryIds.add(`community:${entry.slug}`);
-        }
-      }
-    }
-
-    const documents = await this.buildDocumentsForEntryIds(nextIndex, [...actualChangedEntryIds].sort());
-
-    return {
-      index: nextIndex,
-      changedEntryIds: [...actualChangedEntryIds].sort(),
-      deletedEntryIds: [...deletedEntryIds].sort(),
-      documents,
-    };
-  }
-
   /** Materializes a full Orama projection from the current runtime corpus view. */
   async prepareFullSnapshotForCurrentCorpus(index: KbIndex = this.runtime.readIndexOrEmpty()): Promise<PreparedOramaProjection> {
     return this.prepareFullSnapshotForProjectedIndex({ index });
@@ -417,39 +403,10 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     };
   }
 
-  /** Applies a prepared delta while the caller already holds the KB mutation lock. */
-  async applyDeltaInWriteLock(snapshot: KbCorpusSnapshot, preparedDelta: PreparedOramaDelta): Promise<void> {
-    // snapshot reserved for future freshness FIFO write guard; Orama writes are sync under mutation lock.
-    void snapshot;
-
-    const loaded = await this.runtime.loadOramaSnapshotIfPresent();
-    if (loaded === null) {
-      const preparedProjection = await this.prepareFullSnapshotForProjectedIndex({
-        index: preparedDelta.index,
-      });
-      await this.installFullSnapshotInWriteLock(snapshot, preparedProjection);
-      return;
-    }
-
-    const idsToReplace = [...new Set([...preparedDelta.deletedEntryIds, ...preparedDelta.changedEntryIds])];
-    if (idsToReplace.length > 0) {
-      await removeMultiple(loaded.db, idsToReplace);
-    }
-    if (preparedDelta.documents.length > 0) {
-      await insertMultiple(loaded.db, preparedDelta.documents);
-    }
-
-    this.runtime.persistIndexToDisk(preparedDelta.index);
-    this.runtime.persistOramaSnapshot(loaded.db);
-    this.runtime.installRebuiltArtifacts(preparedDelta.index, loaded);
-  }
-
-  /** Installs a fully rebuilt Orama projection while the caller already holds the KB mutation lock. */
-  async installFullSnapshotInWriteLock(
+  async installFullSnapshot(
     snapshot: KbCorpusSnapshot,
     preparedProjection: PreparedOramaProjection,
   ): Promise<void> {
-    // snapshot reserved for future freshness FIFO write guard; Orama writes are sync under mutation lock.
     void snapshot;
 
     if (preparedProjection.documents.length > 0) {
@@ -466,15 +423,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
   private async getEmbeddingProvider(): Promise<EmbeddingProvider | null> {
     this.embeddingProviderPromise ??= createEmbeddingProvider(this.runtime.runtimeDir);
     return this.embeddingProviderPromise;
-  }
-
-  private async buildDocumentsForEntryIds(index: KbIndex, entryIds: readonly string[]): Promise<KbOramaDocument[]> {
-    const communityFresh = areCommunityDocumentsFresh(this.runtime, index);
-    const records = entryIds
-      .map((entryId) => this.loadProjectionRecordForEntry(index, entryId))
-      .filter((record): record is ProjectionRecord => record !== null);
-
-    return this.materializeDocuments(records, communityFresh);
   }
 
   private async buildDocumentsForIndex(
@@ -584,11 +532,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
         },
       );
     });
-  }
-
-  private loadProjectionRecordForEntry(index: KbIndex, entryId: string): ProjectionRecord | null {
-    const entry = index.entries[entryId];
-    return this.loadProjectionRecord(entry);
   }
 
   private loadProjectionRecord(

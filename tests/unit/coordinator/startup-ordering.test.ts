@@ -10,6 +10,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createCoordinatorServer } from '#src/coordinator/coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contracts.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama-backend.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 
 const tempRoots: string[] = [];
@@ -22,8 +23,21 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
 };
 
 function createMockKb(order?: string[]) {
-  const vectorSurface: VectorRetrieval = {
+  const baseSurface: VectorRetrieval & {
+    id: string;
+    authority: 'corpus';
+    corpusInterest: 'content';
+    registrationKind: 'base';
+    backendKind: 'orama';
+    apply(ctx: { snapshot: CorpusSnapshot }): Promise<void>;
+  } = {
+    id: ORAMA_BASE_CONSUMER_ID,
+    authority: 'corpus',
+    corpusInterest: 'content',
+    registrationKind: 'base',
+    backendKind: 'orama',
     search: vi.fn(async () => ({ hits: [] })),
+    apply: vi.fn(async () => {}),
   };
 
   return {
@@ -49,18 +63,27 @@ function createMockKb(order?: string[]) {
         },
       };
     }),
+    ensureIndex: vi.fn(async () => {
+      order?.push('ensureIndex');
+      return {
+        entries: {},
+        principles: {},
+        entityMeta: {},
+        relationships: [],
+      };
+    }),
     getCorpusStateSnapshot: vi.fn(() => {
       order?.push('getCorpusStateSnapshot');
       return { ...EMPTY_CORPUS_SNAPSHOT };
     }),
     getEquipmentView: vi.fn(() => ({
-      retrieval: vectorSurface,
+      retrieval: baseSurface,
       snapshotId: null,
       contentSeq: 0,
       contentManifestHash: null,
     })),
-    getActiveVectorSurface: vi.fn(() => vectorSurface),
-    getBaseRetrievalSurface: vi.fn(() => vectorSurface),
+    getActiveVectorSurface: vi.fn(() => baseSurface),
+    getBaseRetrievalSurface: vi.fn(() => baseSurface),
   } as never;
 }
 
@@ -121,11 +144,12 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      expect(waitFreshUntil).toHaveBeenCalledTimes(4);
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenCalledTimes(5);
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'corpus', expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), ORAMA_BASE_CONSUMER_ID, expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
     } finally {
@@ -167,10 +191,8 @@ describe('coordinator startup ordering', () => {
       }
       return result;
     });
-    const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async (
-      _target,
-      consumerId,
-    ) => {
+    const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async (...args: unknown[]) => {
+      const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
       order.push(`waitFreshUntil:${consumerId}`);
     });
     const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
@@ -228,11 +250,12 @@ describe('coordinator startup ordering', () => {
       ];
 
       expect(coordinator.getLifecycle()).toBe('running');
-      expect(waitFreshUntil).toHaveBeenCalledTimes(4);
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenCalledTimes(5);
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'corpus', expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), ORAMA_BASE_CONSUMER_ID, expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('listenFn (bind)'));
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
@@ -303,18 +326,16 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       expect(notifyCorpus).toHaveBeenCalledTimes(1);
-      expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(false);
+      expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(true);
       expect(order).toContain('retryPendingCorpusPublication');
-      expect(order).toContain('withMutationLock:start');
-      expect(order).toContain('ensureOramaIndex');
-      expect(order).toContain('withMutationLock:end');
+      expect(order).toContain('ensureIndex');
+      expect(order).toContain('getCorpusStateSnapshot');
       expect(order).toContain('notifyCorpus');
       expect(order).toContain('curateScheduler.start');
       expect(order).toContain('listenFn');
-      expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('withMutationLock:start'));
-      expect(order.indexOf('withMutationLock:start')).toBeLessThan(order.indexOf('ensureOramaIndex'));
-      expect(order.indexOf('ensureOramaIndex')).toBeLessThan(order.indexOf('withMutationLock:end'));
-      expect(order.indexOf('withMutationLock:end')).toBeLessThan(order.indexOf('notifyCorpus'));
+      expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('ensureIndex'));
+      expect(order.indexOf('ensureIndex')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
+      expect(order.indexOf('getCorpusStateSnapshot')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('listenFn'));
     } finally {

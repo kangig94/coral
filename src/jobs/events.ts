@@ -12,6 +12,7 @@ import {
   abortReasonSchema,
   externalErrorSchema,
   jobLaunchRejectedSchema,
+  jobDomainProgressSchema,
   phaseForOutcome,
   terminalOutcomeSchema,
   type JobLaunchRejected,
@@ -55,6 +56,7 @@ export const jobRuntimeStartedBodySchema = z
 
 export const jobProgressBodySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), message: z.string(), ts: z.string().optional() }).strict(),
+  jobDomainProgressSchema,
   z.object({ kind: z.literal('missing_launch_record') }).strict(),
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
 ]);
@@ -101,12 +103,12 @@ type ProjectedJobState = {
   phase: JobPhase;
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics;
-  sessionId: string;
-  provider: string;
+  sessionId: string | null;
+  provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash: string | null;
-  jobKind: 'provider' | 'workflow';
+  jobKind: 'provider' | 'workflow' | 'kb';
   parentWorkflowJobId: string | null;
   workflowSlot: string | null;
   createdAt: string;
@@ -152,9 +154,7 @@ function createInitialProjectionJobState(
   patch: Partial<ProjectedJobState>,
 ): ProjectedJobState {
   if (
-    patch.sessionId === undefined
-    || patch.provider === undefined
-    || patch.projectRoot === undefined
+    patch.projectRoot === undefined
     || patch.backendNamespace === undefined
     || patch.jobKind === undefined
     || patch.createdAt === undefined
@@ -166,8 +166,8 @@ function createInitialProjectionJobState(
     phase: patch.phase ?? 'launching',
     terminal: patch.terminal ?? null,
     diagnostics: patch.diagnostics ?? emptyDiagnostics(),
-    sessionId: patch.sessionId,
-    provider: patch.provider,
+    sessionId: patch.sessionId ?? null,
+    provider: patch.provider ?? null,
     projectRoot: patch.projectRoot,
     backendNamespace: patch.backendNamespace,
     bundleHash: patch.bundleHash ?? null,
@@ -192,8 +192,8 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
         phase: string;
         terminal: string | null;
         diagnostics: string | null;
-        session_id: string;
-        provider: string;
+        session_id: string | null;
+        provider: string | null;
         project_root: string;
         backend_namespace: string;
         bundle_hash: string | null;
@@ -217,7 +217,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
     projectRoot: row.project_root,
     backendNamespace: row.backend_namespace,
     bundleHash: row.bundle_hash,
-    jobKind: row.job_kind as 'provider' | 'workflow',
+    jobKind: row.job_kind as 'provider' | 'workflow' | 'kb',
     parentWorkflowJobId: row.parent_workflow_job_id,
     workflowSlot: row.workflow_slot,
     createdAt: row.created_at,
@@ -239,8 +239,8 @@ function upsertProjectionJob(
     phase: patch.phase ?? base.phase,
     terminal: patch.terminal ?? base.terminal,
     diagnostics: patch.diagnostics ?? base.diagnostics,
-    sessionId: patch.sessionId ?? base.sessionId,
-    provider: patch.provider ?? base.provider,
+    sessionId: patch.sessionId === undefined ? base.sessionId : patch.sessionId,
+    provider: patch.provider === undefined ? base.provider : patch.provider,
     projectRoot: patch.projectRoot ?? base.projectRoot,
     backendNamespace: patch.backendNamespace ?? base.backendNamespace,
     bundleHash: patch.bundleHash ?? base.bundleHash,
@@ -274,16 +274,18 @@ function upsertProjectionJob(
 
 function reducerForRequested(): Reducer<JobLaunchRequestBody> {
   return (db, event) => {
+    const sessionId = event.body.jobKind === 'kb' ? null : event.body.sessionId;
+    const provider = event.body.jobKind === 'kb' ? null : event.body.provider;
     upsertProjectionJob(db, event, {
       phase: 'launching',
-      sessionId: event.body.sessionId,
-      provider: event.body.provider,
+      sessionId,
+      provider,
       projectRoot: event.body.projectRoot,
       backendNamespace: event.body.backendNamespace,
       bundleHash: event.body.bundleHash ?? null,
       jobKind: event.body.jobKind,
-      parentWorkflowJobId: event.body.parentJobId ?? event.refs?.parentJobId ?? null,
-      workflowSlot: event.body.workflowSlot ?? event.refs?.workflowSlotId ?? null,
+      parentWorkflowJobId: event.refs?.parentJobId ?? null,
+      workflowSlot: event.refs?.workflowSlotId ?? null,
       createdAt: event.body.createdAt,
     });
   };
@@ -316,7 +318,7 @@ function reducerForStarted(): Reducer<JobRuntimeStartedBody> {
 function reducerForProgress(): Reducer<JobProgressBody> {
   return (db, event) => {
     const previous = readProjectionJob(db, event.stream.id);
-    if (event.body.kind === 'message') {
+    if (event.body.kind === 'message' || event.body.kind === 'domain') {
       upsertProjectionJob(db, event, {});
       return;
     }

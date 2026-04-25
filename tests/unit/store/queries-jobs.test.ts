@@ -64,8 +64,6 @@ describe('jobs queries', () => {
             },
             coralEnv: { CORAL_ENV: 'test' },
           },
-          parentJobId: 'workflow-1',
-          workflowSlot: 'slot-1',
           createdAt: '2026-04-20T00:00:00.000Z',
         },
       },

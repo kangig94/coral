@@ -159,7 +159,8 @@ describe('kb search AC8 mode branching', () => {
       throw new Error('explicit vector mode should not create a router');
     });
     const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
-    const createEmbeddingProviderSpy = vi.fn().mockResolvedValue({ embedQuery });
+    const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
+    const createEmbeddingProviderSpy = vi.fn().mockResolvedValue({ embedDocuments, embedQuery });
     const needleSearchSpy = vi.fn().mockResolvedValue({
       hits: [
         {

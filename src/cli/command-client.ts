@@ -235,6 +235,8 @@ export type KbUpdateOptions = {
 
 export type KbSourceImportOptions = {
   slug?: string;
+  ready?: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+  async?: boolean;
 };
 
 export type KbMemoWriteOptions = {
@@ -302,6 +304,24 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Invoc
     if (typeof value === 'string' && value.length > 0) {
       body[field] = value;
     }
+  }
+
+  return body;
+}
+
+function buildKbMutationTransportContextBody(
+  args: Record<string, unknown>,
+  context: InvocationContext,
+): Record<string, unknown> {
+  const body = buildTransportContextBody(args, context);
+  const jobId = context.coralEnv.CORAL_JOB_ID;
+  const sessionId = context.coralEnv.CORAL_SESSION_ID;
+
+  if (body.jobId === undefined && typeof jobId === 'string' && jobId.length > 0) {
+    body.jobId = jobId;
+  }
+  if (body.sessionId === undefined && typeof sessionId === 'string' && sessionId.length > 0) {
+    body.sessionId = sessionId;
   }
 
   return body;
@@ -482,18 +502,22 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot issue direct KB reads.`);
     },
     kbPromote: async (args) =>
-      await request<KbPromoteResponse>('kb.note.create', buildTransportContextBody(args, defaultContext)),
+      await request<KbPromoteResponse>('kb.note.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbUpdate: async (args) =>
       await request<KbUpdateResponse>(
         'kb.note.update',
-        buildTransportContextBody({ ...args, slug: args.note }, defaultContext),
+        buildKbMutationTransportContextBody({ ...args, slug: args.note }, defaultContext),
       ),
     kbDelete: async (args) =>
-      await request<KbDeleteResponse>('kb.note.delete', {
-        slug: args.note,
-      }),
+      await request<KbDeleteResponse>(
+        'kb.note.delete',
+        buildKbMutationTransportContextBody({ slug: args.note }, defaultContext),
+      ),
     kbSourceImport: async (args) =>
-      await request<KbSourceImportResponse>('kb.source.create', buildTransportContextBody(args, defaultContext)),
+      await request<KbSourceImportResponse>(
+        'kb.source.create',
+        buildKbMutationTransportContextBody(args, defaultContext),
+      ),
     kbSourceList: async () => {
       if (commandClass === 'read') {
         return await Promise.resolve(readStore().kb.listSources());
@@ -502,11 +526,12 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       return request<KbSourceListResult>('kb.source.list', {});
     },
     kbSourceDelete: async (args) =>
-      await request<KbSourceDeleteResponse>('kb.source.delete', {
-        slug: args.slug,
-      }),
+      await request<KbSourceDeleteResponse>(
+        'kb.source.delete',
+        buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
+      ),
     kbMemo: async (args) =>
-      await request<KbMemoResponse>('kb.memo.create', buildTransportContextBody(args, defaultContext)),
+      await request<KbMemoResponse>('kb.memo.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbMemoList: async (args) => {
       const owner = resolveMemoOwner(args.owner, defaultContext);
 
@@ -523,7 +548,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       const owner = resolveMemoOwner(args.owner, defaultContext);
       return await request<KbMemoDeleteResult>(
         'kb.memo.delete',
-        buildProjectScopedQuery(
+        buildKbMutationTransportContextBody(
           {
             pattern: args.pattern,
             ...(owner === undefined ? {} : { owner }),
@@ -536,7 +561,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       const owner = resolveMemoOwner(args.owner, defaultContext);
       return await request<KbMemoPurgeResult>(
         'kb.memo.delete',
-        buildProjectScopedQuery(
+        buildKbMutationTransportContextBody(
           {
             all: true,
             ...(owner === undefined ? {} : { owner }),
@@ -546,7 +571,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       );
     },
     kbReindex: async (_args = {}) =>
-      await request<ReindexResult>('kb.reindex', buildTransportContextBody({}, defaultContext)),
+      await request<ReindexResult>('kb.reindex', buildKbMutationTransportContextBody({}, defaultContext)),
     subscribe,
   };
 }

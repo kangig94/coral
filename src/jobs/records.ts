@@ -11,6 +11,7 @@ import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
+import type { SourceImportReadiness } from './launch.js';
 
 export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
   return (
@@ -20,7 +21,7 @@ export function belongsToNamespace(status: JobStatus, namespace: string): boolea
   );
 }
 
-export type JobKind = 'provider' | 'workflow';
+export type JobKind = 'provider' | 'workflow' | 'kb';
 
 export interface JobExit extends JobTerminal {
   diagnostics: JobDiagnostics;
@@ -53,7 +54,7 @@ export const jobStatusSchema = z
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
-    jobKind: z.enum(['provider', 'workflow']),
+    jobKind: z.enum(['provider', 'workflow', 'kb']),
     phase: jobPhaseSchema,
     updatedAt: z.string(),
     lastSeq: z.number().int().nonnegative().optional(),
@@ -82,18 +83,22 @@ export interface JobLaunch {
   jobKind: JobKind;
   pool: string;
   enqueueSequence: number;
-  providerAction: ProviderAction;
+  providerAction?: ProviderAction;
+  operation?: 'kb.source_import';
   request: {
-    prompt: string;
+    prompt?: string;
     name?: string;
     model?: string;
-    cwd: string;
+    cwd?: string;
     effort?: string;
-    bypassPermissions: boolean;
+    bypassPermissions?: boolean;
     systemPrompt?: string;
     conversationRef?: string;
     instruction?: ProviderInstruction;
-    coralEnv: Record<string, string>;
+    coralEnv?: Record<string, string>;
+    filePath?: string;
+    slug?: string;
+    readiness?: SourceImportReadiness;
   };
   parentWorkflowJobId?: string;
   workflowSlotId?: string;

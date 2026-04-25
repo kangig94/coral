@@ -3,6 +3,9 @@ import { z } from 'zod';
 import type { EffortLevel, ProviderAction, ProviderInstruction } from '../providers/contract.js';
 
 export type LaunchPool = 'default' | 'discuss' | 'curate';
+export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
+export const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
+export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }
@@ -36,7 +39,7 @@ export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent
   prompt?: string;
 }
 
-export interface JobLaunchRequestBody {
+export interface ProviderJobLaunchRequestBody {
   sessionId: string;
   provider: string;
   providerAction: ProviderAction;
@@ -58,10 +61,26 @@ export interface JobLaunchRequestBody {
     instruction?: ProviderInstruction;
     coralEnv: Record<string, string>;
   };
-  parentJobId?: string;
-  workflowSlot?: string;
   createdAt: string;
 }
+
+export interface KbSourceImportJobLaunchRequestBody {
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash?: string;
+  jobKind: 'kb';
+  pool: string;
+  enqueueSequence: number;
+  operation: 'kb.source_import';
+  request: {
+    filePath: string;
+    slug?: string;
+    readiness: SourceImportReadiness;
+  };
+  createdAt: string;
+}
+
+export type JobLaunchRequestBody = ProviderJobLaunchRequestBody | KbSourceImportJobLaunchRequestBody;
 
 export const providerInstructionSchema = z
   .object({
@@ -70,7 +89,7 @@ export const providerInstructionSchema = z
   })
   .strict();
 
-export const jobLaunchRequestBodySchema = z
+export const providerJobLaunchRequestBodySchema = z
   .object({
     sessionId: z.string(),
     provider: z.string(),
@@ -95,8 +114,31 @@ export const jobLaunchRequestBodySchema = z
         coralEnv: z.record(z.string()),
       })
       .strict(),
-    parentJobId: z.string().optional(),
-    workflowSlot: z.string().optional(),
     createdAt: z.string(),
   })
   .strict();
+
+export const kbSourceImportJobLaunchRequestBodySchema = z
+  .object({
+    projectRoot: z.string(),
+    backendNamespace: z.string(),
+    bundleHash: z.string().optional(),
+    jobKind: z.literal('kb'),
+    pool: z.string(),
+    enqueueSequence: z.number().int().nonnegative(),
+    operation: z.literal('kb.source_import'),
+    request: z
+      .object({
+        filePath: z.string().min(1),
+        slug: z.string().optional(),
+        readiness: sourceImportReadinessSchema,
+      })
+      .strict(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+export const jobLaunchRequestBodySchema = z.discriminatedUnion('jobKind', [
+  providerJobLaunchRequestBodySchema,
+  kbSourceImportJobLaunchRequestBodySchema,
+]);

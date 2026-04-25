@@ -772,6 +772,10 @@ describe('kb search', () => {
     }
     setMtime(kb.entityGraphPath(), new Date(editedGraphMtimeMs));
     await kb.ensureIndex();
+    await kb.getBaseRetrievalSurface().apply({
+      snapshot: kb.captureCorpusSnapshot(),
+      db: kb.db,
+    });
     const response = await searchKb(kb, 'vram', 5);
 
     expect(resultNotes(response.results)).toEqual(['memory-entry']);
@@ -1192,12 +1196,8 @@ describe('kb search', () => {
     await expect(searchKb(kb, 'rendering', 10)).resolves.toEqual({
       results: [],
       mode: 'text',
+      warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
-    expect(kb.readIndex()).toEqual({
-      entries: {},
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    });
+    expect(kb.readIndex()).toBeNull();
   });
 });

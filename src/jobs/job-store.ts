@@ -10,6 +10,7 @@ import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
 import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
+import { ensureResultMarkdownArtifact } from './exports/result-markdown.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
 import { nowIsoString } from '../infra/time.js';
@@ -238,6 +239,10 @@ export class JobStore implements JobProgressStore {
     return readJobProgress(this.db, jobId, this);
   }
 
+  ensureResultArtifact(jobId: string): string {
+    return ensureResultMarkdownArtifact(this.db, jobId, this.runtime.storage, this);
+  }
+
   listJobProjections() {
     return listJobProjections(this.db, this).map(({ jobId, status }) => ({
       jobId,
@@ -275,7 +280,7 @@ export class JobStore implements JobProgressStore {
         this.eventBus.emit('job:created', {
           jobId: event.stream.id,
           sessionId: body.sessionId ?? '',
-          provider: body.provider ?? '',
+          provider: body.provider ?? 'kb',
           projectRoot: body.projectRoot ?? '',
         });
         continue;
@@ -395,36 +400,53 @@ export class JobStore implements JobProgressStore {
 
   appendLaunchRequested(jobId: string, launch: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
+    const refs = {
+      jobId,
+      ...(launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
+      ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+      ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
+    };
+    const body =
+      launch.jobKind === 'kb'
+        ? {
+            projectRoot: launch.projectRoot,
+            backendNamespace: launch.backendNamespace,
+            bundleHash: launch.bundleHash,
+            jobKind: launch.jobKind,
+            pool: launch.pool,
+            enqueueSequence: launch.enqueueSequence,
+            operation: launch.operation ?? 'kb.source_import',
+            request: { ...launch.request },
+            createdAt: launch.createdAt,
+          }
+        : {
+            sessionId: launch.sessionId,
+            provider: launch.provider,
+            projectRoot: launch.projectRoot,
+            backendNamespace: launch.backendNamespace,
+            bundleHash: launch.bundleHash,
+            jobKind: launch.jobKind,
+            pool: launch.pool,
+            enqueueSequence: launch.enqueueSequence,
+            providerAction: launch.providerAction ?? 'exec',
+            request: {
+              ...launch.request,
+              prompt: launch.request.prompt ?? '',
+              cwd: launch.request.cwd ?? launch.projectRoot,
+              bypassPermissions: launch.request.bypassPermissions ?? false,
+              coralEnv: { ...(launch.request.coralEnv ?? {}) },
+            },
+            createdAt: launch.createdAt,
+          };
+
     this.appendEvent({
       type: 'job.launch.requested',
       stream: { kind: 'job', id: jobId },
       namespace: launch.backendNamespace,
       project: launch.projectRoot,
-      refs: {
-        jobId,
-        sessionId: launch.sessionId,
-        ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
-        ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
-      },
+      refs,
       bodyVersion: 1,
-      body: {
-        sessionId: launch.sessionId,
-        provider: launch.provider,
-        projectRoot: launch.projectRoot,
-        backendNamespace: launch.backendNamespace,
-        bundleHash: launch.bundleHash,
-        jobKind: launch.jobKind,
-        pool: launch.pool,
-        enqueueSequence: launch.enqueueSequence,
-        providerAction: launch.providerAction,
-        request: {
-          ...launch.request,
-          coralEnv: { ...launch.request.coralEnv },
-        },
-        ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
-        ...(launch.workflowSlotId ? { workflowSlot: launch.workflowSlotId } : {}),
-        createdAt: launch.createdAt,
-      },
+      body,
     });
   }
 
@@ -442,7 +464,7 @@ export class JobStore implements JobProgressStore {
       project: status?.projectRoot,
       refs: {
         jobId,
-        ...(status ? { sessionId: status.sessionId } : {}),
+        ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
       },
       bodyVersion: 1,
       body:

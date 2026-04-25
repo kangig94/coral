@@ -1,8 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
-import { errorMessage } from '../infra/error-format.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type {
+  CorpusConsumerRegistration,
   KbInboundSyncOptions,
   KbCachedOramaIndex,
   KbCorpusPublishCallbacks,
@@ -15,7 +15,6 @@ import type {
   KbRuntime,
 } from './contracts.js';
 import {
-  INBOUND_SYNC_ORAMA_DELTA_THRESHOLD,
   createKbMutationLock,
   type KbMutationLockContext,
   type KbMutationLockOptions,
@@ -34,7 +33,6 @@ import {
   type KbIndex,
 } from './entry-types.js';
 import { createOramaBaseProjection } from './search/orama-backend.js';
-import { diffSearchVisibleEntryIds } from './search/visible-entry-diff.js';
 import { createCorpusStateMirror } from './runtime-state.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import {
@@ -111,9 +109,6 @@ class KbRuntimeImpl implements KbRuntime {
     writeEntityGraph: (graph) => {
       this.writeEntityGraphLocked(graph);
     },
-    forceFullProjectionInstall: () => {
-      this.forceFullProjectionInstall();
-    },
   };
   private readonly mutationLockController = createKbMutationLock<
     KbIndex,
@@ -131,11 +126,6 @@ class KbRuntimeImpl implements KbRuntime {
     },
     finalizePendingMutation: (context) => {
       this.finalizePendingMutation(context);
-    },
-    installPendingBaseProjectionBeforeRelease: (snapshot, context) =>
-      this.installPendingBaseProjectionBeforeRelease(snapshot, context),
-    recordIndexSyncSuccess: () => {
-      this.recordIndexSyncSuccess();
     },
     enqueuePublication: (publication) => {
       this.publicationQueue.enqueue(publication);
@@ -187,7 +177,7 @@ class KbRuntimeImpl implements KbRuntime {
     return this.getEquipmentView().retrieval;
   }
 
-  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval {
+  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval & CorpusConsumerRegistration {
     return this.baseProjection;
   }
 
@@ -244,7 +234,6 @@ class KbRuntimeImpl implements KbRuntime {
   private writeEntityGraphLocked(graph: EntityGraph): void {
     const { normalized, raw } = writeEntityGraphFile(this.entityGraphPath(), graph);
     this.queueManifestAuthorityDelta(captureEntityGraphManifestDelta(raw));
-    this.forceFullProjectionInstall();
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 
     const currentIndex = this.readIndex();
@@ -378,15 +367,16 @@ class KbRuntimeImpl implements KbRuntime {
       };
     }
 
-    if (this.readOnlyOrama) {
-      return this.ensureOramaIndexReadOnly();
+    const loaded = await this.ensureOramaIndexReadOnly();
+    if (this.textArtifactsNeedRebuild(state)) {
+      return {
+        ...loaded,
+        index: emptyIndex(),
+        warnings: ['orama_snapshot_stale'],
+      };
     }
 
-    if (this.activeMutationContext !== null) {
-      return this.ensureOramaIndexInMutationLock();
-    }
-
-    return this.withMutationLock(async () => this.ensureOramaIndexInMutationLock());
+    return loaded;
   }
 
   async loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null> {
@@ -455,42 +445,7 @@ class KbRuntimeImpl implements KbRuntime {
         this.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
       }
       return result;
-    }, {
-      preReleaseInstallProjection: async (snapshot) => {
-        if (mutationDiff === null || mutationDiff.lane === null) {
-          return false;
-        }
-
-        if (mutationDiff.requiresFullInstall) {
-          const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus();
-          await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
-          return true;
-        }
-
-        const shouldInstallDelta =
-          mutationDiff.changedEntryIds.length <= INBOUND_SYNC_ORAMA_DELTA_THRESHOLD;
-        if (!shouldInstallDelta) {
-          const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus();
-          await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
-          return true;
-        }
-
-        const preparedDelta = await this.baseProjection.prepareDeltaForCurrentCorpusEntries(
-          this.readIndexOrEmpty(),
-          mutationDiff.changedEntryIds,
-          [],
-        );
-        await this.baseProjection.applyDeltaInWriteLock(snapshot, preparedDelta);
-        return true;
-      },
     });
-  }
-
-  private forceFullProjectionInstall(): void {
-    if (this.activeMutationContext === null) {
-      throw new Error('KB mutation-lock projection mode can only change while the mutation lock is held.');
-    }
-    this.activeMutationContext.projectionDispatchMode = 'full';
   }
 
   captureCorpusSnapshot(): KbCorpusPublication['snapshot'] {
@@ -519,32 +474,6 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.manifestAuthority.updateFromDelta(lockContext.pendingOpaqueDeltas);
-  }
-
-  private async installPendingBaseProjectionBeforeRelease(
-    snapshot: CorpusSnapshot,
-    lockContext: MutationLockContext,
-  ): Promise<boolean> {
-    const currentIndex = this.readIndexOrEmpty();
-    const delta = diffSearchVisibleEntryIds(lockContext.startIndex, currentIndex);
-
-    if (lockContext.projectionDispatchMode === 'full') {
-      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(currentIndex);
-      await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
-      return true;
-    }
-
-    if (delta.changedEntryIds.length === 0 && delta.deletedEntryIds.length === 0) {
-      return false;
-    }
-
-    const preparedDelta = await this.baseProjection.prepareDeltaForCurrentCorpusEntries(
-      currentIndex,
-      delta.changedEntryIds,
-      delta.deletedEntryIds,
-    );
-    await this.baseProjection.applyDeltaInWriteLock(snapshot, preparedDelta);
-    return true;
   }
 
   invalidateKbCache(): void {
@@ -617,41 +546,6 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  private async ensureOramaIndexInMutationLock(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-    warnings?: string[];
-  }> {
-    const state = this.readIndexStateIfPresent();
-    const startState = captureIndexStateSnapshot(state);
-
-    if (this.textArtifactsNeedRebuild(state)) {
-      try {
-        await rebuildTextArtifactsAndPersistRepairState(this, this.mutationEffects, startState);
-      } catch (error: unknown) {
-        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-      }
-    } else if (!this.oramaSnapshotStore.hasCache()) {
-      try {
-        this.oramaSnapshotStore.install(await this.oramaSnapshotStore.load());
-      } catch {
-        await this.installCurrentOramaProjectionInWriteLock(startState);
-      }
-    }
-
-    const stateAfterArtifacts = this.readIndexStateIfPresent();
-    const cachedOramaIndex = this.oramaSnapshotStore.getCache();
-    if (cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
-      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-    }
-
-    return {
-      ...cachedOramaIndex,
-      index: this.readIndex() ?? emptyIndex(),
-    };
-  }
-
   private async ensureOramaIndexReadOnly(): Promise<{
     db: KbOramaDb;
     tokenizer: KbOramaTokenizer;
@@ -681,28 +575,6 @@ class KbRuntimeImpl implements KbRuntime {
         index: emptyIndex(),
         warnings: ['orama_snapshot_absent'],
       };
-    }
-  }
-
-  private async installCurrentOramaProjectionInWriteLock(startState: KbIndexStateSnapshot): Promise<void> {
-    this.oramaSnapshotStore.clear();
-    this.oramaSnapshotStore.removeSnapshot();
-
-    const currentIndex = this.readIndex();
-    if (currentIndex === null) {
-      try {
-        await rebuildTextArtifactsAndPersistRepairState(this, this.mutationEffects, startState);
-        return;
-      } catch (error: unknown) {
-        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-      }
-    }
-
-    try {
-      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(currentIndex);
-      await this.baseProjection.installFullSnapshotInWriteLock(this.captureCorpusSnapshot(), preparedProjection);
-    } catch (error: unknown) {
-      throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
     }
   }
 

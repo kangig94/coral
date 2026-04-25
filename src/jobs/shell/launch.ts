@@ -17,7 +17,7 @@ import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
-import { writeResultArtifact } from './result-artifact.js';
+import { writeResultArtifact } from '../exports/result-artifact.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
   AcceptedAdmission,
@@ -251,6 +251,14 @@ export class LaunchOrchestrator {
     const projectRoot = opts.projectRoot ?? request.cwd ?? '';
     const enqueueSequence = progressStore.nextEnqueueSequence();
     const createdAt = nowIsoString(this.deps.runtime.time);
+    const hostedRequest: ProviderRequest = {
+      ...request,
+      coralEnv: {
+        ...request.coralEnv,
+        CORAL_JOB_ID: jobId,
+        CORAL_SESSION_ID: sessionId,
+      },
+    };
 
     abortRegistry.register(jobId);
     progressStore.appendLaunchRequested(jobId, {
@@ -265,16 +273,16 @@ export class LaunchOrchestrator {
       pool,
       enqueueSequence,
       request: {
-        prompt: request.prompt,
-        name: request.name,
-        model: request.model,
-        cwd: request.cwd ?? '',
-        effort: request.effort,
-        bypassPermissions: request.bypassPermissions,
-        systemPrompt: request.systemPrompt,
-        conversationRef: request.conversationRef,
-        instruction: request.instruction,
-        coralEnv: request.coralEnv,
+        prompt: hostedRequest.prompt,
+        name: hostedRequest.name,
+        model: hostedRequest.model,
+        cwd: hostedRequest.cwd ?? '',
+        effort: hostedRequest.effort,
+        bypassPermissions: hostedRequest.bypassPermissions,
+        systemPrompt: hostedRequest.systemPrompt,
+        conversationRef: hostedRequest.conversationRef,
+        instruction: hostedRequest.instruction,
+        coralEnv: hostedRequest.coralEnv,
       },
       parentWorkflowJobId: opts.parentWorkflowJobId,
       workflowSlotId: opts.workflowSlotId,
@@ -288,7 +296,7 @@ export class LaunchOrchestrator {
       this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', { queuePosition: 0 }, { projectRoot });
     }
 
-    this.runAsync(provider, sessionId, jobId, request, admission, pool);
+    this.runAsync(provider, sessionId, jobId, hostedRequest, admission, pool);
     return { status: decisionStatus, job: jobId, session: sessionId };
   }
 

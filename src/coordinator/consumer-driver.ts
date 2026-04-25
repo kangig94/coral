@@ -19,8 +19,11 @@ export type {
 export type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 
 export class FreshnessTimeout extends Error {
-  constructor(consumerId: string, target: number, timeoutMs: number) {
-    super(`waitFreshUntil timed out (consumer=${consumerId}, target=${target}, timeoutMs=${timeoutMs})`);
+  constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {
+    const renderedTarget = typeof target === 'number'
+      ? String(target)
+      : `${target.snapshotId}:${target.contentSeq}/${target.metadataSeq}`;
+    super(`waitFreshUntil timed out (consumer=${consumerId}, target=${renderedTarget}, timeoutMs=${timeoutMs})`);
     this.name = 'FreshnessTimeout';
     Object.setPrototypeOf(this, FreshnessTimeout.prototype);
   }
@@ -80,7 +83,7 @@ export interface JournalConsumerRegistration {
 type ConsumerRegistration = JournalConsumerRegistration | CorpusConsumerRegistration;
 
 interface Waiter {
-  target: number;
+  target: number | KbCorpusSnapshot;
   resolve: () => void;
   reject: (err: Error) => void;
   timeoutHandle: ReturnType<typeof setTimeout>;
@@ -153,6 +156,18 @@ function shouldNotifyCorpusConsumer(
   return laneHint === undefined || interest === 'both' || interest === laneHint;
 }
 
+function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as KbCorpusSnapshot).snapshotId === 'string' &&
+    typeof (value as KbCorpusSnapshot).contentSeq === 'number' &&
+    typeof (value as KbCorpusSnapshot).metadataSeq === 'number' &&
+    typeof (value as KbCorpusSnapshot).contentManifestHash === 'string' &&
+    typeof (value as KbCorpusSnapshot).metadataManifestHash === 'string'
+  );
+}
+
 function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
   if (err instanceof Error && err.message.trim().length > 0) {
     return { message: err.message, at, cause: err };
@@ -193,6 +208,16 @@ function consumerRegistrationKindMismatchError(
     expected,
     actual,
   });
+}
+
+function renderConsumerId(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    return `${value}`;
+  }
+  return 'invalid';
 }
 
 export class ConsumerDriver {
@@ -406,18 +431,52 @@ export class ConsumerDriver {
     this.notify('corpus', snapshot, laneHint);
   }
 
-  waitFreshUntil(target: number, consumerId: string, timeoutMs = 30000): Promise<void> {
+  waitFreshUntil(authority: 'journal', target: number, consumerId: string, timeoutMs?: number): Promise<void>;
+  waitFreshUntil(authority: 'corpus', target: KbCorpusSnapshot, consumerId: string, timeoutMs?: number): Promise<void>;
+  waitFreshUntil(target: number, consumerId: string, timeoutMs?: number): Promise<void>;
+  waitFreshUntil(
+    authorityOrTarget: Authority | number,
+    targetOrConsumerId: number | KbCorpusSnapshot | string,
+    consumerIdOrTimeoutMs?: string | number,
+    maybeTimeoutMs = 30000,
+  ): Promise<void> {
+    const authority: Authority = typeof authorityOrTarget === 'string' ? authorityOrTarget : 'journal';
+    const target = typeof authorityOrTarget === 'string' ? targetOrConsumerId : authorityOrTarget;
+    const consumerId = typeof authorityOrTarget === 'string'
+      ? consumerIdOrTimeoutMs
+      : targetOrConsumerId;
+    const timeoutMs = typeof authorityOrTarget === 'string'
+      ? maybeTimeoutMs
+      : (typeof consumerIdOrTimeoutMs === 'number' ? consumerIdOrTimeoutMs : 30000);
+
+    if (typeof consumerId !== 'string' || consumerId.length === 0) {
+      throw documentedCoralSetupError('consumer_not_registered', { id: renderConsumerId(consumerId) });
+    }
+
     const state = this.consumers.get(consumerId);
     if (!state) {
       throw consumerNotRegisteredError(consumerId);
     }
-    if (state.reg.authority !== 'journal') {
-      throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
+    if (state.reg.authority !== authority) {
+      throw consumerAuthorityMismatchError(consumerId, authority, state.reg.authority);
     }
 
-    const current = this.readJournalCursor(consumerId);
-    if (current >= target) {
-      return Promise.resolve();
+    if (authority === 'journal') {
+      if (typeof target !== 'number') {
+        throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
+      }
+      const current = this.readJournalCursor(consumerId);
+      if (current >= target) {
+        return Promise.resolve();
+      }
+    } else {
+      if (!isKbCorpusSnapshot(target)) {
+        throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
+      }
+      const current = this.readCorpusCursor(consumerId);
+      if (this.corpusTargetReached(state, target, current)) {
+        return Promise.resolve();
+      }
     }
 
     return new Promise<void>((resolve, reject) => {
@@ -475,6 +534,14 @@ export class ConsumerDriver {
   }
 
   private assertValidRegistration(reg: ConsumerRegistration): void {
+    const regLike = reg as { id?: unknown; authority?: unknown };
+    if (regLike.authority !== 'journal' && regLike.authority !== 'corpus') {
+      throw consumerAuthorityMismatchError(
+        renderConsumerId(regLike.id),
+        'journal|corpus',
+        renderConsumerId(regLike.authority),
+      );
+    }
     if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
       throw documentedCoralSetupError('consumer_lane_invalid', { id: reg.id });
     }
@@ -694,6 +761,7 @@ export class ConsumerDriver {
       await state.reg.apply({ snapshot, db: this.db });
       this.advanceCorpusCursor(state.reg, snapshot);
       state.lastApplyError = null;
+      this.resolveWaiters(state, snapshot);
       return true;
     } catch (err) {
       const applyError = toConsumerApplyError(err, this.now().toISOString());
@@ -863,14 +931,33 @@ export class ConsumerDriver {
     }
   }
 
-  private resolveWaiters(state: ConsumerState, newCursor: number): void {
+  private corpusTargetReached(state: ConsumerState, target: KbCorpusSnapshot, current: KbCorpusSnapshot): boolean {
+    if (state.reg.authority !== 'corpus') {
+      return false;
+    }
+
+    return !isSnapshotFresherForInterest(target, current, state.reg.corpusInterest);
+  }
+
+  private resolveWaiters(state: ConsumerState, newCursor: number | KbCorpusSnapshot): void {
     for (const waiter of [...state.waiters]) {
-      if (!waiter.settled && waiter.target <= newCursor) {
-        waiter.settled = true;
-        state.waiters.delete(waiter);
-        clearTimeout(waiter.timeoutHandle);
-        waiter.resolve();
+      if (waiter.settled) {
+        continue;
       }
+      const reached =
+        state.reg.authority === 'journal' && typeof waiter.target === 'number' && typeof newCursor === 'number'
+          ? waiter.target <= newCursor
+          : state.reg.authority === 'corpus' && typeof waiter.target !== 'number' && typeof newCursor !== 'number'
+            ? this.corpusTargetReached(state, waiter.target, newCursor)
+            : false;
+      if (!reached) {
+        continue;
+      }
+
+      waiter.settled = true;
+      state.waiters.delete(waiter);
+      clearTimeout(waiter.timeoutHandle);
+      waiter.resolve();
     }
   }
 }

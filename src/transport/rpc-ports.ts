@@ -97,13 +97,13 @@ export interface KbRequestPort {
   listMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
   listPrinciples(args: Record<string, unknown>): Promise<KbToolResult>;
   createNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  updateNote(args: Record<string, unknown>): Promise<KbToolResult>;
-  deleteNote(slug: string): Promise<KbToolResult>;
-  createSource(args: Record<string, unknown>): Promise<KbToolResult>;
-  deleteSource(slug: string): Promise<KbToolResult>;
+  updateNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  deleteNote(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
+  createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  deleteSource(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
   createMemo(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
   deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
-  reindex(): Promise<KbToolResult>;
+  reindex(ctx?: InvocationContext): Promise<KbToolResult>;
 }
 
 export interface DiscussRequestPort {

@@ -288,7 +288,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
   return data.jobs.map(({ jobId, status }) => ({
     jobId,
     phase: status.phase,
-    provider: status.provider,
+    provider: status.provider ?? status.jobKind,
     cwd: readJobCwd(status),
     age: formatRelativeAge(status.updatedAt, now),
   }));
@@ -489,7 +489,13 @@ export function formatKbDelete(data: KbDeleteResponse): string {
 }
 
 export function formatKbSourceImport(data: KbSourceImportResponse): string {
-  return `Imported: ${data.path}`;
+  switch (data.status) {
+    case 'running':
+    case 'queued':
+      return `Import job ${data.job} ${data.status} (ready=${data.readiness})`;
+    case 'completed':
+      return `Imported: ${data.path}`;
+  }
 }
 
 export function formatKbSourceList(data: KbSourceListResult): string {

@@ -112,8 +112,15 @@ export type KbDeleteResponse = {
 };
 
 export type KbSourceImportResponse = {
+  status: 'completed';
+  job: string;
+  readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
   slug: string;
   path: string;
+} | {
+  status: 'running' | 'queued';
+  job: string;
+  readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
 };
 
 export type KbSourceDeleteResponse = {
@@ -483,24 +490,24 @@ export class BackendClient {
   }
 
   async kbPromote(args: KbPromoteInput, context?: InvocationContext): Promise<KbPromoteResponse> {
-    return this.postRoute('/kb/notes', args, this.resolveContext(context, 'kb note creation'));
+    const ctx = this.resolveContext(context, 'kb note creation');
+    return this.postRoute('/kb/notes', this.addHostedJobContext(args, ctx), ctx);
   }
 
   async kbUpdate(args: KbUpdateInput, context?: InvocationContext): Promise<KbUpdateResponse> {
     const { note, ...body } = args;
-    return this.putRoute(
-      `/kb/notes/${encodeURIComponent(note)}`,
-      body,
-      this.resolveContext(context, 'kb note update'),
-    );
+    const ctx = this.resolveContext(context, 'kb note update');
+    return this.putRoute(`/kb/notes/${encodeURIComponent(note)}`, this.addHostedJobContext(body, ctx), ctx);
   }
 
   async kbDelete(args: KbDeleteInput, context?: InvocationContext): Promise<KbDeleteResponse> {
-    return this.deleteRoute(`/kb/notes/${encodeURIComponent(args.note)}`, context);
+    const ctx = this.resolveContext(context, 'kb note delete');
+    return this.deleteRoute(this.buildKbMutationDeletePath(`/kb/notes/${encodeURIComponent(args.note)}`, ctx), ctx);
   }
 
   async kbSourceImport(args: KbSourcePersistInput, context?: InvocationContext): Promise<KbSourceImportResponse> {
-    return this.postRoute('/kb/sources', args, this.resolveContext(context, 'kb source import'));
+    const ctx = this.resolveContext(context, 'kb source import');
+    return this.postRoute('/kb/sources', this.addHostedJobContext(args, ctx), ctx);
   }
 
   async kbSourceList(context?: InvocationContext): Promise<KbSourceListResult> {
@@ -508,11 +515,13 @@ export class BackendClient {
   }
 
   async kbSourceDelete(args: KbSourceDeleteInput, context?: InvocationContext): Promise<KbSourceDeleteResponse> {
-    return this.deleteRoute(`/kb/sources/${encodeURIComponent(args.slug)}`, context);
+    const ctx = this.resolveContext(context, 'kb source delete');
+    return this.deleteRoute(this.buildKbMutationDeletePath(`/kb/sources/${encodeURIComponent(args.slug)}`, ctx), ctx);
   }
 
   async kbMemo(args: KbMemoInput, context?: InvocationContext): Promise<KbMemoResponse> {
-    return this.postRoute('/kb/memos', args, this.resolveContext(context, 'kb memo creation'));
+    const ctx = this.resolveContext(context, 'kb memo creation');
+    return this.postRoute('/kb/memos', this.addHostedJobContext(args, ctx), ctx);
   }
 
   async kbMemoList(args: KbMemoListInput, context?: InvocationContext): Promise<KbMemoListResult> {
@@ -533,6 +542,8 @@ export class BackendClient {
         projectRoot: ctx.projectRoot,
         pattern: args.pattern,
         owner: this.resolveMemoOwner(args.owner, ctx),
+        jobId: ctx.coralEnv.CORAL_JOB_ID,
+        sessionId: ctx.coralEnv.CORAL_SESSION_ID,
       }),
       ctx,
     );
@@ -545,6 +556,8 @@ export class BackendClient {
         projectRoot: ctx.projectRoot,
         all: true,
         owner: this.resolveMemoOwner(args.owner, ctx),
+        jobId: ctx.coralEnv.CORAL_JOB_ID,
+        sessionId: ctx.coralEnv.CORAL_SESSION_ID,
       }),
       ctx,
     );
@@ -552,7 +565,8 @@ export class BackendClient {
 
   async kbReindex(args: KbReindexInput = {}, context?: InvocationContext): Promise<ReindexResult> {
     void args;
-    return this.postRoute('/kb/index', {}, this.resolveContext(context, 'kb reindex'));
+    const ctx = this.resolveContext(context, 'kb reindex');
+    return this.postRoute('/kb/index', this.addHostedJobContext({}, ctx), ctx);
   }
 
   async health(): Promise<BackendHealth | null> {
@@ -628,6 +642,35 @@ export class BackendClient {
     }
 
     return body;
+  }
+
+  private addHostedJobContext(args: Record<string, unknown>, ctx: InvocationContext): Record<string, unknown> {
+    const body = { ...args };
+    const jobId = ctx.coralEnv.CORAL_JOB_ID;
+    const sessionId = ctx.coralEnv.CORAL_SESSION_ID;
+
+    if (body.jobId === undefined && typeof jobId === 'string' && jobId.length > 0) {
+      body.jobId = jobId;
+    }
+    if (body.sessionId === undefined && typeof sessionId === 'string' && sessionId.length > 0) {
+      body.sessionId = sessionId;
+    }
+
+    return body;
+  }
+
+  private buildKbMutationDeletePath(path: string, ctx: InvocationContext): string {
+    const jobId = ctx.coralEnv.CORAL_JOB_ID;
+    const sessionId = ctx.coralEnv.CORAL_SESSION_ID;
+    if (typeof jobId !== 'string' || jobId.length === 0 || typeof sessionId !== 'string' || sessionId.length === 0) {
+      return path;
+    }
+
+    return this.buildRoutePath(path, {
+      projectRoot: ctx.projectRoot,
+      jobId,
+      sessionId,
+    });
   }
 
   private buildRoutePath(

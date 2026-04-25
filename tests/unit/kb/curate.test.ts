@@ -2328,6 +2328,10 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       expect(lockSpy).toHaveBeenCalledTimes(1);
+      await runtime.getBaseRetrievalSurface().apply({
+        snapshot: runtime.captureCorpusSnapshot(),
+        db: runtime.db,
+      });
       expect(indexSyncSuccessSpy.mock.calls.length).toBeGreaterThan(0);
       expect(spawn.mock.calls.length).toBeGreaterThan(0);
 
@@ -2338,7 +2342,7 @@ describe('curate', () => {
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(state.pendingRepair).toBeNull();
+      expect(state.pendingRepair?.map((repair) => repair.entryId)).toContain('note:coral-malformed');
       expect(state.communitySummaryInputFingerprints).toBeDefined();
       expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
 

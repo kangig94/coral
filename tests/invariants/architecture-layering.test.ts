@@ -153,7 +153,8 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
 
   it('#30: production files never import test helpers', () => {
     const violations = collectViolations(
-      (_source, target) => target.startsWith('tests/') || target.startsWith('src/testing/'),
+      (_source, target) =>
+        target.startsWith('tests/') || target.startsWith('src/testing/') || target.startsWith('tools/testing/'),
     );
 
     expect(violations).toEqual([]);

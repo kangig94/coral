@@ -84,18 +84,21 @@ export function rejectLaunch(code: string, message: string): LaunchDecision {
 
 export function toProviderRequest(launchRecord: JobLaunch): ProviderRequest {
   const { providerAction, request, sessionId, projectRoot } = launchRecord;
+  if (launchRecord.jobKind === 'kb') {
+    throw new Error(`KB job ${launchRecord.jobId} does not have a provider request.`);
+  }
   return {
-    action: providerAction,
+    action: providerAction ?? 'exec',
     sessionId,
     name: request.name,
-    prompt: request.prompt,
+    prompt: request.prompt ?? '',
     conversationRef: request.conversationRef,
     model: request.model,
     cwd: request.cwd ?? projectRoot,
     effort: resolveEffort(request.effort),
-    bypassPermissions: request.bypassPermissions,
+    bypassPermissions: request.bypassPermissions ?? false,
     systemPrompt: request.systemPrompt,
     instruction: request.instruction,
-    coralEnv: request.coralEnv,
+    coralEnv: request.coralEnv ?? {},
   };
 }

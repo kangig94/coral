@@ -35,6 +35,14 @@ export type JobProgressFault =
   | { kind: 'missing_launch_record' }
   | { kind: 'recovery_parse_failed'; cause: ExternalError };
 
+export type JobDomainProgress = {
+  kind: 'domain';
+  stage: string;
+  message: string;
+  detail?: unknown;
+  ts?: string;
+};
+
 export type TerminalOutcome =
   | { kind: 'completed' }
   | { kind: 'aborted'; reason: AbortReason }
@@ -84,6 +92,16 @@ export const jobProgressFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
 ]);
 
+export const jobDomainProgressSchema = z
+  .object({
+    kind: z.literal('domain'),
+    stage: z.string(),
+    message: z.string(),
+    detail: z.unknown().optional(),
+    ts: z.string().optional(),
+  })
+  .strict();
+
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
@@ -129,6 +147,10 @@ export function describeJobProgressFault(fault: JobProgressFault): string {
     default:
       return assertNever(fault);
   }
+}
+
+export function describeJobDomainProgress(progress: JobDomainProgress): string {
+  return progress.message;
 }
 
 export function describeTerminalOutcome(

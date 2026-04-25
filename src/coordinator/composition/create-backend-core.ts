@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
-import { formatError } from '../../infra/error-format.js';
+import { errorMessage, formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
 import {
@@ -32,7 +32,6 @@ import {
   handleKbReindex,
   handleKbSearch,
   handleKbSourceDelete,
-  handleKbSourceImport,
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
@@ -41,6 +40,9 @@ import {
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { RpcPorts } from '../../transport/rpc-ports.js';
+import type { KbToolResult } from '../../kb/result.js';
+import { noteEntryId, sourceEntryId } from '../../kb/entry-types.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import {
@@ -61,6 +63,7 @@ import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
+import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 
 export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
   const runtime = options.runtime;
@@ -98,6 +101,13 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     backendNamespace: world.namespace,
     progressStore: world.progressStore,
   });
+  const kbSourceImportService = new KbSourceImportService({
+    runtime,
+    progressStore: world.progressStore,
+    backendNamespace: world.namespace,
+    bundleHash: identity.bundleHash,
+    waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+  });
 
   const readOnlyInvocationContext = {
     projectRoot: '',
@@ -124,6 +134,87 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       return kbUnavailableResult;
     }
     return run(kbSubsystem);
+  };
+  const normalizeKbFailureDetail = (detail: unknown): unknown => {
+    if (detail === undefined) {
+      return undefined;
+    }
+    if (detail instanceof Error) {
+      return {
+        message: detail.message,
+        ...(detail.stack === undefined ? {} : { stack: detail.stack }),
+      };
+    }
+
+    try {
+      return JSON.parse(JSON.stringify(detail)) as unknown;
+    } catch {
+      return { message: errorMessage(detail) };
+    }
+  };
+  const kbRefsForOperation = (
+    operation: string,
+    args: Record<string, unknown>,
+  ): Array<{ entryId: string }> | undefined => {
+    const slug = typeof args.note === 'string' ? args.note : typeof args.slug === 'string' ? args.slug : undefined;
+    if (slug !== undefined && (operation === 'update' || operation === 'delete')) {
+      return [{ entryId: noteEntryId(slug) }];
+    }
+    if (slug !== undefined && (operation === 'source_import' || operation === 'source_delete')) {
+      return [{ entryId: sourceEntryId(slug) }];
+    }
+    if (operation === 'promote' && typeof args.domain === 'string' && typeof args.topic === 'string') {
+      return [{ entryId: noteEntryId(`${args.domain}-${args.topic}`) }];
+    }
+    return undefined;
+  };
+  const recordHostedKbFailure = (
+    operation: string,
+    args: Record<string, unknown>,
+    ctx: InvocationContext | undefined,
+    result: KbToolResult,
+  ): void => {
+    if (result.ok || ctx === undefined) {
+      return;
+    }
+
+    const jobId = ctx.coralEnv.CORAL_JOB_ID;
+    const sessionId = ctx.coralEnv.CORAL_SESSION_ID;
+    if (typeof jobId !== 'string' || jobId.length === 0 || typeof sessionId !== 'string' || sessionId.length === 0) {
+      return;
+    }
+
+    const status = world.progressStore.readStatus(jobId);
+    if (!status || status.sessionId !== sessionId || !belongsToNamespace(status, world.namespace) || !isLivePhase(status.phase)) {
+      return;
+    }
+
+    const kbRefs = kbRefsForOperation(operation, args);
+    const detail = normalizeKbFailureDetail(result.detail);
+    world.progressStore.appendEvent({
+      type: 'job.progress.emitted',
+      stream: { kind: 'job', id: jobId },
+      namespace: status.backendNamespace,
+      project: status.projectRoot,
+      refs: {
+        jobId,
+        sessionId,
+        ...(kbRefs === undefined ? {} : { kbRefs }),
+      },
+      bodyVersion: 1,
+      body: {
+        kind: 'domain',
+        stage: 'kb_operation_failed',
+        message: `KB ${operation} failed: ${result.message}`,
+        ts: nowIsoString(runtime.time),
+        detail: {
+          operation,
+          code: result.code,
+          message: result.message,
+          ...(detail === undefined ? {} : { detail }),
+        },
+      },
+    });
   };
 
   const rpcPorts: RpcPorts = {
@@ -206,14 +297,58 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
       listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx)),
       listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
-      createNote: (args, ctx) => withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx)),
-      updateNote: (args) => withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem)),
-      deleteNote: (slug) => withKbAsync((kbSubsystem) => handleKbDelete({ note: slug }, kbSubsystem)),
-      createSource: (args) => withKbAsync((kbSubsystem) => handleKbSourceImport(args, kbSubsystem)),
-      deleteSource: (slug) => withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
-      createMemo: (args, ctx) => withKb(() => handleKbMemo(args, ctx)),
-      deleteMemos: (args, ctx) => withKb(() => handleKbMemoDeleteConsolidated(args, ctx)),
-      reindex: () => withKbAsync((kbSubsystem) => handleKbReindex({}, kbSubsystem)),
+      createNote: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx));
+        recordHostedKbFailure('promote', args, ctx, result);
+        return result;
+      },
+      updateNote: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem));
+        recordHostedKbFailure('update', args, ctx, result);
+        return result;
+      },
+      deleteNote: async (slug, ctx) => {
+        const args = { note: slug };
+        const result = await withKbAsync((kbSubsystem) => handleKbDelete(args, kbSubsystem));
+        recordHostedKbFailure('delete', args, ctx, result);
+        return result;
+      },
+      createSource: async (args, ctx) => {
+        const parsed = parseKbSourceImportRequest(args);
+        if (!parsed.ok) {
+          return {
+            ok: false,
+            code: 'invalid_request',
+            message: parsed.message,
+          } satisfies KbToolResult;
+        }
+        const result = await withKbAsync((kbSubsystem) =>
+          Promise.resolve(kbSourceImportService.start(parsed.data, ctx, kbSubsystem)),
+        );
+        recordHostedKbFailure('source_import', args, ctx, result);
+        return result;
+      },
+      deleteSource: async (slug, ctx) => {
+        const args = { slug };
+        const result = await withKbAsync((kbSubsystem) => handleKbSourceDelete(args, kbSubsystem));
+        recordHostedKbFailure('source_delete', args, ctx, result);
+        return result;
+      },
+      createMemo: (args, ctx) => {
+        const result = withKb(() => handleKbMemo(args, ctx));
+        recordHostedKbFailure('memo_create', args, ctx, result);
+        return result;
+      },
+      deleteMemos: (args, ctx) => {
+        const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx));
+        recordHostedKbFailure('memo_delete', args, ctx, result);
+        return result;
+      },
+      reindex: async (ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbReindex({}, kbSubsystem));
+        recordHostedKbFailure('reindex', {}, ctx, result);
+        return result;
+      },
     },
     discuss: {
       seed: handleDiscussSeed,

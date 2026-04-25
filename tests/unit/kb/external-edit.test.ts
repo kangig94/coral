@@ -32,7 +32,7 @@ type StoredOramaDocument = {
 
 type BaseProjectionSpyTarget = {
   baseProjection: {
-    installFullSnapshotInWriteLock: (...args: unknown[]) => Promise<void>;
+    apply: (...args: unknown[]) => Promise<void>;
   };
 };
 
@@ -76,10 +76,16 @@ function createRegisteredRuntime(root: string): KbRuntime {
 
 async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
   await kb.retryPendingCorpusPublication();
-  await kb.withMutationLock(async () => {
-    await kb.ensureOramaIndex();
-  });
+  await kb.ensureIndex();
+  await applyBaseProjection(kb);
   await kb.retryPendingCorpusPublication();
+}
+
+async function applyBaseProjection(kb: KbRuntime): Promise<void> {
+  await kb.getBaseRetrievalSurface().apply({
+    snapshot: kb.captureCorpusSnapshot(),
+    db: kb.db,
+  });
 }
 
 function persistCurrentSnapshot(kb: KbRuntime): void {
@@ -285,7 +291,7 @@ async function bootstrapSeededCorpus(
 function spyOnFullInstall(kb: KbRuntime) {
   return vi.spyOn(
     (kb as unknown as BaseProjectionSpyTarget).baseProjection,
-    'installFullSnapshotInWriteLock',
+    'apply',
   );
 }
 
@@ -412,7 +418,7 @@ describe('external edit absorption (AC28)', () => {
     expect(restarted.readIndexState().textStaleReason).toBeUndefined();
   });
 
-  it('reapplies Orama on the runInboundSync lock-held path for live note body edits', async () => {
+  it('reapplies Orama through the base CorpusConsumer for live note body edits', async () => {
     const root = allocateRoot();
     const initial = await bootstrapSeededCorpus(root);
     const beforeNote = initial.docs.get(noteEntryId('coral-note'));
@@ -430,6 +436,7 @@ describe('external edit absorption (AC28)', () => {
     );
     });
     await initial.kb.retryPendingCorpusPublication();
+    await applyBaseProjection(initial.kb);
 
     const afterSnapshot = readCorpusState(initial.kb.db);
     const afterNote = (await readStoredOramaDocuments(initial.kb)).get(noteEntryId('coral-note'));
@@ -444,7 +451,7 @@ describe('external edit absorption (AC28)', () => {
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
   });
 
-  it('reapplies a full snapshot on the runInboundSync lock-held path for live principle edits', async () => {
+  it('reapplies a full snapshot through the base CorpusConsumer for live principle edits', async () => {
     const root = allocateRoot();
     const principle = 'deterministic-ordering';
     const originalStatement = 'Deterministic ordering keeps index rebuilds stable.';
@@ -464,12 +471,13 @@ describe('external edit absorption (AC28)', () => {
       writeFileSync(initial.kb.principlePath(principle), renderPrinciple(updatedStatement), 'utf-8');
     });
     await initial.kb.retryPendingCorpusPublication();
+    await applyBaseProjection(initial.kb);
 
     expect(installSpy).toHaveBeenCalledTimes(1);
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
   });
 
-  it('reapplies a full snapshot on the runInboundSync lock-held path for live community edits', async () => {
+  it('reapplies a full snapshot through the base CorpusConsumer for live community edits', async () => {
     const root = allocateRoot();
     const community = 'retrieval-community';
     const seededCommunity = renderCommunity({
@@ -494,12 +502,13 @@ describe('external edit absorption (AC28)', () => {
       writeFileSync(initial.kb.communityPath(community), updatedCommunity, 'utf-8');
     });
     await initial.kb.retryPendingCorpusPublication();
+    await applyBaseProjection(initial.kb);
 
     expect(installSpy).toHaveBeenCalledTimes(1);
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
   });
 
-  it('reapplies a full snapshot on the runInboundSync lock-held path for live entity-graph edits', async () => {
+  it('reapplies a full snapshot through the base CorpusConsumer for live entity-graph edits', async () => {
     const root = allocateRoot();
     const originalGraph: EntityGraph = {
       entityMeta: {
@@ -541,6 +550,7 @@ describe('external edit absorption (AC28)', () => {
       writeFileSync(initial.kb.entityGraphPath(), renderEntityGraph(updatedGraph), 'utf-8');
     });
     await initial.kb.retryPendingCorpusPublication();
+    await applyBaseProjection(initial.kb);
 
     expect(installSpy).toHaveBeenCalledTimes(1);
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();

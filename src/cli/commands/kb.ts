@@ -3,7 +3,6 @@ import { Option } from 'commander';
 import type { Command } from 'commander';
 
 import type { KbPromoteInput } from '../../kb/entry-types.js';
-import { prepareSourceImport } from '../../kb/ops/source-import.js';
 import { assertSourceSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/owner-id.js';
 import { UsageError } from '../errors.js';
@@ -47,18 +46,22 @@ function registerKbSourceCommands(kb: Command): void {
     .description('Import a source file into the KB')
     .argument('<file>', 'File to import')
     .option('--slug <slug>', 'Override source slug')
+    .addOption(
+      new Option('--ready <readiness>', 'Readiness to wait for')
+        .choices(['commit', 'base-search', 'active-vector', 'all-equipped'])
+        .default('base-search'),
+    )
+    .option('--async', 'Return after launching the import job')
     .action(async (file: string, opts: KbSourceImportOptions) => {
       const outputFormat = getOutputFormat(kbSourceImportCommand);
 
       try {
-        const prepared = await prepareSourceImport(resolveFilePath(file), opts.slug, (line) =>
-          process.stderr.write(`${line}\n`),
-        );
         const client = makeClient(process.cwd(), kbSourceImportCommand);
         const result = await client.kbSourceImport({
-          slug: prepared.slug,
-          stagedPath: prepared.stagedPath,
-          meta: prepared.meta,
+          filePath: resolveFilePath(file),
+          ...(opts.slug === undefined ? {} : { slug: opts.slug }),
+          readiness: opts.ready ?? 'base-search',
+          async: opts.async === true,
         });
         emit(result, outputFormat, formatKbSourceImport);
       } catch (error) {

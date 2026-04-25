@@ -141,8 +141,8 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 
 **Equipment principles**:
 1. Equipment **replaces a specific projection backend**, it does not add new commands. The CLI surface is identical in both tiers.
-2. Equipment **never writes events**. Events are truth; equipment maintains additional or replacement projections.
-3. Every equipped projection is **rebuildable from events alone**. Equipping = install + subscribe + replay to build local state.
+2. Equipment **never writes an authority**. Journal events and Corpus markdown remain truth; equipment maintains additional or replacement projections.
+3. Every equipped projection is **rebuildable from the authority it serves**. Journal equipment replays events; Corpus equipment diffs Corpus snapshots. Equipping = install + subscribe + build local projection state.
 4. **`coral-cli expansion unequip <name>`** (surfaced to users as `/equip uninstall <name>`) returns the replaced path to the base backend without data loss and without command availability changes.
 5. Equipment is loaded via **dynamic import** — the heavy dependency enters the process only after `/equip` completes.
 6. Equipment is **never prompted** — the base tier must never display "equip X to unlock this" suggestions. Discovery is through `/equip --list` (internally `coral-cli expansion list`) or documentation, not through nagging.
@@ -157,18 +157,18 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 
 The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
-Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Schema 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
+Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
 
 **Projection freshness model**:
 Equipment consumers subscribe to an **authority** (Journal or Corpus, §2). Each authority has its own monotonic version:
 - Journal authority → version is `events.seq`; consumers use range-based replay.
 - Corpus authority → version is `contentSeq` (or `metadataSeq` for metadata-only changes); consumers use snapshot-based content-hash diff.
 
-Both use the same `ConsumerDriver` mechanics: receive `notify(authority, version)` signals after an authoritative write, drain in a single-in-flight microtask (backpressure-safe), persist the cursor only after successful `apply()` completes. Journal strict-freshness reads use `waitFreshUntil(version, consumerId)`, implemented as a condition-variable wake (not polling); corpus equipment observation remains `listEquipment` polling. Consumer `apply()` must be **idempotent** — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`).
+Both use the same `ConsumerDriver` mechanics: receive `notify(authority, version)` signals after an authoritative write, drain in a single-in-flight microtask (backpressure-safe), persist the cursor only after successful `apply()` completes, and expose `waitFreshUntil(authority, version, consumerId)` as a condition-variable wake (not polling). Journal waiters target `events.seq`; Corpus waiters target `contentSeq` / `metadataSeq`. `listEquipment` is status observation, not the freshness primitive. Consumer `apply()` must be **idempotent** — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 
-For coordinator-mediated KB writes: the Corpus mutation lock wraps markdown write + base index update (Orama) synchronously; equipment consumers (needle) are notified after the lock releases and drain asynchronously.
+For coordinator-mediated KB writes: the Corpus mutation lock wraps only authoritative markdown writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval projections are CorpusConsumers: Orama FTS, Orama vector, and needle vector all receive the post-commit notify and drain asynchronously.
 
-This decouples equipment latency from authoritative write latency: a slow or failing equipment projection never blocks a `promote` call from returning. Failed drains retain the last-successful cursor for retry on next `notify` or startup. Fault isolation is structural.
+This decouples projection latency from authoritative write latency: a slow or failing retrieval projection never blocks the Corpus commit. A caller that needs strict retrieval readiness waits after commit via `waitFreshUntil`; if the wait fails, the Corpus commit remains durable and the running job reports the readiness failure. Failed drains retain the last-successful cursor for retry on next `notify` or startup. Fault isolation is structural.
 
 ---
 
@@ -501,7 +501,19 @@ job.terminal.recorded  { terminal: JobTerminal, diagnostics: JobDiagnostics }
 
 **Why the queue split (`queued` vs `admitted`)**: queueing is a first-class state, not an implementation detail. `queued` names the reason (host lock, seat exhaustion) for observability; `admitted` names the transition. Projections can answer "how long was this job queued" without log-grepping.
 
-**`job.progress.emitted` carries domain-specific failure detail**: when a job performs a domain operation (KB promote, KB curation step, etc.) and hits a failure, the failure is recorded as a rich progress event. `stage` names the semantic stage (e.g., `kb_operation_failed`); `detail` carries domain payload (e.g., `{ operation, entryId, cause }`). The terminal outcome then uses `failed { causeRef }` pointing back at this progress event on the same stream — self-stream causeRef is the normal pattern for job-local failure chains. This is why there is no separate `kb/<id>` stream: coordinator-mediated KB operations are jobs, and their failures live on the job stream.
+**`job.progress.emitted` carries domain-specific failure detail**: when a job performs a domain operation (KB source import, KB curation step, provider-hosted KB mutation, etc.) and hits a failure, the failure is recorded as a rich progress event. In the implementation's discriminated progress body this is `kind: 'domain'`; `stage` names the semantic stage (e.g., `kb_operation_failed`); `detail` carries domain payload (e.g., `{ operation, entryId, cause }`). The terminal outcome then uses `failed { causeRef }` pointing back at this progress event on the same stream — self-stream causeRef is the normal pattern for job-local failure chains. This is why there is no separate `kb/<id>` stream: KB content is Corpus authority, while slow process-like KB attempts and KB work hosted by a running job report their failures on the hosting `job/<id>` stream. Fast direct KB commands that do not create a job return structured command errors instead of becoming Journal truth.
+
+**Source import is a job-owned ingest attempt, not a KB stream**: importing a source may include PDF conversion, staging, Corpus commit, and retrieval freshness waits. Those are temporal process facts, so they belong on `job/<id>`. The imported source itself belongs only to the Corpus (`~/.coral/kb/sources/<slug>.md`). A source-import job completes according to an explicit readiness contract:
+
+```ts
+type SourceImportReadiness =
+  | 'commit'        // source markdown is durably written to the Corpus
+  | 'base-search'   // Orama FTS/base search consumer is fresh for the commit
+  | 'active-vector' // current kb.vector slot owner (Orama or needle) is fresh
+  | 'all-equipped'; // every installed Corpus consumer is fresh
+```
+
+The default CLI experience may create the job and wait internally, but the underlying contract is job/wait. The default readiness is `base-search`: after `kb source import paper.pdf` returns, `kb search paper` should observe the document. Stricter readiness (`active-vector` or `all-equipped`) is explicit because it binds the command to embedding and equipment latency.
 
 **Workflow context lives on envelope refs, not in body**:
 A child job launched by a workflow carries envelope-level references, not body fields:
@@ -565,15 +577,29 @@ These are analogous to `events.seq` on the Journal side but version the whole Co
 
 **Mutations** (coordinator-mediated, via CLI):
 
-All coordinator KB operations follow the same pattern inside a single **Corpus mutation lock**:
+Fast coordinator KB operations follow the same pattern inside a single **Corpus mutation lock**:
 
 1. `writeFileAtomic` — markdown `.tmp` + rename (atomic at filesystem level).
 2. Bump `contentSeq` (or `metadataSeq`) in the corpus version state.
-3. `commitIndexUpdate` — update base index (Orama) synchronously in the same lock.
+3. Update lightweight Corpus metadata/index state (`index.json`, manifest authority records) needed to describe the Corpus itself.
 4. Release lock.
-5. Notify Corpus consumers (e.g., needle) — they run their apply loop asynchronously (§9).
+5. Notify Corpus consumers (`orama-fts`, `orama-vector`, `needle-vector`, etc.) — they run their apply loop asynchronously (§9).
 
-External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordinator entirely. They are detected by startup scans and periodic rescans; the next `ensureVectorIndex` picks up the drift via manifest diff.
+Retrieval artifacts are not built inside the authoritative critical section. A command that promises retrieval freshness captures the committed `contentSeq` / `metadataSeq` and waits for the relevant consumer cursor after the lock releases. This keeps the Corpus write small while still giving long-running commands a precise readiness contract.
+
+External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordinator entirely. They are detected by startup scans and periodic rescans; CorpusConsumers pick up the drift via manifest diff.
+
+**Source import readiness**:
+`kb source import` is the one KB mutation whose shell is process-like by default. It stages/converts the external document, commits the resulting markdown source to the Corpus, then optionally waits for retrieval consumers according to the readiness contract defined in §6.1:
+
+| Readiness | Completion condition |
+|---|---|
+| `commit` | Corpus source markdown is durable and `contentSeq` advanced. |
+| `base-search` | `commit` + Orama FTS/base-search consumer cursor reached the committed `contentSeq`. |
+| `active-vector` | `commit` + the current `kb.vector` slot owner (`orama` or `needle`) reached the committed `contentSeq`. |
+| `all-equipped` | `commit` + every installed Corpus consumer reached the committed Corpus version. |
+
+The command surface is identical in base and equipped tiers. Equipping needle changes only which consumer satisfies `active-vector`; it does not create a separate import command.
 
 **Projections / search backends** (all rebuildable from the Corpus alone):
 
@@ -720,7 +746,7 @@ Three variants. All three represent failures of the **coordinator's own wrapper 
 - `launch_rejected` — `job.launch.rejected` event on the job's own stream; `job.terminal.recorded` on the same stream uses `failed { causeRef }` pointing backward to the rejected event (self-stream causeRef is fine and common).
 - `app_server_interrupted` — `session.interrupted` event on the `session/<id>` stream; job terminal uses `failed { causeRef }`.
 - `adapter_output_unparseable`, `provider_session_unavailable`, `provider_request_failed` — each emitted on the `session/<id>` stream as `session.adapter_unparseable`, `session.provider_failed`, etc. Job terminal uses `failed { causeRef }`.
-- `kb_operation_failed` — replaced by `job.progress.emitted { stage: 'kb_operation_failed', detail }` on the **hosting job's own stream** (coordinator-mediated KB operations run as jobs); job terminal uses `failed { causeRef }` pointing self-stream to that progress event. KB is not a Journal stream (§5.5, §6.4). `discuss_moderator_failed`, etc. — replaced by `discuss.moderator.failed` on `discuss/<id>`; job terminal uses `failed { causeRef }`.
+- `kb_operation_failed` — replaced by `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail }` on the **hosting job's own stream** (slow KB attempts such as source import, or KB work performed inside an already-running job); job terminal uses `failed { causeRef }` pointing self-stream to that progress event. KB is not a Journal stream (§5.5, §6.4). `discuss_moderator_failed`, etc. — replaced by `discuss.moderator.failed` on `discuss/<id>`; job terminal uses `failed { causeRef }`.
 
 The **composable union with domain-owned variants** was itself residue — ADT-shaped thinking on top of journal-native causal references. A journal already gives us stream+seq as durable identities; wrapping each fault kind into a union was reinventing pointers as enums.
 
@@ -732,7 +758,8 @@ Every domain that can surface failure emits domain-owned events on its own strea
 job/<id>                  job.launch.rejected              { provider, reason, message, globalActive, globalLimit }
 job/<id>                  job.progress.emitted             { message, stage?, detail? }  — carries coordinator-mediated
                                                                                             domain failures (e.g., KB op
-                                                                                            errors inside a kb-promote job)
+                                                                                            errors inside source-import
+                                                                                            or provider-hosted KB work)
 session/<id>              session.interrupted              { trigger, continuity }
 session/<id>              session.provider_failed          { provider, reason, message }
 session/<id>              session.adapter_unparseable      { provider, stdout, stderr, parseError }
@@ -741,7 +768,7 @@ discuss/<id>              discuss.synthesis.failed         { cause }
 workflow/<id>             workflow.completed               { outcome: 'failed' | 'aborted', causeRef? }
 ```
 
-KB failures have no dedicated Journal stream. Coordinator-mediated KB operations run AS jobs; their failures are recorded on the job's own stream as rich progress events (`stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event. Background curate failures are operational logs, not events — retry is scheduled via `kb_curate_retry_queue` (§3.1). External edits themselves are the **normal** path (Obsidian + git + rescan auto-handle them, see §12.3); only **malformed** content (git conflict markers left in a file, invalid frontmatter) is treated as a skip + log case during rescan, not as an event.
+KB failures have no dedicated Journal stream. Slow process-like KB attempts (source import, explicit reindex/curation jobs) and KB work performed inside an existing provider/workflow job record failures on the hosting job's own stream as rich progress events (`kind: 'domain'`, `stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event. Fast direct KB commands that do not create a job return structured command errors. Background curate failures are operational logs, not events — retry is scheduled via `kb_curate_retry_queue` (§3.1). External edits themselves are the **normal** path (Obsidian + git + rescan auto-handle them, see §12.3); only **malformed** content (git conflict markers left in a file, invalid frontmatter) is treated as a skip + log case during rescan, not as an event.
 
 These are NOT declared in a central `CoralFault` union. They are regular domain events with well-known type strings. A renderer that wants to describe a `causeRef` reads the referenced event's type and dispatches to the domain's describer function:
 
@@ -769,7 +796,7 @@ Each fault-bearing event type has one producer:
 | Event | Stream | Producer |
 |---|---|---|
 | `job.launch.rejected` | `job/<id>` | `coordinator/live/admission.ts` |
-| `job.progress.emitted` (with `stage: 'kb_operation_failed'`/etc.) | `job/<id>` | `kb/ops/` (via coordinator-mediated operation; detail captured inside the hosting job) |
+| `job.progress.emitted` (with `kind: 'domain'`, `stage: 'kb_operation_failed'`/etc.) | `job/<id>` | hosting job shell; domain leaf (`kb/ops/`, `discuss/shell/`, etc.) supplies detail |
 | `session.interrupted` | `session/<id>` | `coordinator/live/provider-hosts.ts` |
 | `session.provider_failed` | `session/<id>` | provider leaf kernel |
 | `session.adapter_unparseable` | `session/<id>` | `providers/middleware/adapter-parse-guard.ts` |
@@ -785,16 +812,18 @@ No layer rewrites another layer's event.
 
 Any subsystem fault reaches any end consumer uniformly by walking the causal graph. No duplication; no wrapping; no re-encoding.
 
-**End-to-end example — KB curation failure inside a workflow**:
+**End-to-end example — KB source import failure inside a workflow**:
 
 All events land in ONE transaction (SQLite `BEGIN IMMEDIATE..COMMIT`):
 
 ```
 seq=101  job/kb-1      job.progress.emitted
-                       { message: 'KB promote failed during Orama index write',
+                       { kind: 'domain',
+                         message: 'KB source import failed during PDF conversion',
                          stage: 'kb_operation_failed',
-                         detail: { operation: 'promote', entryId: 'entry-x',
-                                   cause: { message: 'orama index corrupted' } } }
+                         detail: { operation: 'source_import',
+                                   path: '/papers/topic.pdf',
+                                   cause: { message: 'marker_single exited 1' } } }
 
 seq=102  job/kb-1      job.terminal.recorded
                        terminal: { content: '',
@@ -833,7 +862,7 @@ The renderer:
 1. Reads `JobView(wf-1).terminal.outcome` → `failed` with `causeRef` to `workflow/wf-1@103`.
 2. Reads event at `workflow/wf-1@103` → `workflow.completed { outcome: 'failed', causeRef: job/kb-1@102 }`.
 3. Reads event at `job/kb-1@102` → terminal with `causeRef: job/kb-1@101` (self-stream progress event).
-4. Reads event at `job/kb-1@101` → `job.progress.emitted { stage: 'kb_operation_failed', detail: { entryId: 'entry-x', cause: {...} } }` — the origin fact.
+4. Reads event at `job/kb-1@101` → `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail: { entryId: 'entry-x', cause: {...} } }` — the origin fact.
 5. Dispatches each event type to its describer function; concatenates the rendered chain.
 
 Slot labels (`"kb-promote"`) come from the workflow plan projection (§6.5), not from any fault payload.
@@ -1027,7 +1056,7 @@ interface CorpusConsumer {
 
 Projection types:
 
-- Orama serialized index (base-tier FTS + future vector).
+- Orama serialized index (base-tier FTS + cosine vector).
 - needle DuckDB ANN index (equipment-tier vector).
 
 The per-consumer manifest (hashes of processed entries) lives beside the consumer's storage — e.g., `~/.coral/data/kb/needle/snapshots/<snapshot>/manifest.json` for installed needle snapshots, with staging under `~/.coral/data/kb/needle-staging/<snapshot>/manifest.json` during rebuild.
@@ -1039,7 +1068,7 @@ Journal events are discrete and ordered; range replay is natural. Corpus entries
 Both interfaces share:
 - Durable cursor (in `equipment_cursors` with `authority` field).
 - Idempotent `apply()` (invariant #44).
-- Condition-variable `waitFreshUntil(version, consumerId)` wake mechanism.
+- Condition-variable `waitFreshUntil(authority, version, consumerId)` wake mechanism.
 - Fault-isolated execution (consumer failure never blocks authority writes).
 
 ### 9.4 "Completed" is defined
@@ -1186,7 +1215,8 @@ src/
     records.ts                       — job record DTOs shared across readers and shells
     projections.ts                   — JobView reducer (SQL reducers for projection_jobs)
     exports/
-      result-markdown.ts             — materialize result.md from terminal events
+      result-artifact.ts             — canonical `<os-tmpdir>/coral-jobs/<jobId>/result.md` path + atomic writes
+      result-markdown.ts             — materialize/rebuild result.md from terminal events
     reconcile/                       — imperative reconciliation (not pure replay)
       plan.ts                        — classify world-state divergence
       registry.ts                    — known classifications
@@ -1204,7 +1234,6 @@ src/
       launch.ts                      — launch job helper
       abort.ts                       — abort job helper
       event-subscription.ts          — journal-backed wait/reconnect event streaming
-      result-artifact.ts             — atomic durable `result.md` writes
       wait.ts                        — wait stream helper
 
   sessions/                          ← domain: session events + projections
@@ -1323,7 +1352,7 @@ src/
     wait.ts                          — await-step state + multi-atom wait + cascade
     recover.ts                       — stale-atom recovery paths
 
-  testing/                           ← test helpers; never imported by production
+  tools/testing/                     ← test helpers; never imported by production
     deferred.ts                      — test-only async primitive
     hooks/                           — hook test helpers + hook tests
     skills/                          — skill test helpers
@@ -1874,10 +1903,11 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 **Corpus invariants**:
 17. KB markdown corpus is authoritative. No synthetic events reconstruct KB content.
 18. `contentSeq` and `metadataSeq` are freshness/version counters only, never event history.
-19. Base KB retrieval artifacts (index state + Orama) update synchronously under the Corpus mutation lock for coordinator-owned mutations.
+19. The Corpus mutation lock contains only authority writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval artifacts (Orama and needle) are CorpusConsumers and are never built inside the authoritative critical section.
 20. External Corpus edits (Obsidian, git pull, direct filesystem) are first-class; scans/rebuilds absorb them without backfilling synthetic events.
 21. Corpus recovery = rescan + index rebuild (no history to replay).
 22. Cross-authority references use `KbRef = { entryId, contentHash? }`. `contentHash` is optional, captured at write time when point-in-time semantics matter.
+22a. `kb source import` is a job-owned ingest attempt. Its job terminal records execution/readiness success or failure; the imported source is authoritative only when the Corpus markdown file exists.
 
 **Coordinator & transport**:
 23. Local read-only CLI commands do not require a coordinator (SQLite readers use separate DB handles; Corpus reads are direct filesystem).
@@ -1902,9 +1932,9 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 38. Equipment is **never prompted or nagged**. Base-tier commands never surface "equip X to unlock" hints. Discovery is curiosity-driven (`/equip --list`, internally `coral-cli expansion list`; docs), not system-driven.
 39. Equipment catalog entries are **tool-named** (`needle`), not capability-named (`kb`).
 40. Equipment projections are maintained by registered consumers with durable cursors in `equipment_cursors`. Journal consumers use range-based replay; Corpus consumers use snapshot-based content-hash diff. Updates flow via in-process async push (`ConsumerDriver.notify(authority, version)` after authoritative write).
-41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil(version, consumerId)` — a condition-variable wake, never a polling loop.
-41b. Corpus equipment freshness is eventually consistent relative to base projections and is observed via `listEquipment` polling; Phase 7 does not add a corpus-side waiter primitive.
-42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap.
+41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil('journal', version, consumerId)` — a condition-variable wake, never a polling loop.
+41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listEquipment` is status observation, not a readiness waiter.
+42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
 43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to unequip Y first (internal route `coral-cli expansion unequip Y`; user-facing skill grammar `/equip uninstall Y`).
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
@@ -1953,13 +1983,13 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Orama**: base-tier KB search engine. Provides FTS (BM25) and vector search (cosine brute-force). Pure JS, always present. Vector path requires embedding provider config.
 - **coral-needle**: first equipment. C++ N-API addon at `../coral-needle` providing DuckDB-backed ScanANN vector search (exact / USearch HNSW / ScaNN tree-AH, auto-selected). Replaces Orama's vector path when equipped; FTS stays with Orama. Distributed as prebuilt binaries via GitHub Releases.
 - **SearchBackend**: interface at `src/kb/search/contract.ts` that both Orama and needle implement. `router.ts` picks the active backend per query type based on equipment state.
-- **ConsumerDriver**: in-process driver that turns `notify(authority, version)` signals into `apply(signal)` calls for a registered consumer (Journal or Corpus). Single-in-flight guarantee (backpressure-safe), cursor persistence after success, condition-variable wake for journal `waitFreshUntil`; corpus equipment observation stays polling-based. Lives at `src/coordinator/consumer-driver.ts`.
-- **`waitFreshUntil(seq, consumerId)`**: blocks until the named journal consumer's cursor reaches `seq`. Implemented as condition-variable wake, not polling. Used by strict-freshness journal reads; rarely needed.
+- **ConsumerDriver**: in-process driver that turns `notify(authority, version)` signals into `apply(signal)` calls for a registered consumer (Journal or Corpus). Single-in-flight guarantee (backpressure-safe), cursor persistence after success, condition-variable wake for `waitFreshUntil(authority, version, consumerId)`. Lives at `src/coordinator/consumer-driver.ts`.
+- **`waitFreshUntil(authority, version, consumerId)`**: blocks until the named consumer's cursor reaches the target authority version. Journal callers pass `events.seq`; Corpus callers pass `contentSeq` or `metadataSeq`. Implemented as condition-variable wake, not polling.
 - **`equipment_cursors`**: SQLite table that persists each consumer's cursor (per authority). Source of truth for "where is each equipment projection caught up to".
 - **JournalConsumer**: projection consumer subscribing to Journal authority. Range-based: `apply({ upToSeq })` reads events from `seq > cursor AND seq <= upToSeq` and applies them in order.
 - **CorpusConsumer**: projection consumer subscribing to Corpus authority. Snapshot-based: `apply({ contentSeq, metadataSeq })` captures a corpus snapshot, diffs content hashes against its last manifest, applies only changes. **Reuses the manifest-diff + atomic-snapshot-swap logic from today's `ensureVectorIndex`, but inverts the invocation model** — today pull-driven (called lazily before search), tomorrow push-driven (driven by ConsumerDriver after Corpus writes). The diff half is a port; the trigger half is a rewrite.
 - **KbRef**: `{ entryId, contentHash? }`. Cross-authority reference shape for Journal events pointing at Corpus entries. `entryId` alone = late-bound (resolves to current content); with `contentHash` = point-in-time (preserves historical meaning across subsequent Corpus edits).
-- **Corpus mutation lock**: single-writer lock around the Corpus authority. Coordinator-mediated CLI writes acquire it; base KB indexes (e.g., Orama) update synchronously inside the lock.
+- **Corpus mutation lock**: single-writer lock around the Corpus authority. Coordinator-mediated CLI writes acquire it for markdown atomic writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval projections such as Orama and needle run as CorpusConsumers after the lock releases.
 - **contentSeq / metadataSeq**: monotonic version counters for the Corpus authority. Two lanes because content and metadata changes have different freshness semantics. Analogous to `events.seq` on the Journal side, but versioning the whole corpus rather than counting discrete events.
 
 ---
@@ -1996,5 +2026,6 @@ Tracked deviations from the original design adopted during implementation. Amend
 
 - **Dev data path layout**. Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
 - **Single SQL schema authority**. `src/store/schemas/001_initial.sql` is the canonical clean-slate baseline and the first applied schema file. `src/store/schema.sql` was removed to avoid duplicate DDL authority; pre-merge schema changes edit `001_initial.sql` in place, and `002+` versioning begins only after the first main merge.
-- **Durable result artifact path**. The authoritative wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. `~/.coral/exports/jobs/<jobId>/` remains a future tooling path, not today's authoritative artifact location.
+- **Durable result artifact path**. The authoritative wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/exports/result-artifact.ts`. `~/.coral/exports/jobs/<jobId>/` remains a future tooling path, not today's authoritative artifact location.
 - **IPC bootstrap detection**. `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling. The singleton lock remains the launch gate but is not the detection mechanism.
+- **Source import readiness contract**. `kb source import` is now specified as a job-owned ingest attempt with explicit readiness (`commit | base-search | active-vector | all-equipped`). Corpus writes stay authoritative; Orama and needle are CorpusConsumers, and retrieval readiness is observed through `waitFreshUntil('corpus', version, consumerId)` after commit.

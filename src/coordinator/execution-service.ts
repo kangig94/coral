@@ -104,6 +104,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       readJobProgress: deps.readJobProgress,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
+      ensureResultArtifact: (jobId) => this.progressStore.ensureResultArtifact(jobId),
     });
 
     this.recoveryService = new RecoveryService({

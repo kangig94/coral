@@ -46,20 +46,34 @@ function buildQueryContext(
 
 function stripTransportContextKeys<T extends Record<string, unknown>>(
   parsed: T,
-): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap'> {
+): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'jobId' | 'sessionId'> {
   const {
     projectRoot: _projectRoot,
     owner: _owner,
     effort: _effort,
     claudeModelCap: _claudeModelCap,
+    jobId: _jobId,
+    sessionId: _sessionId,
     ...args
   } = parsed as T & {
     projectRoot?: unknown;
     owner?: unknown;
     effort?: unknown;
     claudeModelCap?: unknown;
+    jobId?: unknown;
+    sessionId?: unknown;
   };
   return args;
+}
+
+function maybeBuildBodyInvocationContext(
+  request: Record<string, unknown>,
+  rpcPorts: HttpHandlerPorts,
+): InvocationContext | undefined {
+  if (typeof request.projectRoot !== 'string' || request.projectRoot.length === 0) {
+    return undefined;
+  }
+  return buildBodyInvocationContext(request, rpcPorts) ?? undefined;
 }
 
 function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: number; body: unknown } | null {
@@ -313,7 +327,8 @@ export async function executeCatalogRequest(
       const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const { sessionId, ...args } = stripTransportContextKeys(parsed);
+      const { sessionId } = parsed;
+      const args = stripTransportContextKeys(parsed);
       return unaryHttp(domainResultToHttp(await rpcPorts.discuss.bid({ ...args, session: sessionId }, ctx)));
     }
 
@@ -324,7 +339,8 @@ export async function executeCatalogRequest(
       const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const { sessionId, ...args } = stripTransportContextKeys(parsed);
+      const { sessionId } = parsed;
+      const args = stripTransportContextKeys(parsed);
       return unaryHttp(domainResultToHttp(await rpcPorts.discuss.speech({ ...args, session: sessionId }, ctx)));
     }
 
@@ -370,16 +386,18 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug })));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug }, ctx)));
     }
 
     case 'kb.note.delete': {
-      const parsed = request as { slug: string };
+      const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteNote(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteNote(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))));
     }
 
     case 'kb.source.list':
@@ -394,14 +412,17 @@ export async function executeCatalogRequest(
 
     case 'kb.source.create': {
       const parsed = request as Record<string, unknown>;
-      return unaryDomain(await rpcPorts.kb.createSource(stripTransportContextKeys(parsed)), 201);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      return unaryDomain(await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx), 201);
     }
 
     case 'kb.source.delete': {
-      const parsed = request as { slug: string };
+      const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteSource(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteSource(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))));
     }
 
     case 'kb.community.read': {
@@ -448,7 +469,8 @@ export async function executeCatalogRequest(
     }
 
     case 'kb.memo.delete': {
-      const parsed = request as { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
+      const parsed = request as Record<string, unknown> & { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts) ?? buildQueryContext(parsed, rpcPorts);
       return unaryHttp(
         domainResultToHttp(
           rpcPorts.kb.deleteMemos(
@@ -457,7 +479,7 @@ export async function executeCatalogRequest(
               ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),
               ...(parsed.all === undefined ? {} : { all: parsed.all }),
             },
-            buildQueryContext(parsed, rpcPorts),
+            ctx,
           ),
         ),
       );
@@ -483,8 +505,10 @@ export async function executeCatalogRequest(
       return unaryHttp(domainResultToHttp(rpcPorts.kb.readPrinciple(slug)));
     }
 
-    case 'kb.reindex':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.reindex()));
+    case 'kb.reindex': {
+      const parsed = request as Record<string, unknown>;
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.reindex(maybeBuildBodyInvocationContext(parsed, rpcPorts))));
+    }
 
     default:
       throw new Error(`Unhandled transport RPC route: ${spec.name}`);

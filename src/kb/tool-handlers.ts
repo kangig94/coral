@@ -22,7 +22,7 @@ import {
 import { promote as kbPromote } from './ops/promote.js';
 import { reindex as kbReindex } from './ops/reindex.js';
 import { searchKb } from './ops/search.js';
-import { deleteSource, listSources, persistPreparedSource } from './ops/source-store.js';
+import { deleteSource, listSources } from './ops/source-store.js';
 import { isNoteEntry } from './entry-types.js';
 import { update as kbUpdate } from './ops/update.js';
 import { readCurateRetryQueue } from './curate/retry.js';
@@ -415,16 +415,16 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
 }
 
 export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  void kbSubsystem;
   const parsed = kbSourceImportSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await persistPreparedSource(kbSubsystem.kb, parsed.data.stagedPath, parsed.data.slug);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return kbError(
+    'source_import_requires_job',
+    'KB source import must run through the coordinator source-import job service.',
+  );
 }
 
 export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {

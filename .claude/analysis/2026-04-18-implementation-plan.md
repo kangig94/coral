@@ -87,21 +87,21 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 ### Phase 0 — Foundation
 
-**Goal**: runnable skeleton for the new layout. No behavior change; old code still drives the installed plugin. New directories exist but are empty/stub. SQLite schema drafted with idempotent migrations. All cross-cutting policies are set here so later phases inherit them.
+**Goal**: runnable skeleton for the new layout. No behavior change; old code still drives the installed plugin. New directories exist but are empty/stub. SQLite schema drafted as an idempotent clean-slate baseline. All cross-cutting policies are set here so later phases inherit them.
 
 **Deliverables**:
 
-- **Skeleton directories**: `src/store/`, `src/coordinator/`, `src/jobs/`, `src/sessions/`, `src/providers/middleware/`, `src/transport/{ipc,http}/`, `src/runtime/`, `src/infra/`, `src/simulation/`, `src/testing/`, `src/workflow/` with `index.ts` barrels.
+- **Skeleton directories**: `src/store/`, `src/coordinator/`, `src/jobs/`, `src/sessions/`, `src/providers/middleware/`, `src/transport/{ipc,http}/`, `src/runtime/`, `src/infra/`, `src/workflow/`, plus debug/test support outside production under `tools/`.
 
-- **Canonical SQLite schema reference** at `src/store/schema.sql` plus the first applied migration at `src/store/migrations/001_initial.sql`:
+- **Canonical SQLite schema reference** at `src/store/schemas/001_initial.sql`:
   - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `meta`, `kb_corpus_state`, `equipment_cursors`, `kb_curate_scheduler`, `kb_curate_retry_queue`.
   - Indexes: `events_stream`, `events_type`, `events_refs_parent`, `curate_retry_by_time`.
   - All `CREATE TABLE IF NOT EXISTS` for crash-resume idempotency.
   - **Explicit seed rows** (singleton tables):
     - `INSERT OR IGNORE INTO kb_corpus_state (id, content_seq, metadata_seq, last_mutation) VALUES (1, 0, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
     - `INSERT OR IGNORE INTO kb_curate_scheduler (id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash) VALUES (1, NULL, NULL, NULL, NULL, 0, NULL);`
-    - `INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2'), ('journal_version', '1'), ('coordinator_id', lower(hex(randomblob(16)))), ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
-  - Migration runner at `src/store/migrations.ts` is idempotent: applies only `NNN_*.sql` files whose numbered version is above `meta.schema_version`.
+    - `INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1'), ('journal_version', '1'), ('coordinator_id', lower(hex(randomblob(16)))), ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
+  - Schema loader at `src/store/schema-loader.ts` is idempotent; pre-merge schema changes edit `001_initial.sql` in place because this SQL has never been deployed.
 
 - **Runtime ports**: `src/runtime/ports.ts` with all 6 subports (`time`, `storage`, `paths`, `process`, `ids`, `env`). `src/runtime/real.ts` stubbed.
 
@@ -134,8 +134,8 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 **Acceptance criteria**:
 
 - `npm run build` clean.
-- `sqlite3 :memory: < src/store/schema.sql` and `sqlite3 :memory: < src/store/migrations/001_initial.sql` run without error.
-- Re-running migrations on an already-migrated DB is a no-op (idempotency test).
+- `sqlite3 :memory: < src/store/schemas/001_initial.sql` runs without error.
+- Re-running schema application on an already-initialized DB is a no-op (idempotency test).
 - `src/runtime/errors.ts` exports `CoralSetupError` with the shape above.
 - Flavor-gated paths return distinct paths for `CORAL_FLAVOR=dev` vs unset/prod.
 - Architecture-boundary test file exists and runs (assertion closures deferred).
@@ -161,8 +161,8 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/store/append.ts` — transactional append. `appendEvents(events: CoralEventInput[]): CoralEvent[]` assigns `seq`, returns events.
 - `src/store/envelope.ts` — Zod schema for event envelope + `bodyVersion` validation + upcaster registry (`registerUpcaster(type, fromVersion, toVersion, fn)`).
 - `src/store/queries/events.ts` — `getEvent(stream, seq)`, `getEventsSince(afterSeq, filter?)`.
-- `src/store/migrations.ts` — idempotent runner described in Phase 0.
-- `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil`, cursor persistence in `equipment_cursors`.
+- `src/store/schema-loader.ts` — idempotent schema loader described in Phase 0.
+- `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil(authority, version, consumerId)`, cursor persistence in `equipment_cursors`.
 - `src/simulation/runtime.ts` — `SimulationRuntime` implementing all 6 `Runtime` ports. **Substrate decision**: `:memory:` SQLite instance for journal, virtual filesystem for Corpus. `SimulationRuntime` is the reference deterministic implementation for all subsequent phase tests.
 - `src/store/index.ts` — public barrel: `CoralStore` (query-only handle). Write-side uses the `appendEvents` primitive in `src/store/append.ts`; there is no separate `CoralWriter` class.
 
@@ -172,7 +172,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `getEventsSince(seq)` returns correctly filtered range.
 - **Projection rebuild equivalence test**: insert events → delete `projection_*` → re-derive → byte-identical result. Uses `SimulationRuntime` in `:memory:` mode.
 - `ConsumerDriver` smoke test: register consumer, notify, apply runs, cursor advances.
-- `waitFreshUntil` returns immediately when cursor ≥ target; blocks when behind; resolves on cursor advance.
+- `waitFreshUntil(authority, version, consumerId)` returns immediately when cursor ≥ target; blocks when behind; resolves on cursor advance for both Journal and Corpus consumers.
 - **Native binding verification**: `better-sqlite3` resolves from the plugin's installed path (test that loads the bundle via `bridge/coral-cli.cjs` in a fresh directory). This rules out "works in repo but breaks at install" class of bugs.
 - **Simulation substrate verified**: `SimulationRuntime` executes a 1000-event sequence; output is byte-identical to production-mode run against `:memory:` DB. Known-unknown resolved.
 - Git tag `phase-1-complete`.
@@ -255,7 +255,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/coordinator/shutdown/` — `mode.ts`, `network.ts`, `sequence.ts`.
 - `src/coordinator/recording/observer.ts`.
 - **CorpusConsumer notify wiring** (architect's finding — explicit Phase 3 deliverable, not Phase 5):
-  - `src/coordinator/corpus-notify.ts` — hook called by KB mutation path after Corpus mutation lock releases. Takes `{contentSeq, metadataSeq}`, invokes `ConsumerDriver.notify('corpus', seq)` for each registered Corpus consumer.
+  - `src/coordinator/corpus-notify.ts` — hook called by KB mutation path after Corpus mutation lock releases. Takes `{contentSeq, metadataSeq}`, invokes `ConsumerDriver.notify('corpus', snapshot)` for each registered Corpus consumer, and wakes Corpus `waitFreshUntil` waiters as cursors advance.
   - Registered consumers list initially empty; Phase 5 populates (Orama, needle).
   - Phase 3 provides the plumbing; Phase 5 plugs in concrete consumers.
 - `src/jobs/reconcile/` operational against real process table.
@@ -272,7 +272,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 **Acceptance criteria**:
 
-- Coordinator cold-starts: creates `coordinator.json`, acquires `coordinator.lock`, applies migrations, sits idle.
+- Coordinator cold-starts: creates `coordinator.json`, acquires `coordinator.lock`, applies schema, sits idle.
 - **Two-coordinator handoff test**: spawn first coordinator, then spawn second with newer bundleHash; verify first detects handoff request, second takes over within CONTENDER_BUDGET.
 - Flavor-gated lock: dev and prod coordinators coexist on same machine without interference (existing `flavor-coexistence.test.ts` passes).
 - Curate scheduler fires at expected cadence (every 60s by default; `CORAL_CURATE_INTERVAL_MS` overrides); updates `kb_curate_scheduler.last_run_day`.
@@ -331,13 +331,13 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 ### Phase 5 — KB / Corpus Authority
 
-**Goal**: KB operations run under Corpus mutation lock; Orama (FTS + cosine vector) + needle backends maintained as CorpusConsumers consuming Phase 3's notify plumbing; curate state in SQLite; corpus repair pipeline built fresh. Orama vector implementation lands here as a named deliverable.
+**Goal**: KB authority writes run under the Corpus mutation lock; Orama (FTS + cosine vector) + needle backends are maintained as CorpusConsumers consuming Phase 3's notify/wait plumbing; curate state in SQLite; corpus repair pipeline built fresh. Orama vector implementation lands here as a named deliverable.
 
 **Corpus repair taxonomy document (committed before fixtures)**: `src/kb/corpus-repair-taxonomy.md` is committed as the **first** deliverable of Phase 5 and defines the classification buckets below. Fixtures are then mapped to the taxonomy, not derived from fixture discovery.
 
 **Deliverables**:
 
-- `src/kb/corpus/` — `mutation-lock.ts`, `mutation-helpers.ts` (writeFileAtomic + `content_seq`/`metadata_seq` bumps + **calls `coordinator/corpus-notify.ts` after lock release**), `paths.ts`, `frontmatter.ts`, `markdown-entries.ts`, `entry-seq-guard.ts`.
+- `src/kb/corpus/` — `mutation-lock.ts`, `mutation-helpers.ts` (writeFileAtomic + `content_seq`/`metadata_seq` bumps + lightweight Corpus metadata/index state + **calls `coordinator/corpus-notify.ts` after lock release**), `paths.ts`, `frontmatter.ts`, `markdown-entries.ts`, `entry-seq-guard.ts`.
 - `src/kb/runtime-state.ts` — in-memory state mirroring `kb_corpus_state` row.
 - `src/kb/search/`:
   - `contract.ts` — `SearchBackend` interface.
@@ -366,11 +366,17 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
     - Consumer crash during staging: next drain recomputes full manifest.
     - Coordinator crash between `corpus-notify` and consumer `apply()`: startup replay from persisted cursor.
   - Budget: 1 week of index-corruption debugging is expected and allocated. Daily backup of `~/.coral/data/kb-dev/vec/` during Phase 5.
+- **Source import job/readiness contract**:
+  - `kb source import` becomes a job-owned ingest attempt: conversion/staging → Corpus commit → optional retrieval readiness wait.
+  - Readiness enum: `commit | base-search | active-vector | all-equipped`.
+  - Default readiness is `base-search`; the CLI may wait internally, but the underlying protocol is job/wait.
+  - `active-vector` resolves through the `kb.vector` slot owner (`orama` or `needle`) and waits for that CorpusConsumer cursor.
 
 **Acceptance criteria**:
 
 - `src/kb/corpus-repair-taxonomy.md` committed before any repair code.
-- `kb promote` writes markdown under mutation lock, bumps `content_seq`, updates Orama synchronously, notifies CorpusConsumers via Phase 3's `corpus-notify.ts`.
+- `kb promote` writes markdown under mutation lock, bumps `content_seq`, updates lightweight Corpus metadata/index state, and notifies CorpusConsumers via Phase 3's `corpus-notify.ts`; Orama is refreshed by its CorpusConsumer outside the lock.
+- `kb source import paper.pdf` creates a job-owned ingest attempt and defaults to `base-search` readiness: when the command returns, Orama FTS has consumed the committed `content_seq`.
 - `kb search "query"` hits Orama FTS.
 - `kb search --vector <emb>` hits Orama cosine (base) or needle (equipped). **Orama cosine test**: 100 random vectors, top-k ranking matches hand-computed cosine within floating-point tolerance.
 - `kb search --hybrid` uses RRF fusion.
@@ -418,7 +424,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/providers/codex/` — `thread-provider.ts`, `thread-kernel.ts`, `protocol.ts`, `request-mapping.ts`.
 - `src/providers/app-server/{driver,types}.ts`.
 - `src/providers/{catalog,registry,bootstrap,cli-runner,cli-detection,inject}.ts`.
-- `src/testing/scripted-provider.ts` — test-only scripted provider factory (already sketched in Phase 1 simulation infra; finalized here).
+- `tools/testing/scripted-provider.ts` — test-only scripted provider factory (already sketched in Phase 1 simulation infra; finalized here).
 
 **Acceptance criteria**:
 
@@ -465,9 +471,9 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
   - Removes consumer from notify list.
   - Deletes cursor row + equipment storage.
 - Identity unification (A2): skill catalog id, runtime consumer id, install dir, and CLI target all use `needle` (`/equip needle`, `coral-cli expansion unequip needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`). Skill grammar remains `/equip uninstall needle`; `skills/equip/SKILL.md` routes that input to `expansion unequip` internally.
-- Slot registry (A3): migration 002 persists `equipment_state`; `kb.vector` defaults to Orama and can be reassigned to `needle`. `KbRuntime` becomes single authority for vector surface (`getActiveVectorSurface()` + `getBaseVectorSurface()`) and corpus snapshot (`getCorpusStateSnapshot()`); `src/kb/search/router.ts` and `src/coordinator/coordinator.ts:178-180` stop open-coding fallback projections or calling `readCorpusState(runtime.db)` directly. KB routing reads ownership through `KbRuntime.getEquipmentView()` without coordinator imports; no boot-time needle auto-registration remains.
+- Slot registry (A3): `src/store/schemas/001_initial.sql` persists `equipment_state`; `kb.vector` defaults to Orama and can be reassigned to `needle`. `KbRuntime` becomes single authority for vector surface (`getActiveVectorSurface()` + `getBaseVectorSurface()`) and corpus snapshot (`getCorpusStateSnapshot()`); `src/kb/search/router.ts` and `src/coordinator/coordinator.ts:178-180` stop open-coding fallback projections or calling `readCorpusState(runtime.db)` directly. KB routing reads ownership through `KbRuntime.getEquipmentView()` without coordinator imports; no boot-time needle auto-registration remains.
 - Consumer handle shape (A4): `ConsumerDriver.register()` returns `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`, with `onApplyFailure` plumbing async apply failures and `registrationKind` distinguishing equipment vs base consumers.
-- Corpus equipment freshness observation (A7): `waitFreshUntil` remains journal-only; CLI and tests observe `catching_up` → `equipped` through `listEquipment` polling rather than a new corpus waiter primitive.
+- Corpus freshness wait (A7): `waitFreshUntil` supports Corpus consumers as well as Journal consumers. CLI and tests still use `listEquipment` for status display, but readiness contracts wait on Corpus consumer cursors directly.
 - Exclusive per-path enforcement: second equip for same query path fails with structured error.
 - `/equip --list` reads catalog + current equipment state from coordinator.
 - `skills/equip/` updates: `skills/equip/` keeps SKILL.md only; `install.mjs`, `coordinator-client.mjs`, `equipment-paths.mjs`, `fs-lock.mjs`, and `scripts/equip-driver.mjs` are deleted. Catalog ownership moves to `src/expansion/catalog.ts` with a `Strategy<Config>` interface (`equipment-addon` for needle, `github-binary` for cgc).
@@ -482,7 +488,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - Corrupt binary: load catches, marks consumer `disabled_pending_reinstall`, CLI returns `CoralSetupError` with reinstall guidance.
 - `grep -R "kb-needle" src/ skills/` returns zero.
 - `grep -R "data/equipment/kb" src/ skills/` returns zero.
-- **Race test** (multi-process): infrastructure at `src/testing/multi-process-driver.ts` exposes `spawnNodeScript<T>`, which the race integration uses to spawn two subprocesses against the invocation-adapter bundle at `<os.tmpdir()>/coral-race-<pid>/install-invocation.cjs` (built once per suite from `src/testing/invocation/install-invocation.ts` via inline `esbuild.build(...)`). Subprocesses call `src/expansion/install.ts#installExpansion` directly and race on the filesystem install-lock. The old `scripts/equip-driver.mjs` harness is deleted. `vitest.integration.config.ts` `singleFork` remains sufficient because OS-level lock contention happens between the spawned child processes, not between vitest workers.
+- **Race test** (multi-process): infrastructure at `tools/testing/multi-process-driver.ts` exposes `spawnNodeScript<T>`, which the race integration uses to spawn two subprocesses against the invocation-adapter bundle at `<os.tmpdir()>/coral-race-<pid>/install-invocation.cjs` (built once per suite from `tools/testing/invocation/install-invocation.ts` via inline `esbuild.build(...)`). Subprocesses call `src/expansion/install.ts#installExpansion` directly and race on the filesystem install-lock. The old `scripts/equip-driver.mjs` harness is deleted. `vitest.integration.config.ts` `singleFork` remains sufficient because OS-level lock contention happens between the spawned child processes, not between vitest workers.
 - Git tag `phase-7-complete`.
 
 **Files touched**: ~10 new coordinator + equip files; ~3 skill updates.
@@ -600,7 +606,7 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 | git-sync detects conflict | Conflict markers detected in frontmatter parser; entry routed to corpus repair pipeline (§Phase 5); skipped with diagnostic. |
 | Orphan `.tmp` files at startup | Phase 3 startup sweep removes `*.tmp` older than start time under `~/.coral/kb/`. |
 | `/equip uninstall` during in-flight drain | `unregisterEquipment` awaits `ConsumerDriver.stop()`; removes consumer + cursor atomically. |
-| Partial-phase crash mid-migration | Migrations are `IF NOT EXISTS` idempotent; re-running is a no-op. Manual `git reset --hard phase-N-complete` for code; DB migrations self-heal. |
+| Partial-phase crash mid-schema-apply | Schema DDL is `IF NOT EXISTS` idempotent; re-running is a no-op. Manual `git reset --hard phase-N-complete` for code; DB schema application self-heals. |
 
 ### 3.4 Concurrency
 
@@ -608,7 +614,7 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 |---|---|
 | Two `/equip needle` races | `src/expansion/install.ts#installExpansion` acquires `~/.coral/data/equipment/needle/install.lock`; the losing caller receives a structured `equipment_install_lock_contended` error. |
 | Obsidian edits mid-promote | Coordinator's write path computes pre-write `content_hash`; if differs from projection's last-seen, abort with `CorpusRaceDetected` (`CoralSetupError` shape); caller retries. |
-| Journal write concurrent with Corpus rescan | Independent authorities; KB retrieval artifacts update inside the Corpus mutation lock; Journal writes never touch them. |
+| Journal write concurrent with Corpus rescan | Independent authorities; Corpus metadata/version updates happen under the Corpus mutation lock; retrieval artifacts refresh through CorpusConsumers after notify. Journal writes never touch them. |
 | Two CLI processes race for coordinator launch | Warm-start handoff (§Phase 3); `ensure.ts` detects in-flight launch and waits. |
 
 ### 3.5 Missing invariants (added to architecture §16 alongside this plan)
@@ -636,7 +642,7 @@ See §0.3 for branch policy and commit shape. Key points:
 |---|---|---|
 | `phase-0-complete` | Yes | Wipe `~/.coral/data/store*` and `~/.coral/data-dev/*` (fresh schema). |
 | `phase-1-complete` | Yes | Same as above. |
-| `phase-2-complete` | Yes | Re-run migrations (idempotent). Legacy types in main are unchanged because rewrite branch is isolated. |
+| `phase-2-complete` | Yes | Re-run schema application (idempotent). Legacy types in main are unchanged because rewrite branch is isolated. |
 | `phase-3-complete` | Yes | Kill any stale coordinator process; delete `~/.coral/run*/coordinator.lock`. |
 | `phase-4-complete` | Yes | IPC socket may linger; `rm -f ~/.coral/run*/coordinator.sock`. |
 | `phase-5-complete` | Requires care | Corpus state in DB may be ahead of filesystem; wipe `~/.coral/data-dev/kb/` and rerun `kb reindex`. |
@@ -680,7 +686,7 @@ Each phase introduces specific codes; Phase 0 seeds the generic shape. Every thr
 
 ### 3.10 Guardrails (runtime limits and protocols)
 
-- **`waitFreshUntil` timeout**: mandatory `timeoutMs` parameter, default 30000 ms, throws `FreshnessTimeout` on expiry.
+- **`waitFreshUntil` timeout**: mandatory `timeoutMs` parameter, default 30000 ms, throws `FreshnessTimeout` on expiry. The call is authority-qualified: `waitFreshUntil(authority, version, consumerId)`.
 - **Microtask queue backpressure**: `ConsumerDriver` coalesces pending notifications to "latest version only"; idempotent `apply()` tolerates.
 - **Circular causeRef detection**: `describeCauseRef` walks with a `Set<string>` of visited `(stream.kind, stream.id, seq)`; cycle returns `CircularCauseRefDiagnostic` metadata to a caller-owned persistence path.
 - **Events-table growth**: unbounded; future operational work may add archival. Document in `docs/operations.md` during Cleanup.
@@ -723,8 +729,8 @@ Tracked deviations from the original plan adopted during implementation. Each en
 - **`coordinator/bootstrap.ts` introduced as a sibling of `coordinator.ts`** (Phase 3). Owns argv parsing, `--smoke-open-store` short-circuit, and main-process exit-code orchestration. `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh` (the Phase 3 plan §AC1 and AC10 references reflect this split).
 - **Phase 2 sessions filename**: `src/sessions/entry.ts` over this plan's `src/sessions/types.ts` (Phase 2, tag `phase-2-complete`). Same intent-revealing rule. The architecture §10.2 ban on generic filenames at domain roots takes precedence over the implementation-plan's `types.ts` placeholder for this slot.
 - **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
-- **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.
-- **Phase 0 schema deliverable split** (Phase 0 implementation correction). The canonical reference lives at `src/store/schema.sql`; the first applied migration lives at `src/store/migrations/001_initial.sql`. Acceptance criteria require `sqlite3 :memory: < src/store/schema.sql` and `sqlite3 :memory: < src/store/migrations/001_initial.sql` to both exit 0.
+- **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/exports/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.
+- **Phase 0 schema deliverable split** (Phase 0 implementation correction). Applied SQL lives under `src/store/schemas/`; the first and only clean-slate schema is `src/store/schemas/001_initial.sql`. There is no migration history because this SQL has never been deployed.
 - **Amendment #6**: `sessions/types.ts` → `sessions/entry.ts` (Phase 2). Same intent-revealing rule as `coordinator/discovery.ts` — generic `types.ts` at a domain root is banned by invariant #31.
 - **Amendment #7**: `discuss/schemas.ts` → `discuss/command-schemas.ts` (Phase 2). Same rule as Amendment #6: generic `schemas.ts` at a domain root is banned by invariant #31.
 - **Phase 4 (tag `phase-4-complete`) — HTTP route decomposition stays table-driven in `src/transport/http/handler.ts`.** The per-resource file split proposed in the plan (`jobs-routes.ts`, `discuss-routes.ts`, etc.) is not adopted; §11.3 already names the single table-driven form.
@@ -734,8 +740,9 @@ Tracked deviations from the original plan adopted during implementation. Each en
 - **Phase 4 (tag `phase-4-complete`) — `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling.** The singleton lock remains the launch gate but is not the detection mechanism. Current `ensureBackend` semantics (observation lattice, compatibility on `bundleHash + flavor + namespace`, verified sick ownership, unsafe-replacement refusal, corrupt-lock quarantine) preserved literally.
 - **A1 — `/equip uninstall` replaces `/unequip` slash command** (Phase 7, tag `phase-7`). Rationale: `/equip` is already the catalog + lifecycle entry; a separate slash command duplicates surface area for no UX gain. Coordinator RPC name `unregisterEquipment` is preserved; only the CLI surface collapses.
 - **A2 — Needle identity unification** (Phase 7, tag `phase-7`). Rationale: Skill catalog id (`kb`), runtime consumer id (`kb-needle`), on-disk directory naming, and user messaging all collapse to the single name `needle`. `/equip needle`, `/equip uninstall needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`.
-- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` persisted via migration 002; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation.
+- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` in the clean-slate `001_initial.sql`; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation.
 - **A4 — `ConsumerDriver.register()` returns per-consumer `ConsumerHandle`** (Phase 7, tag `phase-7`). Rationale: Signature changes from `void` to `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`. `onApplyFailure` callback plumbs async apply errors. `registrationKind` metadata distinguishes equipment vs base consumers for cursor-deletion semantics. Existing base-tier consumers migrate to the same handle shape via `projection-consumer.ts` helper.
 - **A5 — Legacy types retire to upcaster boundary only** (Phase 7, tag `phase-7`). Rationale: `src/shared/legacy-terminal-outcome-compat.ts` deleted; read-time body transforms moved to per-domain upcaster registrars (`jobs/upcasters.ts`, `sessions/upcasters.ts`, `workflow/upcasters.ts`). `src/store/upcasters.ts` remains assembler only. Runtime multi-event canonicalization stays in `legacy-ingest` (consumes upcaster output). Active runtime code uses canonical `SessionContinuityState` / `SessionProviderFailureReason` / `SessionFault` directly.
 - **A6 — Codex pre-turn notification mailbox** (Phase 7, tag `phase-7`). Rationale: `src/providers/codex/thread-kernel.ts` `applyNotification` replaces unconditional buffering with an admission-filtering mailbox. Notifications are admitted only if they can still belong to the active thread's lifecycle (matching `state.threadId` candidate, or lifecycle messages without thread id). `PRE_TURN_MAILBOX_CAP=64` FIFO eviction with `dropped` counter. `status()` exposed for observability. Provisional candidates seeded from persisted continuity / resume `conversationRef` (robustness against `thread/resume` id mismatch).
-- **A7 — Corpus equipment freshness observed via polling** (Phase 7, tag `phase-7`). Invariant 41 split: journal consumers keep `waitFreshUntil` condition-variable wake; corpus equipment consumers are observed via `listEquipment` polling. Rationale: adding a corpus-side waiter primitive was out of scope; `catching_up` → `equipped` transition surfaces through the existing status-read RPC.
+- **A7 — Corpus freshness uses the same waiter primitive as Journal freshness** (Phase 7 amendment). Invariant 41 now requires `waitFreshUntil(authority, version, consumerId)` for both Journal and Corpus consumers. `listEquipment` remains a status/read-model surface, not the mechanism for source-import readiness.
+- **A8 — Source import is a job-owned ingest attempt** (Phase 5 amendment). `kb source import` is process-like because conversion and retrieval freshness can be slow. The job records ingest execution and readiness (`commit | base-search | active-vector | all-equipped`); the imported source remains authoritative only as Corpus markdown.

@@ -96,7 +96,6 @@ When `--release` is passed, it additionally copies all artifacts from `build/` t
 | `__PLUGIN_ROOT__` | CJS banner using `__dirname` | Resolve plugin-relative assets at runtime |
 | `__IS_CORAL_BACKEND_MAIN__` | build script | Backend main-entry guard |
 | `CORAL_VEC_ADDON_VERSION` | coral-needle release metadata | KB addon reporting |
-| `CORAL_VEC_SCHEMA_VERSION` | `src/kb/vector-store-contract.ts` | Vector-store compatibility checks |
 
 Build flavor is intentionally not injected through an esbuild define. Hooks are unbundled ESM files, so the shared carrier is `bridge/manifest.json`.
 

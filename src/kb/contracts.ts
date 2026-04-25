@@ -6,6 +6,7 @@ import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
+import type { CorpusConsumerRegistration } from './corpus/consumer-contract.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,
@@ -71,7 +72,6 @@ export interface KbInboundSyncOptions {
 export interface KbMutationEffects {
   queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void;
   writeEntityGraph(graph: EntityGraph): void;
-  forceFullProjectionInstall(): void;
 }
 
 export interface KbRuntime {
@@ -80,7 +80,7 @@ export interface KbRuntime {
   readonly db: BetterSqlite3.Database;
   getEquipmentView(): KbRuntimeActivationSnapshot;
   getActiveVectorSurface(): VectorRetrieval;
-  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval;
+  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval & CorpusConsumerRegistration;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;

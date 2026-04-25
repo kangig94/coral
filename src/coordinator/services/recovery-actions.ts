@@ -15,7 +15,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from '../contracts.js';
 import { markJobAsError, materializeProviderTerminal } from '../../jobs/reconcile/recovery-effects.js';
 import { materializeJobRecoveryFault } from '../../jobs/shell/fault-materializer.js';
-import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {

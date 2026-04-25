@@ -26,25 +26,32 @@ type JobLaunchProjection = {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind: 'provider' | 'workflow';
+  jobKind: 'provider' | 'workflow' | 'kb';
   pool: string;
   enqueueSequence: number;
-  providerAction: 'exec' | 'resume' | 'fork';
-  request: {
-    prompt: string;
-    name?: string;
-    model?: string;
-    cwd: string;
-    effort?: string;
-    bypassPermissions: boolean;
-    systemPrompt?: string;
-    conversationRef?: string;
-    instruction?: {
-      content: string;
-      channel: 'prompt' | 'system';
-    };
-    coralEnv: Record<string, string>;
-  };
+  providerAction?: 'exec' | 'resume' | 'fork';
+  operation?: 'kb.source_import';
+  request:
+    | {
+        prompt: string;
+        name?: string;
+        model?: string;
+        cwd: string;
+        effort?: string;
+        bypassPermissions: boolean;
+        systemPrompt?: string;
+        conversationRef?: string;
+        instruction?: {
+          content: string;
+          channel: 'prompt' | 'system';
+        };
+        coralEnv: Record<string, string>;
+      }
+    | {
+        filePath: string;
+        slug?: string;
+        readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+      };
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
   createdAt: string;
@@ -101,19 +108,19 @@ type ProjectionRow = {
   phase: string;
   terminal: string | null;
   diagnostics: string | null;
-  session_id: string;
-  provider: string;
+  session_id: string | null;
+  provider: string | null;
   project_root: string;
   backend_namespace: string;
   bundle_hash: string | null;
-  job_kind: 'provider' | 'workflow';
+  job_kind: 'provider' | 'workflow' | 'kb';
   parent_workflow_job_id: string | null;
   workflow_slot: string | null;
   created_at: string;
   last_seq: number;
 };
 
-type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'>;
+type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'> & { refs?: EventsRow['refs'] };
 type LatestJobEventProjection = EventRow & { stream_id: string };
 type ProjectionStatusEventType = 'job.launch.rejected' | 'job.runtime.started' | 'job.terminal.recorded';
 type JobStatusEventsByType = {
@@ -265,7 +272,7 @@ function readLatestEventsForJobs(
 
   const rows = prepareCached<unknown[], LatestJobEventProjection>(
     db,
-    `SELECT stream_id, seq, ts, type, body_version, body
+    `SELECT stream_id, seq, ts, type, refs, body_version, body
        FROM events
       WHERE stream_kind = 'job'
         AND type = ?
@@ -279,13 +286,14 @@ function readLatestEventsForJobs(
       continue;
     }
 
-    eventsByJob.set(row.stream_id, {
-      seq: row.seq,
-      ts: row.ts,
-      type: row.type,
-      body_version: row.body_version,
-      body: row.body,
-    });
+      eventsByJob.set(row.stream_id, {
+        seq: row.seq,
+        ts: row.ts,
+        type: row.type,
+        refs: row.refs,
+        body_version: row.body_version,
+        body: row.body,
+      });
   }
 
   return eventsByJob;
@@ -302,9 +310,9 @@ function readLatestProjectionStatusEvents(
 
   const rows = prepareCached<unknown[], LatestJobEventProjection & { type: ProjectionStatusEventType }>(
     db,
-    `SELECT stream_id, type, seq, ts, body_version, body
+    `SELECT stream_id, type, seq, ts, refs, body_version, body
        FROM (
-         SELECT stream_id, type, seq, ts, body_version, body,
+         SELECT stream_id, type, seq, ts, refs, body_version, body,
                 ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
            FROM events
           WHERE stream_kind = 'job'
@@ -335,12 +343,43 @@ function readLatestProjectionStatusEvents(
   return eventsByJob;
 }
 
+function decodeLaunchRefs(row: EventRow): Pick<JobLaunchProjection, 'parentWorkflowJobId' | 'workflowSlotId'> {
+  if (row.refs === undefined || row.refs === null) {
+    return {};
+  }
+
+  const refs = JSON.parse(row.refs) as Record<string, unknown>;
+  return {
+    ...(typeof refs.parentJobId === 'string' ? { parentWorkflowJobId: refs.parentJobId } : {}),
+    ...(typeof refs.workflowSlotId === 'string' ? { workflowSlotId: refs.workflowSlotId } : {}),
+  };
+}
+
 function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext): JobLaunchProjection | null {
   if (!row) {
     return null;
   }
 
   const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
+  const refs = decodeLaunchRefs(row);
+  if (body.jobKind === 'kb') {
+    return {
+      jobId,
+      sessionId: '',
+      provider: 'kb',
+      projectRoot: body.projectRoot,
+      backendNamespace: body.backendNamespace,
+      bundleHash: body.bundleHash,
+      jobKind: body.jobKind,
+      pool: body.pool,
+      enqueueSequence: body.enqueueSequence,
+      operation: body.operation,
+      request: { ...body.request },
+      ...refs,
+      createdAt: body.createdAt,
+    };
+  }
+
   return {
     jobId,
     sessionId: body.sessionId,
@@ -364,8 +403,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       instruction: body.request.instruction,
       coralEnv: { ...body.request.coralEnv },
     },
-    parentWorkflowJobId: body.parentJobId,
-    workflowSlotId: body.workflowSlot,
+    ...refs,
     createdAt: body.createdAt,
   };
 }
@@ -480,8 +518,8 @@ function projectionRowToStatus(
 
   return {
     jobId,
-    sessionId: projection.session_id,
-    provider: projection.provider,
+    sessionId: projection.session_id ?? '',
+    provider: projection.provider ?? projection.job_kind,
     projectRoot: projection.project_root,
     backendNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),

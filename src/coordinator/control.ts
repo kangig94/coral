@@ -15,7 +15,7 @@ import { isTerminalPhase } from '../jobs/phase.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery-coordinator.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
-import { writeResultArtifact } from '../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../jobs/exports/result-artifact.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';

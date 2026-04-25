@@ -4,6 +4,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import {
   causeRefSchema,
+  describeJobDomainProgress,
   describeJobProgressFault,
   describeLaunchRejected,
   describeTerminalOutcome,
@@ -109,6 +110,9 @@ function describeEvent(event: CoralEvent): string {
     case 'job:job.progress.emitted':
       if (!isRecord(event.body)) return 'Job progress emitted.';
       if (event.body.kind === 'message' && typeof event.body.message === 'string') return event.body.message;
+      if (event.body.kind === 'domain' && typeof event.body.message === 'string') {
+        return describeJobDomainProgress(event.body as Parameters<typeof describeJobDomainProgress>[0]);
+      }
       return describeJobProgressFault(event.body as Parameters<typeof describeJobProgressFault>[0]);
     case 'job:job.terminal.recorded':
       return isRecord(event.body) && isRecord(event.body.outcome)

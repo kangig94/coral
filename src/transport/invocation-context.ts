@@ -20,6 +20,12 @@ export function buildControllerEnv(
       env[CONTEXT_ENV_KEY[field]] = value;
     }
   }
+  if (typeof body.jobId === 'string' && body.jobId.length > 0) {
+    env.CORAL_JOB_ID = body.jobId;
+  }
+  if (typeof body.sessionId === 'string' && body.sessionId.length > 0) {
+    env.CORAL_SESSION_ID = body.sessionId;
+  }
   return env;
 }
 

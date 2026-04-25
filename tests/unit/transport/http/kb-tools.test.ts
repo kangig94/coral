@@ -178,15 +178,11 @@ describe('kb-tools', () => {
       () =>
         handleKbSourceImport(
           {
+            filePath: '/tmp/bridge-removal-plan.pdf',
             slug: 'bridge-removal-plan',
-            stagedPath: '/tmp/bridge-removal-plan.md',
-            meta: {
-              title: 'Bridge Removal Plan',
-              type: 'markdown',
-              tags: ['plan', 'bridge'],
-              importedAt: '2026-04-07T00:00:00.000Z',
-              extra: true,
-            },
+            readiness: 'base-search',
+            async: false,
+            extra: true,
           },
           createKbSubsystem(),
         ),
@@ -230,39 +226,23 @@ describe('kb-tools', () => {
     });
   });
 
-  it('accepts source-import meta while preserving the existing persistence call shape', async () => {
+  it('keeps source-import as a coordinator-owned job route', async () => {
     const kbSubsystem = createKbSubsystem();
-    mockState.persistPreparedSource.mockResolvedValue({
-      slug: 'bridge-removal-plan',
-      path: '/tmp/bridge-removal-plan.md',
-    });
 
     const result = await handleKbSourceImport(
       {
+        filePath: '/tmp/bridge-removal-plan.pdf',
         slug: 'bridge-removal-plan',
-        stagedPath: '/tmp/bridge-removal-plan.md',
-        meta: {
-          title: 'Bridge Removal Plan',
-          type: 'markdown',
-          tags: ['plan', 'bridge'],
-          importedAt: '2026-04-07T00:00:00.000Z',
-        },
+        readiness: 'base-search',
+        async: false,
       },
       kbSubsystem,
     );
 
-    expect(mockState.persistPreparedSource).toHaveBeenCalledWith(
-      kbSubsystem.kb,
-      '/tmp/bridge-removal-plan.md',
-      'bridge-removal-plan',
-    );
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
-      ok: true,
-      data: {
-        slug: 'bridge-removal-plan',
-        path: '/tmp/bridge-removal-plan.md',
-      },
+      ok: false,
+      code: 'source_import_requires_job',
+      message: 'KB source import must run through the coordinator source-import job service.',
     });
   });
 

@@ -864,6 +864,30 @@ describe('ExecutionService wait', () => {
     ]);
   });
 
+  it('rebuilds a missing result artifact from the Journal before emitting terminal', async () => {
+    const service = createService(ctx);
+    const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+    const resultPath = jobResultPath(jobId);
+
+    progressStore.appendTerminal(jobId, sessionId, { content: 'rebuild me', outcome: { kind: 'completed' } }, 'completed');
+    rmSync(resultPath, { force: true });
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'terminal',
+      jobId,
+      resultPath,
+      result: { content: 'rebuild me', outcome: { kind: 'completed' } },
+    });
+    expect(_existsSync(resultPath)).toBe(true);
+    expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
+  });
+
   it('waitStream does not synthesize terminal events from terminal status without Journal evidence', async () => {
     const service = createService(ctx);
     const { progressStore } =

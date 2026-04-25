@@ -80,9 +80,10 @@ export interface KbSourceFrontmatter {
 }
 
 export type KbSourcePersistInput = {
-  slug: string;
-  stagedPath: string;
-  meta: KbSourceFrontmatter;
+  filePath: string;
+  slug?: string;
+  readiness?: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+  async?: boolean;
 };
 
 export type KbSourceDeleteInput = {

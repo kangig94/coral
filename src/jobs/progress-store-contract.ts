@@ -41,6 +41,7 @@ export interface JobProgressStore {
   waitForChange(sinceSeq: number): Promise<void>;
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
   readJobProgress(jobId: string): JobProgress[];
+  ensureResultArtifact(jobId: string): string;
   appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[];
   appendEvent(input: CoralEventInput): void;
   initJob(opts: InitJobOptions): void;

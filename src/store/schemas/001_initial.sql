@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
   diagnostics             TEXT,
-  session_id              TEXT NOT NULL,
-  provider                TEXT NOT NULL,
+  session_id              TEXT,
+  provider                TEXT,
   project_root            TEXT NOT NULL,
   backend_namespace       TEXT NOT NULL,
   bundle_hash             TEXT,

@@ -121,7 +121,7 @@ describe('kb detection and paths', () => {
     expect(kb.runtimeDir).toBe(paths.kbRuntimeDir());
   });
 
-  it('uses orama/ for a fresh cold-start and never creates vec/ anywhere under the machine-local runtime tree', async () => {
+  it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
@@ -133,8 +133,8 @@ describe('kb detection and paths', () => {
     try {
       const result = await kb.ensureOramaIndex();
 
-      expect(result.warnings).toBeUndefined();
-      expect(existsSync(paths.oramaSnapshotDir(kb.runtimeDir))).toBe(true);
+      expect(result.warnings).toEqual(['orama_snapshot_stale']);
+      expect(existsSync(paths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(paths.needleIndexDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(paths.needleStagingDir(kb.runtimeDir))).toBe(false);
       expect(

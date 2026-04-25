@@ -475,7 +475,7 @@ Every current `src/shared/*` file gets a real owner:
 | `schemas.ts` | split: `src/transport/http/job-contracts.ts` + `src/transport/http/session-contracts.ts` + `src/workflow/command.ts` + `src/providers/model-policy.ts` |
 | `session-entry.ts` | `src/sessions/persistence.ts` |
 | `sse-parser.ts` | split: `src/transport/http/sse.ts` + `src/jobs/wait.ts` |
-| `test-deferred.ts` | `src/testing/deferred.ts` |
+| `test-deferred.ts` | `tools/testing/deferred.ts` |
 | `types.ts` | split: `src/jobs/phase.ts` + `src/jobs/result.ts` + `src/jobs/records.ts` + `src/jobs/wait.ts` + `src/jobs/launch.ts` + `src/sessions/types.ts` + `src/providers/contract.ts` + `src/workflow/checkpoint.ts` |
 | `utils.ts` | split: `src/infra/fs/fs-errors.ts` + `src/infra/json/guards.ts` + `src/infra/ids/owner.ts` + `src/infra/time.ts` + `src/transport/http/errors.ts` + `src/transport/json-rpc.ts` + `src/backend/manifest.ts` |
 
@@ -511,7 +511,7 @@ Every current `src/shared/*` file gets a real owner:
 - Domain contract modules may import only `infra/*`, `runtime/*`, and explicit sibling contract modules — never sibling shells.
 - `src/transport/*` may import domain contracts but not domain implementations or `src/backend/*`.
 - `src/backend/*` is the only layer allowed to import broadly across domains.
-- `src/testing/*` must not be imported by production files.
+- `tools/testing/*` must not be imported by production files.
 - Ban generic filenames at top level of a domain root: no new `utils.ts`, `types.ts`, or `schemas.ts` outside an owning domain.
 
 ### Interaction with A, B

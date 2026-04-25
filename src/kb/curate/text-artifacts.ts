@@ -1,9 +1,6 @@
-import { insertMultiple } from '@orama/orama';
-import { errorMessage } from '../../infra/error-format.js';
 import { readCurateState, writeCurateState, type PendingRepair } from './state.js';
 import { applyLaneMutation, detectTextArtifactRebuildInfo } from './text-artifacts-drift.js';
 import {
-  isCommunityStateFreshForIndex,
   prepareCommunityTopologyRefresh,
 } from './text-artifacts-community.js';
 import {
@@ -14,7 +11,6 @@ import {
   loadPrinciples,
   loadSources,
 } from './text-artifacts-loaders.js';
-import { createOramaDb, toOramaDocument } from '../orama-factory.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../contracts.js';
 import type {
   KbReindexCommunityRecord,
@@ -79,33 +75,7 @@ export async function rebuildTextArtifacts(
   const index = buildKbIndex(kb, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
   const pendingRepairState = pendingRepair.length === 0 ? null : pendingRepair;
-  const curateState = readCurateState(kb);
-  const projectedCommunityState = topologyRefresh.shouldPersistState
-    ? {
-        ...curateState,
-        communityTopologyHash: topologyRefresh.topologyHash,
-        communitySummaryTopologyHash: topologyRefresh.topologyHash,
-        communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
-      }
-    : curateState;
-  const communityFresh = isCommunityStateFreshForIndex(projectedCommunityState, kb, index);
-  const { db, tokenizer } = await createOramaDb();
-
-  await insertMultiple(db, [
-    ...notes.map((note) => toOramaDocument(note)),
-    ...sources.map((source) => toOramaDocument(source)),
-    ...communities.map((community) => toOramaDocument(community, { communityFresh })),
-  ]);
-  kb.persistIndexToDisk(index);
-
-  try {
-    kb.persistOramaSnapshot(db);
-  } catch (error: unknown) {
-    const reason = `KB text index rebuild failed: ${errorMessage(error)}`;
-    kb.invalidateTextSnapshot(reason);
-    kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts, pendingRepairState);
-  }
+  kb.writeIndex(index);
 
   const nextState = kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
   const expectedState = applyLaneMutation(startState, rebuildInfo.externalMutation);
@@ -119,8 +89,6 @@ export async function rebuildTextArtifacts(
     kb.invalidateKbCache();
     throw new TextSnapshotRebuildError(reason, counts, pendingRepairState);
   }
-
-  kb.installRebuiltArtifacts(index, { db, tokenizer });
 
   if (topologyRefresh.shouldPersistState) {
     const currentState = readCurateState(kb);
@@ -145,10 +113,8 @@ export async function rebuildTextArtifacts(
 /**
  * @precondition Caller already holds `kb.withMutationLock()`.
  *
- * This rebuild path still refreshes curate repair state
- * in addition to rebuilding the base projection. AC4 write-lock installers use
- * `OramaBaseProjection.installFullSnapshotInWriteLock()` instead so lock-held delta/full installs stay
- * pure and do not regenerate repair or curate side effects.
+ * This rebuild path refreshes curate repair state and the JSON text artifact only.
+ * Retrieval projections are owned by CorpusConsumers after the Corpus state commits.
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,

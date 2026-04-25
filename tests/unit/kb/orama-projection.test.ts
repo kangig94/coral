@@ -398,7 +398,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
 async function installCurrentFullSnapshot(runtime: ReturnType<typeof createKbRuntime>): Promise<void> {
   const projection = createOramaBaseProjection(runtime);
   const preparedProjection = await projection.prepareFullSnapshotForCurrentCorpus(runtime.readIndexOrEmpty());
-  await projection.installFullSnapshotInWriteLock(runtime.captureCorpusSnapshot(), preparedProjection);
+  await projection.installFullSnapshot(runtime.captureCorpusSnapshot(), preparedProjection);
 }
 
 async function createSeededRuntime(root: string): Promise<ReturnType<typeof createKbRuntime>> {
@@ -415,24 +415,13 @@ async function createSeededRuntime(root: string): Promise<ReturnType<typeof crea
 async function applyScenarioAndInstall(
   scenario: MutationScenario,
   runtime: ReturnType<typeof createKbRuntime>,
-  installMode: 'delta' | 'full',
 ): Promise<void> {
   const projection = createOramaBaseProjection(runtime);
-  const { changedEntryIds, deletedEntryIds } = await scenario.apply(runtime);
+  await scenario.apply(runtime);
   const snapshot = runtime.captureCorpusSnapshot();
 
-  if (installMode === 'delta') {
-    const preparedDelta = await projection.prepareDeltaForCurrentCorpusEntries(
-      runtime.readIndexOrEmpty(),
-      changedEntryIds,
-      deletedEntryIds,
-    );
-    await projection.applyDeltaInWriteLock(snapshot, preparedDelta);
-    return;
-  }
-
   const preparedProjection = await projection.prepareFullSnapshotForCurrentCorpus(runtime.readIndexOrEmpty());
-  await projection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
+  await projection.installFullSnapshot(snapshot, preparedProjection);
 }
 
 const scenarios: MutationScenario[] = [
@@ -646,17 +635,17 @@ describe('orama projection invariants', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(scenarios)('keeps delta and full installs canonical-equivalent for $name', async (scenario) => {
-    const deltaRoot = mkdtempSync(join(tmpdir(), 'coral-orama-delta-'));
-    const fullRoot = mkdtempSync(join(tmpdir(), 'coral-orama-full-'));
-    tempRoots.push(deltaRoot, fullRoot);
+  it.each(scenarios)('keeps full consumer installs deterministic for $name', async (scenario) => {
+    const leftRoot = mkdtempSync(join(tmpdir(), 'coral-orama-left-'));
+    const rightRoot = mkdtempSync(join(tmpdir(), 'coral-orama-right-'));
+    tempRoots.push(leftRoot, rightRoot);
 
-    const deltaRuntime = await createSeededRuntime(deltaRoot);
-    const fullRuntime = await createSeededRuntime(fullRoot);
+    const leftRuntime = await createSeededRuntime(leftRoot);
+    const rightRuntime = await createSeededRuntime(rightRoot);
 
-    await applyScenarioAndInstall(scenario, deltaRuntime, 'delta');
-    await applyScenarioAndInstall(scenario, fullRuntime, 'full');
+    await applyScenarioAndInstall(scenario, leftRuntime);
+    await applyScenarioAndInstall(scenario, rightRuntime);
 
-    await expectCanonicalEquivalent(deltaRuntime, fullRuntime);
+    await expectCanonicalEquivalent(leftRuntime, rightRuntime);
   });
 });

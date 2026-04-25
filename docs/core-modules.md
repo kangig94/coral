@@ -16,7 +16,7 @@ The CLI parses commands, follows detached launches via the `jobs.wait` IPC subsc
 
 ## Backend
 
-The backend is a composition root, not a domain. Phase 3 splits that root into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
+The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
 
 ## Runtime
 
@@ -43,15 +43,17 @@ Provider adapters translate between the domain contract and external CLIs (Codex
 
 ## Equipment
 
-Equipment is a coordinator-owned seam for optional runtime add-ons, not a separate KB domain. The coordinator declares the slot registry and owns exclusive assignment; today `kb.vector` defaults to Orama and may be equipped to Needle. `EquipmentLifecycleService` is the sole transport-visible seam for register / unregister / list operations, and it persists durable install state in `equipment_state` while cursor freshness remains in `equipment_cursors`. The KB router never imports coordinator code to discover the active vector backend; it reads the current activation through the `KbRuntime.getEquipmentView()` port and falls back to the default Orama projection until a fresh Needle consumer is equipped.
+Equipment is a coordinator-owned seam for optional runtime add-ons, not a separate KB domain. The coordinator declares the slot registry and owns exclusive assignment; today `kb.vector` defaults to Orama and may be equipped to Needle. `EquipmentLifecycleService` is the sole transport-visible seam for register / unregister / list operations, and it persists durable install state in `equipment_state` while cursor freshness remains in `equipment_cursors`. Orama and Needle are CorpusConsumers: freshness is advanced by `ConsumerDriver` after applying a Corpus snapshot, not by the KB mutation lock. The KB router never imports coordinator code to discover the active vector backend; it reads the current activation through the `KbRuntime.getEquipmentView()` port and falls back to the default Orama projection until a fresh Needle consumer is equipped.
 
 ## Knowledge Base
 
-The KB domain owns text and vector search, note mutation, memo and source lifecycle, and background curation (community detection, entity consolidation). HTTP routing for `/kb/*` lives at the backend layer and delegates to the domain.
+The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, memo lifecycle, source persistence, and background curation (community detection, entity consolidation). Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). The import job commits markdown into the Corpus, then waits for requested CorpusConsumer freshness when needed.
+
+The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional equipment CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
 
 ## Shared and Infrastructure
 
@@ -79,16 +81,19 @@ coordinator API
 
 coordinator startup
   -> Journal open
-  -> consumer-driver freshness drain
+  -> Journal consumer-driver freshness drain
   -> domain reconcile surfaces (in sequence)
+  -> KB Corpus edit absorption
+  -> CorpusConsumer registration + freshness drain
 
 discuss shell
   -> discuss pure core
   -> Journal append via the domain's store-registry
 
 KB runtime
-  -> corpus publication + notify seam
+  -> Corpus authority + publication state
   -> read-only equipment activation port (`KbRuntime.getEquipmentView()`)
+  -> base Orama CorpusConsumer surface (`KbRuntime.getBaseRetrievalSurface()`)
 
 shared / infra
   -> lowest common layer reused everywhere
@@ -102,5 +107,6 @@ These are the load-bearing boundaries that must not leak:
 - Each domain facade is the only coordinator-facing surface for its domain.
 - The Journal read surface (`CoralStore`) is publicly exported; write primitives are internal.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
+- KB retrieval projections are rebuildable consumers of the Corpus authority; source import readiness waits on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
 - Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

@@ -142,8 +142,6 @@ describe('workflow reducer equivalence (AC4)', () => {
                 bypassPermissions: false,
                 coralEnv: {},
               },
-              parentJobId: plan.workflowId,
-              workflowSlot: slot.slotId,
               createdAt: '2026-04-19T00:00:00.000Z',
             },
           })),

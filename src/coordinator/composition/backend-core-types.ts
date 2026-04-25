@@ -26,6 +26,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
+import type { KbSourceImportReadinessWaiter } from '../services/kb-source-import-service.js';
 
 export type BackendBootSnapshot = {
   version?: string;
@@ -81,6 +82,7 @@ export type BackendCoreOptions = {
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
   equipmentLifecycleService?: EquipmentLifecycleService;
+  waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;

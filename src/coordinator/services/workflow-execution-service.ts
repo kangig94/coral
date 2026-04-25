@@ -26,7 +26,7 @@ import {
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
-import { writeResultArtifact } from '../../jobs/shell/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { TerminalWriteError, type LaunchOrchestrator } from '../../jobs/shell/launch.js';
 import { SessionClaimError, rejectLaunch } from '../../jobs/shell/contracts.js';

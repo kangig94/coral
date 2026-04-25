@@ -5,16 +5,9 @@ import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
 import type { EventsRow } from '../../store/schema.js';
 import { jobTerminalRecordedBodySchema } from '../events.js';
 import { describeTerminalOutcome } from '../outcome.js';
-
-type JobProjectionEntry = {
-  terminal: string | null;
-};
+import { resultPathFor, writeResultArtifact } from './result-artifact.js';
 
 export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
-  const projection = db
-    .prepare(`SELECT terminal FROM projection_jobs WHERE job_id = ?`)
-    .get(jobId) as JobProjectionEntry | undefined;
-  const terminal = projection?.terminal ? (JSON.parse(projection.terminal) as { outcome: Parameters<typeof describeTerminalOutcome>[0] }) : null;
   const event = db
     .prepare(
       `SELECT type, body, body_version, stream_kind, stream_id
@@ -33,8 +26,8 @@ export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadC
     return `${content}\n`;
   }
 
-  if (terminal?.outcome) {
-    return `${describeTerminalOutcome(terminal.outcome)}\n`;
+  if (body?.outcome) {
+    return `${describeTerminalOutcome(body.outcome)}\n`;
   }
 
   return '';
@@ -43,12 +36,25 @@ export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadC
 export function materializeResultMarkdown(
   db: Database,
   jobId: string,
-  outputPath: string,
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>,
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
 ): string {
   const markdown = buildResultMarkdown(db, jobId, ctx);
-  storage.mkdirSync(outputPath.slice(0, Math.max(0, outputPath.lastIndexOf('/'))), { recursive: true });
-  storage.writeFileSync(outputPath, markdown);
+  writeResultArtifact(storage, jobId, markdown);
   return markdown;
+}
+
+export function ensureResultMarkdownArtifact(
+  db: Database,
+  jobId: string,
+  storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeAtomicSync'>,
+  ctx: StoreReadContext,
+): string {
+  const targetPath = resultPathFor(jobId);
+  if (storage.existsSync(targetPath)) {
+    return targetPath;
+  }
+
+  materializeResultMarkdown(db, jobId, storage, ctx);
+  return targetPath;
 }

@@ -64,6 +64,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama-backend.js';
 import {
   LaunchCoordinator,
   TypedEventBus,
@@ -499,6 +500,15 @@ describe('execution backend server', () => {
   });
 
   function createMockKbSubsystem() {
+    const baseRetrievalSurface = {
+      id: ORAMA_BASE_CONSUMER_ID,
+      authority: 'corpus',
+      corpusInterest: 'content',
+      registrationKind: 'base',
+      backendKind: 'orama',
+      search: vi.fn(async () => ({ hits: [] })),
+      apply: vi.fn(async () => {}),
+    };
     return {
       kb: {
         retryPendingCorpusPublication: vi.fn(async () => {}),
@@ -512,6 +522,20 @@ describe('execution backend server', () => {
             entityMeta: {},
             relationships: [],
           },
+        })),
+        ensureIndex: vi.fn(async () => ({
+          entries: {},
+          principles: {},
+          entityMeta: {},
+          relationships: [],
+        })),
+        getBaseRetrievalSurface: vi.fn(() => baseRetrievalSurface),
+        getActiveVectorSurface: vi.fn(() => baseRetrievalSurface),
+        getEquipmentView: vi.fn(() => ({
+          retrieval: baseRetrievalSurface,
+          snapshotId: null,
+          contentSeq: 0,
+          contentManifestHash: null,
         })),
         getCorpusStateSnapshot: vi.fn(() => ({
           snapshotId: '',
@@ -2235,27 +2259,18 @@ describe('execution backend server', () => {
         name: 'source create',
         path: '/kb/sources',
         args: {
+          filePath: '/tmp/source.pdf',
           slug: 'slug',
-          stagedPath: '/tmp/staged.md',
-          meta: {
-            title: 'Source Title',
-            type: 'markdown',
-            tags: ['transport'],
-            importedAt: '2026-04-20T00:00:00.000Z',
-          },
+          readiness: 'base-search',
         },
         expectedStatus: 201,
         expectedBody: {
           route: 'kb:source-import',
           args: {
+            filePath: '/tmp/source.pdf',
             slug: 'slug',
-            stagedPath: '/tmp/staged.md',
-            meta: {
-              title: 'Source Title',
-              type: 'markdown',
-              tags: ['transport'],
-              importedAt: '2026-04-20T00:00:00.000Z',
-            },
+            readiness: 'base-search',
+            async: false,
           },
         },
         handlerName: 'handleKbSourceImport',

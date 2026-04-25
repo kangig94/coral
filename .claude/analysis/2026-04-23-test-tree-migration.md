@@ -18,7 +18,7 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (3
 ## Sessions slice (commit `02301ae2` — `phase-2/sessions`)
 
 - `src/execution/__tests__/session-manager.test.ts` → **SPLIT** between `src/sessions/shell/__tests__/store.test.ts` and `src/sessions/shell/__tests__/resolve.test.ts`.
-- `src/testing/__tests__/persistence-readers.test.ts` → **MOVED** out of the removed client tree; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`.
+- `tools/testing/__tests__/persistence-readers.test.ts` → **MOVED** out of the removed client tree; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`.
 - New AC2 proof coverage: `src/sessions/__tests__/reducer-equivalence.test.ts`.
 
 ## Discuss slice (commit `e1a53b3c` — `phase-2/discuss`)
@@ -179,7 +179,7 @@ Commit ledger:
 
 Migration notes:
 
-- Store schema bootstrap now uses a single canonical `src/store/migrations/001_initial.sql` at first-deploy `schema_version='2'`. Pre-merge schema changes edit `001` in place; `002+` versioning begins only after the first main merge.
+- Store schema bootstrap now uses a single canonical `src/store/schemas/001_initial.sql` at first-deploy `schema_version='1'`. Pre-merge schema changes edit `001` in place; `002+` versioning begins only after the first main merge.
 - AC3 rename pass: `AppServerRuntimeRecord` normalized to `AppServerRuntime`; downstream imports now point at the renamed jobs view type.
 - AC4 deletion pass: workflow-cleanup claims remain closed; no deleted workflow/checkpoint types were reintroduced during final polish.
 - AC9 schema additions: `projection_sessions.shard_dir` is authoritative, seeded by `session.opened`, and no empty-string fallback remains in reducer paths.
