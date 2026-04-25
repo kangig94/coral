@@ -7,12 +7,33 @@ import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as NeedleStoreModule from '#src/kb/search/needle-store.js';
 
 import { ConsumerDriver, type ConsumerHandle } from '#src/coordinator/consumer-driver.js';
-import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
-import { runtimeActivationFromHandle } from '#src/coordinator/equipment/runtime-activation.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+
+function createNotifyCorpusMutation(driver: ConsumerDriver) {
+  return async (publication: { snapshot: ReturnType<typeof readCorpusState>; changedLanes: readonly ('content' | 'metadata')[] }) => {
+    if (publication.changedLanes.length === 1) {
+      driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
+      return;
+    }
+    driver.notifyCorpus(publication.snapshot);
+  };
+}
+
+function runtimeActivationFromHandle(retrieval: VectorRetrieval, handle: ConsumerHandle): KbRuntimeActivationSnapshot {
+  const status = handle.status();
+  if (status.authority !== 'corpus') {
+    return { retrieval, snapshotId: null, contentSeq: 0, contentManifestHash: null };
+  }
+  return {
+    retrieval,
+    snapshotId: status.snapshotId,
+    contentSeq: status.contentSeq,
+    contentManifestHash: status.contentManifestHash,
+  };
+}
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';

@@ -12,7 +12,16 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
-import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
+
+function createNotifyCorpusMutation(driver: ConsumerDriver) {
+  return async (publication: { snapshot: CorpusStateSnapshot; changedLanes: readonly ('content' | 'metadata')[] }) => {
+    if (publication.changedLanes.length === 1) {
+      driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
+      return;
+    }
+    driver.notifyCorpus(publication.snapshot);
+  };
+}
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const BASE_CREATED_AT = '2026-04-19T00:00:00.000Z';

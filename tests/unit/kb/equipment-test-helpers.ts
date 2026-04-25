@@ -1,8 +1,23 @@
 import type { ConsumerHandle, ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
-import { runtimeActivationFromHandle } from '#src/coordinator/equipment/runtime-activation.js';
 import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
+
+function runtimeActivationFromHandle(
+  retrieval: VectorRetrieval,
+  handle: ConsumerHandle,
+): KbRuntimeActivationSnapshot {
+  const status = handle.status();
+  if (status.authority !== 'corpus') {
+    return { retrieval, snapshotId: null, contentSeq: 0, contentManifestHash: null };
+  }
+  return {
+    retrieval,
+    snapshotId: status.snapshotId,
+    contentSeq: status.contentSeq,
+    contentManifestHash: status.contentManifestHash,
+  };
+}
 
 export type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
 
