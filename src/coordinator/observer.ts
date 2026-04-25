@@ -1,12 +1,12 @@
 import { join } from 'node:path';
-import type { Disposable, Runtime, RuntimeObserver, SpawnEvent, SpawnListener } from '../../runtime/ports.js';
-import { cloneSpawnEvent } from '../../runtime/spawn.js';
+import type { Disposable, Runtime, RuntimeObserver, SpawnEvent, SpawnListener } from '../runtime/ports.js';
+import { cloneSpawnEvent } from '../runtime/spawn.js';
 import {
   attachSpawnRecordingMetadata,
   buildRecordingFilePath,
   recordSpawn,
   saveRecording,
-} from '../../infra/process/spawn-recording.js';
+} from '../infra/process/spawn-recording.js';
 
 export type EmittingRuntimeObserver = RuntimeObserver & {
   emit(event: SpawnEvent): void;

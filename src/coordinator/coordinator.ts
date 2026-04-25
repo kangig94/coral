@@ -9,7 +9,7 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
-} from './recording/observer.js';
+} from './observer.js';
 import {
   createBackendCore,
 } from './composition/create-backend-core.js';

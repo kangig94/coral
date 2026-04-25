@@ -22,8 +22,41 @@ import {
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { runtimeActivationFromHandle, type RuntimeActivationSnapshot } from './runtime-activation.js';
+import type { KbRuntimeActivationSnapshot } from '../../kb/contracts.js';
 import type { SlotRegistry } from './slots.js';
+
+// Re-exports the KB-facing runtime activation shape so coordinator equipment
+// code shares one contract.
+export type RuntimeActivationSnapshot = KbRuntimeActivationSnapshot;
+
+// Produces the inactive default snapshot readers use before equipment is live.
+function emptySnapshot(retrieval: VectorRetrieval): RuntimeActivationSnapshot {
+  return {
+    retrieval,
+    snapshotId: null,
+    contentSeq: 0,
+    contentManifestHash: null,
+  };
+}
+
+// Derives the router-visible freshness tuple from the registered equipment
+// consumer handle.
+function runtimeActivationFromHandle(
+  retrieval: VectorRetrieval,
+  handle: ConsumerHandle,
+): RuntimeActivationSnapshot {
+  const status = handle.status();
+  if (status.authority !== 'corpus') {
+    return emptySnapshot(retrieval);
+  }
+
+  return {
+    retrieval,
+    snapshotId: status.snapshotId,
+    contentSeq: status.contentSeq,
+    contentManifestHash: status.contentManifestHash,
+  };
+}
 
 type DurableEquipmentState = 'equipped' | 'disabled_pending_reinstall';
 type StoredEquipmentState = DurableEquipmentState | 'unequipped';
