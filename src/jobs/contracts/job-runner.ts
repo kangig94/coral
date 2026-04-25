@@ -1,12 +1,12 @@
-import type { ProviderRequest, ProviderSpec } from '../providers/contract.js';
-import type { SessionEntry } from '../sessions/entry.js';
-import type { TerminalWriteOptions } from './progress-store-contract.js';
-import type { JobPhase } from './phase.js';
-import type { LaunchDecision } from './launch.js';
-import type { JobLaunch, JobTerminalInput } from './records.js';
-import type { AbortReason } from './outcome.js';
-import type { AcceptedAdmission, LaunchPool, QueuedHandle } from './admission-contract.js';
-import type { ClaimJobOptions } from './session-claim.js';
+import type { ProviderRequest, ProviderSpec } from '../../providers/contract.js';
+import type { SessionEntry } from '../../sessions/entry.js';
+import type { TerminalWriteOptions } from './progress-store.js';
+import type { JobPhase } from '../phase.js';
+import type { LaunchDecision } from '../launch.js';
+import type { JobLaunch, JobTerminalInput } from '../records.js';
+import type { AbortReason } from '../outcome.js';
+import type { AcceptedAdmission, LaunchPool, QueuedHandle } from './admission.js';
+import type { ClaimJobOptions } from '../session-claim.js';
 
 export interface ProviderJobLaunchPort {
   claimAndAdmitJob(

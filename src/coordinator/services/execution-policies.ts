@@ -30,9 +30,9 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
+import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import { materializeSessionInterrupted } from '../../jobs/terminal-materializer.js';
+import { materializeSessionInterrupted } from '../../jobs/terminal/materializer.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];

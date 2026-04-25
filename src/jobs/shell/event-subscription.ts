@@ -1,7 +1,7 @@
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobProgress, JobTerminal } from '../records.js';
-import { normalizeJobTerminal } from '../result.js';
+import { normalizeJobTerminal } from '../terminal/result.js';
 
 export type JobEvent = JobProgress;
 

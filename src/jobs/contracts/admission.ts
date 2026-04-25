@@ -1,6 +1,6 @@
-import type { LaunchPool } from './launch.js';
+import type { LaunchPool } from '../launch.js';
 
-export type { LaunchPool } from './launch.js';
+export type { LaunchPool } from '../launch.js';
 
 export type LaunchPermit = { type: 'immediate' };
 

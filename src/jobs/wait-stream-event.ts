@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { jobContinuitySnapshotSchema } from './continuity.js';
-import { jobTerminalSchema } from './result.js';
+import { jobTerminalSchema } from './terminal/result.js';
 import type { WaitStreamEvent } from './wait.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'waiting']);

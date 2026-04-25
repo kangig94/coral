@@ -20,9 +20,9 @@ import type {
   LaunchPermit,
   LaunchPool,
   QueuedHandle,
-} from '../../jobs/admission-contract.js';
+} from '../../jobs/contracts/admission.js';
 
-export type { LaunchPool } from '../../jobs/admission-contract.js';
+export type { LaunchPool } from '../../jobs/contracts/admission.js';
 const MAX_QUEUE_SIZE = 20;
 
 type QueuedLaunchEntry = {

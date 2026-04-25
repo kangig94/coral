@@ -9,7 +9,7 @@ import { appendEvents } from '#src/store/append.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
-import { jobsRegistry } from '#src/jobs/events.js';
+import { jobsRegistry } from '#src/jobs/events/index.js';
 import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {

@@ -25,7 +25,7 @@ import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { storePaths } from '#src/infra/store-paths.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
-import { jobsRegistry } from '#src/jobs/events.js';
+import { jobsRegistry } from '#src/jobs/events/index.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';

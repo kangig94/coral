@@ -17,14 +17,7 @@ function findProductionStronglyConnectedComponents(): string[][] {
   const edges = parseProductionImportEdges(REPO_ROOT, productionFilePaths);
   const graph = new Map(productionFiles.map((filePath) => [filePath, [] as string[]]));
 
-  // Type-only edges are stripped at compile time and never participate in
-  // runtime module init order; only runtime edges can produce a real cycle.
-  // Including type-only edges over-flags pairs like
-  // `events.ts (registry → reducer values) ↔ projections.ts (import type body
-  // shapes from events.ts)` where the second edge exists only as a
-  // declaration annotation.
   for (const edge of edges) {
-    if (edge.typeOnly) continue;
     if (graph.has(edge.source) && graph.has(edge.target)) {
       graph.get(edge.source)?.push(edge.target);
     }

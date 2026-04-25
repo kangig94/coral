@@ -18,26 +18,26 @@ import type { SessionEntry } from '../../sessions/entry.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { phaseForOutcome, type AbortReason, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
-import { writeResultArtifact } from '../result-export.js';
+import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
   AcceptedAdmission,
   JobAdmissionPort,
   LaunchPool,
   QueuedHandle,
-} from '../admission-contract.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../progress-store-contract.js';
+} from '../contracts/admission.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../contracts/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
-import { materializeProviderTerminal } from '../terminal-materializer.js';
+import { materializeProviderTerminal } from '../terminal/materializer.js';
 import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
 import { rejectLaunch } from '../launch.js';
 import { toProviderRequest } from '../provider-request.js';
-import { TerminalWriteError } from '../terminal-write-error.js';
+import { TerminalWriteError } from '../terminal/write-error.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 

@@ -11,7 +11,7 @@ import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.j
 import { adoptOrphanedCrossNamespaceJobs } from '../../../jobs/reconcile/cross-namespace-adoption.js';
 import { StartupInterruptedError } from '../../startup-error.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
-import { writeResultArtifact } from '../../../jobs/result-export.js';
+import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
 import {
   applyRecoveryAction,

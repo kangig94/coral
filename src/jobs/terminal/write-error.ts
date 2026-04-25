@@ -1,4 +1,4 @@
-import { errorMessage } from '../infra/error-format.js';
+import { errorMessage } from '../../infra/error-format.js';
 
 export class TerminalWriteError extends Error {
   constructor(

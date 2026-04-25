@@ -144,7 +144,7 @@ const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle/backend.ts';
-const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal-materializer.ts';
+const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal/materializer.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
@@ -851,7 +851,7 @@ describe('architecture boundary guard', () => {
     const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
     const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
     const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
-    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/progress-store-contract.ts'), 'utf8');
+    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/contracts/progress-store.ts'), 'utf8');
     const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read-queries.ts'), 'utf8');
     const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
 

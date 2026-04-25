@@ -48,7 +48,7 @@ import type {
 import type { ProviderRegistry } from '../providers/registry.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
-import type { AbortResult } from '../jobs/abort-result.js';
+import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { UsageError } from './errors.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';

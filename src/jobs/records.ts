@@ -6,7 +6,7 @@ import {
   jobTerminalSchema,
   type JobDiagnostics,
   type JobTerminal,
-} from './result.js';
+} from './terminal/result.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
@@ -147,10 +147,10 @@ export type {
   JobTerminal,
   JobTerminalDiagnostics,
   JobTerminalInput,
-} from './result.js';
+} from './terminal/result.js';
 export {
   cloneJobTerminal,
   jobDiagnosticsSchema,
   jobTerminalSchema,
   normalizeJobTerminal,
-} from './result.js';
+} from './terminal/result.js';

@@ -7,7 +7,7 @@ import type { AcceptedLaunchResponse } from '#src/transport/http/client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
 import type { WatchState } from '#src/discuss/watch.js';
 import type { KbReadResult } from '#src/kb/entry-types.js';
-import type { AbortResult } from '#src/jobs/abort-result.js';
+import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';

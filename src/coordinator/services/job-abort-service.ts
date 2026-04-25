@@ -6,11 +6,11 @@ import {
   type JobLaunch,
 } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
-import type { JobAbortRegistryPort } from '../../jobs/abort-registry-contract.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { JobAdmissionPort, LaunchPool } from '../../jobs/admission-contract.js';
-import type { QueuedJobAbortPort } from '../../jobs/job-runner-contract.js';
-import type { AbortResult } from '../../jobs/abort-result.js';
+import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
+import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobAdmissionPort, LaunchPool } from '../../jobs/contracts/admission.js';
+import type { QueuedJobAbortPort } from '../../jobs/contracts/job-runner.js';
+import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: JobAbortRegistryPort;

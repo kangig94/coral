@@ -6,7 +6,7 @@
 
 import type { EventDescriberMap } from '../causality/render.js';
 import { discussEventDescribers } from '../discuss/event-describers.js';
-import { jobsEventDescribers } from '../jobs/event-describers.js';
+import { jobsEventDescribers } from '../jobs/events/describers.js';
 import { sessionsEventDescribers } from '../sessions/event-describers.js';
 import { workflowEventDescribers } from '../workflow/event-describers.js';
 

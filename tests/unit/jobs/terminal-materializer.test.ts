@@ -11,7 +11,7 @@ import {
   materializeJobRecoveryFault,
   materializeProviderFailureCause,
   materializeSessionInterrupted,
-} from '#src/jobs/terminal-materializer.js';
+} from '#src/jobs/terminal/materializer.js';
 
 function createAppendRecorder(): {
   readonly events: CoralEventInput[];

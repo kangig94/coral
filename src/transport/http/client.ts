@@ -3,7 +3,7 @@ import type { BackendHealth } from './backend/health.js';
 import { isBackendHealth } from './backend/health.js';
 import { throwBackendCommunicationError } from './backend/communication.js';
 import { BackendToolHttpError } from './errors.js';
-import type { AbortResult } from '../../jobs/abort-result.js';
+import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   DiscussDetailResponse,

@@ -71,7 +71,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
 
 const DOMAIN_API_TARGETS = new Set<string>();
 const CONTRACT_TARGETS = new Set([
-  'src/jobs/admission-contract.ts',
+  'src/jobs/contracts/admission.ts',
   'src/kb/contracts.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',

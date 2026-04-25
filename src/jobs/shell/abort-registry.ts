@@ -1,5 +1,5 @@
-import type { AbortResult } from '../abort-result.js';
-import type { JobAbortRegistryPort } from '../abort-registry-contract.js';
+import type { AbortResult } from '../contracts/abort-registry.js';
+import type { JobAbortRegistryPort } from '../contracts/abort-registry.js';
 import type { RuntimeIdsPort } from '../../runtime/ports.js';
 
 export class AbortRegistry implements JobAbortRegistryPort {

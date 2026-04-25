@@ -25,7 +25,7 @@ const DOMAIN_ROOTS = [
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
-  'src/jobs/abort-result.ts',
+  'src/jobs/contracts/abort-registry.ts',
   'src/jobs/launch.ts',
   'src/jobs/phase.ts',
   'src/jobs/records.ts',
@@ -62,7 +62,7 @@ const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/services/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
-  'src/jobs/admission-contract.ts',
+  'src/jobs/contracts/admission.ts',
   'src/kb/contracts.ts',
   'src/kb/state/corpus-state.ts',
   'src/providers/contract.ts',

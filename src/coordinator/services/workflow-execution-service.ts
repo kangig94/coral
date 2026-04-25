@@ -4,7 +4,7 @@ import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
+import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { SessionWorkflowPort } from '../../sessions/execution-contract.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import {
@@ -26,10 +26,10 @@ import {
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
-import { writeResultArtifact } from '../../jobs/result-export.js';
-import type { JobAbortRegistryPort } from '../../jobs/abort-registry-contract.js';
-import type { WorkflowJobLifecyclePort } from '../../jobs/job-runner-contract.js';
-import { TerminalWriteError } from '../../jobs/terminal-write-error.js';
+import { writeResultArtifact } from '../../jobs/terminal/export.js';
+import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
+import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
+import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
 import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';

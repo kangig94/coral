@@ -1,4 +1,3 @@
-import type { AbortResult } from './abort-result.js';
 
 export interface JobAbortRegistryPort {
   register(jobId?: string, onAbort?: () => void): string;
@@ -7,3 +6,7 @@ export interface JobAbortRegistryPort {
   abort(jobIds: string[]): AbortResult;
   remove(jobId: string): void;
 }
+export type AbortResult = {
+  aborted: string[];
+  notFound: string[];
+};

@@ -1,14 +1,14 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEvent, type WaitStreamOnceResult, type WaitStreamRequest } from '../wait.js';
-import type { JobQueueReadPort, LaunchPool } from '../admission-contract.js';
+import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { resultPathFor as defaultResultPathFor } from '../result-export.js';
+import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = 'wait-aborted' as const;

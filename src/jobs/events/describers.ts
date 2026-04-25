@@ -2,23 +2,23 @@
 // composed by `read-model/event-describers.ts` into the default
 // `EventDescriberMap` consumed by `causality/render.ts`.
 
-import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
-import {
-  jobAbortedBodySchema,
-  jobProgressBodySchema,
-  jobQueueAdmittedBodySchema,
-  jobQueueQueuedBodySchema,
-  jobRuntimeStartedBodySchema,
-  jobTerminalRecordedBodySchema,
-} from './events.js';
-import { jobLaunchRequestBodySchema } from './launch.js';
+import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../../causality/render.js';
+import { jobLaunchRequestBodySchema } from '../launch.js';
 import {
   describeJobDomainProgress,
   describeJobProgressFault,
   describeLaunchRejected,
   describeTerminalOutcome,
+  jobAbortedBodySchema,
   jobLaunchRejectedSchema,
-} from './outcome.js';
+} from '../outcome.js';
+import { jobTerminalRecordedBodySchema } from '../terminal/result.js';
+import {
+  jobProgressBodySchema,
+  jobQueueAdmittedBodySchema,
+  jobQueueQueuedBodySchema,
+  jobRuntimeStartedBodySchema,
+} from './bodies.js';
 
 const launchRequested = typedDescriber(jobLaunchRequestBodySchema, () => 'Job launch requested.');
 

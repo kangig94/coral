@@ -1,20 +1,20 @@
-import type { AppendedEvent } from '../store/append.js';
-import type { CoralEventInput } from '../store/envelope.js';
-import type { CauseRef } from '../causality/cause-ref.js';
-import type { ProviderTerminalEventBody } from '../providers/contract.js';
-import type { ProviderFailureCause } from '../providers/fault.js';
+import type { AppendedEvent } from '../../store/append.js';
+import type { CoralEventInput } from '../../store/envelope.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
+import type { ProviderTerminalEventBody } from '../../providers/contract.js';
+import type { ProviderFailureCause } from '../../providers/fault.js';
 import type {
   JobLifecycleFault,
   JobLaunchRejected,
   JobProgressFault,
   TerminalOutcome,
-} from './outcome.js';
-import type { JobTerminalDiagnostics, JobTerminalInput } from './records.js';
+} from '../outcome.js';
+import type { JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 import type {
   SessionAdapterUnparseableFault,
   SessionInterruptedFault,
   SessionProviderFailedFault,
-} from '../sessions/fault.js';
+} from '../../sessions/fault.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;

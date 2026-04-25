@@ -1,7 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { JobContinuitySnapshot } from './continuity.js';
-import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from './events.js';
+import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './events/bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
 import type { JobProjectionDetail } from './read-contract.js';

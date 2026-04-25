@@ -1,7 +1,7 @@
 import { reindex } from '../../kb/ops/reindex.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
+import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { ReindexResult } from '../../kb/entry-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { KbSourceImportReadinessWaiter } from './kb-source-import-service.js';

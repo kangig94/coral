@@ -8,7 +8,7 @@ import type { ProgressStore } from '../job-store.js';
 import {
   jobRecoveryNeedsDomainEvent,
   materializeJobRecoveryFault,
-} from '../terminal-materializer.js';
+} from '../terminal/materializer.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 

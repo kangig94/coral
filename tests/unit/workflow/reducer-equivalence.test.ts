@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { jobsRegistry } from '#src/jobs/events.js';
+import { jobsRegistry } from '#src/jobs/events/index.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';

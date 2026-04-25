@@ -17,8 +17,8 @@ import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import {
   materializeJobRecoveryFault,
   materializeProviderTerminal,
-} from '../../../jobs/terminal-materializer.js';
-import { writeResultArtifact } from '../../../jobs/result-export.js';
+} from '../../../jobs/terminal/materializer.js';
+import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {

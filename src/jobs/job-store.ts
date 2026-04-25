@@ -9,14 +9,14 @@ import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from "./paths.js";
-import { ensureResultMarkdownArtifact } from './result-export.js';
+import { ensureResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
-import { jobsRegistry } from './events.js';
+import { jobsRegistry } from './events/index.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
-import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './progress-store-contract.js';
+import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './contracts/progress-store.js';
 import {
   normalizeJobTerminal,
   type JobLaunch,

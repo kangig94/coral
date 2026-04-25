@@ -2,12 +2,12 @@ import { dirname, join } from 'node:path';
 
 import type { Database } from 'better-sqlite3';
 
-import { jobsDir } from "./paths.js";
-import type { StoragePort } from '../runtime/ports.js';
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import type { EventsRow } from '../store/schema.js';
-import { jobTerminalRecordedBodySchema } from './events.js';
-import { describeTerminalOutcome } from './outcome.js';
+import { jobsDir } from "../paths.js";
+import type { StoragePort } from '../../runtime/ports.js';
+import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
+import type { EventsRow } from '../../store/schema.js';
+import { jobTerminalRecordedBodySchema } from './result.js';
+import { describeTerminalOutcome } from '../outcome.js';
 
 export function resultPathFor(jobId: string): string {
   return join(jobsDir(), jobId, 'result.md');

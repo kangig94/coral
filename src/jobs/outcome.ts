@@ -163,3 +163,11 @@ export function describeTerminalOutcome(
       return assertNever(outcome);
   }
 }
+
+export const jobAbortedBodySchema = z
+  .object({
+    reason: abortReasonSchema,
+  })
+  .strict();
+
+export type JobAbortedBody = z.infer<typeof jobAbortedBodySchema>;

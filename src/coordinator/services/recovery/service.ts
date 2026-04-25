@@ -14,7 +14,7 @@ import {
   type JobTerminalInput,
 } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
-import { writeResultArtifact } from '../../../jobs/result-export.js';
+import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
@@ -23,12 +23,12 @@ import type {
   ExecutionProviderServerAttachment,
   ExecutionProviderHostManager,
 } from '../../contracts.js';
-import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/admission-contract.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/progress-store-contract.js';
+import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/progress-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/execution-contract.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { JobAbortRegistryPort } from '../../../jobs/abort-registry-contract.js';
-import type { RecoveredJobLifecyclePort } from '../../../jobs/job-runner-contract.js';
+import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
+import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import {
   APP_SERVER_RECOVERY_POLICY,

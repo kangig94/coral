@@ -15,7 +15,8 @@ import {
   type DiscussContextRegistry,
 } from '#src/discuss/shell/live-registry.js';
 import type { DiscussContext } from '#src/discuss/shell/context.js';
-import { buildWatchEvents, listProjectionDiscussSnapshots, readProjectionDiscuss } from '#src/discuss/projections.js';
+import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '#src/discuss/projections.js';
+import { buildWatchEvents } from '#src/discuss/watch.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from '#src/discuss/shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '#src/discuss/shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '#src/discuss/shell/persistence.js';
@@ -27,7 +28,7 @@ import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { jobsRegistry } from '#src/jobs/events.js';
+import { jobsRegistry } from '#src/jobs/events/index.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';

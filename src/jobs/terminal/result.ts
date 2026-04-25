@@ -5,8 +5,9 @@ import {
   terminalOutcomeSchema,
   type JobProgressFault,
   type TerminalOutcome,
-} from './outcome.js';
-import { usageSummarySchema, type UsageSummary } from '../providers/contract.js';
+} from '../outcome.js';
+import { usageSummarySchema, type UsageSummary } from '../../providers/contract.js';
+import { jobContinuitySnapshotSchema } from '../continuity.js';
 
 export interface JobTerminal {
   content: string;
@@ -72,3 +73,13 @@ export function cloneJobTerminal(input: JobTerminal): JobTerminal {
     ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
   };
 }
+
+export const jobTerminalRecordedBodySchema = z
+  .object({
+    terminal: jobTerminalSchema,
+    diagnostics: jobTerminalDiagnosticsSchema.optional(),
+    continuity: jobContinuitySnapshotSchema.nullable().optional(),
+  })
+  .strict();
+
+export type JobTerminaledBody = z.infer<typeof jobTerminalRecordedBodySchema>;

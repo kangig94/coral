@@ -3,7 +3,7 @@ import { nowIsoString } from '../../infra/time.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
+import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { KbRef } from '../../store/envelope.js';
 

@@ -7,9 +7,9 @@ import type {
 import type {
   LaunchCoordinatorPort,
   LaunchPool,
-} from '../jobs/admission-contract.js';
+} from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
-import type { JobProgressStore } from '../jobs/progress-store-contract.js';
+import type { JobProgressStore } from '../jobs/contracts/progress-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import type {
   JobProgress,
@@ -23,7 +23,7 @@ import type {
 } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { EffortLevel } from '../providers/request-policy.js';
-import type { AbortResult } from '../jobs/abort-result.js';
+import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';

@@ -26,7 +26,7 @@ import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';
-import { jobsRegistry } from '../jobs/events.js';
+import { jobsRegistry } from '../jobs/events/index.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';

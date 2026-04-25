@@ -1,8 +1,7 @@
-// Job projection writers + DB-side reducers. Imports body shapes from
-// events.ts as `import type` only — the resulting `events.ts ↔ projections.ts`
-// pair has a runtime edge in one direction (registry → reducer values) and a
-// declaration-only edge in the other, which the production-import-graph
-// invariant correctly accepts as non-cyclic at runtime.
+// Job projection writers + DB-side reducers. Body type imports come from
+// per-concept companion files (queue/runtime/progress/outcome/result/launch),
+// keeping `events.ts` (registry assembly) cleanly above this file with no
+// cycle in either direction.
 
 import type { Database } from 'better-sqlite3';
 
@@ -12,7 +11,12 @@ import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
 import type { JobPhase } from './phase.js';
-import { phaseForOutcome, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
+import {
+  phaseForOutcome,
+  type JobAbortedBody,
+  type JobLaunchRejected,
+  type JobProgressFault,
+} from './outcome.js';
 import {
   jobDiagnosticsSchema,
   jobTerminalSchema,
@@ -20,15 +24,14 @@ import {
   type JobDiagnostics,
   type JobTerminal,
   type JobTerminalDiagnostics,
-} from './result.js';
+  type JobTerminaledBody,
+} from './terminal/result.js';
 import type {
-  JobAbortedBody,
   JobProgressBody,
   JobQueueAdmittedBody,
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
-  JobTerminaledBody,
-} from './events.js';
+} from './events/bodies.js';
 
 type ProjectedJobState = {
   phase: JobPhase;

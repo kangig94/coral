@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { makeEvent } from '#src/discuss/events.js';
-import { buildAuditView, buildControlView, buildWatchEvents } from '#src/discuss/projections.js';
+import { buildAuditView, buildControlView } from '#src/discuss/projections.js';
+import { buildWatchEvents } from '#src/discuss/watch.js';
 import {
   cleanupDiscussHarnesses,
   createDiscussHarness,

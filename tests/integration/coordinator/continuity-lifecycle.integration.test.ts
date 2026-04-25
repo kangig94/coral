@@ -17,7 +17,7 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '#src/providers/contract.js';
 import { providerTerminalEventBodySchema, jobTerminalSchema } from '#src/providers/contract.js';
-import { jobTerminalRecordedBodySchema } from '#src/jobs/events.js';
+import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
 import {

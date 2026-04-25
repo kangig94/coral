@@ -6,7 +6,6 @@
 // internals) stays in `src/discuss/shell/context.ts`.
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
-import { buildWatchEvents } from './projections.js';
 
 export type WatchEvent = {
   type: 'bid_resolved' | 'speech_done' | 'epoch_transition' | 'session_ended';
@@ -36,6 +35,76 @@ export class DiscussWatchReadError extends Error {
     this.code = code;
     this.detail = detail;
   }
+}
+
+function parseWatchEventTs(ts: string): number {
+  const parsed = Date.parse(ts);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function buildWatchEvents(events: DiscussDomainEvent[]): WatchEvent[] {
+  const watchEvents: WatchEvent[] = [];
+
+  for (const event of events) {
+    const ts = parseWatchEventTs(event.ts);
+
+    switch (event.kind) {
+      case 'bid.round.closed':
+        if ('winner' in event.payload.outcome) {
+          watchEvents.push({
+            type: 'bid_resolved',
+            data: {
+              winner: event.payload.outcome.winner,
+              speaker_type: event.payload.outcome.speaker_type,
+            },
+            ts,
+          });
+          break;
+        }
+
+        if (event.payload.outcome.reason !== 'epoch_transition') break;
+
+        watchEvents.push({
+          type: 'epoch_transition',
+          data: {
+            epoch: event.payload.stateMutations.epoch ?? null,
+          },
+          ts,
+        });
+        break;
+
+      case 'speech.recorded':
+        watchEvents.push({
+          type: 'speech_done',
+          data: {
+            speaker: event.payload.agent,
+            content: event.payload.content,
+          },
+          ts,
+        });
+        break;
+
+      case 'session.ended':
+        watchEvents.push({
+          type: 'session_ended',
+          data: event.payload.force
+            ? {
+                reason: 'force_end',
+                detail: event.payload.reason ?? event.payload.endReasonContent ?? null,
+              }
+            : {
+                reason: event.payload.endReason ?? null,
+              },
+          ts,
+        });
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  return watchEvents;
 }
 
 export function buildDiscussWatchState(

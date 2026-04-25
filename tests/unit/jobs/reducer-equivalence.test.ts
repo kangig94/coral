@@ -9,7 +9,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
-import { jobsRegistry } from '#src/jobs/events.js';
+import { jobsRegistry } from '#src/jobs/events/index.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {

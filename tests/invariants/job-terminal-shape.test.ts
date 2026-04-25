@@ -7,7 +7,7 @@ import { listProductionSourceFiles } from '#tests/helpers/ts-import-scanner.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const JOBS_ROOT = join(ROOT, 'src/jobs');
-const RESULT_PATH = join(JOBS_ROOT, 'result.ts');
+const RESULT_PATH = join(JOBS_ROOT, 'terminal', 'result.ts');
 
 const TERMINAL_METADATA_FIELDS = ['exitCode', 'warnings', 'usage', 'workflow'] as const;
 

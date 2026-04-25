@@ -1,4 +1,4 @@
-import { buildWatchEvents } from '../projections.js';
+import { buildWatchEvents } from '../watch.js';
 import { DiscussWatchReadError } from '../watch.js';
 import { buildDiscussWatchState } from '../watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
