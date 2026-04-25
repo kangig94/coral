@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
+import { equipmentPaths } from "#src/infra/equipment-paths.js";
 import { equipmentAddonStrategy } from '#src/expansion/strategies/equipment-addon.js';
 import { installExpansion, removeInstallArtifacts } from '#src/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -37,6 +37,7 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
+  const fixtureEquipment = equipmentPaths('prod', { baseDir: fixture.baseDir });
 
   return {
     ...realRuntime,
@@ -49,6 +50,12 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
       fullSnapshot: () => envRecord,
       coralSnapshot: () => ({}),
     },
+    paths: {
+      ...realRuntime.paths,
+      get coral() {
+        return { ...realRuntime.paths.coral, equipment: fixtureEquipment };
+      },
+    },
   };
 }
 
@@ -57,13 +64,13 @@ describe('installExpansion', () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
     const installSpy = vi.spyOn(equipmentAddonStrategy, 'install').mockImplementation(async (ctx) => {
-      expect(statSync(ctx.paths.equipmentDataDir('needle')).isDirectory()).toBe(true);
-      expect(statSync(ctx.paths.equipmentInstallLockPath('needle')).isDirectory()).toBe(true);
+      expect(statSync(ctx.runtime.paths.coral.equipment.dataDir('needle')).isDirectory()).toBe(true);
+      expect(statSync(ctx.runtime.paths.coral.equipment.installLockPath('needle')).isDirectory()).toBe(true);
       return {
         status: 'installed',
         method: 'prebuild',
         version: '0.2.0',
-        targetDir: ctx.paths.equipmentDataDir('needle'),
+        targetDir: ctx.runtime.paths.coral.equipment.dataDir('needle'),
         postInstall: ['register_equipment'],
       };
     });
@@ -75,10 +82,10 @@ describe('installExpansion', () => {
       status: 'installed',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }),
+      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_equipment'],
     });
-    expect(pathExists(equipmentInstallLockPath('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }))).toBe(
+    expect(pathExists(equipmentPaths("prod", { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(
       false,
     );
   });
@@ -103,7 +110,7 @@ describe('installExpansion', () => {
       status: 'already_up_to_date',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }),
+      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_equipment'],
     });
 
@@ -113,7 +120,7 @@ describe('installExpansion', () => {
       status: 'already_up_to_date',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }),
+      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_equipment'],
     });
     expect(installSpy).toHaveBeenCalledWith(expect.anything(), expect.anything(), { update: true });
@@ -131,7 +138,7 @@ describe('installExpansion', () => {
         status: 'installed',
         method: 'prebuild',
         version: '0.2.0',
-        targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }),
+        targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
         postInstall: ['register_equipment'],
       };
     });
@@ -160,7 +167,7 @@ describe('installExpansion', () => {
 
     await expect(installExpansion('needle', { runtime, lockTimeoutMs: 25 })).rejects.toThrow('simulated install failure');
     expect(installSpy).toHaveBeenCalledTimes(1);
-    expect(pathExists(equipmentInstallLockPath('needle', { baseDir: fixture.baseDir, env: runtime.env.fullSnapshot() }))).toBe(
+    expect(pathExists(equipmentPaths("prod", { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(
       false,
     );
   });
@@ -169,27 +176,25 @@ describe('installExpansion', () => {
 describe('removeInstallArtifacts', () => {
   it('removes local expansion artifacts for uninstall cleanup', async () => {
     const fixture = createFixture();
-    const targetDir = equipmentDataDir('needle', { baseDir: fixture.baseDir });
+    const runtime = createRuntimeForFixture(fixture);
+    const targetDir = runtime.paths.coral.equipment.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'coral-needle.node'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
-    vi.stubEnv('HOME', fixture.homeDir);
-    vi.stubEnv('USERPROFILE', fixture.homeDir);
 
-    await removeInstallArtifacts('needle');
+    await removeInstallArtifacts(runtime, 'needle');
 
     expect(pathExists(targetDir)).toBe(false);
   });
 
   it('removes the equipment data dir for github-binary cleanup', async () => {
     const fixture = createFixture();
-    const targetDir = equipmentDataDir('cgc', { baseDir: fixture.baseDir });
+    const runtime = createRuntimeForFixture(fixture);
+    const targetDir = runtime.paths.coral.equipment.dataDir('cgc');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'state.json'), '{"ok":true}', 'utf-8');
-    vi.stubEnv('HOME', fixture.homeDir);
-    vi.stubEnv('USERPROFILE', fixture.homeDir);
 
-    await removeInstallArtifacts('cgc');
+    await removeInstallArtifacts(runtime, 'cgc');
 
     expect(pathExists(targetDir)).toBe(false);
   });

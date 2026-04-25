@@ -14,11 +14,7 @@ import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { nowDate } from '../../infra/time.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
-import {
-  equipmentAddonPath,
-  equipmentInstallLockPath,
-  type EquipmentPathOptions,
-} from '../../infra/equipment-paths.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';
@@ -88,7 +84,7 @@ type EquipmentDescriptor = {
   name: 'needle';
   slotId: 'kb.vector';
   consumerId: typeof NEEDLE_CONSUMER_ID;
-  addonPath: (pathOptions?: EquipmentPathOptions) => string;
+  addonPath: () => string;
 };
 
 type PreparedActivation = {
@@ -130,12 +126,12 @@ const closeNeedleBackend: CloseNeedleBackendFn = async (runtime) => {
 
 export interface EquipmentLifecycleServiceOptions {
   readonly db: BetterSqlite3.Database;
+  readonly runtime: Pick<Runtime, 'paths'>;
   readonly consumerDriver: ConsumerDriver;
   readonly slotRegistry: SlotRegistry;
   readonly resolveKbRuntime: () => KbRuntime | null;
   readonly removeInstallArtifacts?: (name: string) => Promise<void>;
   readonly now?: () => Date;
-  readonly pathOptions?: EquipmentPathOptions;
   readonly closeNeedleBackend?: CloseNeedleBackendFn;
   readonly activateNeedle?: ActivateNeedleFn;
   readonly needleBackendOptions?: Pick<NeedleBackendOptions, 'storeFactory'>;
@@ -195,7 +191,7 @@ export class EquipmentLifecycleService {
       name: 'needle',
       slotId: 'kb.vector',
       consumerId: NEEDLE_CONSUMER_ID,
-      addonPath: (pathOptions) => equipmentAddonPath('needle', pathOptions),
+      addonPath: () => options.runtime.paths.coral.equipment.addonPath('needle'),
     });
   }
 
@@ -217,7 +213,7 @@ export class EquipmentLifecycleService {
     const descriptor = this.requireDescriptor(name);
     const durableState = this.readStateRow(name);
     const active = this.activeBySlot.get(descriptor.slotId);
-    const addonPath = descriptor.addonPath(this.options.pathOptions);
+    const addonPath = descriptor.addonPath();
 
     let status: EquipmentView['status'] = 'not_equipped';
     if (this.isInstallLockPresent(name)) {
@@ -357,7 +353,7 @@ export class EquipmentLifecycleService {
       throw documentedCoralSetupError('equipment_embedding_provider_missing', { name: 'Needle' });
     }
 
-    const addonPath = descriptor.addonPath(this.options.pathOptions);
+    const addonPath = descriptor.addonPath();
     if (!this.isAddonFileReadable(addonPath)) {
       throw documentedCoralSetupError('equipment_binary_corrupt', { name });
     }
@@ -506,7 +502,7 @@ export class EquipmentLifecycleService {
 
   private isInstallLockPresent(name: string): boolean {
     try {
-      return statSync(equipmentInstallLockPath(name, this.options.pathOptions)).isDirectory();
+      return statSync(this.options.runtime.paths.coral.equipment.installLockPath(name)).isDirectory();
     } catch {
       return false;
     }

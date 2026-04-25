@@ -82,7 +82,7 @@ function buildMutationOptions(
 
 function installLockExists(ctx: ExpansionInstallContext, name: string): boolean {
   try {
-    ctx.runtime.storage.statSync(ctx.paths.equipmentInstallLockPath(name));
+    ctx.runtime.storage.statSync(ctx.runtime.paths.coral.equipment.installLockPath(name));
     return true;
   } catch {
     return false;
@@ -118,7 +118,7 @@ function equipmentStatusDescription(
 function hasDurableEquipmentState(ctx: ExpansionInstallContext, name: string): boolean {
   try {
     return ctx.runtime.storage
-      .readdirSync(ctx.paths.equipmentDataDir(name), { withFileTypes: true })
+      .readdirSync(ctx.runtime.paths.coral.equipment.dataDir(name), { withFileTypes: true })
       .some((entry) => entry.name !== 'install.lock');
   } catch {
     return false;
@@ -292,7 +292,7 @@ function buildEquipmentEntry(
     ...binding.entry,
     status,
     statusDescription,
-    addonPath: ctx.paths.equipmentAddonPath(binding.entry.id),
+    addonPath: ctx.runtime.paths.coral.equipment.addonPath(binding.entry.id),
     ...(version === undefined ? {} : { version }),
     ...(onboarding === undefined ? {} : { onboarding }),
   });

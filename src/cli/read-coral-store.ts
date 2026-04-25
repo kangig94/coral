@@ -8,7 +8,6 @@ import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
 import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
-import { storePaths } from '../infra/store-paths.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 
 export type ReadCoralStoreHandle = {
@@ -100,7 +99,7 @@ export function getSharedReadCoralStore(
 export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const flavor = readBuildFlavor(pluginRoot || projectRoot);
   const runtime = createRealRuntime(flavor);
-  const dbPath = storePaths(flavor).dbFile;
+  const dbPath = runtime.paths.coral.store.dbFile;
   const hasStore = existsSync(dbPath);
   const namespace = pluginRoot
     ? (() => {

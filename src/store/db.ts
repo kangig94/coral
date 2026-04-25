@@ -2,10 +2,8 @@ import BetterSqlite3 from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Runtime, StoragePort } from '../runtime/ports.js';
 import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
-import { storePaths } from '../infra/store-paths.js';
 
 type ReadonlyStoreOptions = {
   readonly path: string;
@@ -73,17 +71,9 @@ type OpenBackendStoreOptions = {
 
 export function openBackendStoreDb(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
-  flavor: BuildFlavor,
   options: OpenBackendStoreOptions = {},
 ): BetterSqlite3.Database {
-  let storeDbPath = options.path ?? storePaths(flavor).dbFile;
-  if (options.path === undefined) {
-    try {
-      storeDbPath = runtime.paths.coral.store.dbFile;
-    } catch {
-      // Some tests intentionally bypass flavor-settled bootstrap.
-    }
-  }
+  const storeDbPath = options.path ?? runtime.paths.coral.store.dbFile;
 
   if (storeDbPath !== ':memory:') {
     runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });

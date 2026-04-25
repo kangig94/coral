@@ -55,7 +55,6 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 import { KbReindexService } from '../services/kb-reindex-service.js';
@@ -492,13 +491,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     closeIpcServerFn: closeIpcServer,
     listenIpcFn:
       options.listenIpcFn ??
-      ((listener) =>
-        listenIpcServer(
-          listener,
-          coordinatorPaths(identity.flavor, runtime.env.fullSnapshot(), {
-            baseDir: join(runtime.env.homedir(), '.coral'),
-          }).socketPath,
-        )),
+      ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath)),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

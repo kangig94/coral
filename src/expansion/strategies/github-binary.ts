@@ -142,7 +142,7 @@ export class GithubBinaryStrategy implements Strategy<GithubBinaryConfig> {
 
   async uninstall(ctx: ExpansionInstallContext, config: GithubBinaryConfig): Promise<InstallResult> {
     const hadArtifacts = hasBinaryArtifacts(ctx, config);
-    ctx.runtime.storage.rmSync(ctx.paths.equipmentDataDir(config.name), { recursive: true, force: true });
+    ctx.runtime.storage.rmSync(ctx.runtime.paths.coral.equipment.dataDir(config.name), { recursive: true, force: true });
     try {
       ctx.runtime.storage.unlinkSync(binaryPathFor(ctx, config));
     } catch {
@@ -212,7 +212,7 @@ function metaPathFor(ctx: ExpansionInstallContext, config: GithubBinaryConfig): 
 }
 
 function externalInstallPathFor(ctx: ExpansionInstallContext, config: GithubBinaryConfig): string {
-  return join(ctx.paths.equipmentDataDir(config.name), '.external-install.json');
+  return join(ctx.runtime.paths.coral.equipment.dataDir(config.name), '.external-install.json');
 }
 
 function writeBinaryInstallMeta(ctx: ExpansionInstallContext, config: GithubBinaryConfig, version: string): void {
@@ -259,7 +259,7 @@ function readExternalInstallMeta(
 }
 
 function writeExternalInstallMeta(ctx: ExpansionInstallContext, config: GithubBinaryConfig, command: string): void {
-  const targetDir = ctx.paths.equipmentDataDir(config.name);
+  const targetDir = ctx.runtime.paths.coral.equipment.dataDir(config.name);
   const filePath = externalInstallPathFor(ctx, config);
   ctx.runtime.storage.mkdirSync(targetDir, { recursive: true });
   if (

@@ -69,9 +69,16 @@ describe('composeCoralPaths', () => {
     });
   });
 
-  it('equipmentPaths accepts an explicit baseDir', () => {
-    expect(equipmentPaths('prod', { baseDir: '/tmp/coral-root' })).toEqual({
-      equipmentRoot: join('/tmp/coral-root', 'data', 'equipment'),
-    });
+  it('equipmentPaths accepts an explicit baseDir and exposes per-name accessors', () => {
+    const eq = equipmentPaths('prod', { baseDir: '/tmp/coral-root' });
+    expect(eq.equipmentRoot).toBe(join('/tmp/coral-root', 'data', 'equipment'));
+    expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'equipment', 'needle'));
+    expect(eq.addonPath('needle')).toBe(
+      join('/tmp/coral-root', 'data', 'equipment', 'needle', 'coral-needle.node'),
+    );
+    expect(eq.addonPath('cgc')).toBe(join('/tmp/coral-root', 'data', 'equipment', 'cgc', 'cgc.node'));
+    expect(eq.installLockPath('needle')).toBe(
+      join('/tmp/coral-root', 'data', 'equipment', 'needle', 'install.lock'),
+    );
   });
 });

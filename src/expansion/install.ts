@@ -8,7 +8,6 @@ import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-l
 import type { InstallError, InstallResponse, InstallResult } from './contracts.js';
 import { installErrorSchema } from './contracts.js';
 import { CATALOG } from './catalog.js';
-import { equipmentDataDir } from '../infra/equipment-paths.js';
 import { createExpansionInstallContext, type ExpansionInstallContext } from './strategies/strategy.js';
 
 const EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS = 250;
@@ -67,8 +66,8 @@ async function withInstallLock<T>(
   timeoutMs: number,
   run: () => Promise<T>,
 ): Promise<T | InstallError> {
-  const targetDir = ctx.paths.equipmentDataDir(name);
-  const lockPath = ctx.paths.equipmentInstallLockPath(name);
+  const targetDir = ctx.runtime.paths.coral.equipment.dataDir(name);
+  const lockPath = ctx.runtime.paths.coral.equipment.installLockPath(name);
   ctx.runtime.storage.mkdirSync(targetDir, { recursive: true });
 
   let release: () => void;
@@ -118,8 +117,8 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
   }
 }
 
-export async function removeInstallArtifacts(name: string): Promise<void> {
-  rmSync(equipmentDataDir(name), {
+export async function removeInstallArtifacts(runtime: Runtime, name: string): Promise<void> {
+  rmSync(runtime.paths.coral.equipment.dataDir(name), {
     recursive: true,
     force: true,
     maxRetries: 3,

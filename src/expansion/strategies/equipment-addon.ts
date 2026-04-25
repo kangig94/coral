@@ -69,8 +69,8 @@ export class EquipmentAddonStrategy implements Strategy<EquipmentAddonConfig> {
     config: EquipmentAddonConfig,
     opts: StrategyInstallOptions = {},
   ): Promise<InstallResult> {
-    const targetDir = ctx.paths.equipmentDataDir(config.name);
-    const addonPath = ctx.paths.equipmentAddonPath(config.name);
+    const targetDir = ctx.runtime.paths.coral.equipment.dataDir(config.name);
+    const addonPath = ctx.runtime.paths.coral.equipment.addonPath(config.name);
     const hadExistingInstall = hasEquipmentArtifacts(ctx, config);
     const installedMeta = readEquipmentInstallMeta(ctx, config);
     const failures: string[] = [];
@@ -117,7 +117,7 @@ export class EquipmentAddonStrategy implements Strategy<EquipmentAddonConfig> {
   }
 
   async uninstall(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): Promise<InstallResult> {
-    const targetDir = ctx.paths.equipmentDataDir(config.name);
+    const targetDir = ctx.runtime.paths.coral.equipment.dataDir(config.name);
     const hadArtifacts = hasEquipmentArtifacts(ctx, config);
     ctx.runtime.storage.rmSync(targetDir, { recursive: true, force: true });
     return { status: hadArtifacts ? 'uninstalled' : 'not_equipped' };
@@ -125,7 +125,7 @@ export class EquipmentAddonStrategy implements Strategy<EquipmentAddonConfig> {
 
   isInstalled(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): boolean {
     try {
-      return ctx.runtime.storage.statSync(ctx.paths.equipmentAddonPath(config.name)).isFile();
+      return ctx.runtime.storage.statSync(ctx.runtime.paths.coral.equipment.addonPath(config.name)).isFile();
     } catch {
       return false;
     }
@@ -192,7 +192,7 @@ function needlePlatformKey(platformName: string, archName: string): string {
 }
 
 function equipmentMetaCandidates(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): string[] {
-  const targetDir = ctx.paths.equipmentDataDir(config.name);
+  const targetDir = ctx.runtime.paths.coral.equipment.dataDir(config.name);
   return [join(targetDir, `.${config.name}-meta.json`)];
 }
 
@@ -217,15 +217,15 @@ function hasEquipmentArtifacts(ctx: ExpansionInstallContext, config: EquipmentAd
   }
 
   try {
-    return ctx.runtime.storage.readdirSync(ctx.paths.equipmentDataDir(config.name), { withFileTypes: true }).some((entry) => entry.name !== 'install.lock');
+    return ctx.runtime.storage.readdirSync(ctx.runtime.paths.coral.equipment.dataDir(config.name), { withFileTypes: true }).some((entry) => entry.name !== 'install.lock');
   } catch {
-    return ctx.runtime.storage.existsSync(ctx.paths.equipmentAddonPath(config.name));
+    return ctx.runtime.storage.existsSync(ctx.runtime.paths.coral.equipment.addonPath(config.name));
   }
 }
 
 function isAddonInstalled(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): boolean {
   try {
-    return ctx.runtime.storage.statSync(ctx.paths.equipmentAddonPath(config.name)).isFile();
+    return ctx.runtime.storage.statSync(ctx.runtime.paths.coral.equipment.addonPath(config.name)).isFile();
   } catch {
     return false;
   }

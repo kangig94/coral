@@ -63,7 +63,7 @@ export function getDefaultKbQueryDb(context: KbQueryContext = {}): Database {
   }
 
   const runtime = getQueryRuntime(flavor);
-  const db = openBackendStoreDb(runtime, flavor);
+  const db = openBackendStoreDb(runtime);
   queryDbsByFlavor.set(flavor, db);
   return db;
 }

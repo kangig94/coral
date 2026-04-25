@@ -40,8 +40,8 @@ export function createProjectionSessionLookup(db: BetterSqlite3.Database): Sessi
   };
 }
 
-type SessionLookupRuntime = Pick<Runtime, 'flavor' | 'storage' | 'paths'>;
+type SessionLookupRuntime = Pick<Runtime, 'storage' | 'paths'>;
 
 export function createSessionLookup(runtime: SessionLookupRuntime): SessionLookup {
-  return createProjectionSessionLookup(openBackendStoreDb(runtime, runtime.flavor));
+  return createProjectionSessionLookup(openBackendStoreDb(runtime));
 }

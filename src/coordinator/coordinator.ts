@@ -111,7 +111,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       return storeDb;
     }
 
-    storeDb = openBackendStoreDb(runtime, flavor);
+    storeDb = openBackendStoreDb(runtime);
     return storeDb;
   };
   const getQueryDb = () => options.progressStore?.getDb() ?? getStoreDb();
@@ -131,10 +131,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let currentKbRuntime: KbRuntime | null = null;
   const equipmentLifecycleService = new EquipmentLifecycleService({
     db: getStoreDb(),
+    runtime,
     consumerDriver: getConsumerDriver(),
     slotRegistry: equipmentSlots,
     resolveKbRuntime: () => currentKbRuntime,
-    removeInstallArtifacts: (name) => removeInstallArtifacts(name),
+    removeInstallArtifacts: (name) => removeInstallArtifacts(runtime, name),
     now: () => nowDate(runtime.time),
   });
 

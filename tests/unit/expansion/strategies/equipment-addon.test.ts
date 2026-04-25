@@ -5,12 +5,12 @@ import { gzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
+import { equipmentPaths } from "#src/infra/equipment-paths.js";
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { EquipmentAddonStrategy, type EquipmentAddonConfig } from '#src/expansion/strategies/equipment-addon.js';
-import type { ExpansionInstallContext, ExpansionPathHelpers } from '#src/expansion/strategies/strategy.js';
+import type { ExpansionInstallContext } from '#src/expansion/strategies/strategy.js';
 
 const createdRoots: string[] = [];
 
@@ -35,6 +35,7 @@ function createContext(fixture: ReturnType<typeof createFixture>): ExpansionInst
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
+  const fixtureEquipment = equipmentPaths('prod', { baseDir: fixture.baseDir });
   const runtime: Runtime = {
     ...realRuntime,
     env: {
@@ -46,15 +47,15 @@ function createContext(fixture: ReturnType<typeof createFixture>): ExpansionInst
       fullSnapshot: () => envRecord,
       coralSnapshot: () => ({}),
     },
-  };
-  const pathEnv = envRecord as NodeJS.ProcessEnv;
-  const paths: ExpansionPathHelpers = {
-    equipmentDataDir: (name) => equipmentDataDir(name, { baseDir: fixture.baseDir, env: pathEnv }),
-    equipmentAddonPath: (name) => equipmentAddonPath(name, { baseDir: fixture.baseDir, env: pathEnv }),
-    equipmentInstallLockPath: (name) => equipmentInstallLockPath(name, { baseDir: fixture.baseDir, env: pathEnv }),
+    paths: {
+      ...realRuntime.paths,
+      get coral() {
+        return { ...realRuntime.paths.coral, equipment: fixtureEquipment };
+      },
+    },
   };
 
-  return { runtime, paths };
+  return { runtime };
 }
 
 function createPrebuildArchive(fileName: string, content: Buffer): Buffer {
@@ -129,7 +130,7 @@ describe('EquipmentAddonStrategy', () => {
       status: 'installed',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: ctx.paths.equipmentDataDir('needle'),
+      targetDir: ctx.runtime.paths.coral.equipment.dataDir('needle'),
       postInstall: ['register_equipment'],
       onboarding,
     });
@@ -137,8 +138,8 @@ describe('EquipmentAddonStrategy', () => {
       ctx.runtime,
       `https://github.com/kangig94/coral-needle/releases/download/v0.2.0/coral-needle-v0.2.0-${process.platform}-${process.arch === 'x64' ? 'amd64' : process.arch}.tar.gz`,
     );
-    expect(readFileSync(ctx.paths.equipmentAddonPath('needle'))).toEqual(addonBytes);
-    expect(readFileSync(join(ctx.paths.equipmentDataDir('needle'), '.needle-meta.json'), 'utf-8')).toBe(
+    expect(readFileSync(ctx.runtime.paths.coral.equipment.addonPath('needle'))).toEqual(addonBytes);
+    expect(readFileSync(join(ctx.runtime.paths.coral.equipment.dataDir('needle'), '.needle-meta.json'), 'utf-8')).toBe(
       JSON.stringify({ version: '0.2.0', method: 'prebuild' }),
     );
   });
@@ -146,9 +147,9 @@ describe('EquipmentAddonStrategy', () => {
   it('returns already_installed when the current packaged addon is already present', async () => {
     const fixture = createFixture();
     const ctx = createContext(fixture);
-    const targetDir = ctx.paths.equipmentDataDir('needle');
+    const targetDir = ctx.runtime.paths.coral.equipment.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
-    writeFileSync(ctx.paths.equipmentAddonPath('needle'), Buffer.from('addon'));
+    writeFileSync(ctx.runtime.paths.coral.equipment.addonPath('needle'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
     const strategy = new EquipmentAddonStrategy({
       downloadBuffer: vi.fn(),
@@ -187,16 +188,16 @@ describe('EquipmentAddonStrategy', () => {
     });
 
     await expect(strategy.install(failingCtx, createConfig())).rejects.toThrow(/Could not install needle/);
-    expect(statSafe(`${ctx.paths.equipmentAddonPath('needle')}.part`)).toBeNull();
-    expect(statSafe(ctx.paths.equipmentAddonPath('needle'))).toBeNull();
+    expect(statSafe(`${ctx.runtime.paths.coral.equipment.addonPath('needle')}.part`)).toBeNull();
+    expect(statSafe(ctx.runtime.paths.coral.equipment.addonPath('needle'))).toBeNull();
   });
 
   it('uninstalls by removing the entire equipment directory', async () => {
     const fixture = createFixture();
     const ctx = createContext(fixture);
-    const targetDir = ctx.paths.equipmentDataDir('needle');
+    const targetDir = ctx.runtime.paths.coral.equipment.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
-    writeFileSync(ctx.paths.equipmentAddonPath('needle'), Buffer.from('addon'));
+    writeFileSync(ctx.runtime.paths.coral.equipment.addonPath('needle'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
     const strategy = new EquipmentAddonStrategy();
 
@@ -209,9 +210,9 @@ describe('EquipmentAddonStrategy', () => {
   it('reports installation status and current version from the installed metadata', () => {
     const fixture = createFixture();
     const ctx = createContext(fixture);
-    const targetDir = ctx.paths.equipmentDataDir('needle');
+    const targetDir = ctx.runtime.paths.coral.equipment.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
-    writeFileSync(ctx.paths.equipmentAddonPath('needle'), Buffer.from('addon'));
+    writeFileSync(ctx.runtime.paths.coral.equipment.addonPath('needle'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'source-build' }), 'utf-8');
     const strategy = new EquipmentAddonStrategy();
 

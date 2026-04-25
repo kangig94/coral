@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
+import { equipmentPaths } from "#src/infra/equipment-paths.js";
 
 const mockState = vi.hoisted(() => ({
   installExpansion: vi.fn(),
@@ -67,9 +67,9 @@ function useFixtureEnv(fixture: ReturnType<typeof createFixture>): void {
 }
 
 function installNeedle(fixture: ReturnType<typeof createFixture>, version = '0.2.0'): void {
-  const targetDir = equipmentDataDir('needle', { baseDir: fixture.baseDir });
+  const targetDir = equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle');
   mkdirSync(targetDir, { recursive: true });
-  writeFileSync(equipmentAddonPath('needle', { baseDir: fixture.baseDir }), Buffer.from('addon'));
+  writeFileSync(equipmentPaths("prod", { baseDir: fixture.baseDir }).addonPath('needle'), Buffer.from('addon'));
   writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version, method: 'prebuild' }), 'utf-8');
 }
 
@@ -81,7 +81,7 @@ function installCgc(fixture: ReturnType<typeof createFixture>, version = 'v1.2.3
 }
 
 function installCgcSystemMarker(fixture: ReturnType<typeof createFixture>, command = '/usr/local/bin/cgc'): void {
-  const targetDir = equipmentDataDir('cgc', { baseDir: fixture.baseDir });
+  const targetDir = equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('cgc');
   mkdirSync(targetDir, { recursive: true });
   writeFileSync(
     join(targetDir, '.external-install.json'),
@@ -163,7 +163,7 @@ describe('expansion workflow (AC7)', () => {
           activation: 'equipment',
           status: 'catching_up',
           version: '0.2.0',
-          addonPath: equipmentAddonPath('needle', { baseDir: fixture.baseDir }),
+          addonPath: equipmentPaths("prod", { baseDir: fixture.baseDir }).addonPath('needle'),
         }),
         expect.objectContaining({
           id: 'cgc',
@@ -251,7 +251,7 @@ describe('expansion workflow (AC7)', () => {
         activation: 'equipment',
         status: 'inactive',
         version: '0.2.0',
-        addonPath: equipmentAddonPath('needle', { baseDir: fixture.baseDir }),
+        addonPath: equipmentPaths("prod", { baseDir: fixture.baseDir }).addonPath('needle'),
       }),
     });
     expect(mockState.readEquipmentStatus).toHaveBeenCalledWith('needle');
@@ -275,7 +275,7 @@ describe('expansion workflow (AC7)', () => {
         activation: 'equipment',
         status: 'equipped',
         version: '0.2.0',
-        addonPath: equipmentAddonPath('needle', { baseDir: fixture.baseDir }),
+        addonPath: equipmentPaths("prod", { baseDir: fixture.baseDir }).addonPath('needle'),
       }),
     });
     expect(mockState.readEquipmentStatus).toHaveBeenCalledWith('needle');
@@ -284,7 +284,7 @@ describe('expansion workflow (AC7)', () => {
   it('info(name) reports install-only lock state without touching coordinator status RPCs', async () => {
     const fixture = createFixture();
     useFixtureEnv(fixture);
-    mkdirSync(equipmentInstallLockPath('cgc', { baseDir: fixture.baseDir }), { recursive: true });
+    mkdirSync(equipmentPaths("prod", { baseDir: fixture.baseDir }).installLockPath('cgc'), { recursive: true });
 
     const result = installResponseSchema.parse(await info('cgc'));
 
@@ -340,7 +340,7 @@ describe('expansion workflow (AC7)', () => {
         status: 'installed',
         method: 'prebuild',
         version: '0.2.0',
-        targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir }),
+        targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
         postInstall: ['register_equipment'],
         onboarding,
       })
@@ -348,7 +348,7 @@ describe('expansion workflow (AC7)', () => {
         status: 'already_installed',
         method: 'prebuild',
         version: '0.2.0',
-        targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir }),
+        targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
         postInstall: ['register_equipment'],
         onboarding,
       });
@@ -513,7 +513,7 @@ describe('expansion workflow (AC7)', () => {
       status: 'installed',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentDataDir('needle', { baseDir: fixture.baseDir, env: { CORAL_FLAVOR: 'dev' } }),
+      targetDir: equipmentPaths('dev', { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_equipment'],
     });
 

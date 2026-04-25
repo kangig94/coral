@@ -30,7 +30,7 @@ import {
   readProjectionSession,
 } from '../projections.js';
 
-type SessionRuntime = Pick<Runtime, 'flavor' | 'storage' | 'paths' | 'time' | 'ids'>;
+type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 type Database = BetterSqlite3.Database;
 
@@ -190,7 +190,7 @@ export class SessionManager {
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
-    this.db = db ?? openBackendStoreDb(runtime, runtime.flavor);
+    this.db = db ?? openBackendStoreDb(runtime);
     this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);

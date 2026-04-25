@@ -2,7 +2,6 @@ import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-discovery.js';
-import { coordinatorPaths } from '../infra/coordinator-paths.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -417,7 +416,7 @@ async function runLifecycleStartup({
 
     const { port, host } = await listenFn(server);
     const { socketPath } =
-      ipcServer && listenIpcFn ? await listenIpcFn(ipcServer) : { socketPath: coordinatorPaths(flavor).socketPath };
+      ipcServer && listenIpcFn ? await listenIpcFn(ipcServer) : { socketPath: runtime.paths.coral.coordinator.socketPath };
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 

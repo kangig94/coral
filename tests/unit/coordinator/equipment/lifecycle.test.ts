@@ -9,7 +9,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '#src/coordinator/equipment/lifecycle.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
+import { equipmentPaths } from "#src/infra/equipment-paths.js";
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
@@ -80,7 +80,7 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 function writeNeedleAddon(baseDir: string, content = 'fake-addon'): string {
-  const addonPath = equipmentAddonPath('needle', { baseDir });
+  const addonPath = equipmentPaths('prod', { baseDir }).addonPath('needle');
   mkdirSync(dirname(addonPath), { recursive: true });
   writeFileSync(addonPath, content, 'utf8');
   return addonPath;
@@ -183,7 +183,7 @@ async function createHarness(options: CreateHarnessOptions = {}): Promise<Harnes
     slotRegistry: runtimeHarness.slotRegistry,
     resolveKbRuntime: () => kb,
     now: () => FIXED_NOW,
-    pathOptions: { baseDir: coralBaseDir },
+    runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: coralBaseDir }) } as never } } as never,
     ...(options.removeInstallArtifacts === undefined ? {} : { removeInstallArtifacts: options.removeInstallArtifacts }),
     ...(options.activateNeedle === undefined ? {} : { activateNeedle: options.activateNeedle }),
     ...(options.storeFactory === undefined ? {} : { needleBackendOptions: { storeFactory: () => options.storeFactory?.() ?? null } }),
@@ -355,7 +355,7 @@ describe('EquipmentLifecycleService', () => {
     const harness = await createHarness();
 
     try {
-      const lockPath = equipmentInstallLockPath('needle', { baseDir: harness.coralBaseDir });
+      const lockPath = equipmentPaths("prod", { baseDir: harness.coralBaseDir }).installLockPath('needle');
       mkdirSync(dirname(lockPath), { recursive: true });
       const release = acquireDirectoryLockSync(lockPath);
 
@@ -379,7 +379,7 @@ describe('EquipmentLifecycleService', () => {
     mockEmbeddingProvider();
     let cleanupBaseDir = '';
     const removeInstallArtifacts = vi.fn(async (name: string) => {
-      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+      rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
         recursive: true,
         force: true,
         maxRetries: 3,
@@ -407,7 +407,7 @@ describe('EquipmentLifecycleService', () => {
         last_error_code: 'equipment_binary_corrupt',
       });
       expect(removeInstallArtifacts).not.toHaveBeenCalled();
-      expect(existsSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }))).toBe(true);
+      expect(existsSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'))).toBe(true);
     } finally {
       await harness.dispose();
     }
@@ -417,7 +417,7 @@ describe('EquipmentLifecycleService', () => {
     mockEmbeddingProvider();
     let cleanupBaseDir = '';
     const removeInstallArtifacts = vi.fn(async (name: string) => {
-      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+      rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
         recursive: true,
         force: true,
         maxRetries: 3,
@@ -426,7 +426,7 @@ describe('EquipmentLifecycleService', () => {
     });
     const activateNeedle: NonNullable<EquipmentLifecycleServiceOptions['activateNeedle']> = () => {
       throw new NeedleAddonLoadError('simulated addon load failure', {
-        addonPath: equipmentAddonPath('needle', { baseDir: cleanupBaseDir }),
+        addonPath: equipmentPaths("prod", { baseDir: cleanupBaseDir }).addonPath('needle'),
       });
     };
 
@@ -445,7 +445,7 @@ describe('EquipmentLifecycleService', () => {
         state: 'disabled_pending_reinstall',
         last_error_code: 'equipment_binary_corrupt',
       });
-      expect(existsSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }))).toBe(true);
+      expect(existsSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'))).toBe(true);
     } finally {
       await harness.dispose();
     }
@@ -455,7 +455,7 @@ describe('EquipmentLifecycleService', () => {
     mockEmbeddingProvider();
     let cleanupBaseDir = '';
     const removeInstallArtifacts = vi.fn(async (name: string) => {
-      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+      rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
         recursive: true,
         force: true,
         maxRetries: 3,
@@ -489,7 +489,7 @@ describe('EquipmentLifecycleService', () => {
         },
       ]);
       expect(readEquipmentStateRow(harness.db, 'needle')).toBeNull();
-      expect(existsSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }))).toBe(false);
+      expect(existsSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'))).toBe(false);
       expect(equipmentBackendKind(harness.kb)).toBe('orama');
 
       writeNeedleAddon(harness.coralBaseDir, 'fresh-addon');
@@ -535,7 +535,7 @@ describe('EquipmentLifecycleService', () => {
         slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
-        pathOptions: { baseDir: harness.coralBaseDir },
+        runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: harness.coralBaseDir }) } as never } } as never,
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
       restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());
@@ -570,7 +570,7 @@ describe('EquipmentLifecycleService', () => {
 
       await closeNeedleBackend(harness.kb);
       await harness.driver.shutdown();
-      rmSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }), { recursive: true, force: true });
+      rmSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'), { recursive: true, force: true });
 
       const restartedRuntimeHarness = createRuntimeHarness(harness.markdownRoot, harness.runtimeDir, harness.db);
       restartedDriver = new ConsumerDriver({
@@ -583,7 +583,7 @@ describe('EquipmentLifecycleService', () => {
         slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
-        pathOptions: { baseDir: harness.coralBaseDir },
+        runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: harness.coralBaseDir }) } as never } } as never,
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
       restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());

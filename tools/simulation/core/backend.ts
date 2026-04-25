@@ -422,7 +422,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const storeDb = openBackendStoreDb(runtime, 'dev', { path: ':memory:' });
+  const storeDb = openBackendStoreDb(runtime, { path: ':memory:' });
   const progressStore = new ProgressStore(
     namespace,
     runtime,

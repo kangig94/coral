@@ -6,7 +6,8 @@ import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, wr
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from '../../infra/paths.js';
-import { coordinatorPaths } from '../../infra/coordinator-paths.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import type { CoordinatorPaths } from '../../infra/coordinator-paths.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
@@ -31,7 +32,7 @@ type DesiredCoordinator = {
   namespace: string;
 };
 
-type CoordinatorFilePaths = ReturnType<typeof coordinatorPaths>;
+type CoordinatorFilePaths = CoordinatorPaths;
 
 type RawCoordinatorHealth = {
   status: 'ok' | 'draining';
@@ -786,7 +787,8 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
   const flavor = readBuildFlavor(root);
   const bundleHash = readBundleHash(root);
   const namespace = pluginRootNamespace(root);
-  const paths = coordinatorPaths(flavor);
+  const runtime = createRealRuntime(flavor);
+  const paths = runtime.paths.coral.coordinator;
   const desired: DesiredCoordinator = {
     version: currentVersion(root),
     bundleHash,

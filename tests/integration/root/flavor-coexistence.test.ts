@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { composeCoralPaths } from '#src/infra/coral-paths.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
+import { equipmentPaths } from '#src/infra/equipment-paths.js';
 
 function assertDistinctPathPair(prodPath: string, devPath: string): void {
   expect(prodPath).not.toBe(devPath);
@@ -21,25 +21,19 @@ describe('flavor coexistence integration', () => {
 
   it('routes equipment helpers to the flavor-specific install directories', () => {
     const baseDir = '/tmp/coral-flavor-coexistence';
-    const prodEnv: NodeJS.ProcessEnv = {};
-    const devEnv: NodeJS.ProcessEnv = { CORAL_FLAVOR: 'dev' };
+    const prodEq = equipmentPaths('prod', { baseDir });
+    const devEq = equipmentPaths('dev', { baseDir });
 
-    expect(equipmentDataDir('needle', { baseDir, env: prodEnv })).toBe(
-      join(baseDir, 'data', 'equipment', 'needle'),
-    );
-    expect(equipmentDataDir('needle', { baseDir, env: devEnv })).toBe(
-      join(baseDir, 'data-dev', 'equipment', 'needle'),
-    );
-    expect(equipmentAddonPath('needle', { baseDir, env: prodEnv })).toBe(
+    expect(prodEq.dataDir('needle')).toBe(join(baseDir, 'data', 'equipment', 'needle'));
+    expect(devEq.dataDir('needle')).toBe(join(baseDir, 'data-dev', 'equipment', 'needle'));
+    expect(prodEq.addonPath('needle')).toBe(
       join(baseDir, 'data', 'equipment', 'needle', 'coral-needle.node'),
     );
-    expect(equipmentAddonPath('needle', { baseDir, env: devEnv })).toBe(
+    expect(devEq.addonPath('needle')).toBe(
       join(baseDir, 'data-dev', 'equipment', 'needle', 'coral-needle.node'),
     );
-    expect(equipmentInstallLockPath('needle', { baseDir, env: prodEnv })).toBe(
-      join(baseDir, 'data', 'equipment', 'needle', 'install.lock'),
-    );
-    expect(equipmentInstallLockPath('needle', { baseDir, env: devEnv })).toBe(
+    expect(prodEq.installLockPath('needle')).toBe(join(baseDir, 'data', 'equipment', 'needle', 'install.lock'));
+    expect(devEq.installLockPath('needle')).toBe(
       join(baseDir, 'data-dev', 'equipment', 'needle', 'install.lock'),
     );
   });

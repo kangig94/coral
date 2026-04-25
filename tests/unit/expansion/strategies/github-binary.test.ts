@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { equipmentPaths } from '#src/infra/equipment-paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { GithubBinaryStrategy, type GithubBinaryConfig } from '#src/expansion/strategies/github-binary.js';
-import type { ExpansionInstallContext, ExpansionPathHelpers } from '#src/expansion/strategies/strategy.js';
+import type { ExpansionInstallContext } from '#src/expansion/strategies/strategy.js';
 
 const createdRoots: string[] = [];
 
@@ -49,13 +50,18 @@ function createContext(fixture: ReturnType<typeof createFixture>): ExpansionInst
       execSync: processExecSync,
     },
   };
-  const paths: ExpansionPathHelpers = {
-    equipmentDataDir: (name) => join(fixture.baseDir, 'data', 'equipment', name),
-    equipmentAddonPath: (name) => join(fixture.baseDir, 'data', 'equipment', name, `${name}.node`),
-    equipmentInstallLockPath: (name) => join(fixture.baseDir, 'data', 'equipment', name, 'install.lock'),
+  const fixtureEquipment = equipmentPaths('prod', { baseDir: fixture.baseDir });
+  const wrappedRuntime: Runtime = {
+    ...runtime,
+    paths: {
+      ...runtime.paths,
+      get coral() {
+        return { ...runtime.paths.coral, equipment: fixtureEquipment };
+      },
+    },
   };
 
-  return { runtime, paths };
+  return { runtime: wrappedRuntime };
 }
 
 function createConfig(): GithubBinaryConfig {

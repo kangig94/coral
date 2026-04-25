@@ -7,7 +7,6 @@ import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js
 import type { ActivationDeps } from '#src/expansion/activate.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
 import { installExpansion, uninstallExpansion } from '#src/expansion/install.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
 import { equip, info, list, unequip, update } from '#src/expansion/workflow.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -128,24 +127,16 @@ function withStorageOverrides(runtime: Runtime, overrides: Partial<StoragePort>)
   };
 }
 
-function baseDir(runtime: Runtime): string {
-  return join(runtime.env.homedir(), '.coral');
-}
-
-function envSnapshot(runtime: Runtime): Readonly<Record<string, string>> {
-  return runtime.env.fullSnapshot();
-}
-
 function needleTargetDir(runtime: Runtime): string {
-  return equipmentDataDir('needle', { baseDir: baseDir(runtime), env: envSnapshot(runtime) });
+  return runtime.paths.coral.equipment.dataDir('needle');
 }
 
 function needleAddon(runtime: Runtime): string {
-  return equipmentAddonPath('needle', { baseDir: baseDir(runtime), env: envSnapshot(runtime) });
+  return runtime.paths.coral.equipment.addonPath('needle');
 }
 
 function needleLock(runtime: Runtime): string {
-  return equipmentInstallLockPath('needle', { baseDir: baseDir(runtime), env: envSnapshot(runtime) });
+  return runtime.paths.coral.equipment.installLockPath('needle');
 }
 
 function cgcBinaryPath(runtime: Runtime): string {
@@ -545,12 +536,9 @@ describe('expansion workflow/install integration (AC24)', () => {
   it('reports install-only lock state via workflow.info() without touching coordinator IPC', async () => {
     const runtime = createRuntime();
     const activation = createActivationHarness();
-    runtime.storage.mkdirSync(
-      equipmentInstallLockPath('cgc', { baseDir: baseDir(runtime), env: envSnapshot(runtime) }),
-      {
-        recursive: true,
-      },
-    );
+    runtime.storage.mkdirSync(runtime.paths.coral.equipment.installLockPath('cgc'), {
+      recursive: true,
+    });
 
     const result = installResponseSchema.parse(await info('cgc', { runtime, activation: activation.deps }));
 
