@@ -15,7 +15,7 @@ import {
 } from '#src/jobs/agent-resolution.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
-const runtime = createRealRuntime();
+const runtime = createRealRuntime('prod');
 
 const AGENT_IDENT_CASES: ReadonlyArray<
   readonly [input: string, accepted: boolean, canonicalForm: string | null]

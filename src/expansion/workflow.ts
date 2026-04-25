@@ -2,7 +2,7 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { EquipmentView } from './equipment-contract.js';
-import { currentBuildFlavor } from '../infra/build-flavor.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { readEquipmentStatus, activateExpansion, deactivateExpansion, type ActivationDeps } from './activate.js';
 import {
@@ -36,7 +36,7 @@ export interface WorkflowOptions {
 }
 
 function createContext(runtime?: Runtime, logger?: ExpansionInstallContext['logger']): ExpansionInstallContext {
-  return createExpansionInstallContext(runtime ?? createRealRuntime(), logger);
+  return createExpansionInstallContext(runtime ?? createRealRuntime(resolveBuildFlavor(process.env)), logger);
 }
 
 function unknownEquipmentResponse(name: string): InstallResponse {
@@ -239,7 +239,7 @@ function maybeAttachOnboarding(
       ...onboarding,
       localRuntime: {
         ...onboarding.localRuntime,
-        targetDir: kbRuntimeDir(currentBuildFlavor()),
+        targetDir: kbRuntimeDir(ctx.runtime.flavor),
       },
     },
   });

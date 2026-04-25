@@ -19,16 +19,15 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths, infraPaths, buildFlavor] = await Promise.all([
+  const [runtime, paths, infraPaths] = await Promise.all([
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
     import('#src/infra/paths.js'),
-    import('#src/infra/build-flavor.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
-    infraPaths: { ...infraPaths, ...buildFlavor },
+    infraPaths,
   };
 }
 
@@ -68,7 +67,7 @@ describe('kb detection and paths', () => {
     const { createKbRuntime, paths, infraPaths } = await loadKbModules();
 
     const kb = createKbRuntime({
-      markdownRoot: infraPaths.kbRoot(),
+      markdownRoot: infraPaths.kbRoot('prod'),
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
@@ -76,11 +75,10 @@ describe('kb detection and paths', () => {
     expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
   });
 
-  it('derives default markdown and runtime KB roots from the settled build flavor', async () => {
+  it('derives flavor-specific KB roots and runtime dirs', async () => {
     const { paths, infraPaths } = await loadKbModules();
 
-    expect(infraPaths.currentBuildFlavor()).toBe('prod');
-    expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb'));
+    expect(infraPaths.kbRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
     const prodRuntimeDir = paths.kbRuntimeDir('prod');
     expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
     expect(paths.oramaSnapshotDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
@@ -89,10 +87,7 @@ describe('kb detection and paths', () => {
       join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle-staging'),
     );
 
-    infraPaths.setBuildFlavor('dev');
-
-    expect(infraPaths.currentBuildFlavor()).toBe('dev');
-    expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
+    expect(infraPaths.kbRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
     const devRuntimeDir = paths.kbRuntimeDir('dev');
     expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
     expect(paths.oramaSnapshotDir(devRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'));
@@ -100,16 +95,6 @@ describe('kb detection and paths', () => {
     expect(paths.needleStagingDir(devRuntimeDir)).toBe(
       join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle-staging'),
     );
-  });
-
-  it('treats build flavor as single-assignment', async () => {
-    const { infraPaths } = await loadKbModules();
-
-    infraPaths.setBuildFlavor('dev');
-
-    expect(() => infraPaths.setBuildFlavor('dev')).not.toThrow();
-    expect(() => infraPaths.setBuildFlavor('prod')).toThrow('Build flavor already set to dev');
-    expect(infraPaths.currentBuildFlavor()).toBe('dev');
   });
 
   it('creates the runtime without requiring needle equipment at startup', async () => {
@@ -154,8 +139,7 @@ describe('kb detection and paths', () => {
 
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { createKbRuntime, paths, infraPaths } = await loadKbModules();
-    infraPaths.setBuildFlavor('dev');
+    const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir('dev'),

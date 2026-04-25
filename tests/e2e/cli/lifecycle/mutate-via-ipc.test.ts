@@ -276,7 +276,7 @@ describe('mutating commands via IPC', () => {
       expect(discoveryRecord && isProcessAlive(discoveryRecord.pid)).toBe(true);
       expect(discoveryRecord?.socketPath).toContain('.sock');
 
-      const runtime = createRealRuntime();
+      const runtime = createRealRuntime('prod');
       const db = openStoreDatabase({
         path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
         storage: runtime.storage,

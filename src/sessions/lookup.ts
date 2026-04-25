@@ -1,7 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { Runtime } from '../runtime/ports.js';
-import { currentBuildFlavor } from '../infra/build-flavor.js';
 import { openBackendStoreDb } from '../store/db.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntry } from './projections.js';
@@ -41,8 +40,8 @@ export function createProjectionSessionLookup(db: BetterSqlite3.Database): Sessi
   };
 }
 
-type SessionLookupRuntime = Pick<Runtime, 'storage' | 'paths'>;
+type SessionLookupRuntime = Pick<Runtime, 'flavor' | 'storage' | 'paths'>;
 
 export function createSessionLookup(runtime: SessionLookupRuntime): SessionLookup {
-  return createProjectionSessionLookup(openBackendStoreDb(runtime, currentBuildFlavor()));
+  return createProjectionSessionLookup(openBackendStoreDb(runtime, runtime.flavor));
 }

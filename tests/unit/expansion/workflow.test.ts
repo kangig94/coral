@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setBuildFlavor } from '#src/infra/build-flavor.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
@@ -509,7 +508,7 @@ describe('expansion workflow (AC7)', () => {
   it('equip(name) resolves onboarding local runtime paths from the settled KB runtime dir', async () => {
     const fixture = createFixture();
     useFixtureEnv(fixture);
-    setBuildFlavor('dev');
+    process.env.CORAL_FLAVOR = 'dev';
     mockState.installExpansion.mockResolvedValue({
       status: 'installed',
       method: 'prebuild',

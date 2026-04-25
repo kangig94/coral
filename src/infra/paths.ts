@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { type BuildFlavor, currentBuildFlavor } from './build-flavor.js';
+import type { BuildFlavor } from './build-flavor.js';
 import { hashToken } from './hash.js';
 
 export function jobsDir(): string {
@@ -49,7 +49,7 @@ export function coralRoot(baseDir?: string): string {
  * Returns the KB markdown root. The directory may not exist — callers are
  * responsible for creation.
  */
-export function kbRoot(flavor: BuildFlavor = currentBuildFlavor(), baseDir?: string): string {
+export function kbRoot(flavor: BuildFlavor, baseDir?: string): string {
   if (baseDir !== undefined) {
     return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
   }
@@ -57,10 +57,6 @@ export function kbRoot(flavor: BuildFlavor = currentBuildFlavor(), baseDir?: str
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
   return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
-}
-
-export function kbDir(): string {
-  return join(kbRoot(), 'notes');
 }
 
 export function resolveProjectSource(projectRoot: string): string {

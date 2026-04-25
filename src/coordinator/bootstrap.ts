@@ -8,6 +8,7 @@ import { createCoordinatorServer } from './coordinator.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../runtime/ports.js';
 
 function resolveSmokeSchemasDir(storage: Pick<StoragePort, 'existsSync'>): string {
@@ -46,7 +47,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const { composeReducers } = await import('../store/reducers.js');
     const { createEmptyRegistry } = await import('../store/envelope.js');
     const { getEvent } = await import('../store/event-queries.js');
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime(resolveBuildFlavor(process.env));
     const db = openStoreDatabase({
       path: storePath,
       storage: runtime.storage,

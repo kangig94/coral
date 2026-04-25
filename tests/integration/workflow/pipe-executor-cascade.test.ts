@@ -55,7 +55,7 @@ describe('pipe executor coral cascade invariant', () => {
       expect(existsSync(coralArchitectPath)).toBe(true);
       expect(readFileSync(projectArchitectPath, 'utf8')).toContain(SENTINEL_PROJECT);
       expect(readFileSync(coralArchitectPath, 'utf8')).toContain(SENTINEL_CORAL);
-      const runtime = createRealRuntime();
+      const runtime = createRealRuntime('prod');
 
       const resolutionCtx = {
         projectRoot,

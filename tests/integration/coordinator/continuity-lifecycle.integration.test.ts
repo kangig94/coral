@@ -122,7 +122,7 @@ describe('coordinator continuity lifecycle integration', () => {
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     mkdirSync(ctx.pluginRoot, { recursive: true });
-    runtime = createRealRuntime();
+    runtime = createRealRuntime('prod');
     eventBus = new TypedEventBus();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);

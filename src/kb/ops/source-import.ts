@@ -64,7 +64,9 @@ export interface Converter {
 }
 
 function createDefaultSourceImportRuntime(): SourceImportRuntime {
-  const runtime = createRealRuntime();
+  // SourceImportRuntime only needs env/process/ids/time — no path-flavor dependency,
+  // so 'prod' is a safe placeholder.
+  const runtime = createRealRuntime('prod');
   return {
     env: runtime.env,
     process: runtime.process,

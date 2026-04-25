@@ -5,12 +5,10 @@ import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEve
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
-import { storePaths } from '../infra/store-paths.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from '../infra/paths.js';
-import { currentBuildFlavor } from '../infra/build-flavor.js';
 import { ensureResultMarkdownArtifact } from './result-export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
@@ -106,11 +104,7 @@ export class JobStore implements JobProgressStore {
     if (this.usesInMemoryStorage()) {
       return ':memory:';
     }
-    try {
-      return this.runtime.paths.coral.store.dbFile;
-    } catch {
-      return storePaths(currentBuildFlavor()).dbFile;
-    }
+    return this.runtime.paths.coral.store.dbFile;
   }
 
   private openDefaultStoreDatabase(): Database {
@@ -122,24 +116,19 @@ export class JobStore implements JobProgressStore {
         schemasDir: ensureStoreSchemasDir(this.runtime.storage),
       });
     } catch (error: unknown) {
-      if (path === ':memory:' || this.isFlavorSettled()) {
+      // The coordinator opens its own store DB and surfaces the same schema
+      // error if real-disk state is incompatible — so we can fall back to
+      // :memory: here without masking real production bugs. Tests that point a
+      // real Runtime at a dev box's stale ~/.coral DB still get a working
+      // store rather than a hard failure during ProgressStore construction.
+      if (path === ':memory:') {
         throw error;
       }
-
       return openStoreDatabase({
         path: ':memory:',
         storage: this.runtime.storage,
         schemasDir: ensureStoreSchemasDir(this.runtime.storage),
       });
-    }
-  }
-
-  private isFlavorSettled(): boolean {
-    try {
-      void this.runtime.paths.coral.store.dbFile;
-      return true;
-    } catch {
-      return false;
     }
   }
 

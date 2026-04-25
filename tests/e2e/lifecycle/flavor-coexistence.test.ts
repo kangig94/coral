@@ -107,7 +107,7 @@ function seedCompletedJob(
 ): void {
   createdJobIds.push(jobId);
   mkdirSync(projectRoot, { recursive: true });
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths(flavor).dbFile,
     storage: runtime.storage,

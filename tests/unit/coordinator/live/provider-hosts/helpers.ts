@@ -5,7 +5,7 @@ import type { ProviderServerSpec } from '#src/providers/contract.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/pool.js';
 import type { ProviderServerHandle } from '#src/coordinator/live/admission.js';
 
-export const runtime = createRealRuntime();
+export const runtime = createRealRuntime('prod');
 
 export function createSharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
   return {

@@ -2,6 +2,7 @@ import { rmSync } from 'node:fs';
 
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { InstallError, InstallResponse, InstallResult } from './contracts.js';
@@ -41,7 +42,7 @@ function resolveBinding(name: string) {
 }
 
 function createContext(opts: InstallExpansionOptions = {}): ExpansionInstallContext {
-  return createExpansionInstallContext(opts.runtime ?? createRealRuntime(), opts.logger);
+  return createExpansionInstallContext(opts.runtime ?? createRealRuntime(resolveBuildFlavor(process.env)), opts.logger);
 }
 
 function isInstallPathUnwritableError(error: unknown): error is NodeJS.ErrnoException {
@@ -132,7 +133,7 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
     return toInstallError('unknown_equipment', name);
   }
 
-  const ctx = createExpansionInstallContext(opts.runtime ?? createRealRuntime(), opts.logger);
+  const ctx = createExpansionInstallContext(opts.runtime ?? createRealRuntime(resolveBuildFlavor(process.env)), opts.logger);
   try {
     const response = await withInstallLock(
       name,

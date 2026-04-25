@@ -399,6 +399,7 @@ async function runLifecycleStartup({
       const kbSub = await createKbSubsystemFn({
         db: progressStore.getDb(),
         pluginRoot,
+        flavor,
         spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
         processPort: runtime.process,
         storagePort: runtime.storage,

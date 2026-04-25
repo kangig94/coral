@@ -24,7 +24,7 @@ describe('coordinator curate scheduler', () => {
   it('ticks on the configured cadence and updates last_run_day', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-19T12:00:00.000Z'));
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const db = openStoreDatabase({
       path: ':memory:',
       storage: runtime.storage,
@@ -59,7 +59,7 @@ describe('coordinator curate scheduler', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-20T08:00:00.000Z'));
     vi.stubEnv('CORAL_CURATE_INTERVAL_MS', '2500');
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const db = openStoreDatabase({
       path: ':memory:',
       storage: runtime.storage,

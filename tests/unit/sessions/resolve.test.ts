@@ -20,7 +20,7 @@ import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { currentBuildFlavor } from '#src/infra/build-flavor.js';
+import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { pluginRootNamespace } from '#src/infra/paths.js';
 import { storePaths } from '#src/infra/store-paths.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
@@ -32,7 +32,7 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
-const runtime = createRealRuntime();
+const runtime = createRealRuntime('prod');
 
 describe('sessions shell resolve', () => {
   beforeEach(() => {
@@ -52,7 +52,7 @@ describe('sessions shell resolve', () => {
 
   function createSessionDb() {
     return openStoreDatabase({
-      path: storePaths(currentBuildFlavor()).dbFile,
+      path: storePaths(resolveBuildFlavor(process.env)).dbFile,
       storage: runtime.storage,
       schemasDir: ensureStoreSchemasDir(runtime.storage),
     });

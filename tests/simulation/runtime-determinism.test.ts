@@ -259,7 +259,7 @@ describe('SimulationRuntime determinism', () => {
   it('matches createRealRuntime on the same deterministic event plan', async () => {
     const plan = createSequencePlan();
     const simulated = await runPlannedSequence(new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } }), plan);
-    const production = await runPlannedSequence(createRealRuntime(), plan);
+    const production = await runPlannedSequence(createRealRuntime('prod'), plan);
 
     expect(simulated.serialized).toBe(production.serialized);
   });

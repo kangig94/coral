@@ -50,7 +50,7 @@ function createJournalAppender(db: InstanceType<typeof Database>) {
 describe('wait SSE reconnect', () => {
   it('resumes from the next per-job event without gaps or duplication across catch-up and live tail', async () => {
     const db = createDb();
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
@@ -226,7 +226,7 @@ describe('wait SSE reconnect', () => {
 
   it('does not lose a terminal event that arrives while building the catch-up snapshot', async () => {
     const db = createDb();
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();

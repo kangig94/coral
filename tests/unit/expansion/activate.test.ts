@@ -131,15 +131,14 @@ describe('expansion activation (AC6)', () => {
     vi.doUnmock('#src/infra/backend-discovery.js');
 
     try {
-      const [{ setBuildFlavor }, { writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
+      const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
         await Promise.all([
-          import('#src/infra/build-flavor.js'),
           import('#src/infra/backend-discovery.js'),
           import('#src/cli/expansion-activation.js'),
         ]);
       const request = vi.fn().mockResolvedValue({ equipment: [] });
 
-      setBuildFlavor('dev');
+      process.env.CORAL_FLAVOR = 'dev';
       writeDiscoveryRecord(
         'dev',
         makeDiscoveryRecord({

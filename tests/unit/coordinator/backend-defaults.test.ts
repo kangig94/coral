@@ -50,7 +50,7 @@ function createHarness(options: HarnessOptions = {}) {
     'utf-8',
   );
 
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const fetchFn = vi.fn(async (_url: string, _init?: RequestInit) => new Response());
   const defaultsPlan = resolveBackendDefaults(
     {

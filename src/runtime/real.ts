@@ -23,7 +23,7 @@ import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/coral-paths.js';
 import { resolveProjectSource } from '../infra/paths.js';
-import { getSettledBuildFlavor } from '../infra/build-flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/coral-paths.js';
 import type {
   ChildProcessLike,
@@ -39,7 +39,6 @@ import type {
   StoragePort,
   TimePort,
 } from './ports.js';
-import { CoralSetupError } from './errors.js';
 import { MAX_BUFFER } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime } from './durable-runtime.js';
@@ -116,7 +115,7 @@ type DurableControlMessage =
       exitRecord: DurableProcessExit;
     };
 
-export function createRealRuntime(): Runtime {
+export function createRealRuntime(flavor: BuildFlavor): Runtime {
   const capturedEnv = captureEnvState();
   const envBudgetBytes = resolveEnvBudgetBytes();
   const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
@@ -180,24 +179,15 @@ export function createRealRuntime(): Runtime {
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
-  let cachedCoralPaths: CoralPaths | undefined;
+  // CoralPaths is composed on each access so tests can mock node:os.homedir()
+  // per-test (in beforeEach) and still get the right roots back from a
+  // module-level Runtime instance. Path joins are cheap enough that
+  // recomputing per access is fine; caching here would freeze the very first
+  // mocked homedir into every subsequent test.
   const paths: RuntimePaths = {
     projectSource: resolveProjectSource,
     get coral(): CoralPaths {
-      if (cachedCoralPaths !== undefined) {
-        return cachedCoralPaths;
-      }
-      const settled = getSettledBuildFlavor();
-      if (settled === null) {
-        throw new CoralSetupError({
-          code: 'E_FLAVOR_NOT_SETTLED',
-          userMessage: 'Runtime.paths.coral accessed before setBuildFlavor settled',
-          remediation:
-            'Ensure setBuildFlavor() is called during composition-root bootstrap before any paths.coral consumer runs. See src/coordinator/composition/backend-world.ts.',
-        });
-      }
-      cachedCoralPaths = Object.freeze(composeCoralPaths(settled));
-      return cachedCoralPaths;
+      return composeCoralPaths(flavor);
     },
   };
 
@@ -424,6 +414,7 @@ export function createRealRuntime(): Runtime {
   };
 
   return {
+    flavor,
     time,
     storage,
     process: runtimeProcess,

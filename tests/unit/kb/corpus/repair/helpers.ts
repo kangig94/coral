@@ -124,7 +124,7 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     const classifications = detected.map((incident) => classifyIncident(incident));
     expect(classifications).toEqual(testCase.expectedIncidents.map(() => testCase.classification));
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const results = await applyDetectedIncidentFixes(detected, harness.kb, {
       processPort: runtime.process,
       storagePort: runtime.storage,

@@ -12,7 +12,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 
-const runtime = createRealRuntime();
+const runtime = createRealRuntime('prod');
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -378,7 +378,7 @@ function createLifecycleHarness(
       now: () => 1,
       log: () => {},
     },
-    runtime: createRealRuntime(),
+    runtime: createRealRuntime('prod'),
     backendPid: 1234,
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,

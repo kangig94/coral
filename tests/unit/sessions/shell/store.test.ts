@@ -14,7 +14,6 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { currentBuildFlavor } from '#src/infra/build-flavor.js';
 import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
@@ -24,12 +23,11 @@ import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { storePaths } from '#src/infra/store-paths.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
-const runtime = createRealRuntime();
+const runtime = createRealRuntime('prod');
 
 function resolveScopeKey(projectRoot: string): string {
   return pluginRootNamespace(projectRoot);
@@ -60,7 +58,7 @@ describe('sessions shell store', () => {
     mkdirSync(workDir, { recursive: true });
 
     const db = openStoreDatabase({
-      path: storePaths(currentBuildFlavor()).dbFile,
+      path: ':memory:',
       storage: runtime.storage,
       schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
@@ -76,7 +74,7 @@ describe('sessions shell store', () => {
 
     return {
       db,
-      mgr: new SessionManager(workDir, runtime, coordinatorAppendEvents),
+      mgr: new SessionManager(workDir, runtime, coordinatorAppendEvents, undefined, db),
       workDir,
     };
   }

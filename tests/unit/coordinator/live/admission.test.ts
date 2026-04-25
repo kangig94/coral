@@ -11,7 +11,7 @@ function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', val
 }
 
 function createCoordinator(): LaunchCoordinator {
-  return new LaunchCoordinator({ runtime: createRealRuntime() });
+  return new LaunchCoordinator({ runtime: createRealRuntime('prod') });
 }
 
 describe('launch admission', () => {

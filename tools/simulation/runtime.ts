@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import { composeChildEnv } from '../../src/infra/env-sanitize.js';
 import { MAX_BUFFER } from '../../src/infra/process-constants.js';
+import type { BuildFlavor } from '../../src/infra/build-flavor.js';
 import type { Runtime, RuntimeExecOptions, ProcessPort } from '../../src/runtime/ports.js';
 import { copySchemaAssets, resolveDefaultSchemasDir } from '../../src/store/schema-loader.js';
 import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';
@@ -30,9 +31,11 @@ export interface SimulationRuntimeOptions {
   epochMs?: number;
   env?: Record<string, string>;
   roots?: InMemoryRoots;
+  flavor?: BuildFlavor;
 }
 
 export class SimulationRuntime implements Runtime {
+  readonly flavor: BuildFlavor;
   readonly time: VirtualTime;
   readonly storage: InMemoryStorage;
   readonly paths: InMemoryPaths;
@@ -44,9 +47,10 @@ export class SimulationRuntime implements Runtime {
 
   constructor(options: SimulationRuntimeOptions = {}) {
     const roots: InMemoryRoots = options.roots ?? {};
+    this.flavor = options.flavor ?? 'prod';
     this.time = new VirtualTime(options.epochMs ?? DEFAULT_EPOCH_MS);
     this.env = new SealedEnv(options.env);
-    this.paths = new InMemoryPaths(roots);
+    this.paths = new InMemoryPaths(roots, this.flavor);
     this.storage = new InMemoryStorage(this.time, roots);
     seedStoreSchemas(this.storage);
     this.ids = new SequentialIds();

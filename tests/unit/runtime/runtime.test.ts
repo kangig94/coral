@@ -57,7 +57,7 @@ describe('createRealRuntime', () => {
     vi.stubEnv('CORAL_OWNER', 'owner-a');
     vi.stubEnv('CORAL_EFFORT', 'high');
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const fullSnapshot = runtime.env.fullSnapshot();
     const snapshot = runtime.env.coralSnapshot();
 
@@ -79,7 +79,7 @@ describe('createRealRuntime', () => {
     vi.stubEnv('KEEP_ME', 'base-value');
     vi.stubEnv('CORAL_TEST_STRIP_ME', 'secret');
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const child = runtime.process.spawn({
       command: process.execPath,
       args: [
@@ -118,7 +118,7 @@ describe('createRealRuntime', () => {
     const recordingDir = join(recordingRoot, 'recordings');
     vi.stubEnv('CORAL_SIMULATE_RECORD', recordingDir);
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const child = runtime.process.spawn({
       command: process.execPath,
       args: ['-e', "process.stdout.write('recorded\\n');"],
@@ -136,7 +136,7 @@ describe('createRealRuntime', () => {
   });
 
   it('models ignored stdio launches explicitly', async () => {
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const child = runtime.process.spawn({
       command: process.execPath,
       args: ['-e', 'process.exit(0)'],
@@ -151,7 +151,7 @@ describe('createRealRuntime', () => {
   });
 
   it('launches durable detached jobs without materializing runtime/exit sidecar files', async () => {
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-');
     const jobDir = join(rootDir, 'job-1');
     runtime.storage.mkdirSync(jobDir, { recursive: true });
@@ -183,7 +183,7 @@ describe('createRealRuntime', () => {
   });
 
   it('writes and appends through durable storage operations', () => {
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-durable-');
     const statePath = join(rootDir, 'nested', 'state.json');
     const logPath = join(rootDir, 'events', 'events.jsonl');

@@ -406,7 +406,7 @@ describe('recovery coordinator shutdown', () => {
 
   it('stops the startup tail when shutdown begins during recovery adoption', async () => {
     const modules = await loadModules();
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const pluginRoot = createProjectRoot('plugin-mid-adoption');
     const projectRoot = createProjectRoot('project-mid-adoption');
     const cleanupSpy = vi.fn();

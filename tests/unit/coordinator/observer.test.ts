@@ -54,7 +54,7 @@ afterEach(() => {
 
 describe('recording observer', () => {
   it('records spawned children through the observer subscriber wiring', async () => {
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const observer = new EventEmitterObserver();
     observeRuntimeSpawns(runtime, observer);
 
@@ -96,7 +96,7 @@ describe('recording observer', () => {
   it.each([
     {
       name: 'real',
-      createRuntime: () => createRealRuntime(),
+      createRuntime: () => createRealRuntime('prod'),
       command: process.execPath,
       args: ['-e', "process.stdout.write('late-bound\\n');"],
       runExec: async (runtime: ReturnType<typeof createRealRuntime>) =>

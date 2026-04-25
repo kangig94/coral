@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { currentBuildFlavor } from '#src/infra/build-flavor.js';
+import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { JobProgress, JobStatus } from '#src/jobs/records.js';
 import { sessionEntrySchema, type SessionEntry } from '#src/sessions/entry.js';
@@ -43,7 +43,7 @@ export function readSessionEntry(
 }
 
 function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) => T, fallback: T): T {
-  const dbPath = storePaths(currentBuildFlavor()).dbFile;
+  const dbPath = storePaths(resolveBuildFlavor(process.env)).dbFile;
   if (!existsSync(dbPath)) {
     return fallback;
   }

@@ -1,3 +1,4 @@
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/coral-paths.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
@@ -169,6 +170,7 @@ export interface EnvPort {
 }
 
 export interface Runtime {
+  readonly flavor: BuildFlavor;
   readonly time: TimePort;
   readonly storage: StoragePort;
   readonly process: ProcessPort;

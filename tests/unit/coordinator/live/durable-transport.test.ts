@@ -45,7 +45,7 @@ describe('durable transport', () => {
   beforeEach(() => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
-    coordinator = new LaunchCoordinator({ runtime: createRealRuntime() });
+    coordinator = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-live-durable-'));
   });
 

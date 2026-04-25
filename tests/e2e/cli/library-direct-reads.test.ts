@@ -195,7 +195,7 @@ Second line
 }
 
 function seedStore(fixture: Fixture): void {
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
@@ -288,7 +288,7 @@ function runCliSubprocess(
 }
 
 async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Promise<string> {
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,

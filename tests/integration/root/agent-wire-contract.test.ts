@@ -220,7 +220,7 @@ describe('agent wire contract', () => {
     };
     providerRegistry.register(toProviderSpec(fakeProvider)!);
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
     const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });

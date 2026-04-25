@@ -173,7 +173,7 @@ describe('curate AC6/AC8', () => {
       runtimeDir: tempDir,
       db: createKbTestDb(tempDir),
     });
-    gitSyncRuntime = createRealRuntime();
+    gitSyncRuntime = createRealRuntime('prod');
     useScheduler(async () => ({
       stdout: '[]',
       stderr: '',

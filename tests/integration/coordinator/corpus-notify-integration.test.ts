@@ -400,8 +400,8 @@ describe('Corpus notify E2E', () => {
           code: 0,
           aborted: false,
         }),
-        processPort: createRealRuntime().process,
-        storagePort: createRealRuntime().storage,
+        processPort: createRealRuntime('prod').process,
+        storagePort: createRealRuntime('prod').storage,
         envPort: {
           get(name: string) {
             return name === 'CORAL_KB_GIT_SYNC' ? '1' : undefined;

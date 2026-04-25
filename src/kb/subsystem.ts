@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import { kbRoot } from '../infra/paths.js';
-import { currentBuildFlavor } from '../infra/build-flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntimeActivationSnapshot, KbRuntime } from './contracts.js';
 import type { GitSyncRuntimePicks } from './curate/types.js';
@@ -18,6 +18,7 @@ export type KnowledgeBaseRuntime = {
 export type CreateKbSubsystemOptions = {
   db: Database;
   pluginRoot: string;
+  flavor: BuildFlavor;
   spawnCli: SpawnCliFn;
   getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
@@ -29,6 +30,7 @@ export type CreateKbSubsystemOptions = {
 export async function createKbSubsystem({
   db,
   pluginRoot,
+  flavor,
   spawnCli: spawnKbCli,
   processPort,
   storagePort,
@@ -42,8 +44,8 @@ export async function createKbSubsystem({
   onCorpusPublishSuccess,
 }: CreateKbSubsystemOptions): Promise<KnowledgeBaseRuntime> {
   const kb = createKbRuntime({
-    markdownRoot: kbRoot(),
-    runtimeDir: kbRuntimeDir(currentBuildFlavor()),
+    markdownRoot: kbRoot(flavor),
+    runtimeDir: kbRuntimeDir(flavor),
     db,
     time: timePort,
     ids: idsPort,

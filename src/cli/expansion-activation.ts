@@ -8,7 +8,7 @@ import {
 import { installResultSchema } from '../expansion/contracts.js';
 import type { ActivationDeps, EquipmentStatus } from '../expansion/activate.js';
 import { readDiscoveryRecord } from '../infra/backend-discovery.js';
-import { getSettledBuildFlavor, resolveBuildFlavor } from '../infra/build-flavor.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 
@@ -47,7 +47,7 @@ export function createCliExpansionActivation(): ActivationDeps {
     },
 
     async readEquipmentStatus(name): Promise<EquipmentStatus> {
-      const flavor = getSettledBuildFlavor() ?? resolveBuildFlavor(process.env);
+      const flavor = resolveBuildFlavor(process.env);
       let record;
       try {
         record = readDiscoveryRecord(flavor);

@@ -75,7 +75,7 @@ describe('sessions consumer-driver notify', () => {
     tempRoots.push(tempHome);
     process.env.HOME = tempHome;
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const workDir = join(tempHome, 'project');
     mkdirSync(workDir, { recursive: true });
     const manager = new SessionManager(workDir, runtime, coordinatorAppendEvents);

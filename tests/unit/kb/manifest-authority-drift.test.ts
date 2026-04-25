@@ -492,7 +492,7 @@ describe('manifest authority drift checks (AC2)', () => {
           writeRootNote(root, 'repair-target', renderMalformedEntrySeqNote());
         }, { reindexOnBoot: false });
 
-        const runtime = createRealRuntime();
+        const runtime = createRealRuntime('prod');
         await applyDetectedIncidentFixes(
           [
             {

@@ -207,7 +207,7 @@ beforeEach(() => {
     runtimeDir: tempDir,
     db: createKbTestDb(tempDir),
   });
-  gitSyncRuntime = createRealRuntime();
+  gitSyncRuntime = createRealRuntime('prod');
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli: noopSpawnCli,

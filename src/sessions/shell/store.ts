@@ -7,7 +7,6 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
-import { currentBuildFlavor } from '../../infra/build-flavor.js';
 import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
@@ -31,7 +30,7 @@ import {
   readProjectionSession,
 } from '../projections.js';
 
-type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
+type SessionRuntime = Pick<Runtime, 'flavor' | 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 type Database = BetterSqlite3.Database;
 
@@ -191,7 +190,7 @@ export class SessionManager {
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
-    this.db = db ?? openBackendStoreDb(runtime, currentBuildFlavor());
+    this.db = db ?? openBackendStoreDb(runtime, runtime.flavor);
     this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);

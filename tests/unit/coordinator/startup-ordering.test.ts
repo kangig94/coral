@@ -111,7 +111,7 @@ describe('coordinator startup ordering', () => {
 
     vi.stubEnv('HOME', home);
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const order: string[] = [];
     const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async () => {
       order.push('waitFreshUntil:start');
@@ -172,7 +172,7 @@ describe('coordinator startup ordering', () => {
 
     vi.stubEnv('HOME', home);
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const order: string[] = [];
     const journalConsumerIds = new Set(['jobs', 'sessions', 'discuss', 'workflow']);
     const observedJournalConsumers = new Set<string>();
@@ -289,7 +289,7 @@ describe('coordinator startup ordering', () => {
 
     vi.stubEnv('HOME', home);
 
-    const runtime = createRealRuntime();
+    const runtime = createRealRuntime('prod');
     const order: string[] = [];
     const register = vi.spyOn(ConsumerDriver.prototype, 'register');
     const notifyCorpus = vi

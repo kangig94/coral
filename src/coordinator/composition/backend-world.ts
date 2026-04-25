@@ -3,7 +3,6 @@ declare const __VERSION__: string;
 import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
-import { setBuildFlavor } from '../../infra/build-flavor.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -63,7 +62,6 @@ export function createBackendWorld(
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(pluginRoot);
   backendLog.init({ version, bundleHash });
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
-  setBuildFlavor(flavor);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
@@ -77,7 +75,7 @@ export function createBackendWorld(
       backendLog.raw(message);
     });
 
-  // All identity resolution above (setBuildFlavor, backendLog.init) must complete before constructing singletons; do not move backendLog.init or setBuildFlavor below this point.
+  // backendLog.init must complete before constructing singletons; do not move it below this point.
   const idleTimer = defaultsPlan.eager.createIdleTimer();
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const progressStoreEventBus = options.progressStore?.getEventBus();

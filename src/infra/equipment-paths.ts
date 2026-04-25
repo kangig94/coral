@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { BuildFlavor } from './build-flavor.js';
-import { getSettledBuildFlavor, resolveBuildFlavor } from './build-flavor.js';
+import { resolveBuildFlavor } from './build-flavor.js';
 import { coralRoot } from './paths.js';
 
 export interface EquipmentPaths {
@@ -17,7 +17,7 @@ export interface EquipmentPathOptions {
 }
 
 function resolveEquipmentFlavor(opts?: EquipmentPathOptions): BuildFlavor {
-  return getSettledBuildFlavor() ?? resolveBuildFlavor(opts?.env ?? process.env);
+  return resolveBuildFlavor(opts?.env ?? process.env);
 }
 
 function equipmentRoot(opts?: EquipmentPathOptions): string {

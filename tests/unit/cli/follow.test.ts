@@ -145,7 +145,7 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
     'utf-8',
   );
 
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,

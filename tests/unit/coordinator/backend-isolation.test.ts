@@ -18,8 +18,8 @@ const terminalResult: JobTerminal = { content: '', durationMs: 100, outcome: { k
 
 describe('backend isolation', () => {
   it('two coordinators track children independently', () => {
-    const coordA = new LaunchCoordinator({ runtime: createRealRuntime() });
-    const coordB = new LaunchCoordinator({ runtime: createRealRuntime() });
+    const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+    const coordB = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
 
     const admitA = coordA.requestLaunch('job-a1', 'codex');
     const admitB = coordB.requestLaunch('job-b1', 'codex');
@@ -112,11 +112,11 @@ describe('backend isolation', () => {
   });
 
   it('shutdown of backend A does not interfere with backend B event delivery', () => {
-    const coordA = new LaunchCoordinator({ runtime: createRealRuntime() });
+    const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const busA = new TypedEventBus();
     const regA = createDiscussContextRegistry();
 
-    const coordB = new LaunchCoordinator({ runtime: createRealRuntime() });
+    const coordB = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const busB = new TypedEventBus();
     const regB = createDiscussContextRegistry();
 

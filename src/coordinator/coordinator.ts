@@ -78,7 +78,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     registerBuiltInProvidersFn,
     ...coreOptions
   } = options;
-  const runtime = providedRuntime ?? createRealRuntime();
+  const flavor =
+    options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? process.cwd());
+  const runtime = providedRuntime ?? createRealRuntime(flavor);
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
 
@@ -91,7 +93,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
   }
 
-  const flavor = options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? runtime.env.cwd());
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const upcasters = createDefaultUpcasterRegistry();
   const readCtx = { schemas: reducers.schemas, upcasters };
@@ -165,6 +166,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
         db: getStoreDb(),
+        flavor,
         getEquipmentView: () =>
           equipmentLifecycleService.getRuntimeActivation()
           ?? currentKbRuntime?.getEquipmentView()

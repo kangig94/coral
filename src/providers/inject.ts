@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { kbRoot, projectDataDir, resolveProjectSource } from '../infra/paths.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { isOwnerId } from '../infra/owner-id.js';
 
 declare const __PLUGIN_ROOT__: string;
@@ -34,7 +35,7 @@ export function resolveInjectMd(workingDirectory?: string, ownerSessionId?: stri
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
   const cliPath = `node "${join(pluginRoot, 'bridge', 'coral-cli.cjs')}"`;
   const rendered = md
-    .replaceAll('{{CORAL_KB}}', kbRoot())
+    .replaceAll('{{CORAL_KB}}', kbRoot(resolveBuildFlavor(process.env)))
     .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
     .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')

@@ -34,7 +34,7 @@ async function seedKbSearchSnapshot(): Promise<void> {
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
   ]);
-  const realRuntime = createRealRuntime();
+  const realRuntime = createRealRuntime('prod');
   const kb = runtime.createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbPaths.kbRuntimeDir('prod'),
@@ -95,7 +95,7 @@ Make the contract explicit first.
 }
 
 function seedStore(projectRoot: string): void {
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths('prod').dbFile,
     storage: runtime.storage,

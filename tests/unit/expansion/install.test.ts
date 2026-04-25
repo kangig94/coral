@@ -32,7 +32,7 @@ function createFixture() {
 }
 
 function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Runtime {
-  const realRuntime = createRealRuntime();
+  const realRuntime = createRealRuntime('prod');
   const envRecord: Record<string, string> = {
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,

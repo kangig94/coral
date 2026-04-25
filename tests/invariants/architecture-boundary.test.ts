@@ -395,7 +395,10 @@ function collectLaunchPoolDefinitions(): string[] {
 
 function collectDomainAmbientRuntimeAccess(): string[] {
   const scopedRoots = ['src/providers', 'src/workflow', 'src/kb', 'src/discuss'];
-  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts']);
+  // inject.ts renders INJECT.md template substitutions at request-prep time
+  // and must read process.env to derive the build flavor for {{CORAL_KB}};
+  // the function has no runtime in scope.
+  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/providers/inject.ts']);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 

@@ -21,21 +21,24 @@ export type KbQueryContext = {
   pluginRoot?: string;
 };
 
-let queryRuntime: ReturnType<typeof createRealRuntime> | null = null;
+const queryRuntimeByFlavor = new Map<BuildFlavor, ReturnType<typeof createRealRuntime>>();
 const queryDbsByFlavor = new Map<BuildFlavor, Database>();
 
-function getQueryRuntime(): ReturnType<typeof createRealRuntime> {
-  queryRuntime ??= createRealRuntime();
-  return queryRuntime;
+function getQueryRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
+  let cached = queryRuntimeByFlavor.get(flavor);
+  if (cached === undefined) {
+    cached = createRealRuntime(flavor);
+    queryRuntimeByFlavor.set(flavor, cached);
+  }
+  return cached;
 }
 
 export function resolveQueryFlavor(context: KbQueryContext = {}): BuildFlavor {
-  const runtime = getQueryRuntime();
-  return readBuildFlavor(context.pluginRoot ?? runtime.env.cwd());
+  return readBuildFlavor(context.pluginRoot ?? process.cwd());
 }
 
 export function resolveQueryProjectRoot(context: KbQueryContext = {}): string {
-  return context.projectRoot ?? getQueryRuntime().env.cwd();
+  return context.projectRoot ?? process.cwd();
 }
 
 export function resolveQueryMarkdownRoot(context: KbQueryContext = {}): string {
@@ -53,13 +56,13 @@ export function createDefaultKbReadPaths(context: KbQueryContext = {}): KbReadPa
 }
 
 export function getDefaultKbQueryDb(context: KbQueryContext = {}): Database {
-  const runtime = getQueryRuntime();
   const flavor = resolveQueryFlavor(context);
   const existing = queryDbsByFlavor.get(flavor);
   if (existing !== undefined) {
     return existing;
   }
 
+  const runtime = getQueryRuntime(flavor);
   const db = openBackendStoreDb(runtime, flavor);
   queryDbsByFlavor.set(flavor, db);
   return db;

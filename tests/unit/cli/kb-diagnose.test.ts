@@ -35,7 +35,7 @@ function seedRetryQueue(entries: Array<{
   retryNotBefore: string;
   retryCount: number;
 }>): void {
-  const runtime = createRealRuntime();
+  const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
     path: storePaths('prod').dbFile,
     storage: runtime.storage,

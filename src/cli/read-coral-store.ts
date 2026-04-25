@@ -98,8 +98,8 @@ export function getSharedReadCoralStore(
 }
 
 export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
-  const runtime = createRealRuntime();
   const flavor = readBuildFlavor(pluginRoot || projectRoot);
+  const runtime = createRealRuntime(flavor);
   const dbPath = storePaths(flavor).dbFile;
   const hasStore = existsSync(dbPath);
   const namespace = pluginRoot

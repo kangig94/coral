@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
-const runtime = createRealRuntime();
+const runtime = createRealRuntime('prod');
 
 describe('jobs AbortRegistry', () => {
   it('register returns a UUID', () => {

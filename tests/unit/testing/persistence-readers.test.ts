@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { currentBuildFlavor } from '#src/infra/build-flavor.js';
+import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
@@ -16,11 +16,11 @@ let testJobId: string;
 let testHomeDir: string;
 
 const NOW = '2026-01-01T00:00:00Z';
-const nodeStoreStorage = createRealRuntime().storage;
+const nodeStoreStorage = createRealRuntime('prod').storage;
 
 function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
   const db = openStoreDatabase({
-    path: storePaths(currentBuildFlavor()).dbFile,
+    path: storePaths(resolveBuildFlavor(process.env)).dbFile,
     storage: nodeStoreStorage,
     schemasDir: ensureStoreSchemasDir(nodeStoreStorage),
   });

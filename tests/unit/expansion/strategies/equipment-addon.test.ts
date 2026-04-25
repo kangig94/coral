@@ -30,7 +30,7 @@ function createFixture() {
 }
 
 function createContext(fixture: ReturnType<typeof createFixture>): ExpansionInstallContext {
-  const realRuntime = createRealRuntime();
+  const realRuntime = createRealRuntime('prod');
   const envRecord: Record<string, string> = {
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
