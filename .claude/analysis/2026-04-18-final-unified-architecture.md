@@ -494,6 +494,8 @@ Projection tables carry materialized read-model columns for stable-at-launch ide
 Event body is authoritative; each projection row is derived via reducer dispatch keyed by replay identity (`stream.kind`, `stream.id`, `seq`).
 Richer launch/runtime/terminal payloads remain event-backed; projection is derived via reducer + replay identity, never by mutating historical event bodies.
 
+Domain registries own the full write-time contract for their events: schemas, reducers, and append validators. `store.appendEvents()` remains a domain-neutral transaction substrate; it runs any composed append validators inside the same `BEGIN IMMEDIATE` transaction before the first insert. This lets domains enforce lifecycle invariants at the Journal boundary without hardcoding domain vocabulary in `store/`.
+
 ---
 
 ## 5. Journal Stream Kinds
@@ -1219,8 +1221,8 @@ src/
     envelope.ts                      — Zod validator for event envelope + upcaster registry
     schemas/                         — SQL schema authority; numbered files applied in order
       001_initial.sql                — clean-slate baseline (events, projection_*, meta)
-    append.ts                        — transactional append primitive (single-writer gate)
-    reducers.ts                      — per-domain event-to-projection reducers
+    append.ts                        — transactional append primitive (single-writer gate + composed validator runner)
+    reducers.ts                      — per-domain event schemas, append validators, and projection reducers
     consumer-contract.ts             — neutral consumer error/kind vocabulary
     projection-consumer.ts           — journal projection registration factory
     index.ts                         — public Journal substrate barrel
@@ -1276,8 +1278,8 @@ src/
 
   jobs/                              ← domain: jobs events + projections + shell
     consumer.ts                      — Journal projection consumer registration for jobs
-    job-store.ts                     — journal append/read seam; enforces terminal event ordering
-    events.ts                        — jobs event body schemas + projection_jobs reducers
+    job-store.ts                     — journal append/read seam over jobsRegistry
+    events.ts                        — jobs event body schemas + terminal-order append validator + projection_jobs reducers
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef re-export + describers
     read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
     phase.ts                         — JobPhase + phaseForOutcome

@@ -8,7 +8,8 @@ import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
+import type { TerminalOutcome } from '../../jobs/outcome.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';
 
 export type KbSourceImportRequest = {

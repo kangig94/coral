@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CauseRef } from '../jobs/outcome.js';
+import type { CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from '../jobs/phase.js';
 import { jobTerminalSchema } from '../jobs/result.js';
 import { workflowCompletedBodySchema } from './events.js';

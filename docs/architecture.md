@@ -191,7 +191,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 
 | Area | Owns truth | May write | May read/compose | Must not own |
 | --- | --- | --- | --- | --- |
-| `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives only | Domain query modules | Product read facade or domain policy |
+| `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives and composed validator execution | Domain registries | Product read facade or domain policy |
 | `read-model/` | No truth; composed product reads | Nothing authoritative | Domain read queries + KB reads | Writes or recovery |
 | `jobs/` | Job lifecycle, terminal outcomes, wait/reconcile vocabulary | Job streams/projections through store substrate | Session/workflow refs by typed query/composition | Provider process mechanics or transport |
 | `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
@@ -279,6 +279,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 - `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
 Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
+Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
 `job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
 
 CLI wait output surfaces the outcome through five exhaustive headers:

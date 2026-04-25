@@ -68,6 +68,14 @@ export function appendEvents(
   const txn = db.transaction((items: typeof prepared): AppendedEvent[] => {
     const assigned: AppendedEvent[] = [];
     const ts = prepared[0]?.input.tsOverride ?? toTimestamp(ctx.now());
+    const validationInputs: AppendInput[] = items.map(({ input, parsedBody }) => ({
+      ...input,
+      body: parsedBody,
+    }));
+
+    for (const validateAppend of reducers.appendValidators) {
+      validateAppend(db, validationInputs);
+    }
 
     for (const { input, parsedBody, bodyBytes } of items) {
       const row = insertStmt.get(

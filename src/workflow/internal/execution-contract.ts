@@ -4,7 +4,8 @@ import type { AbortResult } from '../../jobs/abort-result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { LaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
-import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
+import type { TerminalOutcome } from '../../jobs/outcome.js';
 
 export type StepDetail = {
   stepIndex: number;

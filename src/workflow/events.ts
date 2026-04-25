@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
-import { causeRefSchema } from '../jobs/outcome.js';
+import { causeRefSchema } from '../causality/cause-ref.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
 export const workflowCompletedBodySchema = z

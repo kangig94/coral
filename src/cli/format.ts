@@ -1,4 +1,5 @@
-import { describeTerminalOutcome, type CauseRef } from '../jobs/outcome.js';
+import type { CauseRef } from '../causality/cause-ref.js';
+import { describeTerminalOutcome } from '../jobs/outcome.js';
 import type { JobsListResponse } from '../transport/http/client.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';

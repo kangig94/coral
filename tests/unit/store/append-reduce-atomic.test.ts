@@ -8,7 +8,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { composeReducers } from '#src/store/reducers.js';
+import { composeReducers, type DomainEventRegistry, type Reducer } from '#src/store/reducers.js';
 import {
   applyTestCounterSchema,
   TEST_COUNTER_SCHEMA,
@@ -100,6 +100,93 @@ describe('appendEvents + in-transaction projection reduction', () => {
 
       expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
       expect((db.prepare('SELECT COUNT(*) AS n FROM projection_test_counter').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('append validator throw rolls back before event insert or reducer execution', () => {
+    const db = setupDb();
+
+    try {
+      let reducerCalls = 0;
+      const reducer: Reducer<{ id: string; delta: number }> = (reducerDb, event) => {
+        reducerCalls += 1;
+        reducerDb
+          .prepare(
+            `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
+          )
+          .run(event.body.id, event.body.delta, event.seq);
+      };
+      const registry: DomainEventRegistry = {
+        types: ['test.counter.ticked'],
+        reducers: {
+          'test.counter.ticked': reducer as Reducer<unknown>,
+        },
+        schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
+        appendValidators: [
+          () => {
+            throw new Error('append validator failure');
+          },
+        ],
+      };
+
+      expect(() =>
+        appendEvents(
+          db,
+          [
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'job', id: 'a' },
+              bodyVersion: 1,
+              body: { id: 'a', delta: 5 },
+            },
+          ],
+          {
+            now: () => new Date(0),
+            reducers: composeReducers(registry),
+            upcasters: createEmptyRegistry(),
+          },
+        ),
+      ).toThrow(/append validator failure/);
+
+      expect(reducerCalls).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM projection_test_counter').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the store substrate domain-free when no registry validator is composed', () => {
+    const db = setupDb();
+
+    try {
+      appendEvents(
+        db,
+        [
+          {
+            type: 'job.terminal.recorded',
+            stream: { kind: 'job', id: 'domain-free' },
+            bodyVersion: 1,
+            body: { intentionally: 'not a job terminal body' },
+          },
+          {
+            type: 'job.progress.emitted',
+            stream: { kind: 'job', id: 'domain-free' },
+            bodyVersion: 1,
+            body: { intentionally: 'not a job progress body' },
+          },
+        ],
+        {
+          now: () => new Date(0),
+          reducers: composeReducers(),
+          upcasters: createEmptyRegistry(),
+        },
+      );
+
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(2);
     } finally {
       db.close();
     }

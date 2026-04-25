@@ -4,8 +4,6 @@ import { assertNever } from '../infra/error-format.js';
 import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
-export { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
-
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
 
 export interface ExternalError {

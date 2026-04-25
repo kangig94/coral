@@ -26,7 +26,7 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 
 ## Journal
 
-The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
 
 ## Causality
 
@@ -145,6 +145,7 @@ These are the load-bearing boundaries that must not leak:
 - The Runtime interface is the only channel for I/O inside the backend.
 - Each domain facade is the only coordinator-facing surface for its domain.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
+- Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.

@@ -2,7 +2,8 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { JobTerminal } from '../jobs/records.js';
-import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
+import type { CauseRef } from '../causality/cause-ref.js';
+import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';

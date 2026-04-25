@@ -2,13 +2,12 @@ import type { CoralEvent } from '../../store/envelope.js';
 import { continuitySentenceFragment, type SessionContinuityState, type SessionProviderFailureReason } from '../../sessions/fault.js';
 import { assertNever } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
+import { causeRefSchema, type CauseRef } from '../../causality/cause-ref.js';
 import {
-  causeRefSchema,
   describeJobDomainProgress,
   describeJobProgressFault,
   describeLaunchRejected,
   describeTerminalOutcome,
-  type CauseRef,
   type TerminalOutcome,
 } from '../outcome.js';
 
