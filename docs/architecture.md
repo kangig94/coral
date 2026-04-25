@@ -210,7 +210,7 @@ Shared / infra layer
 | `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
-| `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
+| `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 

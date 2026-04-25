@@ -9,7 +9,6 @@ export interface CorpusPaths {
   sourcesDir: string;
   principlesDir: string;
   communitiesDir: string;
-  derivedDir: string;
 }
 
 export interface CorpusPathOptions {
@@ -24,6 +23,5 @@ export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): Corp
     sourcesDir: join(kbRootDir, 'sources'),
     principlesDir: join(kbRootDir, 'principles'),
     communitiesDir: join(kbRootDir, 'communities'),
-    derivedDir: join(kbRootDir, 'derived'),
   };
 }

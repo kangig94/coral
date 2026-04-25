@@ -22,7 +22,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
 | `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
-| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` |
+| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
 | `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
@@ -123,10 +123,10 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 ### KB state
 
 - Markdown root defaults: `~/.coral/kb/` for prod, `~/.coral/kb-dev/` for dev
-- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data/kb-dev/` for dev
+- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
-- `~/.coral/data/kb/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
-- `~/.coral/data/kb/needle/` and `~/.coral/data/kb/needle-staging/` are optional Needle equipment artifacts, created only when Needle is equipped
+- `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
+- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle equipment artifacts, created only when Needle is equipped
 - Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
 
 ### Job state
@@ -175,7 +175,7 @@ projection_sessions in store.db                -> projected provider session con
 ~/.coral/projects/<source-slug>/discuss/       -> discuss storage
 ~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data/kb-dev/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
+~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

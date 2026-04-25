@@ -89,10 +89,10 @@ describe('kb detection and paths', () => {
 
     expect(infraPaths.currentBuildFlavor()).toBe('dev');
     expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
-    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev'));
-    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'orama'));
-    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'needle'));
-    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'needle-staging'));
+    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
+    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'));
+    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle'));
+    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle-staging'));
   });
 
   it('treats build flavor as single-assignment', async () => {
@@ -157,7 +157,7 @@ describe('kb detection and paths', () => {
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     const markdownRoot = join(mockState.tmpHome, 'vault');
-    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data', 'kb-dev');
+    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data-dev', 'kb');
     const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
     const principlePath = join(markdownRoot, 'principles', 'contract-first-design.md');
 

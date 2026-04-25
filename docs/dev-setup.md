@@ -18,7 +18,7 @@ Keep `.claude/settings.local.json` machine-local. Point the Coral hooks at your 
 
 - **Daemon identity is intrinsic**: each daemon reads its own `bridge/manifest.json` to determine its flavor. No environment variable tells the daemon what it is.
 - **`CORAL_FLAVOR` is a settings-level hook selector**: hooks read it from their process environment, so local dev setup records it in `.claude/settings.local.json` under `env`. Hooks that don't match the selected flavor exit immediately.
-- **KB isolation**: prod markdown → `~/.coral/kb/`, dev → `~/.coral/kb-dev/`. Runtime state (indexes, vectors): prod → `~/.coral/data/kb/`, dev → `~/.coral/data/kb-dev/`. Override markdown root with `CORAL_KB_PATH`.
+- **KB isolation**: prod markdown → `~/.coral/kb/`, dev → `~/.coral/kb-dev/`. Runtime state (indexes, vectors): prod → `~/.coral/data/kb/`, dev → `~/.coral/data-dev/kb/`. Override markdown root with `CORAL_KB_PATH`.
 - **Backend replacement**: if a prod daemon is running and you start a dev session, the dev hooks detect a flavor mismatch on the running backend and trigger replacement. The dev daemon starts at a different namespace (derived from the local plugin root path).
 
 ## Verification

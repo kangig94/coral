@@ -34,6 +34,8 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **Equipment** (Zelda UX) = opt-in `/equip needle` enhances specific query paths. Base tier fully functional with Orama (FTS zero-config, vector with embedding provider config per README). No native deps in base bundle.
 - Everything else (`status.json`, `result.md` as authority, `WorkflowCheckpoint`, `LaunchState` files, segment rotation, checkpoint files, advisory `writer.lock`, multi-variant `CoralFault` union, unified "everything is an event" thesis) either becomes a projection/export or disappears outright.
 
+Flavor-gated data families use sibling top-level roots: production data under `~/.coral/data/<family>/`, development data under `~/.coral/data-dev/<family>/`. Do not encode flavor into the family name (`data/<family>-dev/`). This applies to the Journal store, Corpus-derived retrieval artifacts, equipment runtime artifacts, and any future device-local rebuildable state. The Corpus authority itself remains `~/.coral/kb/` for production and `~/.coral/kb-dev/` for development.
+
 ---
 
 ## 1. Current Pain (What We're Leaving Behind)
@@ -177,6 +179,8 @@ This decouples projection latency from authoritative write latency: a slow or fa
 The Journal authority (§2.1) is backed by a **single transactional event database**. Path depends on build flavor (hook isolation requires flavor-gated paths):
 - prod: `~/.coral/data/store/store.db`
 - dev: `~/.coral/data-dev/store/store.db`
+
+This is the general flavor layout rule for device-local rebuildable data: `data/<family>/` in prod and `data-dev/<family>/` in dev, never `data/<family>-dev/`.
 
 SQLite in WAL mode is the reference implementation: it provides append-only write semantics, ACID transactions across multiple events, concurrent readers, and a single-writer discipline via `BEGIN IMMEDIATE` — all properties the Journal requires, without reinventing them.
 
@@ -354,7 +358,7 @@ Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by 
 |---|---|---|
 | Segment rotation logic | None — SQLite WAL checkpointing is automatic | Delete code |
 | Standalone checkpoint files | None — projections ARE the live state | Delete code |
-| Advisory `writer.lock` file | SQLite `BEGIN IMMEDIATE` | Delete code |
+| Journal writer `lock` file | SQLite `BEGIN IMMEDIATE` | Delete code |
 | Projection versioning / invalidation files | `meta.schema_version` row + SQL schema script | Simpler |
 | Log-scan queries for cross-domain lookups | SQL JOIN | Faster, less code |
 | Cross-stream atomicity gap | `BEGIN..COMMIT` transaction | Correct by construction |
@@ -362,7 +366,7 @@ Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by 
 
 The `CoralStore` becomes a thin SQL query layer. The `CoralCoordinator` is the sole owner of a writable DB connection.
 
-**Terminology note**: SQL schema scripts live under `schemas/` (§10). They are ordered schema generations applied to an empty or existing Coral store and are never user-data migration scripts; this rewrite has no prior deployed SQL state to preserve (§0).
+**Terminology note**: SQL schema scripts live under `schemas/` (§10). They are ordered schema generations applied to an empty or existing Coral store and are never user-data migration scripts; this rewrite has no prior deployed SQL state to preserve (§0). `src/store/schemas/001_initial.sql` is the single SQL schema authority for the clean-slate baseline and first applied schema. `src/store/schema.sql` must not exist because duplicate DDL authority is worse than a larger first script. Until the first main-branch deploy that actually creates SQL state, schema changes edit `001_initial.sql` in place; `002+` begins only after deployed SQL exists.
 
 ---
 
@@ -473,7 +477,7 @@ Projection: `DiscussView`.
 
 ### 5.4 `workflow/<id>`
 Events about a workflow's durable plan and execution shape: plan declared, revised, completed. A workflow is a first-class aggregate, distinct from the jobs that execute its slots. Child jobs reference their slot via `refs.workflowSlotId`; they do NOT carry `stepIndex`/`atomIndex`/`label` (those are plan-owned).
-Projection: `WorkflowView` (plan + slot outcomes aggregated from child jobs).
+Projection: `WorkflowView` (plan + slot outcomes aggregated at read time from the workflow projection and child job rows).
 
 ### 5.5 Why four Journal kinds
 
@@ -603,6 +607,7 @@ External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordina
 | `all-equipped` | `commit` + every installed Corpus consumer reached the committed Corpus version. |
 
 The command surface is identical in base and equipped tiers. Equipping needle changes only which consumer satisfies `active-vector`; it does not create a separate import command.
+Retrieval readiness is observed through `waitFreshUntil('corpus', version, consumerId)` after the Corpus commit. If that wait fails, the source markdown and Corpus version remain durable; the hosting job records the readiness failure instead of rolling back knowledge content.
 
 **Projections / search backends** (all rebuildable from the Corpus alone):
 
@@ -1090,7 +1095,7 @@ No stored "is complete" boolean anywhere. Projections compute it from event pres
 SELECT job_id, phase, workflow_slot FROM projection_jobs WHERE parent_workflow_job_id = ?
 ```
 
-`WorkflowView.slotOutcomes` is built by the projection reducer from child job events + the workflow plan. No denormalization onto the parent.
+`WorkflowView.slotOutcomes` is built by `store/queries/workflows.ts`: join `projection_workflows.plan` to child rows in `projection_jobs` via `parent_workflow_job_id` / `workflow_slot`, then render each slot outcome from the child `JobView` state. No denormalization onto the parent.
 
 ### 9.6 Why a single `WaitCursor.afterSeq`
 
@@ -1099,6 +1104,8 @@ Journal events have a single global `seq`. One number describes "what I have see
 ### 9.7 Why no denormalized child array on `JobView`
 
 With events in a database, joining child jobs onto a parent is a single indexed SQL query — cheaper than carrying a denormalized array that drifts under concurrent child terminations. `JobView` stays lean; `WorkflowView` owns the aggregate read model.
+
+The read model lives in `store/queries/workflows.ts`. Workflow-domain reducers own only workflow stream state (`projection_workflows.plan`, workflow completion), while child job lifecycle state remains in `projection_jobs`.
 
 ---
 
@@ -1348,8 +1355,8 @@ src/
     normalize.ts                     — AST normalization (desugaring) → WorkflowPlan
     plan.ts                          — WorkflowPlan + WorkflowSlot types + validation
     command.ts                       — workflow command schema
-    events.ts                        — workflow event body schemas (plan.declared, completed)
-    projections.ts                   — WorkflowView reducer (plan + slot outcomes)
+    events.ts                        — workflow event body schemas + projection_workflows reducers
+    projections.ts                   — workflow journal append helper for tests/recovery over workflowRegistry
     executor.ts                      — top-level orchestration: declares plan, schedules launches, emits workflow.completed
     launch.ts                        — atom launch + retry (intertwined per current code; §10.1a)
     wait.ts                          — await-step state + multi-atom wait + cascade
@@ -1464,6 +1471,8 @@ Only the coordinator may:
 
 Direct readers observe projections at `seq N`. Coordinated calls acknowledge after journal append. Two terminals launching `codex` simultaneously serialize through the coordinator; launched-in-shell-A + waited-in-shell-B stays coherent because both go through the same `afterSeq` cursor.
 
+Local IPC bootstrap is discover-or-launch via `coordinator.json` plus socket readiness. The coordinator singleton lock (`coordinator.lock`) is a launch gate and ownership handoff mechanism for replacement; it is not the readiness detector. CLI-side `ensure` logic must not poll a lock file as a health signal.
+
 ### 11.3 HTTP is a gateway
 
 `http://127.0.0.1:<port>` is not the architectural boundary — it is a *carriage* for coordinator RPC. IPC and HTTP share identical command semantics; only wire format differs. Local security is filesystem ownership on the socket; HTTP auth applies to network gateways.
@@ -1563,7 +1572,7 @@ External edits never synthesize backfilled Journal events. They are first-class 
 
 ### 12.4 Simulation
 
-`SimulationRuntime` is an alternative `Runtime` implementation that reproduces the entire system deterministically. The 6 ports (`time`, `ids`, `storage`, `process`, `paths`, `env`) are the injection surface; every byte of behavior traces to either port input or injected events/corpus state. Repeated runs with identical inputs produce byte-identical journal segments, projections, and exports.
+`SimulationRuntime` is an alternative `Runtime` implementation that reproduces the entire system deterministically. The 6 ports (`time`, `ids`, `storage`, `process`, `paths`, `env`) are the injection surface; every byte of behavior traces to either port input or injected events/corpus state. Repeated runs with identical inputs produce byte-identical Journal rows, projections, and exports.
 
 #### 12.4.1 Coverage
 
@@ -1735,7 +1744,7 @@ This section documents the **design delta** between today's codebase and the end
 | `src/client/` | `store/queries/` + `transport/ipc/client.ts` + `transport/http/client.ts` |
 | `src/bridge/` transport | `transport/` |
 | `status.json`, `launch.json`, `runtime.json`, `exit.json`, `progress.jsonl` | SQLite `events` + `projection_*` tables |
-| Custom segment rotation, checkpoint files, advisory lockfile | SQLite WAL + `BEGIN IMMEDIATE` transactions |
+| Custom segment rotation, checkpoint files, Journal writer lockfile | SQLite WAL + `BEGIN IMMEDIATE` transactions |
 | `result.md` (authority) | `<os-tmpdir>/coral-jobs/<id>/result.md` (materialized view; job-directory contract) |
 | `TerminalResult` (single struct) | `JobTerminal` + `JobDiagnostics` + `JobView` (three concerns) |
 | `TerminalResult.exitCode` | `outcome.provider_exit.code` |
@@ -1777,11 +1786,11 @@ Concrete pathologies in today's codebase that disappear structurally when this a
 **Current blast radius**: `src/execution/recovery-core.ts`, `src/execution/lifecycle/recovery-actions.ts`, `src/execution/lifecycle/cross-namespace-adoption.ts`, `src/execution/lifecycle/ownership-checker.ts`, `src/execution/lifecycle/claim-protocol.ts`.
 
 **Why this architecture eliminates it**:
-- `~/.coral/store/writer.lock` is a single filesystem advisory lock. Two backend instances cannot both hold it; the second one blocks or fails fast.
-- Backend identity is not tied to the bundle path. It is tied to the journal directory and its lock. Reinstalling the bundle does not create a new "instance" — only one coordinator exists per store, regardless of which bundle path spawned it.
+- The per-flavor coordinator singleton lock (`~/.coral/run[-dev]/coordinator.lock`) is the launch gate, and `coordinator.json` + socket readiness is the discovery signal. Two compatible backend instances cannot both complete bootstrap for the same flavor; the contender waits, requests handoff, or replaces only after verified ownership.
+- Backend identity is not tied to the bundle path. It is tied to the coordinator discovery record, process identity, bundle hash, and flavor. Reinstalling the bundle does not create a parallel live instance — only one compatible coordinator serves a flavor at a time.
 - Recovery = pure `replay()` over the single global journal. There is no "other backend's jobs" category to adopt — there is only the journal.
 - Reconciliation compares projected running state to the process table and appends new facts (e.g., `wrapper_lost`) when reality disagrees. No classifier over file-presence matrices.
-- If the bundle-swap handoff is desired (old coordinator shuts down, new one takes over), the sequence is: old coordinator closes → releases `writer.lock` → new coordinator acquires lock → replays journal → reconciles against process table. Jobs never become invisible.
+- If the bundle-swap handoff is desired (old coordinator shuts down, new one takes over), the sequence is: old coordinator closes → removes discovery/lock ownership → new coordinator writes its discovery record after socket readiness → replays journal → reconciles against process table. Jobs never become invisible.
 
 Lifecycle clarifications:
 - Lock probe result is cached per `(pid, snapshot.processStartedAt)` within the acquire loop; cache invalidates when the observed snapshot key changes.
@@ -1952,7 +1961,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Corpus authority**: the markdown filesystem at `~/.coral/kb/` (git-tracked). The authoritative source for knowledge content (notes, sources, principles, communities, entity graph). Truth is the current file contents; no event history.
 - **Journal substrate**: SQLite database (`store.db`) — holds the events table, base projection tables, and `equipment_cursors`. Not a "global store"; it is the substrate for Journal authority only.
 - **Corpus substrate**: filesystem directory tree under `~/.coral/kb/`. Git-tracked; Obsidian-editable.
-- **Store**: the single SQLite database at `~/.coral/data/store/store.db`. Holds events + projections for Journal domains. KB indexes are projections too but live at `~/.coral/data/kb/` (device-local) since they derive from Corpus, not Journal.
+- **Store**: the single SQLite database at `~/.coral/data/store/store.db` in prod and `~/.coral/data-dev/store/store.db` in dev. Holds events + projections for Journal domains. KB indexes are projections too but live under `~/.coral/data/kb/` (prod) or `~/.coral/data-dev/kb/` (dev) since they derive from Corpus, not Journal.
 - **Events table**: append-only SQL table keyed by `seq` (auto-increment). The only durable truth.
 - **Projection tables**: SQL read models (`projection_jobs`, `projection_sessions`, `projection_workflows`, etc.) maintained incrementally by event reducers in the same transaction that appends events.
 - **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflows}.ts` plus `kb/queries.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
@@ -1965,7 +1974,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **CauseRef**: `{ stream: {kind,id}, seq }`. A pointer to the event that caused this outcome. Used by `TerminalOutcome.failed` and `workflow.completed`.
 - **Projection rebuild**: `DROP` + repopulate `projection_*` tables from the events table. Pure, deterministic, bounded by events count.
 - **Reconciliation**: imperative post-startup phase that compares projected state to observed world (processes, DB state) and appends new events when they disagree.
-- **Export**: a materialized file outside the database (`result.md`, KB markdown). Rebuildable from events.
+- **Export**: a materialized file outside its authority, such as a Journal job's `result.md`. Rebuildable from the relevant authority. KB markdown is not an export; it is the Corpus authority.
 - **JobView**: the projected read shape for a job — stable launch identity (`sessionId`, `provider`, `projectRoot`, `backendNamespace`, `bundleHash`, `jobKind`), lifecycle summary (`phase`, `terminal`, `diagnostics`), workflow linkage (`parentWorkflowJobId`, `workflowSlot`), `createdAt`, `lastSeq`. Children derived by SQL query, not embedded.
 - **WorkflowView**: the projected read shape for a workflow — plan, slot outcomes, overall outcome, causeRef, lastSeq.
 - **WorkflowPlan**: `{ slots: WorkflowSlot[], labels: Record<slotId, label> }`. Declared once per workflow via `workflow.plan.declared`.
@@ -2019,16 +2028,4 @@ The two-authority model is not an asymmetry to apologize for — it is Coral's *
 
 Five elegance axes hold (inevitable / self-evident / essential / natural / resonant) with zero cost-axis residue. Adversarial review rounds have converged; the design now resists further sharpening without violating one of the axes.
 
-This document is the sole design reference for any `/coral:plan` session implementing this architecture.
-
----
-
-## Amendments
-
-Tracked deviations from the original design adopted during implementation. Amendments are historical notes, not standing exceptions: if an amendment conflicts with §10 steady-state topology, deleted-tree rules, or layering invariants, §10 wins and the amendment must be folded back into the body or removed.
-
-- **Dev data path layout**. Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
-- **Single SQL schema authority**. `src/store/schemas/001_initial.sql` is the canonical clean-slate baseline and the first applied schema file. `src/store/schema.sql` was removed to avoid duplicate DDL authority; pre-merge schema changes edit `001_initial.sql` in place, and `002+` versioning begins only after the first main merge.
-- **Durable result artifact path**. The authoritative wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/exports/result-artifact.ts`. `~/.coral/exports/jobs/<jobId>/` remains a future tooling path, not today's authoritative artifact location.
-- **IPC bootstrap detection**. `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling. The singleton lock remains the launch gate but is not the detection mechanism.
-- **Source import readiness contract**. `kb source import` is now specified as a job-owned ingest attempt with explicit readiness (`commit | base-search | active-vector | all-equipped`). Corpus writes stay authoritative; Orama and needle are CorpusConsumers, and retrieval readiness is observed through `waitFreshUntil('corpus', version, consumerId)` after commit.
+This document's canonical body and invariants are the sole design reference for any `/coral:plan` session implementing this architecture. Implementation-time corrections are folded into the relevant sections above; they are not maintained as standing amendments.

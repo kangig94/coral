@@ -34,7 +34,7 @@ export function communitiesDir(root: string = kbRoot()): string {
 }
 
 export function kbRuntimeDir(flavor: BuildFlavor = currentBuildFlavor()): string {
-  return join(coralRoot(), 'data', flavor === 'dev' ? 'kb-dev' : 'kb');
+  return join(coralRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
 }
 
 export function oramaSnapshotDir(runtimeRoot: string = kbRuntimeDir()): string {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveBuildFlavor } from '#src/runtime/flavor.js';
 import { composeCoralPaths } from '#src/infra/coral-paths.js';
+import { kbRuntimeDir } from '#src/kb/paths.js';
 
 const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'equipment'] as const;
 
@@ -48,5 +49,8 @@ describe('flavor path separation', () => {
     expect(dev.coordinator.runDir).toContain('run-dev');
     expect(dev.exports.jobsRoot).toContain('exports-dev/jobs');
     expect(dev.equipment.equipmentRoot).toContain('data-dev/equipment');
+    expect(kbRuntimeDir(devFlavor)).toContain('data-dev/kb');
+    expect(kbRuntimeDir(devFlavor)).not.toContain('data/kb-dev');
+    expect(kbRuntimeDir(prodFlavor)).toContain('data/kb');
   });
 });
