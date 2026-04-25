@@ -41,6 +41,7 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transpor
 import type { RpcPorts } from '../../transport/rpc-ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import { noteEntryId, sourceEntryId } from '../../kb/entry-types.js';
+import type { KbRef } from '../../store/envelope.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
@@ -148,7 +149,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   const kbRefsForOperation = (
     operation: string,
     args: Record<string, unknown>,
-  ): Array<{ entryId: string }> | undefined => {
+  ): Array<Pick<KbRef, 'entryId'>> | undefined => {
     const slug = typeof args.note === 'string' ? args.note : typeof args.slug === 'string' ? args.slug : undefined;
     if (slug !== undefined && (operation === 'update' || operation === 'delete')) {
       return [{ entryId: noteEntryId(slug) }];

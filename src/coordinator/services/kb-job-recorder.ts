@@ -5,6 +5,7 @@ import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch
 import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
+import type { KbRef } from '../../store/envelope.js';
 
 type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, never>;
 
@@ -145,7 +146,7 @@ export class KbJobRecorder {
     code: string;
     message: string;
     detail: unknown;
-    kbRefs?: Array<{ entryId: string }>;
+    kbRefs?: Array<Pick<KbRef, 'entryId'>>;
   }): void {
     this.deps.progressStore.appendEvent({
       type: 'job.progress.emitted',

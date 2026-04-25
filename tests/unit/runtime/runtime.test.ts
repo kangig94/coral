@@ -218,7 +218,7 @@ describe('createRealRuntime', () => {
 
     try {
       const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime();
+      const runtime = createMockedRuntime('prod');
 
       expect(runtime.storage.writeAtomicDurableSync(statePath, '{}')).toBe(false);
       expect(openSyncMock).toHaveBeenCalledWith(`${statePath}.tmp`, 'w');
@@ -248,7 +248,7 @@ describe('createRealRuntime', () => {
 
     try {
       const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime();
+      const runtime = createMockedRuntime('prod');
 
       expect(runtime.storage.appendFileDurableSync(logPath, 'event\n')).toBe(false);
       expect(openSyncMock).toHaveBeenCalledWith(logPath, 'a');
@@ -306,7 +306,7 @@ describe('createRealRuntime', () => {
 
     try {
       const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime();
+      const runtime = createMockedRuntime('prod');
 
       expect(runtime.storage.writeAtomicDurableSync(statePath, '{"ok":true}')).toBe(true);
       expect(fdatasyncSyncMock).toHaveBeenCalledWith(tempFd);

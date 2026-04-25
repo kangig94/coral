@@ -4,11 +4,11 @@ import { dirname, join } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './coral-paths.js';
+import { composeCoralPaths } from './coral-paths.js';
 import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { readBuildFlavor } from './bundle-manifest.js';
-import { coordinatorPaths } from './coordinator-paths.js';
 
 export interface CoordinatorDiscoveryRecord {
   pid: number;
@@ -165,15 +165,16 @@ function resolveDiscoveryRuntime(runtime?: DiscoveryRuntime): ResolvedDiscoveryR
   };
 }
 
-function discoveryFilePath(flavor: BuildFlavor, runtime?: Pick<ResolvedDiscoveryRuntime, 'env' | 'paths'>): string {
-  if (runtime?.paths !== undefined) {
-    return runtime.paths.coral.coordinator.infoFile;
-  }
+function discoveryFilePath(flavor: BuildFlavor, deps: ResolvedDiscoveryRuntime): string {
+  return resolveCoralPaths(flavor, deps).coordinator.infoFile;
+}
 
-  const env = runtime?.env ?? defaultEnv();
-  const envSnapshot = env.fullSnapshot?.() ?? process.env;
-  const baseDir = env.homedir === undefined ? undefined : join(env.homedir(), '.coral');
-  return coordinatorPaths(flavor, envSnapshot, baseDir === undefined ? undefined : { baseDir }).infoFile;
+function resolveCoralPaths(flavor: BuildFlavor, deps: ResolvedDiscoveryRuntime): CoralPaths {
+  if (deps.paths !== undefined) {
+    return deps.paths.coral;
+  }
+  const baseDir = deps.env.homedir === undefined ? undefined : join(deps.env.homedir(), '.coral');
+  return composeCoralPaths(flavor, baseDir === undefined ? undefined : { baseDir });
 }
 
 function flavorForPluginRoot(pluginRoot: string): BuildFlavor {
@@ -181,7 +182,7 @@ function flavorForPluginRoot(pluginRoot: string): BuildFlavor {
 }
 
 export function backendInfoPath(pluginRoot: string): string {
-  return discoveryFilePath(flavorForPluginRoot(pluginRoot));
+  return discoveryFilePath(flavorForPluginRoot(pluginRoot), resolveDiscoveryRuntime());
 }
 
 export function writeDiscoveryRecord(

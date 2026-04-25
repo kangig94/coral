@@ -5,6 +5,24 @@ import { decodeEventBody } from './body-codec.js';
 import type { EventsRow } from './schema.js';
 export { UpcasterRegistry, createEmptyRegistry } from './upcaster-registry.js';
 
+/**
+ * Cross-authority reference shape (GOD doc §2.4).
+ * - `entryId` alone: late-bound — resolves to current Corpus content.
+ * - `entryId + contentHash`: point-in-time — preserves historical meaning
+ *   even if the Corpus entry is later edited.
+ *
+ * Producers that intentionally only emit late-bound refs should type their
+ * surface as `Pick<KbRef, 'entryId'>` so the choice is visible in the code.
+ */
+export const kbRefSchema = z
+  .object({
+    entryId: z.string(),
+    contentHash: z.string().optional(),
+  })
+  .strict();
+
+export type KbRef = z.infer<typeof kbRefSchema>;
+
 const journalEventRefsSchema = z
   .object({
     jobId: z.string().optional(),
@@ -13,16 +31,7 @@ const journalEventRefsSchema = z
     workflowId: z.string().optional(),
     workflowSlotId: z.string().optional(),
     discussSessionId: z.string().optional(),
-    kbRefs: z
-      .array(
-        z
-          .object({
-            entryId: z.string(),
-            contentHash: z.string().optional(),
-          })
-          .strict(),
-      )
-      .optional(),
+    kbRefs: z.array(kbRefSchema).optional(),
   })
   .strict();
 

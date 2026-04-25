@@ -39,14 +39,9 @@ type LockSnapshot = {
 
 type CoordinatorLockRuntime = Pick<Runtime, 'env' | 'process' | 'storage' | 'time' | 'paths'>;
 
-type LockState = {
-  flavor: BuildFlavor;
-  record: LockRecord;
-};
-
 type IncumbentState = 'healthy_same' | 'healthy_replacing' | 'contended' | 'stale';
 
-const activeLocks = new Map<string, LockState>();
+const activeLocks = new Map<string, LockRecord>();
 
 type LockFileStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
 
@@ -335,7 +330,7 @@ export async function acquireLock(
     }
 
     if (writeLockFile(runtime, record)) {
-      activeLocks.set(instanceId, { flavor, record });
+      activeLocks.set(instanceId, record);
       return record;
     }
 
@@ -390,14 +385,11 @@ export function releaseLock(
     return;
   }
 
-  const state = activeLocks.get(key);
-  if (!state) {
+  const record = activeLocks.get(key);
+  if (!record) {
     return;
   }
 
-  removeLockIfSnapshotMatches(
-    runtime,
-    { raw: JSON.stringify(state.record), record: state.record },
-  );
+  removeLockIfSnapshotMatches(runtime, { raw: JSON.stringify(record), record });
   activeLocks.delete(key);
 }
