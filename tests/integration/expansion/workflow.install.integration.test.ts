@@ -15,6 +15,7 @@ import type { ExecResult, StoragePort } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { IpcClient } from '#src/transport/ipc/client.js';
 import type { EnsuredIpcClient } from '#src/transport/ipc/ensure.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const NEEDLE_VERSION = '0.2.0';
 const CGC_VERSION = 'v1.2.3';
@@ -256,16 +257,6 @@ function jsonResponse(value: unknown): Response {
 
 function binaryResponse(value: Buffer): Response {
   return new Response(new Uint8Array(value), { status: 200 });
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-  return { promise, resolve, reject };
 }
 
 function createErrnoError(code: string, path: string, message?: string): NodeJS.ErrnoException {
@@ -700,8 +691,8 @@ describe('expansion workflow/install integration (AC24)', () => {
 
   it('reports equipment_install_lock_contended while another install holds the runtime lock', async () => {
     const runtime = createRuntime();
-    const gate = deferred<void>();
-    const started = deferred<void>();
+    const gate = createDeferred<void>();
+    const started = createDeferred<void>();
     stubFetch(async () => {
       started.resolve();
       await gate.promise;

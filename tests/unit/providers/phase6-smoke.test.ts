@@ -12,6 +12,7 @@ import type {
   ProviderSpec,
 } from '#src/providers/contract.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const REGISTERED_PROVIDER_NAMES = ['claude', 'codex'] as const;
 type RegisteredProviderName = (typeof REGISTERED_PROVIDER_NAMES)[number];
@@ -21,16 +22,6 @@ const CLAUDE_BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
   systemPromptHash: 'sha256:smoke',
   permissionMode: 'default',
 };
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 type MockLease = ProviderServerLease & {
   close(outcome?: Error | void): void;
@@ -50,7 +41,7 @@ function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
 ): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  const closed = deferred<Error | void>();
+  const closed = createDeferred<Error | void>();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => rpcImpl(method, params));
   const subscribeMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handlers.add(handler);
@@ -349,7 +340,7 @@ describe('phase6 provider smoke', () => {
   it('emits aborted from the Claude leaf kernel when aborted mid-stream', async () => {
     const provider = getProductionProvider('claude');
     const controller = new AbortController();
-    const runStarted = deferred<void>();
+    const runStarted = createDeferred<void>();
     const runtime = makeRuntime({
       controller,
       runCliImpl: async (request) => {

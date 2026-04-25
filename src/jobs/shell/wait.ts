@@ -169,11 +169,7 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
-          const owner = {
-            provider: status.provider,
-            sessionId: status.sessionId,
-          };
-          if (!this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, status)) {
+          if (!this.isTerminalAndReleased(jobId, status.provider, status.sessionId, status)) {
             if (!isTerminalPhase(status.phase)) {
               return;
             }
@@ -269,7 +265,7 @@ export class WaitCoordinator {
           yield {
             type: 'queued',
             jobId,
-            sessionId: status.sessionId,
+            sessionId: status.sessionId ?? '',
             queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
             runningJobIds: launchCoordinator.getActiveJobIds(pool),
           };
@@ -411,12 +407,15 @@ export class WaitCoordinator {
 
   private isTerminalAndReleased(
     jobId: string,
-    providerName: string,
-    sessionId: string,
+    providerName: string | null,
+    sessionId: string | null,
     status: JobStatus,
   ): boolean {
     if (!isTerminalPhase(status.phase)) {
       return false;
+    }
+    if (providerName === null || sessionId === null) {
+      return true;
     }
 
     const session = this.deps.sessionManager.get(providerName, sessionId);

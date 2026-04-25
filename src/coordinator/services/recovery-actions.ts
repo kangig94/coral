@@ -65,9 +65,11 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
           log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
         }
       }
-      SessionManager.forProduction(action.status.projectRoot, runtime, undefined, emitSessionReleased, {
-        db: progressStore.getDb(),
-      }).releaseJob(action.status.sessionId, action.status.jobId);
+      if (action.status.sessionId !== null) {
+        SessionManager.forProduction(action.status.projectRoot, runtime, undefined, emitSessionReleased, {
+          db: progressStore.getDb(),
+        }).releaseJob(action.status.sessionId, action.status.jobId);
+      }
       switch (action.fault.kind) {
         case 'missing_launch_record':
           log(`Marked live job with missing launch record: ${action.jobId}\n`);
@@ -173,6 +175,12 @@ export function finalizeDeadAdoptedJob({
   progressStore,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
+  const sessionId = launchRecord.sessionId;
+  if (sessionId === null) {
+    log(`Skipped provider recovery for job ${jobId}: launch record has no session id\n`);
+    return;
+  }
+
   const exitRecord = progressStore.readExitProjection(jobId);
   if (exitRecord) {
     if (provider) {
@@ -187,11 +195,11 @@ export function finalizeDeadAdoptedJob({
         .then((result) => {
           const materialized = materializeProviderTerminal(progressStore, result.terminal, {
             jobId,
-            sessionId: launchRecord.sessionId,
+            sessionId,
           });
           service.completeRecoveredJob(
             jobId,
-            launchRecord.sessionId,
+            sessionId,
             materialized.terminal,
             phaseForOutcome(materialized.terminal.outcome),
             {
@@ -209,11 +217,11 @@ export function finalizeDeadAdoptedJob({
               kind: 'recovery_parse_failed',
               cause: { message: formatError(recoverErr) },
             },
-            { jobId, sessionId: launchRecord.sessionId },
+            { jobId, sessionId },
           );
           service.completeRecoveredJob(
             jobId,
-            launchRecord.sessionId,
+            sessionId,
             {
               content: '',
               outcome,
@@ -227,7 +235,7 @@ export function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalProjection(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      service.completeRecoveredJob(jobId, launchRecord.sessionId, persistedPayload, phase, {
+      service.completeRecoveredJob(jobId, sessionId, persistedPayload, phase, {
         exitCode: exitRecord.exitCode,
       });
       return;
@@ -248,7 +256,7 @@ export function finalizeDeadAdoptedJob({
             },
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
-    service.completeRecoveredJob(jobId, launchRecord.sessionId, { content: '', outcome }, phaseForOutcome(outcome), {
+    service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, phaseForOutcome(outcome), {
       exitCode: exitRecord.exitCode,
     });
     return;
@@ -256,7 +264,7 @@ export function finalizeDeadAdoptedJob({
 
   service.completeRecoveredJob(
     jobId,
-    launchRecord.sessionId,
+    sessionId,
     {
       content: '',
       outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },

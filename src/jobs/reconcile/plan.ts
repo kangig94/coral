@@ -136,6 +136,18 @@ function planJobRecovery(facts: RecoveryJobFacts, currentNamespace: string): Pla
     };
   }
 
+  if (isLivePhase(status.phase) && status.jobKind === 'kb') {
+    return {
+      bucket: 'staleRunning',
+      action: {
+        type: 'markError',
+        jobId: facts.jobId,
+        fault: { kind: 'wrapper_lost' },
+        status,
+      },
+    };
+  }
+
   if (
     facts.hasLaunchRequest &&
     status.phase === 'queued' &&

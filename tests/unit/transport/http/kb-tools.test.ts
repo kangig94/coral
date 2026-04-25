@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as MemoMod from '#src/kb/ops/memo.js';
 import { memoDir, notePathFromName } from '#src/kb/paths.js';
 import type * as SearchMod from '#src/kb/ops/search.js';
-import type * as SourceStoreMod from '#src/kb/ops/source-store.js';
 import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/read-contract.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import {
@@ -21,10 +20,8 @@ import {
   handleKbPrinciples,
   handleKbPromote,
   handleKbRead,
-  handleKbReindex,
   handleKbSearch,
   handleKbSourceDelete,
-  handleKbSourceImport,
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
@@ -33,7 +30,6 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),
-  persistPreparedSource: vi.fn(),
   deleteMemos: vi.fn(),
   purgeMemos: vi.fn(),
   files: new Map<string, string>(),
@@ -63,14 +59,6 @@ vi.mock('#src/kb/ops/search.js', async () => {
   return {
     ...actual,
     searchKb: mockState.searchKb,
-  };
-});
-
-vi.mock('#src/kb/ops/source-store.js', async () => {
-  const actual = await vi.importActual<typeof SourceStoreMod>('#src/kb/ops/source-store.js');
-  return {
-    ...actual,
-    persistPreparedSource: mockState.persistPreparedSource,
   };
 });
 
@@ -173,23 +161,8 @@ describe('kb-tools', () => {
       () => handleKbUpdate({ note: 'contracts/overview', title: 'Updated', extra: true }, createKbSubsystem()),
     ],
     ['delete', () => handleKbDelete({ note: 'contracts/overview', extra: true }, createKbSubsystem())],
-    [
-      'source-import',
-      () =>
-        handleKbSourceImport(
-          {
-            filePath: '/tmp/bridge-removal-plan.pdf',
-            slug: 'bridge-removal-plan',
-            readiness: 'base-search',
-            async: false,
-            extra: true,
-          },
-          createKbSubsystem(),
-        ),
-    ],
     ['source-list', () => handleKbSourceList({ extra: true }, createKbSubsystem())],
     ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbSubsystem())],
-    ['reindex', () => handleKbReindex({ extra: true }, createKbSubsystem())],
     ['diagnose', () => handleKbDiagnose({ extra: true }, createKbSubsystem())],
     ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbSubsystem())],
     ['memo', () => handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext)],
@@ -223,26 +196,6 @@ describe('kb-tools', () => {
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'], mode: 'vector' },
-    });
-  });
-
-  it('keeps source-import as a coordinator-owned job route', async () => {
-    const kbSubsystem = createKbSubsystem();
-
-    const result = await handleKbSourceImport(
-      {
-        filePath: '/tmp/bridge-removal-plan.pdf',
-        slug: 'bridge-removal-plan',
-        readiness: 'base-search',
-        async: false,
-      },
-      kbSubsystem,
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      code: 'source_import_requires_job',
-      message: 'KB source import must run through the coordinator source-import job service.',
     });
   });
 

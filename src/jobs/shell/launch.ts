@@ -368,6 +368,9 @@ export class LaunchOrchestrator {
     const { abortRegistry, launchCoordinator } = this.deps;
     const jobId = launchRecord.jobId;
     const sessionId = launchRecord.sessionId;
+    if (sessionId === null) {
+      throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
+    }
     const signal = abortRegistry.getSignal(jobId);
     if (!signal) {
       admission.cancel();

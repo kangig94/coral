@@ -36,7 +36,7 @@ export class JobAbortService {
 
       const status = this.deps.progressStore.readStatus(jobId);
       const pool = this.deps.jobPools.get(jobId) ?? 'default';
-      if (status?.phase === 'queued' && this.deps.launchCoordinator.cancelQueued(jobId, pool)) {
+      if (status?.phase === 'queued' && status.sessionId !== null && this.deps.launchCoordinator.cancelQueued(jobId, pool)) {
         this.finishQueuedAbort(jobId, status.sessionId, 'queue_shutdown');
         aborted.push(jobId);
         continue;

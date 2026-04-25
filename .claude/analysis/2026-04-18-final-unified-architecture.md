@@ -213,8 +213,8 @@ CREATE TABLE projection_jobs (
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
   diagnostics             TEXT,
-  session_id              TEXT NOT NULL,
-  provider                TEXT NOT NULL,
+  session_id              TEXT,            -- NULL for coordinator-owned internal KB jobs
+  provider                TEXT,            -- NULL for coordinator-owned internal KB jobs
   project_root            TEXT NOT NULL,
   backend_namespace       TEXT NOT NULL,
   bundle_hash             TEXT,
@@ -514,6 +514,8 @@ type SourceImportReadiness =
 ```
 
 The default CLI experience may create the job and wait internally, but the underlying contract is job/wait. The default readiness is `base-search`: after `kb source import paper.pdf` returns, `kb search paper` should observe the document. Stricter readiness (`active-vector` or `all-equipped`) is explicit because it binds the command to embedding and equipment latency.
+
+**Explicit reindex is also coordinator-owned**: `kb reindex` rebuilds Corpus text artifacts and then waits for base-search freshness through the CorpusConsumer driver. It records an internal `kb.reindex` job on `job/<id>` for recovery and observability, but it is not a provider/session job and has `session_id = NULL`, `provider = NULL`. Fast KB reads, note writes, memo operations, and normal search remain direct commands because they are expected to be immediate.
 
 **Workflow context lives on envelope refs, not in body**:
 A child job launched by a workflow carries envelope-level references, not body fields:
@@ -993,12 +995,12 @@ Projection types (all maintained in SQLite):
 ```ts
 type JobView = {
   jobId: string;
-  sessionId: string;
-  provider: string;
+  sessionId: string | null;
+  provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash: string | null;
-  jobKind: 'provider' | 'workflow';
+  jobKind: 'provider' | 'workflow' | 'kb';
   phase: 'queued' | 'running' | 'completed' | 'error' | 'aborted';
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics | null;
@@ -1106,8 +1108,6 @@ src/
   coordinator/                       ← single-writer daemon; owns live state
     bootstrap.ts                     — bundle entrypoint; argv parsing + `--smoke-open-store` bootstrap
     coordinator.ts                   — composition root (factory + world + state + lifecycle)
-    api.ts                           — thin public seam (7 lines); exports `ExecutionService` +
-                                       public coordinator contracts only
     contracts.ts                     — coordinator request/launch/wait/recovery port types
     execution-service.ts             — request-scoped launch/resume/fork/workflow orchestration
     workflow-cleanup.ts              — workflow-session artifact cleanup dispatch
@@ -1130,6 +1130,7 @@ src/
       backend-world.ts, create-backend-core.ts, execution-services.ts
     services/                        — request/repair services factored out of coordinator.ts
       job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
+      kb-source-import-service.ts, kb-reindex-service.ts,
       workflow-execution-service.ts, recovery-service.ts,
       continuity-consumer.ts, execution-policies.ts
     equipment/                       — active equipment slot lifecycle + RPC surface
@@ -1203,7 +1204,6 @@ src/
     time.ts                          — clock abstraction (real impl)
 
   jobs/                              ← domain: jobs events + projections + shell
-    api.ts                           — coordinator/transport-facing jobs facade
     consumer.ts                      — Journal projection consumer registration for jobs
     job-store.ts                     — journal query/read-through seam with draft fallback for recovery
     events.ts                        — jobs event body schemas

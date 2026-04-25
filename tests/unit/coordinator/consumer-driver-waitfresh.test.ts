@@ -45,7 +45,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
 
     try {
       let resolved = false;
-      const waitPromise = driver.waitFreshUntil(0, consumerId, 5000).then(() => {
+      const waitPromise = driver.waitFreshUntil('journal', 0, consumerId, 5000).then(() => {
         resolved = true;
       });
 
@@ -71,7 +71,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
 
     try {
       let resolved = false;
-      const waitPromise = driver.waitFreshUntil(10, consumerId, 5000).then(() => {
+      const waitPromise = driver.waitFreshUntil('journal', 10, consumerId, 5000).then(() => {
         resolved = true;
       });
 
@@ -110,7 +110,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
       let resolveCalls = 0;
       let rejectCalls = 0;
 
-      const observed = driver.waitFreshUntil(100, consumerId, 50).then(
+      const observed = driver.waitFreshUntil('journal', 100, consumerId, 50).then(
         () => {
           resolveCalls += 1;
           return 'resolved' as const;
@@ -149,7 +149,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
     const { db, driver, consumerId } = createDriver();
 
     try {
-      const waits = Array.from({ length: 1000 }, () => driver.waitFreshUntil(100, consumerId, 50).catch((error) => error));
+      const waits = Array.from({ length: 1000 }, () => driver.waitFreshUntil('journal', 100, consumerId, 50).catch((error) => error));
 
       await vi.advanceTimersByTimeAsync(50);
 
@@ -175,13 +175,13 @@ describe('ConsumerDriver waitFreshUntil', () => {
     try {
       let resolveCount = 0;
       const waits = [
-        driver.waitFreshUntil(5, consumerId, 5000).then(() => {
+        driver.waitFreshUntil('journal', 5, consumerId, 5000).then(() => {
           resolveCount += 1;
         }),
-        driver.waitFreshUntil(5, consumerId, 5000).then(() => {
+        driver.waitFreshUntil('journal', 5, consumerId, 5000).then(() => {
           resolveCount += 1;
         }),
-        driver.waitFreshUntil(5, consumerId, 5000).then(() => {
+        driver.waitFreshUntil('journal', 5, consumerId, 5000).then(() => {
           resolveCount += 1;
         }),
       ];

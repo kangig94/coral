@@ -57,6 +57,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort-service.ts',
   'src/coordinator/services/job-launch-service.ts',
   'src/coordinator/services/job-wait-service.ts',
+  'src/coordinator/services/kb-reindex-service.ts',
   'src/coordinator/services/kb-source-import-service.ts',
   'src/coordinator/services/recovery-actions.ts',
   'src/coordinator/services/recovery-coordinator.ts',

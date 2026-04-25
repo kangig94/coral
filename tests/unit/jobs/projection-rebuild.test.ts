@@ -131,7 +131,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
 
       const target = appended.at(-1)?.seq ?? 0;
       driver.notify('journal', target);
-      await driver.waitFreshUntil(target, 'jobs');
+      await driver.waitFreshUntil('journal', target, 'jobs');
 
       expect(
         db

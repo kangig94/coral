@@ -123,6 +123,7 @@ function makeStatus(
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
     backendNamespace: CURRENT_NAMESPACE,
+    jobKind: 'provider',
     phase,
     updatedAt: NOW,
   }
@@ -310,6 +311,36 @@ describe('planRecovery', () => {
         type: 'markError',
         jobId: 'ghost-job',
         fault: { kind: 'ghost_launch' },
+        status,
+      },
+    ])
+  })
+
+  it('marks live internal KB jobs as wrapper_lost instead of provider recovery', () => {
+    const status = makeStatus('kb-reindex-job', 'running', {
+      sessionId: null,
+      provider: null,
+      jobKind: 'kb',
+    })
+    const snapshot = new InMemoryRecoverySnapshot().addJob({
+      jobId: 'kb-reindex-job',
+      status,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
+      runtime: {
+        transport: 'internal',
+        operation: 'kb.reindex',
+        startTime: NOW,
+      },
+    })
+
+    const plan = planRecovery(snapshot)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
+      {
+        type: 'markError',
+        jobId: 'kb-reindex-job',
+        fault: { kind: 'wrapper_lost' },
         status,
       },
     ])

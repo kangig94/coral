@@ -10,6 +10,7 @@ import { installResponseSchema } from '#src/expansion/contracts.js';
 import { equipmentDataDir, equipmentInstallLockPath } from '#src/expansion/paths.js';
 import { equipmentAddonStrategy } from '#src/expansion/strategies/equipment-addon.js';
 import { installExpansion, removeInstallArtifacts } from '#src/expansion/install.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const createdRoots: string[] = [];
 
@@ -49,16 +50,6 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
       coralSnapshot: () => ({}),
     },
   };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-  return { promise, resolve, reject };
 }
 
 describe('installExpansion', () => {
@@ -131,8 +122,8 @@ describe('installExpansion', () => {
   it('returns equipment_install_lock_contended when another install holds the lock', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const blocker = deferred<void>();
-    const started = deferred<void>();
+    const blocker = createDeferred<void>();
+    const started = createDeferred<void>();
     const installSpy = vi.spyOn(equipmentAddonStrategy, 'install').mockImplementation(async () => {
       started.resolve();
       await blocker.promise;

@@ -402,24 +402,27 @@ export class JobStore implements JobProgressStore {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
     const refs = {
       jobId,
-      ...(launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
+      ...(launch.sessionId !== null && launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
       ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
       ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
     };
-    const body =
-      launch.jobKind === 'kb'
-        ? {
-            projectRoot: launch.projectRoot,
-            backendNamespace: launch.backendNamespace,
-            bundleHash: launch.bundleHash,
-            jobKind: launch.jobKind,
-            pool: launch.pool,
-            enqueueSequence: launch.enqueueSequence,
-            operation: launch.operation ?? 'kb.source_import',
-            request: { ...launch.request },
-            createdAt: launch.createdAt,
+    const body = launch.jobKind === 'kb'
+      ? {
+          projectRoot: launch.projectRoot,
+          backendNamespace: launch.backendNamespace,
+          bundleHash: launch.bundleHash,
+          jobKind: launch.jobKind,
+          pool: launch.pool,
+          enqueueSequence: launch.enqueueSequence,
+          operation: launch.operation ?? 'kb.source_import',
+          request: { ...launch.request },
+          createdAt: launch.createdAt,
+        }
+      : (() => {
+          if (launch.sessionId === null || launch.provider === null) {
+            throw new Error(`Provider job '${jobId}' requires sessionId and provider.`);
           }
-        : {
+          return {
             sessionId: launch.sessionId,
             provider: launch.provider,
             projectRoot: launch.projectRoot,
@@ -438,6 +441,7 @@ export class JobStore implements JobProgressStore {
             },
             createdAt: launch.createdAt,
           };
+        })();
 
     this.appendEvent({
       type: 'job.launch.requested',
@@ -468,7 +472,13 @@ export class JobStore implements JobProgressStore {
       },
       bodyVersion: 1,
       body:
-        runtime.transport === 'app-server'
+        runtime.transport === 'internal'
+          ? {
+              transport: 'internal',
+              operation: runtime.operation,
+              startedAt: runtime.startTime,
+            }
+          : runtime.transport === 'app-server'
           ? {
               transport: 'app-server',
               startedAt: runtime.startTime,
@@ -546,7 +556,7 @@ export class JobStore implements JobProgressStore {
     }
   }
 
-  appendProgress(jobId: string, sessionId: string, message: string): number {
+  appendProgress(jobId: string, sessionId: string | null, message: string): number {
     const stamped = formatProgressMessage(this.jobStartedAt.get(jobId), this.runtime.time.now(), message);
     const detail = this.detail(jobId);
     const status = detail.status;
@@ -557,7 +567,7 @@ export class JobStore implements JobProgressStore {
       project: status?.projectRoot,
       refs: {
         jobId,
-        sessionId,
+        ...(sessionId === null ? {} : { sessionId }),
       },
       bodyVersion: 1,
       body: {
@@ -571,7 +581,7 @@ export class JobStore implements JobProgressStore {
 
   appendTerminal(
     jobId: string,
-    sessionId: string,
+    sessionId: string | null,
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions = {},
@@ -588,7 +598,7 @@ export class JobStore implements JobProgressStore {
       project: status?.projectRoot,
       refs: {
         jobId,
-        sessionId,
+        ...(sessionId === null ? {} : { sessionId }),
       },
       bodyVersion: 1,
       body: {

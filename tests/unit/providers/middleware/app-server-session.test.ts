@@ -11,16 +11,7 @@ import type { AppServerContract } from '#src/providers/app-server/driver.js';
 import { bindAppServerNotificationHandler, requireAppServerLease } from '#src/providers/app-server/driver.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -45,7 +36,7 @@ type MockBridge = {
 
 function makeLease(options: { onSubscribe?: () => void; unsubscribeThrows?: boolean } = {}): MockLease {
   let handler: ((message: { method: string; params?: Record<string, unknown> }) => void) | null = null;
-  const closed = deferred<Error | void>();
+  const closed = createDeferred<Error | void>();
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     options.onSubscribe?.();
     handler = next;
@@ -162,8 +153,8 @@ describe('appServerSession', () => {
     const dynamicHandler = vi.fn();
     const staticHandler = vi.fn();
     const contract = makeContract({ onNotification: staticHandler, subscriptionPhase: 'afterInitialize' });
-    const started = deferred<void>();
-    const nextTerminal = deferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
+    const started = createDeferred<void>();
+    const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'completed' }, 'bound-handler');
     const provider: Provider = async function* leaf(_request, nextRuntime) {
       const clearNotificationBinding = bindAppServerNotificationHandler(nextRuntime, dynamicHandler);
@@ -200,8 +191,8 @@ describe('appServerSession', () => {
     const runtime = makeRuntime(lease, controller);
     const interrupt = vi.fn(async () => {});
     const contract = makeContract({ interrupt });
-    const started = deferred<void>();
-    const nextTerminal = deferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
+    const started = createDeferred<void>();
+    const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'aborted', reason: 'signal_abort' });
     const provider: Provider = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
@@ -240,8 +231,8 @@ describe('appServerSession', () => {
     const bridge = makeBridge();
     const runtime = makeRuntime(lease, new AbortController(), bridge);
     const contract = makeContract();
-    const started = deferred<void>();
-    const nextTerminal = deferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
+    const started = createDeferred<void>();
+    const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent(
       { kind: 'failed' },
       '',

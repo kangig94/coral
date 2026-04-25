@@ -51,7 +51,11 @@ export function markJobAsError(
   fault: JobRecoveryError,
   _log: (message: string) => void,
 ): void {
-  if (jobRecoveryNeedsDomainEvent(fault) && progressStore.readLaunchProjection(status.jobId) === null) {
+  if (
+    status.jobKind !== 'kb' &&
+    jobRecoveryNeedsDomainEvent(fault) &&
+    progressStore.readLaunchProjection(status.jobId) === null
+  ) {
     progressStore.appendLaunchRequested(status.jobId, syntheticLaunchRecord(status));
   }
 

@@ -339,6 +339,7 @@ class KbRuntimeImpl implements KbRuntime {
 
   async ensureIndex(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
+      let rebuilt = false;
       await this.withMutationLock(async (mutation) => {
         const state = this.readIndexStateIfPresent();
         if (!this.textArtifactsNeedRebuild(state)) {
@@ -346,7 +347,12 @@ class KbRuntimeImpl implements KbRuntime {
         }
 
         await rebuildTextArtifactsAndPersistRepairState(this, mutation, captureIndexStateSnapshot(state));
+        rebuilt = true;
       });
+      if (rebuilt) {
+        this.oramaSnapshotStore.clear();
+        this.oramaSnapshotStore.removeSnapshot();
+      }
     }
 
     return this.readIndex() ?? emptyIndex();
@@ -368,6 +374,26 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     const loaded = await this.ensureOramaIndexReadOnly();
+    const loadedSnapshotAbsent = loaded.warnings?.includes('orama_snapshot_absent') === true;
+    if (!this.textArtifactsNeedRebuild(state) && !loadedSnapshotAbsent) {
+      return loaded;
+    }
+
+    if (!this.readOnlyOrama && state !== null && !this.textArtifactsNeedRebuild(state) && loadedSnapshotAbsent) {
+      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(
+        this.readIndexOrEmpty(),
+        { includeEmbeddings: false },
+      );
+      await this.baseProjection.installFullSnapshot(this.captureCorpusSnapshot(), preparedProjection);
+      const rebuiltOramaIndex = this.oramaSnapshotStore.getCache();
+      if (rebuiltOramaIndex !== null) {
+        return {
+          ...rebuiltOramaIndex,
+          index: this.readIndex() ?? emptyIndex(),
+        };
+      }
+    }
+
     if (this.textArtifactsNeedRebuild(state)) {
       return {
         ...loaded,

@@ -56,10 +56,8 @@ import {
   handleKbPrincipleRead,
   handleKbPrinciples,
   handleKbPromote,
-  handleKbReindex,
   handleKbSearch,
   handleKbSourceDelete,
-  handleKbSourceImport,
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
@@ -1487,14 +1485,18 @@ describe('execution backend server', () => {
           updateNote: (args: Record<string, unknown>) =>
             withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem)),
           deleteNote: (slug: string) => withKbAsync((kbSubsystem) => handleKbDelete({ note: slug }, kbSubsystem)),
-          createSource: (args: Record<string, unknown>) =>
-            withKbAsync((kbSubsystem) => handleKbSourceImport(args, kbSubsystem)),
+          createSource: async () =>
+            domainError(
+              'source_import_requires_coordinator_service',
+              'KB source import must run through the coordinator source-import job service.',
+            ),
           deleteSource: (slug: string) =>
             withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
           createMemo: (args: Record<string, unknown>, ctx: unknown) => withKb(() => handleKbMemo(args, ctx as never)),
           deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
             withKb(() => handleKbMemoDeleteConsolidated(args, ctx as never)),
-          reindex: () => withKbAsync((kbSubsystem) => handleKbReindex({}, kbSubsystem)),
+          reindex: async () =>
+            domainError('reindex_requires_coordinator_service', 'KB reindex must run through the coordinator service.'),
         },
         discuss: {
           seed: handleDiscussSeed,
@@ -1584,7 +1586,9 @@ describe('execution backend server', () => {
         handleKbPromote: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:promote', args })),
         handleKbUpdate: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:update', args })),
         handleKbDelete: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:delete', args })),
-        handleKbSourceImport: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:source-import', args })),
+        handleKbSourceImport: vi.fn(async (args: unknown) =>
+          domainSuccess({ status: 'running', route: 'kb:source-import', args }),
+        ),
         handleKbSourceList: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:source-list', args })),
         handleKbSourceDelete: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:source-delete', args })),
         handleKbReindex: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:reindex', args })),
@@ -2263,8 +2267,9 @@ describe('execution backend server', () => {
           slug: 'slug',
           readiness: 'base-search',
         },
-        expectedStatus: 201,
+        expectedStatus: 202,
         expectedBody: {
+          status: 'running',
           route: 'kb:source-import',
           args: {
             filePath: '/tmp/source.pdf',

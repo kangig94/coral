@@ -33,8 +33,8 @@ export interface JobExit extends JobTerminal {
 
 export interface JobStatus {
   jobId: string;
-  sessionId: string;
-  provider: string;
+  sessionId: string | null;
+  provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
@@ -49,8 +49,8 @@ export interface JobStatus {
 export const jobStatusSchema = z
   .object({
     jobId: z.string(),
-    sessionId: z.string(),
-    provider: z.string(),
+    sessionId: z.string().nullable(),
+    provider: z.string().nullable(),
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
@@ -75,8 +75,8 @@ export function safeParseJobStatus(value: unknown) {
 
 export interface JobLaunch {
   jobId: string;
-  sessionId: string;
-  provider: string;
+  sessionId: string | null;
+  provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
@@ -84,7 +84,7 @@ export interface JobLaunch {
   pool: string;
   enqueueSequence: number;
   providerAction?: ProviderAction;
-  operation?: 'kb.source_import';
+  operation?: 'kb.source_import' | 'kb.reindex';
   request: {
     prompt?: string;
     name?: string;
@@ -117,15 +117,25 @@ export interface AppServerRuntime {
   };
 }
 
-export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime;
+export interface InternalJobRuntime {
+  transport: 'internal';
+  operation: 'kb.source_import' | 'kb.reindex';
+  startTime: string;
+}
+
+export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime | InternalJobRuntime;
 
 export function isAppServerRuntime(record: JobRuntime | null | undefined): record is AppServerRuntime {
   return record?.transport === 'app-server';
 }
 
+export function isInternalJobRuntime(record: JobRuntime | null | undefined): record is InternalJobRuntime {
+  return record?.transport === 'internal';
+}
+
 export interface JobProgress {
   jobId: string;
-  sessionId: string;
+  sessionId: string | null;
   seq: number;
   type: 'progress' | 'terminal';
   ts: string;

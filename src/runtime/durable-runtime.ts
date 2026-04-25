@@ -11,7 +11,7 @@ export interface DurableCliRuntimeRecord {
 export function isDurableCliRuntime(
   record: { transport?: string } | null | undefined,
 ): record is DurableCliRuntimeRecord {
-  return record !== null && record !== undefined && record.transport !== 'app-server';
+  return record !== null && record !== undefined && (record.transport === undefined || record.transport === 'durable-cli');
 }
 
 export interface DurableProcessExit {

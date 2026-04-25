@@ -433,23 +433,13 @@ export class ConsumerDriver {
 
   waitFreshUntil(authority: 'journal', target: number, consumerId: string, timeoutMs?: number): Promise<void>;
   waitFreshUntil(authority: 'corpus', target: KbCorpusSnapshot, consumerId: string, timeoutMs?: number): Promise<void>;
-  waitFreshUntil(target: number, consumerId: string, timeoutMs?: number): Promise<void>;
   waitFreshUntil(
-    authorityOrTarget: Authority | number,
-    targetOrConsumerId: number | KbCorpusSnapshot | string,
-    consumerIdOrTimeoutMs?: string | number,
-    maybeTimeoutMs = 30000,
+    authority: Authority,
+    target: number | KbCorpusSnapshot,
+    consumerId: string,
+    timeoutMs = 30000,
   ): Promise<void> {
-    const authority: Authority = typeof authorityOrTarget === 'string' ? authorityOrTarget : 'journal';
-    const target = typeof authorityOrTarget === 'string' ? targetOrConsumerId : authorityOrTarget;
-    const consumerId = typeof authorityOrTarget === 'string'
-      ? consumerIdOrTimeoutMs
-      : targetOrConsumerId;
-    const timeoutMs = typeof authorityOrTarget === 'string'
-      ? maybeTimeoutMs
-      : (typeof consumerIdOrTimeoutMs === 'number' ? consumerIdOrTimeoutMs : 30000);
-
-    if (typeof consumerId !== 'string' || consumerId.length === 0) {
+    if (consumerId.length === 0) {
       throw documentedCoralSetupError('consumer_not_registered', { id: renderConsumerId(consumerId) });
     }
 

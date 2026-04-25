@@ -144,7 +144,7 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 - `result.md`: durable wait/follow export materialized from Journal terminal state
 - provider runtime scratch files such as stdout/stderr/env artifacts, owned by the runtime transport
-- KB source imports are internal jobs in the Journal/store, not provider jobs; they may still appear in job list/detail output with provider-like display value `kb`
+- KB source imports and explicit reindex runs are internal jobs in the Journal/store, not provider/session jobs; CLI display may label them as KB work even though `session_id` and `provider` are null in the projection
 
 ## Runtime Dependencies
 

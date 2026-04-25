@@ -29,7 +29,6 @@ import {
   handleKbPrincipleRead,
   handleKbPrinciples,
   handleKbPromote,
-  handleKbReindex,
   handleKbSearch,
   handleKbSourceDelete,
   handleKbSourceList,
@@ -64,6 +63,7 @@ import { belongsToNamespace } from '../../jobs/records.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
+import { KbReindexService } from '../services/kb-reindex-service.js';
 
 export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
   const runtime = options.runtime;
@@ -102,6 +102,13 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     progressStore: world.progressStore,
   });
   const kbSourceImportService = new KbSourceImportService({
+    runtime,
+    progressStore: world.progressStore,
+    backendNamespace: world.namespace,
+    bundleHash: identity.bundleHash,
+    waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+  });
+  const kbReindexService = new KbReindexService({
     runtime,
     progressStore: world.progressStore,
     backendNamespace: world.namespace,
@@ -345,7 +352,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
         return result;
       },
       reindex: async (ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbReindex({}, kbSubsystem));
+        const invocationContext = ctx ?? readOnlyInvocationContext;
+        const result = await withKbAsync((kbSubsystem) => kbReindexService.run(invocationContext, kbSubsystem));
         recordHostedKbFailure('reindex', {}, ctx, result);
         return result;
       },

@@ -16,7 +16,7 @@ import type {
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;
-  readonly sessionId: string;
+  readonly sessionId?: string | null;
   readonly namespace?: string;
   readonly project?: string;
   readonly correlationId?: string;
@@ -40,10 +40,17 @@ type RuntimeAppendStore = Pick<
 function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
-    sessionId: options.sessionId,
+    ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
     ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
     ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
   };
+}
+
+function requireSessionId(options: RuntimeIngestOptions, eventType: string): string {
+  if (options.sessionId === undefined || options.sessionId === null) {
+    throw new Error(`${eventType} requires a provider session id.`);
+  }
+  return options.sessionId;
 }
 
 function baseEvent(
@@ -168,9 +175,10 @@ export function materializeSessionInterrupted(
   fault: SessionInterruptedFault,
   options: RuntimeIngestOptions,
 ): TerminalOutcome {
+  const sessionId = requireSessionId(options, 'session.interrupted');
   return appendFailedEvent(
     progressStore,
-    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.interrupted', fault),
+    baseEvent(options, { kind: 'session', id: sessionId }, 'session.interrupted', fault),
     options,
   );
 }
@@ -180,9 +188,10 @@ export function materializeSessionProviderFailed(
   fault: SessionProviderFailedFault,
   options: RuntimeIngestOptions,
 ): TerminalOutcome {
+  const sessionId = requireSessionId(options, 'session.provider_failed');
   return appendFailedEvent(
     progressStore,
-    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', fault),
+    baseEvent(options, { kind: 'session', id: sessionId }, 'session.provider_failed', fault),
     options,
   );
 }
@@ -192,9 +201,10 @@ export function materializeSessionAdapterUnparseable(
   fault: SessionAdapterUnparseableFault,
   options: RuntimeIngestOptions,
 ): TerminalOutcome {
+  const sessionId = requireSessionId(options, 'session.adapter_unparseable');
   return appendFailedEvent(
     progressStore,
-    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', fault),
+    baseEvent(options, { kind: 'session', id: sessionId }, 'session.adapter_unparseable', fault),
     options,
   );
 }

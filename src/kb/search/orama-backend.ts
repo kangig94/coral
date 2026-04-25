@@ -381,8 +381,11 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
   }
 
   /** Materializes a full Orama projection from the current runtime corpus view. */
-  async prepareFullSnapshotForCurrentCorpus(index: KbIndex = this.runtime.readIndexOrEmpty()): Promise<PreparedOramaProjection> {
-    return this.prepareFullSnapshotForProjectedIndex({ index });
+  async prepareFullSnapshotForCurrentCorpus(
+    index: KbIndex = this.runtime.readIndexOrEmpty(),
+    options: { includeEmbeddings?: boolean } = {},
+  ): Promise<PreparedOramaProjection> {
+    return this.prepareFullSnapshotForProjectedIndex({ index, ...options });
   }
 
   /** Builds a complete projection from a provided index, optionally injecting generated community docs. */
@@ -390,10 +393,16 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     index: KbIndex;
     generatedCommunityDocs?: readonly CommunityDocument[];
     forceCommunityFresh?: boolean;
+    includeEmbeddings?: boolean;
   }): Promise<PreparedOramaProjection> {
     const nextIndex = cloneKbIndex(params.index);
     const { db, tokenizer } = await createOramaDb();
-    const documents = await this.buildDocumentsForIndex(nextIndex, params.generatedCommunityDocs, params.forceCommunityFresh);
+    const documents = await this.buildDocumentsForIndex(
+      nextIndex,
+      params.generatedCommunityDocs,
+      params.forceCommunityFresh,
+      params.includeEmbeddings ?? true,
+    );
 
     return {
       index: nextIndex,
@@ -429,6 +438,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     index: KbIndex,
     generatedCommunityDocs: readonly CommunityDocument[] = [],
     forceCommunityFresh?: boolean,
+    includeEmbeddings = true,
   ): Promise<KbOramaDocument[]> {
     const generatedCommunityDocsBySlug = new Map(generatedCommunityDocs.map((document) => [document.slug, document] as const));
     const communityFresh = forceCommunityFresh ?? areCommunityDocumentsFresh(this.runtime, index);
@@ -438,14 +448,15 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
       .map(([, entry]) => this.loadProjectionRecord(entry, generatedCommunityDocsBySlug))
       .filter((record): record is ProjectionRecord => record !== null);
 
-    return this.materializeDocuments(records, communityFresh);
+    return this.materializeDocuments(records, communityFresh, includeEmbeddings);
   }
 
   private async materializeDocuments(
     records: readonly ProjectionRecord[],
     communityFresh: boolean,
+    includeEmbeddings: boolean,
   ): Promise<KbOramaDocument[]> {
-    const provider = await this.getEmbeddingProvider();
+    const provider = includeEmbeddings ? await this.getEmbeddingProvider() : null;
     const authorityTexts = records.map((record) => buildRetrievalAuthorityText(record.entry.title, record.body));
     const embeddings = provider === null ? [] : await provider.embedDocuments(authorityTexts);
 

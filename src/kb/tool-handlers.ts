@@ -20,7 +20,6 @@ import {
   communityPathFromName,
 } from './paths.js';
 import { promote as kbPromote } from './ops/promote.js';
-import { reindex as kbReindex } from './ops/reindex.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources } from './ops/source-store.js';
 import { isNoteEntry } from './entry-types.js';
@@ -51,10 +50,8 @@ import {
   kbPrinciplesSchema,
   kbPromoteSchema,
   kbReadSchema,
-  kbReindexSchema,
   kbSearchSchema,
   kbSourceDeleteSchema,
-  kbSourceImportSchema,
   kbSourceListSchema,
   kbUpdateSchema,
 } from './tool-contracts.js';
@@ -414,19 +411,6 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   });
 }
 
-export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  void kbSubsystem;
-  const parsed = kbSourceImportSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return kbError(
-    'source_import_requires_job',
-    'KB source import must run through the coordinator source-import job service.',
-  );
-}
-
 export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
   const parsed = kbDiagnoseSchema.safeParse(args);
   if (!parsed.success) {
@@ -456,15 +440,6 @@ export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeB
     kbSubsystem.curateScheduler.scheduleDeferredCommit();
     return result;
   });
-}
-
-export async function handleKbReindex(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbReindexSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(() => kbReindex(kbSubsystem.kb));
 }
 
 export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

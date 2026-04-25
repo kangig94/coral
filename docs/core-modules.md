@@ -16,7 +16,7 @@ The CLI parses commands, follows detached launches via the `jobs.wait` IPC subsc
 
 ## Backend
 
-The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
+The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
 
 ## Runtime
 
@@ -47,13 +47,13 @@ Equipment is a coordinator-owned seam for optional runtime add-ons, not a separa
 
 ## Knowledge Base
 
-The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, memo lifecycle, source persistence, and background curation (community detection, entity consolidation). Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). The import job commits markdown into the Corpus, then waits for requested CorpusConsumer freshness when needed.
+The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, memo lifecycle, source persistence, and background curation (community detection, entity consolidation). Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). Explicit reindex is also coordinator-owned as an internal `kb.reindex` job: the KB op rebuilds text artifacts, and the coordinator service waits for base-search freshness. These jobs are Journal-observable process attempts, not provider/session jobs.
 
 The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional equipment CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
 
 ## Shared and Infrastructure
 
@@ -107,6 +107,6 @@ These are the load-bearing boundaries that must not leak:
 - Each domain facade is the only coordinator-facing surface for its domain.
 - The Journal read surface (`CoralStore`) is publicly exported; write primitives are internal.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
-- KB retrieval projections are rebuildable consumers of the Corpus authority; source import readiness waits on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
+- KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
 - Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

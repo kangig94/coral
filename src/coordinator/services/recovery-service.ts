@@ -41,6 +41,18 @@ import {
   type InterruptedProbeOutcome,
 } from './execution-policies.js';
 
+type ProviderLaunchRecord = JobLaunch & {
+  sessionId: string;
+  provider: string;
+  jobKind: Exclude<JobLaunch['jobKind'], 'kb'>;
+};
+
+function requireProviderLaunchRecord(launchRecord: JobLaunch, operation: string): asserts launchRecord is ProviderLaunchRecord {
+  if (launchRecord.jobKind === 'kb' || launchRecord.sessionId === null || launchRecord.provider === null) {
+    throw new Error(`${operation} requires a provider launch record.`);
+  }
+}
+
 export interface RecoveryServiceDeps {
   runtime: Runtime;
   sessionManager: SessionManager;
@@ -91,6 +103,7 @@ export class RecoveryService {
     launchRecord: JobLaunch,
     runtimeRecord: AppServerRuntime,
   ): Promise<void> {
+    requireProviderLaunchRecord(launchRecord, 'interruptAppServerJob');
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
     const appServer = providerEntry?.appServer;
     if (!appServer) {
@@ -126,6 +139,7 @@ export class RecoveryService {
     runtimeRecord: AppServerRuntime,
     options: { reason: InterruptedAppServerReason },
   ): Promise<void> {
+    requireProviderLaunchRecord(launchRecord, 'finalizeInterruptedAppServerJob');
     const status = this.deps.progressStore.readStatus(launchRecord.jobId);
     if (!status || isTerminalPhase(status.phase)) {
       return;
@@ -271,6 +285,7 @@ export class RecoveryService {
   }
 
   recoverQueuedJob(launchRecord: JobLaunch): string {
+    requireProviderLaunchRecord(launchRecord, 'recoverQueuedJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
@@ -292,6 +307,7 @@ export class RecoveryService {
   }
 
   adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void } {
+    requireProviderLaunchRecord(launchRecord, 'adoptRunningJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 

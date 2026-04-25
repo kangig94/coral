@@ -415,7 +415,16 @@ export async function executeCatalogRequest(
       const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      return unaryDomain(await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx), 201);
+      const result = await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx);
+      const response = domainResultToHttp(result);
+      if (!result.ok) {
+        return unaryHttp(response);
+      }
+      const data = result.data;
+      const status = typeof data === 'object' && data !== null && 'status' in data
+        ? (data as { status?: unknown }).status
+        : undefined;
+      return unary(response.body, status === 'running' || status === 'queued' ? 202 : 201);
     }
 
     case 'kb.source.delete': {

@@ -6,6 +6,7 @@ export type LaunchPool = 'default' | 'discuss' | 'curate';
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 export const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
+export type KbJobOperation = 'kb.source_import' | 'kb.reindex';
 
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }
@@ -72,15 +73,32 @@ export interface KbSourceImportJobLaunchRequestBody {
   pool: string;
   enqueueSequence: number;
   operation: 'kb.source_import';
-  request: {
-    filePath: string;
-    slug?: string;
-    readiness: SourceImportReadiness;
-  };
+  request: KbSourceImportJobRequest;
   createdAt: string;
 }
 
-export type JobLaunchRequestBody = ProviderJobLaunchRequestBody | KbSourceImportJobLaunchRequestBody;
+export interface KbReindexJobLaunchRequestBody {
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash?: string;
+  jobKind: 'kb';
+  pool: string;
+  enqueueSequence: number;
+  operation: 'kb.reindex';
+  request: Record<string, never>;
+  createdAt: string;
+}
+
+export type KbSourceImportJobRequest = {
+  filePath: string;
+  slug?: string;
+  readiness: SourceImportReadiness;
+};
+
+export type JobLaunchRequestBody =
+  | ProviderJobLaunchRequestBody
+  | KbSourceImportJobLaunchRequestBody
+  | KbReindexJobLaunchRequestBody;
 
 export const providerInstructionSchema = z
   .object({
@@ -118,7 +136,7 @@ export const providerJobLaunchRequestBodySchema = z
   })
   .strict();
 
-export const kbSourceImportJobLaunchRequestBodySchema = z
+const kbJobLaunchBaseSchema = z
   .object({
     projectRoot: z.string(),
     backendNamespace: z.string(),
@@ -126,6 +144,11 @@ export const kbSourceImportJobLaunchRequestBodySchema = z
     jobKind: z.literal('kb'),
     pool: z.string(),
     enqueueSequence: z.number().int().nonnegative(),
+    createdAt: z.string(),
+  });
+
+export const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+  .extend({
     operation: z.literal('kb.source_import'),
     request: z
       .object({
@@ -134,11 +157,18 @@ export const kbSourceImportJobLaunchRequestBodySchema = z
         readiness: sourceImportReadinessSchema,
       })
       .strict(),
-    createdAt: z.string(),
   })
   .strict();
 
-export const jobLaunchRequestBodySchema = z.discriminatedUnion('jobKind', [
+export const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+  .extend({
+    operation: z.literal('kb.reindex'),
+    request: z.object({}).strict(),
+  })
+  .strict();
+
+export const jobLaunchRequestBodySchema = z.union([
   providerJobLaunchRequestBodySchema,
   kbSourceImportJobLaunchRequestBodySchema,
+  kbReindexJobLaunchRequestBodySchema,
 ]);

@@ -124,8 +124,8 @@ export class KbSourceImportService {
     const createdAt = nowIsoString(this.deps.runtime.time);
     this.deps.progressStore.appendLaunchRequested(jobId, {
       jobId,
-      sessionId: '',
-      provider: 'kb',
+      sessionId: null,
+      provider: null,
       projectRoot: ctx.projectRoot,
       backendNamespace: this.deps.backendNamespace,
       bundleHash: this.deps.bundleHash,
@@ -140,7 +140,11 @@ export class KbSourceImportService {
       },
       createdAt,
     });
-    this.appendRuntimeStarted(jobId, ctx.projectRoot);
+    this.deps.progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: nowIsoString(this.deps.runtime.time),
+    });
 
     const run = this.run(jobId, request, ctx, kbSubsystem, this.deps.runtime.time.now());
     if (request.async) {
@@ -207,21 +211,6 @@ export class KbSourceImportService {
         detail,
       };
     }
-  }
-
-  private appendRuntimeStarted(jobId: string, projectRoot: string): void {
-    this.deps.progressStore.appendEvent({
-      type: 'job.runtime.started',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.deps.backendNamespace,
-      project: projectRoot,
-      refs: { jobId },
-      bodyVersion: 1,
-      body: {
-        startedAt: nowIsoString(this.deps.runtime.time),
-        providerMeta: { operation: 'kb.source_import' },
-      },
-    });
   }
 
   private appendProgress(jobId: string, projectRoot: string, message: string): void {

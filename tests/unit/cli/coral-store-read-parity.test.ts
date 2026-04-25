@@ -47,6 +47,10 @@ async function seedKbSearchSnapshot(): Promise<void> {
 
   try {
     await reindex(kb);
+    await kb.getBaseRetrievalSurface().apply({
+      snapshot: kb.captureCorpusSnapshot(),
+      db: kb.db,
+    });
   } finally {
     await closeNeedleBackend(kb);
     kb.db.close();

@@ -21,8 +21,8 @@ import type { EventsRow } from '../schema.js';
 
 type JobLaunchProjection = {
   jobId: string;
-  sessionId: string;
-  provider: string;
+  sessionId: string | null;
+  provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
@@ -30,7 +30,7 @@ type JobLaunchProjection = {
   pool: string;
   enqueueSequence: number;
   providerAction?: 'exec' | 'resume' | 'fork';
-  operation?: 'kb.source_import';
+  operation?: 'kb.source_import' | 'kb.reindex';
   request:
     | {
         prompt: string;
@@ -51,7 +51,8 @@ type JobLaunchProjection = {
         filePath: string;
         slug?: string;
         readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
-      };
+      }
+    | Record<string, never>;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
   createdAt: string;
@@ -79,7 +80,13 @@ type JobAppServerRuntimeProjection = {
   };
 };
 
-type JobRuntimeProjection = JobCliRuntimeProjection | JobAppServerRuntimeProjection | null;
+type JobInternalRuntimeProjection = {
+  transport: 'internal';
+  operation: 'kb.source_import' | 'kb.reindex';
+  startTime: string;
+};
+
+type JobRuntimeProjection = JobCliRuntimeProjection | JobAppServerRuntimeProjection | JobInternalRuntimeProjection | null;
 
 type JobExitProjection = {
   outcome: JobTerminal['outcome'];
@@ -94,7 +101,7 @@ type JobExitProjection = {
 
 type JobProgressProjection = {
   jobId: string;
-  sessionId: string;
+  sessionId: string | null;
   seq: number;
   type: 'progress' | 'terminal';
   ts: string;
@@ -363,10 +370,17 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
   const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
   const refs = decodeLaunchRefs(row);
   if (body.jobKind === 'kb') {
+    const request = body.operation === 'kb.source_import'
+      ? {
+          filePath: body.request.filePath,
+          ...(body.request.slug === undefined ? {} : { slug: body.request.slug }),
+          readiness: body.request.readiness,
+        }
+      : {};
     return {
       jobId,
-      sessionId: '',
-      provider: 'kb',
+      sessionId: null,
+      provider: null,
       projectRoot: body.projectRoot,
       backendNamespace: body.backendNamespace,
       bundleHash: body.bundleHash,
@@ -374,7 +388,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       pool: body.pool,
       enqueueSequence: body.enqueueSequence,
       operation: body.operation,
-      request: { ...body.request },
+      request,
       ...refs,
       createdAt: body.createdAt,
     };
@@ -425,6 +439,17 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
           : undefined,
         recoveryPolicy: 'session_continuity_only',
       },
+    };
+  }
+
+  if (parsed.transport === 'internal') {
+    if (parsed.operation !== 'kb.source_import' && parsed.operation !== 'kb.reindex') {
+      throw new Error('Internal job runtime requires a KB operation.');
+    }
+    return {
+      transport: 'internal',
+      operation: parsed.operation,
+      startTime: parsed.startedAt,
     };
   }
 
@@ -518,8 +543,8 @@ function projectionRowToStatus(
 
   return {
     jobId,
-    sessionId: projection.session_id ?? '',
-    provider: projection.provider ?? projection.job_kind,
+    sessionId: projection.session_id,
+    provider: projection.provider,
     projectRoot: projection.project_root,
     backendNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
@@ -711,7 +736,7 @@ export function readJobProgress(
       body: Uint8Array | Buffer;
     }>;
 
-  const sessionId = readProjectionRow(db, jobId)?.session_id ?? '';
+  const sessionId = readProjectionRow(db, jobId)?.session_id ?? null;
 
   return rows.flatMap<JobProgressProjection>((row) => {
     if (row.type === 'job.progress.emitted') {

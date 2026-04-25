@@ -57,10 +57,10 @@ export interface JobProgressStore {
   listJobIds(): string[];
   liveJobCountByNamespace(namespace: string): number;
   hydrateJobStartedAt(jobId: string, startTime: string): void;
-  appendProgress(jobId: string, sessionId: string, message: string): number;
+  appendProgress(jobId: string, sessionId: string | null, message: string): number;
   appendTerminal(
     jobId: string,
-    sessionId: string,
+    sessionId: string | null,
     result: JobTerminalInput,
     phase: JobPhase,
     options?: TerminalWriteOptions,

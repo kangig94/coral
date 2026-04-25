@@ -1,5 +1,6 @@
 import { formatError } from '../../infra/error-format.js';
 import { isAppServerRuntime } from '../../jobs/records.js';
+import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
@@ -151,6 +152,16 @@ export function createRecoveryCoordinator({
     for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
       let cleanup: (() => void) | null = null;
       try {
+        if (launchRecord.provider === null || launchRecord.sessionId === null) {
+          const status = progressStore.readStatus(jobId);
+          if (status !== null) {
+            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, log);
+          }
+          state.recoveryRegistry?.remove(jobId);
+          log(`Skipped adopting non-provider job: ${jobId}\n`);
+          continue;
+        }
+
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         const recovery = providerRegistry.get(launchRecord.provider)?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
@@ -159,6 +170,15 @@ export function createRecoveryCoordinator({
           assertStartupStillActive();
           state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
+          continue;
+        }
+        if (!isDurableCliRuntime(runtimeRecord)) {
+          const status = progressStore.readStatus(jobId);
+          if (status !== null) {
+            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, log);
+          }
+          state.recoveryRegistry?.remove(jobId);
+          log(`Skipped adopting unsupported runtime for job: ${jobId}\n`);
           continue;
         }
 

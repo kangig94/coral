@@ -2,16 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+import { createDeferred } from '#tools/testing/deferred.js';
 
 type MockLease = ProviderServerLease & {
   close(outcome?: Error | void): void;
@@ -25,7 +16,7 @@ function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
 ): MockLease {
   let handler: ((message: { method: string; params?: Record<string, unknown> }) => void) | null = null;
-  const closed = deferred<Error | void>();
+  const closed = createDeferred<Error | void>();
   const releaseMock = vi.fn();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => rpcImpl(method, params));
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {

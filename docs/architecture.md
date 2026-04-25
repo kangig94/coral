@@ -75,13 +75,13 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `PUT /kb/notes/:slug` | 200 | Update a note by slug |
 | `DELETE /kb/notes/:slug` | 200 | Delete a note by slug |
 | `GET /kb/sources` | 200 | List imported KB sources |
-| `POST /kb/sources` | 201 | Start a job-backed KB source import |
+| `POST /kb/sources` | 201 / 202 | Start a job-backed KB source import; async requests return 202 |
 | `DELETE /kb/sources/:slug` | 200 | Delete an imported KB source |
 | `GET /kb/memos` | 200 | List project-scoped memos |
 | `POST /kb/memos` | 201 | Create a project-scoped memo |
 | `DELETE /kb/memos` | 200 | Delete selected memos or purge all project memos |
 | `GET /kb/principles` | 200 | Search KB principles |
-| `POST /kb/index` | 200 | Rebuild the KB index |
+| `POST /kb/index` | 200 | Rebuild KB text artifacts through an internal job |
 | `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
 | `GET /events/stream` | 200 | Backend-local event stream for live observers |
@@ -90,7 +90,9 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 
 Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / non-resumable or provider-mismatched session), 503 (recovering / busy).
 
-`POST /kb/sources` accepts `{ filePath, slug?, readiness?, async? }`. It does not accept pre-staged markdown paths from clients. Source conversion, staging, persistence, progress, terminal outcome, and failure causes are coordinator-owned as an internal `kb.source_import` job. `readiness` defaults to `base-search` and may be `commit`, `base-search`, `active-vector`, or `all-equipped`; `async: true` returns the job id immediately, while the default waits for the requested readiness before returning the completed import.
+`POST /kb/sources` accepts `{ filePath, slug?, readiness?, async? }`. It does not accept pre-staged markdown paths from clients. Source conversion, staging, persistence, progress, terminal outcome, and failure causes are coordinator-owned as an internal `kb.source_import` job. `readiness` defaults to `base-search` and may be `commit`, `base-search`, `active-vector`, or `all-equipped`; `async: true` returns 202 with the job id immediately, while the default waits for the requested readiness and returns 201 after the completed import.
+
+`POST /kb/index` rebuilds KB text artifacts through an internal coordinator-owned `kb.reindex` job and waits for base-search readiness before returning. The job is recorded for recovery and observability, but it is not a provider/session job.
 
 ## Primary Execution Flows
 
@@ -130,7 +132,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
-- KB markdown is the Corpus authority for notes, sources, principles, communities, and memos. Source import is job-owned by the coordinator because conversion can be long-running; lightweight KB reads and note/memo mutations stay direct commands.
+- KB markdown is the Corpus authority for notes, sources, principles, communities, and memos. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads and note/memo mutations stay direct commands.
 - Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer; Needle is optional equipment for the `kb.vector` slot. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling equipment status.
 
 ## Module Map
@@ -139,7 +141,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
 | Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `CoralStore` read helpers for no-coordinator CLI paths. |
-| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, and cross-domain assembly. `src/coordinator/api.ts` plus `src/coordinator/composition/**` are explicit coordinator glue and may assemble domain shells/contracts. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
@@ -164,7 +166,7 @@ Transport IPC/HTTP surface
   -> Coordinator API + control ports
   -> Domain facades/contracts (workflow / discuss / KB / jobs / sessions)
 
-Coordinator glue (`api.ts` + `bootstrap.ts` + `composition/**`)
+Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
   -> Jobs shells / queries / recovery
   -> Sessions shell / continuity lookup
   -> Workflow / discuss / KB facades

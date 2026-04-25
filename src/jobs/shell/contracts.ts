@@ -84,8 +84,8 @@ export function rejectLaunch(code: string, message: string): LaunchDecision {
 
 export function toProviderRequest(launchRecord: JobLaunch): ProviderRequest {
   const { providerAction, request, sessionId, projectRoot } = launchRecord;
-  if (launchRecord.jobKind === 'kb') {
-    throw new Error(`KB job ${launchRecord.jobId} does not have a provider request.`);
+  if (launchRecord.jobKind === 'kb' || sessionId === null || launchRecord.provider === null) {
+    throw new Error(`Job ${launchRecord.jobId} does not have a provider request.`);
   }
   return {
     action: providerAction ?? 'exec',

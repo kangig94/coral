@@ -36,13 +36,6 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
       mode: 'text',
     };
   });
-  if (!('warning' in textResult)) {
-    await kb.getBaseRetrievalSurface().apply({
-      snapshot: kb.captureCorpusSnapshot(),
-      db: kb.db,
-    });
-  }
-
   return {
     ...textResult,
     duration_ms: Date.now() - startedAt,
