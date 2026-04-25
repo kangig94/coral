@@ -444,11 +444,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     discussSeed: async (args) => await request<PersonaSeedOutput>('discuss.persona.generate', args),
     discussStart: async (args) =>
       await request<DiscussStartResponse>('discuss.session.create', buildTransportContextBody(args, defaultContext)),
-    discussWatch: async (session, cursor) =>
-      await request<WatchState>('discuss.session.events', buildProjectScopedQuery({
+    discussWatch: async (session, cursor) => {
+      if (commandClass === 'read') {
+        return readStore().discuss.watch(session, cursor);
+      }
+
+      return await request<WatchState>('discuss.session.events', buildProjectScopedQuery({
         sessionId: session,
         ...(cursor === undefined ? {} : { cursor }),
-      }, defaultContext)),
+      }, defaultContext));
+    },
     discussBid: async (args) =>
       await request<BidResult>(
         'discuss.session.bid',

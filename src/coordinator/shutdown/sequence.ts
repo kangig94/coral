@@ -11,7 +11,7 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
-import { closeNeedleBackend } from '../../kb/search/needle-backend.js';
+import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 
@@ -91,6 +91,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
+  equipmentLifecycleService?: EquipmentLifecycleService | null;
   terminateAllFn: () => void;
   progressStore: ProgressStore;
   pluginRoot: string;
@@ -116,6 +117,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
+  equipmentLifecycleService,
   terminateAllFn,
   progressStore,
   pluginRoot,
@@ -170,8 +172,8 @@ export async function runShutdownSequence({
   if (curateSchedulerStop && kbStopBudgetMs >= 500) {
     await Promise.race([curateSchedulerStop(), runtime.time.sleep(kbStopBudgetMs)]);
   }
-  await (kbSubsystem === null ? Promise.resolve() : closeNeedleBackend(kbSubsystem.kb)).catch((error: unknown) => {
-    backendLog.warn(`closeNeedleBackend failed during shutdown: ${errorMessage(error)}`);
+  await equipmentLifecycleService?.shutdownActiveEquipment().catch((error: unknown) => {
+    backendLog.warn(`equipment shutdown failed: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);
   for (const store of discussStores.values()) {

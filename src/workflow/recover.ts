@@ -8,6 +8,7 @@ import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
 import { loadJobProjectionDetails } from '../store/queries/jobs.js';
+import { readProjectionJob, readWorkflowProjection } from '../store/queries/workflows.js';
 import {
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
@@ -24,9 +25,9 @@ import {
   workflowPlanRevisedEvent,
 } from './events.js';
 import { executePlannedSteps } from './executor.js';
-import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './execution-constants.js';
+import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
 import type { PlanSlot, WorkflowPlan } from './plan.js';
-import { appendWorkflowEvents, readProjectionJob, readWorkflowProjection } from './projections.js';
+import { appendWorkflowEvents } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 export { recoverStaleAtom } from './stale-recovery.js';
@@ -185,7 +186,7 @@ async function resumeWorkflow(
   options: {
     onProgress: (workflowId: string, message: string) => void;
     staleTimeoutMs: number;
-    pollIntervalMs: number;
+    staleCheckIntervalMs: number;
   },
 ): Promise<PipelineResult | null> {
   const readCtx: StoreReadContext = progressStore;
@@ -225,7 +226,7 @@ async function resumeWorkflow(
       completedStepDetails: summary.stepDetails,
       onProgress: (message) => options.onProgress(plan.workflowId, message),
       staleTimeoutMs: options.staleTimeoutMs,
-      pollIntervalMs: options.pollIntervalMs,
+      staleCheckIntervalMs: options.staleCheckIntervalMs,
       workflowJobId: plan.workflowId,
     });
     appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
@@ -291,7 +292,7 @@ async function resumeWorkflow(
   options.onProgress(plan.workflowId, `resuming step ${summary.activeStepIndex}`);
   const stepResults = await waitForAtoms(activeAtoms, executionSvc, ctx, {
     staleTimeoutMs: options.staleTimeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
+    staleCheckIntervalMs: options.staleCheckIntervalMs,
     initialState: waitState,
     completedStepDetails: summary.stepDetails,
     onProgress: (message) => options.onProgress(plan.workflowId, message),
@@ -327,7 +328,7 @@ async function resumeWorkflow(
     completedStepDetails: stepDetails,
     onProgress: (message) => options.onProgress(plan.workflowId, message),
     staleTimeoutMs: options.staleTimeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
+    staleCheckIntervalMs: options.staleCheckIntervalMs,
     workflowJobId: plan.workflowId,
   });
 
@@ -345,11 +346,11 @@ export async function resumeAll(options: {
   createInvocationContext: (projectRoot: string) => InvocationContext;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
-  pollIntervalMs?: number;
+  staleCheckIntervalMs?: number;
 }): Promise<string[]> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const resumedWorkflowIds: string[] = [];
 
   for (const jobId of options.progressStore.listJobIds()) {
@@ -364,7 +365,7 @@ export async function resumeAll(options: {
     await resumeWorkflow(options.db, options.progressStore, options.getExecutionService(ctx), ctx, projection.plan, {
       onProgress,
       staleTimeoutMs,
-      pollIntervalMs,
+      staleCheckIntervalMs,
     });
     resumedWorkflowIds.push(jobId);
   }

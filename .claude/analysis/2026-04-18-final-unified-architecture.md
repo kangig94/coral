@@ -1144,7 +1144,7 @@ src/
     live/
       admission.ts                   — launch admission (seat/host pool)
       provider-hosts/                — app-server host pool (lease, idle, drain, recovery; 16K file decomposed here)
-        pool.ts, lease.ts, idle.ts, drain.ts, recovery.ts
+        pool.ts, lease.ts, idle.ts, drain.ts, recovery.ts, state.ts
       idle.ts                        — idle-daemon eviction policy
       worker-limits.ts               — per-provider launch concurrency clamps
       curate-scheduler.ts            — periodic Corpus curation (discovery, community detection, repair retry).
@@ -1168,6 +1168,9 @@ src/
     queries/
       jobs.ts                        — JobView queries + progress/event lookup
       events.ts                      — raw event lookup by (stream, seq) for causeRef deref
+      sessions.ts                    — session projection reads
+      discuss.ts                     — discuss projection/event-log reads
+      workflows.ts                   — workflow projection/view reads
 
   transport/                         ← carriage only; imports only contracts
     json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
@@ -1265,7 +1268,6 @@ src/
       index-mutations.ts             — content/metadata sequence commits
       index-records.ts               — markdown entry → index record builders
       manifest-authority.ts          — manifest hash/delta authority checks
-      entry-seq-guard.ts             — entrySeq upgrade guard
       repair/                        — Corpus repair detection and remediation
         corpus-scan.ts               — scan/incident types plus filesystem scan
         classify.ts, fix.ts, incident-ids.ts
@@ -1274,14 +1276,15 @@ src/
       corpus-state.ts                — persisted Corpus snapshot cursors
       schema.ts                      — Corpus state row contracts
     queries.ts                       — Corpus read/search/list/diagnose facade for read paths
+    orama-factory.ts, orama-schema.ts — Orama construction/schema shared by base retrieval surfaces
     search/                          — search backend abstraction (equipment-aware)
       contract.ts                    — SearchBackend interface (fts, vector, hybrid)
       router.ts                      — picks active backend per query type; detects equipment
       chunking.ts                    — text chunking (shared by vector backends)
       embedding.ts                   — embedding provider abstraction (shared)
       orama-backend.ts               — base tier: FTS + vector (both at first deploy)
-      orama-factory.ts, orama-schema.ts
-      needle-backend.ts              — equipment: dynamic import of ../coral-needle; replaces vector
+      needle-contract.ts             — lightweight needle constants/types safe for coordinator imports
+      needle-backend.ts              — equipment implementation; dynamically imported by lifecycle activation
       hybrid.ts                      — RRF fusion over active FTS + vector backends
     ops/                             — user-facing operations (coordinator-mediated writes)
       memo.ts, promote.ts, update.ts, delete.ts
@@ -1398,7 +1401,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
 | `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/http/contracts.ts`, `transport/http/tool-response.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
-| `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts` (see §10 coordinator entry). |
+| `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts` (see §10 coordinator entry). |
 | `src/execution/progress-store.ts` | 24K | REMOVED — job lifecycle events replace six-file progress. `jobs/shell/wait.ts` owns live-tail + SSE. `jobs/reconcile/` owns startup classification. |
 | `src/execution/runtime.ts` | 22K | `runtime/ports.ts` (interface) + `runtime/real.ts` (production implementation). Current composition stays roughly this size; no further split needed since it is interface + single implementation. |
 | `src/workflow/pipe-executor.ts` | 37K | Decompose along the natural seams in the current code (atom launch/retry coupling at `launchAtomWithRetry`, wait-state at `createAwaitStepState`, stale recovery at `recoverStaleAtom`, multi-atom wait at `waitForAtoms`): `workflow/executor.ts` (top-level orchestration), `workflow/launch.ts` (atom launch + retry — they are intertwined, not separable), `workflow/wait.ts` (await-step state + multi-atom wait + cascade), `workflow/recover.ts` (stale-atom recovery). Fault mapping lives inside whichever module emits the fault, not in a separate `error.ts`. |
@@ -1952,7 +1955,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Store**: the single SQLite database at `~/.coral/data/store/store.db`. Holds events + projections for Journal domains. KB indexes are projections too but live at `~/.coral/data/kb/` (device-local) since they derive from Corpus, not Journal.
 - **Events table**: append-only SQL table keyed by `seq` (auto-increment). The only durable truth.
 - **Projection tables**: SQL read models (`projection_jobs`, `projection_sessions`, `projection_workflows`, etc.) maintained incrementally by event reducers in the same transaction that appends events.
-- **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.get(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflow}.ts` plus `kb/queries.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
+- **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflows}.ts` plus `kb/queries.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
 - **CoralCoordinator**: the single-writer daemon. Owns live state (admission, host pool, subscriptions) and is the only layer that opens a writable DB handle.
 - **Stream**: a logical sub-sequence of the events table identified by `(stream_kind, stream_id)` — e.g., `job/wf-1`, `session/s-42`, `workflow/wf-1`. Ordering is global via `seq`.
 - **Envelope**: the event header — `seq`, `ts`, `type`, `stream`, `namespace`, `refs`, `correlationId`, `causationSeq`, `bodyVersion`. Wraps a `body`.

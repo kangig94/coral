@@ -500,6 +500,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
+    equipmentLifecycleService: options.equipmentLifecycleService ?? null,
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,

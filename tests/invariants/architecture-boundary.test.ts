@@ -122,6 +122,7 @@ const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
+const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle-backend.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -389,6 +390,18 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+  it('needle equipment backend is loaded only through lifecycle dynamic import', () => {
+    expect(PARSED_IMPORT_EDGES.filter((edge) => edge.target === NEEDLE_BACKEND_TARGET)).toEqual([
+      {
+        source: 'src/coordinator/equipment/lifecycle.ts',
+        specifier: '../../kb/search/needle-backend.js',
+        target: NEEDLE_BACKEND_TARGET,
+        via: 'DynamicImport',
+        runtime: true,
+        typeOnly: false,
+      },
+    ]);
   });
   it('providers may not import jobs shell modules', () => {
     const violations = collectViolations(

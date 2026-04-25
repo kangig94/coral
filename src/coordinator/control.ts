@@ -26,6 +26,7 @@ import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
+import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
 
 export { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from './shutdown/sequence.js';
 export type { ShutdownMode } from './shutdown/mode.js';
@@ -295,6 +296,7 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
+  readonly equipmentLifecycleService?: EquipmentLifecycleService | null;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
@@ -578,6 +580,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         namespace,
         markJobsAsErrorFn,
         providerHostManager,
+        equipmentLifecycleService: deps.equipmentLifecycleService,
         terminateAllFn,
         progressStore,
         pluginRoot,

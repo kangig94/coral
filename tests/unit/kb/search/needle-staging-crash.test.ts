@@ -20,9 +20,9 @@ import {
   __setNeedleBackendStagingHookForTests,
   closeNeedleBackend,
   createNeedleBackend,
-  NEEDLE_CONSUMER_ID,
   NeedleBackendSimulatedCrashError,
 } from '#src/kb/search/needle-backend.js';
+import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle-contract.js';
 
 const FIXED_NOW = new Date('2026-04-21T00:00:00.000Z');
 const tempRoots: string[] = [];

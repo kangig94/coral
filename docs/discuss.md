@@ -1,16 +1,16 @@
 # Discuss
 
-Backend-managed multi-agent discussion with an event-sourced core. `event-log.jsonl` is the canonical record. `state.json` is a derived snapshot used for fast reads and snapshot-plus-tail hydration.
+Backend-managed multi-agent discussion with an event-sourced core. SQLite Journal events are the canonical record; `projection_discuss` is the durable read model used for snapshots, watch hydration, discovery, and summary indexes.
 
 ## Entry Points
 
-Discuss is exposed through CLI commands backed by dedicated HTTP endpoints:
+Discuss is exposed through CLI commands and matching coordinator HTTP endpoints:
 
 | CLI command | HTTP route | Purpose |
 | --- | --- | --- |
 | `coral-cli discuss seed` | `POST /discuss/persona-sets` | Persona seeding |
 | `coral-cli discuss start` | `POST /discuss/sessions` | Create session, append initial events, start control loop |
-| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events |
+| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events; local CLI reads use `CoralStore` directly |
 | `coral-cli discuss participate` | `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches` | Inject a manual bid or speech |
 | `coral-cli discuss abort` | `DELETE /discuss/sessions/:id` | End the session and detach it from the live registry |
 
@@ -49,7 +49,7 @@ Runtime flow:
 1. `coral-cli discuss start` / `POST /discuss/sessions` appends `session.created` and `bidding.opened`.
 2. Automatic providers bid; manual participants wait for `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches`.
 3. The loop resolves speakers, records speech, evaluates epochs, schedules follow-up turns, and eventually synthesizes.
-4. `coral-cli discuss watch` reads the projected watch stream from `GET /discuss/sessions/:id/events`.
+4. `coral-cli discuss watch` reads the projected watch stream from `CoralStore`; remote HTTP callers use `GET /discuss/sessions/:id/events`.
 5. `coral-cli discuss abort` / `DELETE /discuss/sessions/:id` appends a durable terminal event and detaches the live session.
 
 Persisted control phases are `idle`, `observer_wait`, `evaluate_epoch`, `collect_follow_up`, and `synthesize`.
@@ -83,26 +83,9 @@ Cursor rules:
 
 ## Storage and Recovery
 
-Discuss storage is source-scoped:
+Discuss storage is Journal-scoped. Events live in `events` on the `discuss/<session-id>` stream, snapshots live in `projection_discuss`, and source-scoped discovery/summary views are derived from those projections.
 
-```text
-~/.coral/
-├── discuss-sources.json
-└── projects/
-    └── <source-slug>/
-        └── discuss/
-            ├── discovery.json
-            ├── summary-index.json
-            └── <session-id>/
-                ├── event-log.jsonl
-                └── state.json
-```
-
-- `event-log.jsonl` is authoritative
-- `state.json` is the derived snapshot
-- source indexes are rebuilt or marked dirty as sessions change
-
-Hydration uses snapshot-plus-tail replay. On backend startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
+Hydration reads the projected snapshot plus the persisted event tail. On backend startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
 
 ## Projections and Authority
 

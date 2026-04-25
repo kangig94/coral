@@ -13,7 +13,8 @@ import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { registerWorkflowConsumer } from '#src/workflow/consumer.js';
-import { createWorkflowJournal, readWorkflowProjection } from '#src/workflow/projections.js';
+import { readWorkflowProjection } from '#src/store/queries/workflows.js';
+import { createWorkflowJournal } from '#src/workflow/projections.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {

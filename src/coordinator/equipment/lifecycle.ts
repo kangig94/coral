@@ -5,12 +5,11 @@ import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../cons
 import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import {
-  closeNeedleBackend,
-  createNeedleBackend,
   NEEDLE_CONSUMER_ID,
   type NeedleBackend,
+  type NeedleBackendModule,
   type NeedleBackendOptions,
-} from '../../kb/search/needle-backend.js';
+} from '../../kb/search/needle-contract.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
@@ -73,14 +72,26 @@ type ActivateNeedleFn = (
   runtime: KbRuntime,
   addonPath: string,
   options?: ActivateNeedleOptions,
-) => NeedleBackend;
+) => NeedleBackend | Promise<NeedleBackend>;
 
-const activateNeedle: ActivateNeedleFn = (runtime, addonPath, options = {}) => {
+type CloseNeedleBackendFn = (runtime: KbRuntime) => Promise<void>;
+
+async function loadNeedleBackendModule(): Promise<NeedleBackendModule> {
+  return import('../../kb/search/needle-backend.js');
+}
+
+const activateNeedle: ActivateNeedleFn = async (runtime, addonPath, options = {}) => {
+  const { createNeedleBackend } = await loadNeedleBackendModule();
   return createNeedleBackend(runtime, {
     addonPath,
     ...(options.consumerId === undefined ? {} : { consumerId: options.consumerId }),
     ...(options.storeFactory === undefined ? {} : { storeFactory: options.storeFactory }),
   });
+};
+
+const closeNeedleBackend: CloseNeedleBackendFn = async (runtime) => {
+  const needle = await loadNeedleBackendModule();
+  await needle.closeNeedleBackend(runtime);
 };
 
 export interface EquipmentLifecycleServiceOptions {
@@ -91,7 +102,7 @@ export interface EquipmentLifecycleServiceOptions {
   readonly removeInstallArtifacts?: (name: string) => Promise<void>;
   readonly now?: () => Date;
   readonly pathOptions?: EquipmentPathOptions;
-  readonly closeNeedleBackend?: typeof closeNeedleBackend;
+  readonly closeNeedleBackend?: CloseNeedleBackendFn;
   readonly activateNeedle?: ActivateNeedleFn;
   readonly needleBackendOptions?: Pick<NeedleBackendOptions, 'storeFactory'>;
 }
@@ -100,7 +111,7 @@ const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'
 
 export class EquipmentLifecycleService {
   private readonly now: () => Date;
-  private readonly closeNeedleBackendFn: typeof closeNeedleBackend;
+  private readonly closeNeedleBackendFn: CloseNeedleBackendFn;
   private readonly activateNeedleFn: ActivateNeedleFn;
   private readonly descriptors = new Map<string, EquipmentDescriptor>();
   private readonly activeBySlot = new Map<string, ActiveEquipmentEntry>();
@@ -205,7 +216,7 @@ export class EquipmentLifecycleService {
     let backend: NeedleBackend | null = null;
 
     try {
-      backend = this.activateNeedleFn(runtime, addonPath, {
+      backend = await this.activateNeedleFn(runtime, addonPath, {
         consumerId: descriptor.consumerId,
         ...(this.options.needleBackendOptions?.storeFactory === undefined
           ? {}
@@ -256,6 +267,21 @@ export class EquipmentLifecycleService {
     }
 
     return runtimeActivationFromHandle(active.backend, active.handle);
+  }
+
+  async shutdownActiveEquipment(): Promise<void> {
+    const activeEntries = [...this.activeBySlot.values()];
+    if (activeEntries.length === 0) {
+      return;
+    }
+
+    for (const entry of activeEntries) {
+      await entry.handle.stop().catch(() => {});
+    }
+
+    this.activeBySlot.clear();
+    this.safeUnequipSlot('kb.vector');
+    await this.closeRuntimeBackend(this.options.resolveKbRuntime(), activeEntries[0]?.backend ?? null);
   }
 
   private drainSlotGuardQueue(slotId: string): void {

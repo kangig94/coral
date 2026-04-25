@@ -22,3 +22,17 @@ export type WatchState = {
   events: WatchEvent[];
   cursor: number;
 };
+
+export type DiscussWatchReadErrorCode = 'session_not_found' | 'invalid_cursor';
+
+export class DiscussWatchReadError extends Error {
+  readonly code: DiscussWatchReadErrorCode;
+  readonly detail?: Record<string, unknown>;
+
+  constructor(code: DiscussWatchReadErrorCode, detail?: Record<string, unknown>) {
+    super(code);
+    this.name = 'DiscussWatchReadError';
+    this.code = code;
+    this.detail = detail;
+  }
+}

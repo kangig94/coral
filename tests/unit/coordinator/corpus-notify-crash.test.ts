@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
-import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle-backend.js';
+import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle-contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';

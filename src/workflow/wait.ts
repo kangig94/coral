@@ -16,7 +16,7 @@ import { formatAtomProgress, stripElapsedPrefix } from './internal/format.js';
 export type WaitForAtomsOptions = {
   signal?: AbortSignal;
   staleTimeoutMs: number;
-  pollIntervalMs: number;
+  staleCheckIntervalMs: number;
   workDir?: string;
   onProgress: (message: string) => void;
   completedStepDetails?: StepDetail[];
@@ -53,8 +53,8 @@ export type AwaitStepState = {
   } | null;
 };
 
-export function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): number {
-  const timeoutMs = staleTimeoutMs > 0 ? Math.min(staleTimeoutMs, pollIntervalMs) : pollIntervalMs;
+export function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number): number {
+  const timeoutMs = staleTimeoutMs > 0 ? Math.min(staleTimeoutMs, staleCheckIntervalMs) : staleCheckIntervalMs;
   return Math.max(1, Math.ceil(timeoutMs / 1000));
 }
 
@@ -217,7 +217,7 @@ export async function awaitWaitCycle(
   options: WaitForAtomsOptions,
   buildPartialStepDetailsForCycle: () => StepDetail[],
 ): Promise<'stream-ended' | 'stale-recovered'> {
-  const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.pollIntervalMs);
+  const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
 
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],

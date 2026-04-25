@@ -4,7 +4,7 @@ import { readCorpusState } from '../state/corpus-state.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
-import type { ConsumerApplyError, CorpusConsumerApplyContext, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
+import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../contracts.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../paths.js';
@@ -12,21 +12,17 @@ import { loadKbNote, loadKbSource } from '../read.js';
 import { chunkEntry, type ChunkSeed } from './chunking.js';
 import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from './embedding.js';
 import { createNeedleStore, type NeedleStore } from './needle-store.js';
-import type { RetrievalScope, VectorRetrieval, VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
-
-export const NEEDLE_CONSUMER_ID = 'needle';
+import {
+  NEEDLE_CONSUMER_ID,
+  type NeedleBackend as NeedleBackendContract,
+  type NeedleBackendOptions,
+} from './needle-contract.js';
+import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';
 const NEEDLE_ACTIVE_POINTER_FILE = 'ACTIVE';
 const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
-
-export interface NeedleBackendOptions {
-  consumerId?: string;
-  addonPath: string;
-  pluginRoot?: string;
-  storeFactory?: (runtimeDir: string) => NeedleStore | null;
-}
 
 type NeedleBackendStagingHook = (ctx: {
   snapshot: NeedleApplyContext['snapshot'];
@@ -237,7 +233,7 @@ function aggregateVectorHits(
     }));
 }
 
-export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistration {
+export class NeedleBackend implements NeedleBackendContract {
   readonly authority = 'corpus';
   readonly backendKind = 'needle';
   readonly corpusInterest = 'content';

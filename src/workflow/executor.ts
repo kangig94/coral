@@ -15,7 +15,7 @@ import {
 } from './command.js';
 import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
 import { workflowCompletedEvent, workflowDrainEnteredEvent, workflowPlanDeclaredEvent, workflowPlanRevisedEvent } from './events.js';
-import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './execution-constants.js';
+import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
 import { buildWorkflowPlan, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
@@ -27,7 +27,7 @@ type ExecutePlannedStepsOptions = {
   signal?: AbortSignal;
   onProgress: (message: string) => void;
   staleTimeoutMs: number;
-  pollIntervalMs: number;
+  staleCheckIntervalMs: number;
   workflowJobId?: string;
   journal?: WorkflowJournal;
   startStepIndex?: number;
@@ -92,7 +92,7 @@ async function drainLaunchedAtoms(
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
-    pollIntervalMs: number;
+    staleCheckIntervalMs: number;
     workDir?: string;
     onProgress: (message: string) => void;
   },
@@ -105,7 +105,7 @@ async function drainLaunchedAtoms(
     const results = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
-      pollIntervalMs: options.pollIntervalMs,
+      staleCheckIntervalMs: options.staleCheckIntervalMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
       completedStepDetails: [],
@@ -129,7 +129,7 @@ async function awaitLaunchedStepResults(
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
-    pollIntervalMs: number;
+    staleCheckIntervalMs: number;
     workDir?: string;
     onProgress: (message: string) => void;
     completedStepDetails: StepDetail[];
@@ -143,7 +143,7 @@ async function awaitLaunchedStepResults(
     return await waitForAtoms(launchedAtoms, executionSvc, ctx, {
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
-      pollIntervalMs: options.pollIntervalMs,
+      staleCheckIntervalMs: options.staleCheckIntervalMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
       completedStepDetails: options.completedStepDetails,
@@ -237,7 +237,7 @@ export async function executePlannedSteps(
             drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
               signal: options.signal,
               staleTimeoutMs: options.staleTimeoutMs,
-              pollIntervalMs: options.pollIntervalMs,
+              staleCheckIntervalMs: options.staleCheckIntervalMs,
               workDir: options.workDir,
               onProgress: options.onProgress,
             }),
@@ -247,7 +247,7 @@ export async function executePlannedSteps(
       const stepResults = await awaitLaunchedStepResults(workingPlan, launchedAtoms, stepIndex, executionSvc, ctx, {
         signal: options.signal,
         staleTimeoutMs: options.staleTimeoutMs,
-        pollIntervalMs: options.pollIntervalMs,
+        staleCheckIntervalMs: options.staleCheckIntervalMs,
         workDir: options.workDir,
         onProgress: options.onProgress,
         completedStepDetails: stepDetails,
@@ -287,7 +287,7 @@ export async function executePipeline(
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
-    pollIntervalMs?: number;
+    staleCheckIntervalMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
     createJobId?: () => string;
@@ -295,7 +295,7 @@ export async function executePipeline(
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const workflowId = options.workflowJobId ?? randomUUID();
   const plan = buildWorkflowPlan(workflowId, ast, {
     createJobId: options.createJobId,
@@ -313,7 +313,7 @@ export async function executePipeline(
       signal: options.signal,
       onProgress,
       staleTimeoutMs,
-      pollIntervalMs,
+      staleCheckIntervalMs,
       workflowJobId: options.workflowJobId,
       journal: options.journal,
     });

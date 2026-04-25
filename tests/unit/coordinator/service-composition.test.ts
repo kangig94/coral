@@ -46,7 +46,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { readWorkflowView } from '#src/workflow/projections.js';
+import { readWorkflowView } from '#src/store/queries/workflows.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;

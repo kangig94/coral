@@ -39,7 +39,7 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama-backend.js';
-import { NEEDLE_CONSUMER_ID } from '../kb/search/needle-backend.js';
+import { NEEDLE_CONSUMER_ID } from '../kb/search/needle-contract.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';

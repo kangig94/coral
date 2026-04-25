@@ -20,6 +20,8 @@ import {
   readKnowledgeBaseEntry,
   searchKnowledgeBase,
 } from '../kb/queries.js';
+import { buildDiscussWatchState } from '../discuss/watch-state.js';
+import type { WatchState } from '../discuss/watch.js';
 import {
   readDiscussDiscovery,
   readDiscussEventLog,
@@ -30,6 +32,13 @@ import {
   type DiscussSnapshotRow,
 } from './queries/discuss.js';
 import { readSessionEntryById } from './queries/sessions.js';
+import {
+  listWorkflowProjections,
+  readWorkflowProjection,
+  readWorkflowView,
+  type WorkflowProjectionRow,
+  type WorkflowView,
+} from './queries/workflows.js';
 import type {
   KbDiagnoseResult,
   KbMemoListInput,
@@ -73,11 +82,17 @@ export class CoralStore implements StoreReadContext {
   public readonly discuss: {
     snapshot: (ref: DiscussReadRef) => DiscussSnapshotRow | null;
     eventLog: (ref: DiscussReadRef) => DiscussEventLogEntry[];
+    watch: (sessionId: string, cursor?: number) => WatchState;
     discovery: (source: string) => DiscussDiscoveryData | null;
     summaryIndex: (source: string) => DiscussSummaryIndexData | null;
   };
   public readonly sessions: {
     readEntry: (sessionId: string) => SessionEntry;
+  };
+  public readonly workflows: {
+    projection: (workflowId: string) => WorkflowProjectionRow | null;
+    list: () => WorkflowProjectionRow[];
+    view: (workflowId: string) => WorkflowView | null;
   };
 
   constructor(
@@ -117,12 +132,25 @@ export class CoralStore implements StoreReadContext {
     this.discuss = {
       snapshot: (ref) => readDiscussSnapshot(this.db, ref),
       eventLog: (ref) => readDiscussEventLog(this.db, ref, this),
+      watch: (sessionId, cursor) =>
+        buildDiscussWatchState(
+          sessionId,
+          readDiscussSnapshot(this.db, sessionId),
+          readDiscussEventLog(this.db, sessionId, this),
+          cursor,
+        ),
       discovery: (source) => readDiscussDiscovery(this.db, source),
       summaryIndex: (source) => readDiscussSummaryIndex(this.db, source),
     };
 
     this.sessions = {
       readEntry: (sessionId) => readSessionEntryById(this.db, sessionId),
+    };
+
+    this.workflows = {
+      projection: (workflowId) => readWorkflowProjection(this.db, workflowId),
+      list: () => listWorkflowProjections(this.db),
+      view: (workflowId) => readWorkflowView(this.db, workflowId, this),
     };
   }
 

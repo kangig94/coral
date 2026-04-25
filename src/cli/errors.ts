@@ -3,6 +3,7 @@ import { CommanderError } from 'commander';
 import { BackendToolHttpError } from '../transport/http/client-errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
+import { DiscussWatchReadError } from '../discuss/watch.js';
 
 export class UsageError extends Error {
   constructor(message: string) {
@@ -52,6 +53,16 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
         ? { error: true, code, message }
         : { error: true, code, message, detail },
       errorCodeToExit(code, error.statusCode),
+    );
+  }
+
+  if (error instanceof DiscussWatchReadError) {
+    const message = error.code.replaceAll('_', ' ');
+    return withExitCode(
+      error.detail === undefined
+        ? { error: true, code: error.code, message }
+        : { error: true, code: error.code, message, detail: error.detail },
+      errorCodeToExit(error.code),
     );
   }
 

@@ -1,4 +1,6 @@
 import { buildWatchEvents } from '../projections.js';
+import { DiscussWatchReadError } from '../watch.js';
+import { buildDiscussWatchState } from '../watch-state.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { Result } from '../session-types.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -7,7 +9,6 @@ import {
   ABORT_REASON,
   DiscussManagerError,
   compactLiveWatchBuffer,
-  createWatchBuffer,
   getSubscriberCursorMap,
   type DiscussContext,
   type WatchState,
@@ -182,26 +183,12 @@ export async function appendRuntimeEvents(
 
 export function buildPersistedWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {
   const snapshot = ctx.store.load(sessionId);
-  if (!snapshot) {
-    throw new DiscussManagerError('session_not_found', { session: sessionId });
+  try {
+    return buildDiscussWatchState(sessionId, snapshot, readSessionEvents(ctx, sessionId), cursor);
+  } catch (error: unknown) {
+    if (error instanceof DiscussWatchReadError) {
+      throw new DiscussManagerError(error.code, error.detail);
+    }
+    throw error;
   }
-
-  const watchBuffer = createWatchBuffer(buildWatchEvents(readSessionEvents(ctx, sessionId)));
-  const totalCursor = watchBufferCursor(watchBuffer);
-  if (cursor !== undefined && cursor > totalCursor) {
-    throw new DiscussManagerError('invalid_cursor', {
-      cursor,
-      max: totalCursor,
-    });
-  }
-
-  return {
-    session: sessionId,
-    status: snapshot.state.status,
-    topic: snapshot.state.topic,
-    epoch: snapshot.state.epoch,
-    step: snapshot.state.step,
-    events: cursor === undefined ? watchBuffer.events.slice() : watchBuffer.events.slice(cursor),
-    cursor: totalCursor,
-  };
 }

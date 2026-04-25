@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
+  readStore: {
+    discuss: {
+      watch: vi.fn(),
+    },
+  },
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
@@ -13,6 +18,11 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   })),
 }));
 
+vi.mock('#src/cli/read-coral-store.js', () => ({
+  getSharedReadCoralStore: vi.fn(() => mockState.readStore),
+}));
+
+import { ensure } from '#src/transport/ipc/ensure.js';
 import { makeClient } from '#src/cli/command-client.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
@@ -33,12 +43,34 @@ function buildProgram(): Command {
   const program = new Command();
   const kb = program.command('kb');
   kb.command('reindex');
+  const discuss = program.command('discuss');
+  discuss.command('watch');
   return program;
 }
 
 describe('command client routing', () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('reads discuss watch from CoralStore without starting the coordinator', async () => {
+    const watchState = {
+      session: 'discuss-1',
+      status: 'ended',
+      topic: 'Architecture',
+      epoch: 1,
+      step: 2,
+      events: [],
+      cursor: 0,
+    };
+    mockState.readStore.discuss.watch.mockReturnValueOnce(watchState);
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'discuss', 'watch'));
+
+    await expect(client.discussWatch('discuss-1', 3)).resolves.toBe(watchState);
+
+    expect(mockState.readStore.discuss.watch).toHaveBeenCalledWith('discuss-1', 3);
+    expect(ensure).not.toHaveBeenCalled();
   });
 
   it('forwards kb search mode through non-read transport dispatchers', async () => {

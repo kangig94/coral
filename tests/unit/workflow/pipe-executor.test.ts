@@ -327,7 +327,7 @@ describe('workflow pipe executor', () => {
         ctx,
         {
           staleTimeoutMs: 1,
-          pollIntervalMs: 1,
+          staleCheckIntervalMs: 1,
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
           recoverStaleAtom,
@@ -379,7 +379,7 @@ describe('workflow pipe executor', () => {
       await expect(
         waitForAtoms([launchedAtom()], executionSvc, ctx, {
           staleTimeoutMs: 1,
-          pollIntervalMs: 1,
+          staleCheckIntervalMs: 1,
           onProgress: vi.fn(),
           recoverStaleAtom,
         }),
@@ -559,7 +559,7 @@ describe('workflow pipe executor', () => {
     try {
       const result = await executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         staleTimeoutMs: 1,
-        pollIntervalMs: 1,
+        staleCheckIntervalMs: 1,
       });
 
       expect(result.finalOutput).toBe('DONE');
@@ -898,7 +898,7 @@ describe('waitForAtoms', () => {
 
     const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
       staleTimeoutMs: 0,
-      pollIntervalMs: 500,
+      staleCheckIntervalMs: 500,
       onProgress: progress,
     });
 
@@ -947,7 +947,7 @@ describe('waitForAtoms', () => {
         ctx,
         {
           staleTimeoutMs: 0,
-          pollIntervalMs: 500,
+          staleCheckIntervalMs: 500,
           onProgress: vi.fn(),
         },
       ),
@@ -978,7 +978,7 @@ describe('waitForAtoms', () => {
     await expect(
       waitForAtoms([launchedAtom()], executionSvc, ctx, {
         staleTimeoutMs: 0,
-        pollIntervalMs: 500,
+        staleCheckIntervalMs: 500,
         onProgress: vi.fn(),
       }),
     ).rejects.toBeInstanceOf(WorkflowExecutionError);

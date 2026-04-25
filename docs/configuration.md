@@ -118,11 +118,7 @@ Sessions are Journal events projected into `projection_sessions`. `SessionManage
 
 ### Discuss state
 
-`~/.coral/projects/<source-slug>/discuss/<session-dir>/`
-
-- `event-log.jsonl`: authoritative event stream
-- `state.json`: derived snapshot
-- `discovery.json` / `summary-index.json`: source-scoped indexes
+Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files.
 
 ### KB state
 
