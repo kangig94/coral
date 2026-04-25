@@ -71,11 +71,7 @@ function installNeedle(fixture: ReturnType<typeof createFixture>, version = '0.2
   const targetDir = equipmentDataDir('needle', { baseDir: fixture.baseDir });
   mkdirSync(targetDir, { recursive: true });
   writeFileSync(equipmentAddonPath('needle', { baseDir: fixture.baseDir }), Buffer.from('addon'));
-  writeFileSync(
-    join(targetDir, '.needle-meta.json'),
-    JSON.stringify({ version, method: 'prebuild' }),
-    'utf-8',
-  );
+  writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version, method: 'prebuild' }), 'utf-8');
 }
 
 function installCgc(fixture: ReturnType<typeof createFixture>, version = 'v1.2.3'): void {
@@ -495,7 +491,9 @@ describe('expansion workflow (AC7)', () => {
       status: 'available',
       equipment: [{ slot: 'kb.vector', name: 'needle', status: 'inactive' }],
     });
-    mockState.uninstallExpansion.mockResolvedValueOnce({ status: 'uninstalled' }).mockResolvedValueOnce({ status: 'uninstalled' });
+    mockState.uninstallExpansion
+      .mockResolvedValueOnce({ status: 'uninstalled' })
+      .mockResolvedValueOnce({ status: 'uninstalled' });
 
     const needleResult = installResponseSchema.parse(await unequip('needle'));
     const cgcResult = installResponseSchema.parse(await unequip('cgc'));
@@ -526,13 +524,13 @@ describe('expansion workflow (AC7)', () => {
       status: 'installed',
       onboarding: expect.objectContaining({
         localRuntime: expect.objectContaining({
-          targetDir: kbRuntimeDir(),
+          targetDir: kbRuntimeDir('dev'),
         }),
       }),
     });
     expect(result.status).toBe('installed');
     if (result.status === 'installed') {
-      expect(result.onboarding?.localRuntime.targetDir).toBe(kbRuntimeDir());
+      expect(result.onboarding?.localRuntime.targetDir).toBe(kbRuntimeDir('dev'));
     }
   });
 });

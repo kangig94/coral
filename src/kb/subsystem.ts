@@ -1,12 +1,10 @@
 import type { Database } from 'better-sqlite3';
 
-import { kbRoot } from '../infra/paths.js';
+import { currentBuildFlavor, kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntimeActivationSnapshot, KbRuntime } from './contracts.js';
 import type { GitSyncRuntimePicks } from './curate/types.js';
-import {
-  kbRuntimeDir,
-} from './paths.js';
+import { kbRuntimeDir } from './paths.js';
 import { createKbRuntime } from './runtime.js';
 import type { SpawnCliFn } from './curate/types.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -44,7 +42,7 @@ export async function createKbSubsystem({
 }: CreateKbSubsystemOptions): Promise<KnowledgeBaseRuntime> {
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
-    runtimeDir: kbRuntimeDir(),
+    runtimeDir: kbRuntimeDir(currentBuildFlavor()),
     db,
     time: timePort,
     ids: idsPort,

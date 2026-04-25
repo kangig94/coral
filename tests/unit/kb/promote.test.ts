@@ -46,9 +46,19 @@ function createRuntime(
 ) {
   return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir(),
-    db: createKbTestDb(paths.kbRuntimeDir()),
+    runtimeDir: paths.kbRuntimeDir('prod'),
+    db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+}
+
+function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths']) {
+  const root = process.env.CORAL_KB_PATH!;
+  return {
+    notePath: (slug: string) => paths.notePathFromName(slug, root),
+    sourcePath: (slug: string) => paths.sourcePathFromName(slug, root),
+    communityPath: (slug: string) => paths.communityPathFromName(slug, root),
+    principlePath: (slug: string) => paths.principlePathFromName(slug, root),
+  };
 }
 
 describe('kb mutations', () => {
@@ -99,7 +109,7 @@ memo body
       topic: 'kb-promotion',
     });
 
-    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
     expect(result).toEqual({ path: notePath });
     expect(existsSync(memoPath)).toBe(false);
     expect(existsSync(`${notePath}.tmp`)).toBe(false);
@@ -137,7 +147,7 @@ memo body
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     const memoPath = join(paths.memoDir(projectRoot), 'dup.md');
     writeFileSync(
@@ -150,7 +160,7 @@ memo body
       'utf-8',
     );
 
-    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'original note', 'utf-8');
 
     await expect(
@@ -251,8 +261,8 @@ memo body
   it('updates an existing note atomically while preserving createdAt and source', async () => {
     const { update, createKbRuntime, paths, frontmatter } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
     writeFileSync(
       notePath,
       `---
@@ -286,9 +296,9 @@ Original body.
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
 
     vi.setSystemTime(new Date('2026-03-24T05:06:07.000Z'));
     const result = await update(kb, {
@@ -330,8 +340,8 @@ Original body.
   it('deletes a note and removes its JSON index entry', async () => {
     const { deleteFn, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'note body', 'utf-8');
     kb.writeIndex({
       entries: {
@@ -349,9 +359,9 @@ Original body.
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
 
     const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });
@@ -361,9 +371,9 @@ Original body.
 
   it('reads a note by slug and returns structured content without timestamps', async () => {
     const { readEntry, paths } = await loadKbModules();
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeFileSync(
-      join(paths.notesDir(), 'coral-kb-read.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-read.md'),
       `---
 tags: [coral, kb]
 principles: [contract-first-design]
@@ -380,7 +390,7 @@ Content here.
       'utf-8',
     );
 
-    const result = readEntry({ note: 'coral-kb-read' });
+    const result = readEntry({ note: 'coral-kb-read' }, { paths: createReadPaths(paths) });
     expect(result).toEqual({
       kind: 'note',
       note: 'coral-kb-read',
@@ -397,7 +407,7 @@ Content here.
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(paths.memoDir(projectRoot), { recursive: true });
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
       join(paths.memoDir(projectRoot), '20260323-010203-shared-slug.md'),
@@ -409,7 +419,7 @@ Memo body
       'utf-8',
     );
     writeFileSync(
-      join(paths.notesDir(), '20260323-010203-shared-slug.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), '20260323-010203-shared-slug.md'),
       `---
 tags: [coral]
 principles: [contract-first-design]
@@ -425,7 +435,7 @@ Note body.
       'utf-8',
     );
 
-    expect(readEntry({ note: '20260323-010203-shared-slug' }, projectRoot)).toEqual({
+    expect(readEntry({ note: '20260323-010203-shared-slug' }, { projectRoot, paths: createReadPaths(paths) })).toEqual({
       kind: 'memo',
       note: '20260323-010203-shared-slug',
       title: '20260323-010203-shared-slug',
@@ -438,12 +448,12 @@ Note body.
   it('reads principles directly when no memo or note matches', async () => {
     const { readEntry, paths } = await loadKbModules();
     writeFileSync(
-      join(paths.principlesDir(), 'contract-first-design.md'),
+      join(paths.principlesDir(process.env.CORAL_KB_PATH!), 'contract-first-design.md'),
       '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n',
       'utf-8',
     );
 
-    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+    expect(readEntry({ note: 'contract-first-design' }, { paths: createReadPaths(paths) })).toEqual({
       kind: 'principle',
       note: 'contract-first-design',
       title: 'contract-first-design',
@@ -457,14 +467,14 @@ Note body.
 
   it('prefers notes over principles when both share the same slug', async () => {
     const { readEntry, paths } = await loadKbModules();
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeFileSync(
-      join(paths.principlesDir(), 'contract-first-design.md'),
+      join(paths.principlesDir(process.env.CORAL_KB_PATH!), 'contract-first-design.md'),
       '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nPrinciple statement.\n',
       'utf-8',
     );
     writeFileSync(
-      join(paths.notesDir(), 'contract-first-design.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'contract-first-design.md'),
       `---
 tags: [coral]
 principles: [single-source-of-truth]
@@ -480,7 +490,7 @@ Note body.
       'utf-8',
     );
 
-    expect(readEntry({ note: 'contract-first-design' })).toEqual({
+    expect(readEntry({ note: 'contract-first-design' }, { paths: createReadPaths(paths) })).toEqual({
       kind: 'note',
       note: 'contract-first-design',
       title: 'Note Title',
@@ -492,7 +502,7 @@ Note body.
   });
 
   it('throws when reading a non-existent note', async () => {
-    const { readEntry } = await loadKbModules();
-    expect(() => readEntry({ note: 'does-not-exist' })).toThrow('not found');
+    const { readEntry, paths } = await loadKbModules();
+    expect(() => readEntry({ note: 'does-not-exist' }, { paths: createReadPaths(paths) })).toThrow('not found');
   });
 });

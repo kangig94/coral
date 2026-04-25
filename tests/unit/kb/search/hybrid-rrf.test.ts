@@ -67,8 +67,8 @@ function createRuntime(
   // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir(),
-    db: createKbTestDb(paths.kbRuntimeDir()),
+    runtimeDir: paths.kbRuntimeDir('prod'),
+    db: createKbTestDb(paths.kbRuntimeDir('prod')),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -168,9 +168,7 @@ ${body}
   );
 }
 
-function createCorpusHandle(
-  initial: Partial<Extract<ConsumerHandleStatus, { authority: 'corpus' }>>,
-): ConsumerHandle {
+function createCorpusHandle(initial: Partial<Extract<ConsumerHandleStatus, { authority: 'corpus' }>>): ConsumerHandle {
   const status: Extract<ConsumerHandleStatus, { authority: 'corpus' }> = {
     authority: 'corpus',
     corpusInterest: 'content',
@@ -220,29 +218,29 @@ function installMockHybridSearch(
   hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
     embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
   });
-  equipVectorSlot(kb, {
-    backendKind: 'needle',
-    search: async (
-      embedding: number[],
-      topK: number,
-      scope?: 'all' | 'notes' | 'sources' | 'communities',
-    ) => {
-      let candidateK = Math.max(topK, 1);
-      const candidateCap = Math.max(topK, 10 * topK);
-      let rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-      let hits = aggregateMockNeedleHits(kb, rawHits, scope);
-      let exhausted = rawHits.length < candidateK;
+  equipVectorSlot(
+    kb,
+    {
+      backendKind: 'needle',
+      search: async (embedding: number[], topK: number, scope?: 'all' | 'notes' | 'sources' | 'communities') => {
+        let candidateK = Math.max(topK, 1);
+        const candidateCap = Math.max(topK, 10 * topK);
+        let rawHits = await searchVector(Float32Array.from(embedding), candidateK);
+        let hits = aggregateMockNeedleHits(kb, rawHits, scope);
+        let exhausted = rawHits.length < candidateK;
 
-      while (hits.length < topK && !exhausted && candidateK < candidateCap) {
-        candidateK = Math.min(candidateCap, candidateK * 2);
-        rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-        hits = aggregateMockNeedleHits(kb, rawHits, scope);
-        exhausted = rawHits.length < candidateK;
-      }
+        while (hits.length < topK && !exhausted && candidateK < candidateCap) {
+          candidateK = Math.min(candidateCap, candidateK * 2);
+          rawHits = await searchVector(Float32Array.from(embedding), candidateK);
+          hits = aggregateMockNeedleHits(kb, rawHits, scope);
+          exhausted = rawHits.length < candidateK;
+        }
 
-      return { hits: hits.slice(0, topK) };
+        return { hits: hits.slice(0, topK) };
+      },
     },
-  }, createCorpusHandle(routeState));
+    createCorpusHandle(routeState),
+  );
 }
 
 function resultNotes(results: { note: string }[]): string[] {
@@ -414,17 +412,17 @@ describe('hybrid reciprocal rank fusion', () => {
   it('keeps graph participation in explicit hybrid mode through the router-backed fusion path', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'rendering-anchor', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-anchor', {
       title: 'Rendering Anchor',
       body: 'Rendering guides keep frames stable.',
     });
-    writeNote(paths.notesDir(), 'semantic-vector', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'semantic-vector', {
       title: 'Semantic Vector',
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(), 'memory-node', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'memory-node', {
       title: 'Opaque Memory Node',
       tags: ['gpu-device-memory'],
       body: 'Archive only.',
@@ -445,9 +443,7 @@ describe('hybrid reciprocal rank fusion', () => {
     installMockHybridSearch(
       kb,
       seedNeedleRouteState(kb, kb.captureCorpusSnapshot()),
-      vi.fn().mockResolvedValue([
-        { chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 },
-      ]),
+      vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 }]),
     );
 
     const response = await searchKb(kb, 'rendering vram', 3, 'all', 'hybrid');

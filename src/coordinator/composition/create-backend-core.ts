@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
-import { errorMessage, formatError } from '../../infra/error-format.js';
+import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/server-ports.js';
 import {
@@ -44,12 +44,7 @@ import { noteEntryId, sourceEntryId } from '../../kb/entry-types.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
-import {
-  createRuntimeState,
-  createLifecycle,
-  type LifecycleController,
-  type LifecycleDeps,
-} from '../control.js';
+import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../control.js';
 import type { BackendCoreOptions, BackendCoreResult } from './backend-core-types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
@@ -64,6 +59,7 @@ import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 import { KbReindexService } from '../services/kb-reindex-service.js';
+import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
 
 export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
   const runtime = options.runtime;
@@ -115,6 +111,12 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
   });
+  const kbJobRecorder = new KbJobRecorder({
+    runtime,
+    progressStore: world.progressStore,
+    backendNamespace: world.namespace,
+    bundleHash: identity.bundleHash,
+  });
 
   const readOnlyInvocationContext = {
     projectRoot: '',
@@ -126,7 +128,9 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     code: 'kb_unavailable',
     message: 'Knowledge base is not available. Check backend health for details.',
   };
-  const withKb = <T>(run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T): T | typeof kbUnavailableResult => {
+  const withKb = <T>(
+    run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
+  ): T | typeof kbUnavailableResult => {
     const kbSubsystem = runtimeState.getKbSubsystem();
     if (!kbSubsystem) {
       return kbUnavailableResult;
@@ -141,23 +145,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       return kbUnavailableResult;
     }
     return run(kbSubsystem);
-  };
-  const normalizeKbFailureDetail = (detail: unknown): unknown => {
-    if (detail === undefined) {
-      return undefined;
-    }
-    if (detail instanceof Error) {
-      return {
-        message: detail.message,
-        ...(detail.stack === undefined ? {} : { stack: detail.stack }),
-      };
-    }
-
-    try {
-      return JSON.parse(JSON.stringify(detail)) as unknown;
-    } catch {
-      return { message: errorMessage(detail) };
-    }
   };
   const kbRefsForOperation = (
     operation: string,
@@ -192,35 +179,27 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     }
 
     const status = world.progressStore.readStatus(jobId);
-    if (!status || status.sessionId !== sessionId || !belongsToNamespace(status, world.namespace) || !isLivePhase(status.phase)) {
+    if (
+      !status ||
+      status.sessionId !== sessionId ||
+      !belongsToNamespace(status, world.namespace) ||
+      !isLivePhase(status.phase)
+    ) {
       return;
     }
 
     const kbRefs = kbRefsForOperation(operation, args);
-    const detail = normalizeKbFailureDetail(result.detail);
-    world.progressStore.appendEvent({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
+    const detail = normalizeHostedKbFailureDetail(result.detail);
+    kbJobRecorder.appendHostedKbOperationFailure({
+      jobId,
+      sessionId,
+      projectRoot: status.projectRoot,
       namespace: status.backendNamespace,
-      project: status.projectRoot,
-      refs: {
-        jobId,
-        sessionId,
-        ...(kbRefs === undefined ? {} : { kbRefs }),
-      },
-      bodyVersion: 1,
-      body: {
-        kind: 'domain',
-        stage: 'kb_operation_failed',
-        message: `KB ${operation} failed: ${result.message}`,
-        ts: nowIsoString(runtime.time),
-        detail: {
-          operation,
-          code: result.code,
-          message: result.message,
-          ...(detail === undefined ? {} : { detail }),
-        },
-      },
+      operation,
+      code: result.code,
+      message: result.message,
+      detail,
+      ...(kbRefs === undefined ? {} : { kbRefs }),
     });
   };
 
@@ -296,7 +275,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     kb: {
       readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
       diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
-      readNote: (slug) => withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
+      readNote: (slug) =>
+        withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
       readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
       readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
       readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),

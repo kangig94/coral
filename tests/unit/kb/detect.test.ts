@@ -68,8 +68,8 @@ describe('kb detection and paths', () => {
 
     const kb = createKbRuntime({
       markdownRoot: infraPaths.kbRoot(),
-      runtimeDir: paths.kbRuntimeDir(),
-      db: createKbTestDb(paths.kbRuntimeDir()),
+      runtimeDir: paths.kbRuntimeDir('prod'),
+      db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
 
     expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
@@ -80,19 +80,25 @@ describe('kb detection and paths', () => {
 
     expect(infraPaths.currentBuildFlavor()).toBe('prod');
     expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb'));
-    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
-    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
-    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle'));
-    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle-staging'));
+    const prodRuntimeDir = paths.kbRuntimeDir('prod');
+    expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
+    expect(paths.oramaSnapshotDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
+    expect(paths.needleIndexDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle'));
+    expect(paths.needleStagingDir(prodRuntimeDir)).toBe(
+      join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle-staging'),
+    );
 
     infraPaths.setBuildFlavor('dev');
 
     expect(infraPaths.currentBuildFlavor()).toBe('dev');
     expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
-    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
-    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'));
-    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle'));
-    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle-staging'));
+    const devRuntimeDir = paths.kbRuntimeDir('dev');
+    expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
+    expect(paths.oramaSnapshotDir(devRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'));
+    expect(paths.needleIndexDir(devRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle'));
+    expect(paths.needleStagingDir(devRuntimeDir)).toBe(
+      join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle-staging'),
+    );
   });
 
   it('treats build flavor as single-assignment', async () => {
@@ -110,15 +116,15 @@ describe('kb detection and paths', () => {
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
-      runtimeDir: paths.kbRuntimeDir(),
-      db: createKbTestDb(paths.kbRuntimeDir()),
+      runtimeDir: paths.kbRuntimeDir('prod'),
+      db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
     const pluginRoot = join(mockState.tmpHome, 'plugin');
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(join(pluginRoot, 'bridge', 'coral-backend.cjs'), '', 'utf-8');
     void pluginRoot;
 
-    expect(kb.runtimeDir).toBe(paths.kbRuntimeDir());
+    expect(kb.runtimeDir).toBe(paths.kbRuntimeDir('prod'));
   });
 
   it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
@@ -126,8 +132,8 @@ describe('kb detection and paths', () => {
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
-      runtimeDir: paths.kbRuntimeDir(),
-      db: createKbTestDb(paths.kbRuntimeDir()),
+      runtimeDir: paths.kbRuntimeDir('prod'),
+      db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
 
     try {
@@ -137,9 +143,9 @@ describe('kb detection and paths', () => {
       expect(existsSync(paths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(paths.needleIndexDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(paths.needleStagingDir(kb.runtimeDir))).toBe(false);
-      expect(
-        collectDirectoryPaths(join(mockState.tmpHome, '.coral')).some((path) => path.endsWith('/vec')),
-      ).toBe(false);
+      expect(collectDirectoryPaths(join(mockState.tmpHome, '.coral')).some((path) => path.endsWith('/vec'))).toBe(
+        false,
+      );
     } finally {
       kb.db.close();
     }
@@ -151,8 +157,8 @@ describe('kb detection and paths', () => {
     infraPaths.setBuildFlavor('dev');
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
-      runtimeDir: paths.kbRuntimeDir(),
-      db: createKbTestDb(paths.kbRuntimeDir()),
+      runtimeDir: paths.kbRuntimeDir('dev'),
+      db: createKbTestDb(paths.kbRuntimeDir('dev')),
     });
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
@@ -161,29 +167,24 @@ describe('kb detection and paths', () => {
     const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
     const principlePath = join(markdownRoot, 'principles', 'contract-first-design.md');
 
-    expect(paths.notesDir()).toBe(join(markdownRoot, 'notes'));
     expect(paths.notesDir(markdownRoot)).toBe(join(markdownRoot, 'notes'));
-    expect(paths.principlesDir()).toBe(join(markdownRoot, 'principles'));
     expect(paths.principlesDir(markdownRoot)).toBe(join(markdownRoot, 'principles'));
-    expect(paths.notePathFromName('coral-kb-runtime-root')).toBe(notePath);
     expect(paths.notePathFromName('coral-kb-runtime-root', markdownRoot)).toBe(notePath);
-    expect(paths.notePathFromParts('coral', 'kb-runtime-root')).toBe(notePath);
     expect(paths.notePathFromParts('coral', 'kb-runtime-root', markdownRoot)).toBe(notePath);
-    expect(paths.principlePathFromName('contract-first-design')).toBe(principlePath);
     expect(paths.principlePathFromName('contract-first-design', markdownRoot)).toBe(principlePath);
     expect(kb.notesDir()).toBe(join(markdownRoot, 'notes'));
     expect(kb.principlesDir()).toBe(join(markdownRoot, 'principles'));
     expect(kb.notePath('coral-kb-runtime-root')).toBe(notePath);
     expect(kb.principlePath('contract-first-design')).toBe(principlePath);
-    expect(paths.kbRuntimeDir()).toBe(machineLocalRuntimeDir);
+    expect(paths.kbRuntimeDir('dev')).toBe(machineLocalRuntimeDir);
     expect(kb.runtimeDir).toBe(machineLocalRuntimeDir);
     expect(paths.memoPathFromContext(projectRoot, 'memo.md')).toBe(
       join(mockState.tmpHome, '.coral', 'projects', 'local-project', 'memo', 'memo.md'),
     );
     expect(() => kb.notePath('../escape')).toThrow();
     expect(() => kb.principlePath('../escape')).toThrow();
-    expect(() => paths.notePathFromName('../escape')).toThrow();
-    expect(() => paths.principlePathFromName('../escape')).toThrow();
+    expect(() => paths.notePathFromName('../escape', markdownRoot)).toThrow();
+    expect(() => paths.principlePathFromName('../escape', markdownRoot)).toThrow();
     expect(() => paths.memoPathFromContext(projectRoot, '../escape.md')).toThrow();
   });
 });

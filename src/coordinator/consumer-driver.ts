@@ -1,29 +1,33 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type {
-  CorpusConsumerRegistration,
-  CorpusInterest,
-  CorpusLaneHint,
-  KbCorpusSnapshot,
-} from '../kb/contracts.js';
+import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contracts.js';
 import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
-import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
+import {
+  consumerAuthorityMismatchError,
+  consumerInterestMismatchError,
+  consumerNotRegisteredError,
+  consumerRegistrationKindMismatchError,
+  isCorpusInterest,
+  isKbCorpusSnapshot,
+  isRegistrationKind,
+  laneHintFromInterest,
+  parseStoredCorpusInterest,
+  renderConsumerId,
+  shouldNotifyCorpusConsumer,
+  toConsumerApplyError,
+} from './consumer-driver/support.js';
 
-export type {
-  CorpusConsumerRegistration,
-  CorpusInterest,
-  CorpusLaneHint,
-} from '../kb/contracts.js';
+export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contracts.js';
 export type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {
-    const renderedTarget = typeof target === 'number'
-      ? String(target)
-      : `${target.snapshotId}:${target.contentSeq}/${target.metadataSeq}`;
+    const renderedTarget =
+      typeof target === 'number' ? String(target) : `${target.snapshotId}:${target.contentSeq}/${target.metadataSeq}`;
     super(`waitFreshUntil timed out (consumer=${consumerId}, target=${renderedTarget}, timeoutMs=${timeoutMs})`);
     this.name = 'FreshnessTimeout';
     Object.setPrototypeOf(this, FreshnessTimeout.prototype);
@@ -131,94 +135,6 @@ export interface ConsumerDriverOptions {
 
 export interface UnregisterStoppedConsumerOptions {
   readonly preserveCursor?: boolean;
-}
-
-function isCorpusInterest(value: unknown): value is CorpusInterest {
-  return value === 'content' || value === 'metadata' || value === 'both';
-}
-
-function isRegistrationKind(value: unknown): value is ConsumerRegistrationKind {
-  return value === 'base' || value === 'equipment';
-}
-
-function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint | null {
-  return interest === 'both' ? null : interest;
-}
-
-function parseStoredCorpusInterest(row: CursorMetadataRow): CorpusInterest | null {
-  const raw = row.corpus_interest ?? row.lane;
-  return isCorpusInterest(raw) ? raw : null;
-}
-
-function shouldNotifyCorpusConsumer(
-  interest: CorpusInterest,
-  laneHint: CorpusLaneHint | undefined,
-): boolean {
-  return laneHint === undefined || interest === 'both' || interest === laneHint;
-}
-
-function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as KbCorpusSnapshot).snapshotId === 'string' &&
-    typeof (value as KbCorpusSnapshot).contentSeq === 'number' &&
-    typeof (value as KbCorpusSnapshot).metadataSeq === 'number' &&
-    typeof (value as KbCorpusSnapshot).contentManifestHash === 'string' &&
-    typeof (value as KbCorpusSnapshot).metadataManifestHash === 'string'
-  );
-}
-
-function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
-  if (err instanceof Error && err.message.trim().length > 0) {
-    return { message: err.message, at, cause: err };
-  }
-  if (typeof err === 'string' && err.trim().length > 0) {
-    return { message: err, at, cause: err };
-  }
-  return { message: 'Consumer apply failed', at, cause: err };
-}
-
-function consumerNotRegisteredError(consumerId: string): CoralSetupError {
-  return documentedCoralSetupError('consumer_not_registered', { id: consumerId });
-}
-
-function consumerAuthorityMismatchError(
-  consumerId: string,
-  expected: string,
-  actual: string,
-): CoralSetupError {
-  return documentedCoralSetupError('consumer_authority_mismatch', {
-    id: consumerId,
-    expected,
-    actual,
-  });
-}
-
-function consumerInterestMismatchError(consumerId: string): CoralSetupError {
-  return documentedCoralSetupError('consumer_interest_mismatch', { id: consumerId });
-}
-
-function consumerRegistrationKindMismatchError(
-  consumerId: string,
-  expected: ConsumerRegistrationKind,
-  actual: ConsumerRegistrationKind,
-): CoralSetupError {
-  return documentedCoralSetupError('consumer_registration_kind_mismatch', {
-    id: consumerId,
-    expected,
-    actual,
-  });
-}
-
-function renderConsumerId(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
-    return `${value}`;
-  }
-  return 'invalid';
 }
 
 export class ConsumerDriver {
@@ -355,11 +271,7 @@ export class ConsumerDriver {
       if (row) {
         const storedKind = this.ensureCursorRow(reg, false, row);
         if (storedKind !== existing.registrationKind) {
-          throw consumerRegistrationKindMismatchError(
-            reg.id,
-            existing.registrationKind,
-            storedKind,
-          );
+          throw consumerRegistrationKindMismatchError(reg.id, existing.registrationKind, storedKind);
         }
       } else {
         this.insertCursorRow(reg, existing.registrationKind);
@@ -552,16 +464,16 @@ export class ConsumerDriver {
       throw consumerAuthorityMismatchError(reg.id, reg.authority, state.reg.authority);
     }
 
-    if (state.reg.authority === 'corpus' && reg.authority === 'corpus' && state.reg.corpusInterest !== reg.corpusInterest) {
+    if (
+      state.reg.authority === 'corpus' &&
+      reg.authority === 'corpus' &&
+      state.reg.corpusInterest !== reg.corpusInterest
+    ) {
       throw consumerInterestMismatchError(reg.id);
     }
 
     if (reg.registrationKind !== undefined && state.registrationKind !== reg.registrationKind) {
-      throw consumerRegistrationKindMismatchError(
-        reg.id,
-        reg.registrationKind,
-        state.registrationKind,
-      );
+      throw consumerRegistrationKindMismatchError(reg.id, reg.registrationKind, state.registrationKind);
     }
   }
 
@@ -587,11 +499,7 @@ export class ConsumerDriver {
       const storedKind = this.parseStoredRegistrationKind(reg.id, row.registration_kind);
       if (requestedKind !== undefined && storedKind !== requestedKind) {
         if (!allowRegistrationKindUpdate) {
-          throw consumerRegistrationKindMismatchError(
-            reg.id,
-            requestedKind,
-            storedKind,
-          );
+          throw consumerRegistrationKindMismatchError(reg.id, requestedKind, storedKind);
         }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);
         return requestedKind;
@@ -863,10 +771,7 @@ export class ConsumerDriver {
     this.finalizeStoppedConsumer(state);
   }
 
-  private finalizeStoppedConsumer(
-    state: ConsumerState,
-    options: UnregisterStoppedConsumerOptions = {},
-  ): void {
+  private finalizeStoppedConsumer(state: ConsumerState, options: UnregisterStoppedConsumerOptions = {}): void {
     if (state.unregistered) {
       return;
     }

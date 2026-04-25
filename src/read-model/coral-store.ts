@@ -121,12 +121,17 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.kb = {
-      search: (args) => searchKnowledgeBase(args, { pluginRoot: this.pluginRoot }),
-      diagnose: () => diagnoseKnowledgeBase({ pluginRoot: this.pluginRoot }),
-      read: (selector) => readKnowledgeBaseEntry(selector, { projectRoot: this.projectRoot, pluginRoot: this.pluginRoot }),
-      listPrinciples: (args) => listKnowledgeBasePrinciples(args, { pluginRoot: this.pluginRoot }),
-      listSources: () => listKnowledgeBaseSources({ pluginRoot: this.pluginRoot }),
-      listMemos: (args) => listKnowledgeBaseMemos(this.projectRoot ?? process.cwd(), args),
+      search: (args) => searchKnowledgeBase(args, { pluginRoot: this.requirePluginRoot('kb.search') }),
+      diagnose: () => diagnoseKnowledgeBase({ pluginRoot: this.requirePluginRoot('kb.diagnose') }),
+      read: (selector) =>
+        readKnowledgeBaseEntry(selector, {
+          projectRoot: this.requireProjectRoot('kb.read'),
+          pluginRoot: this.requirePluginRoot('kb.read'),
+        }),
+      listPrinciples: (args) =>
+        listKnowledgeBasePrinciples(args, { pluginRoot: this.requirePluginRoot('kb.listPrinciples') }),
+      listSources: () => listKnowledgeBaseSources({ pluginRoot: this.requirePluginRoot('kb.listSources') }),
+      listMemos: (args) => listKnowledgeBaseMemos(this.requireProjectRoot('kb.listMemos'), args),
     };
 
     this.discuss = {
@@ -168,5 +173,19 @@ export class CoralStore implements StoreReadContext {
 
   readJobProgress(jobId: string) {
     return readJobProgress(this.db, jobId, this);
+  }
+
+  private requireProjectRoot(operation: string): string {
+    if (this.projectRoot === undefined || this.projectRoot.length === 0) {
+      throw new Error(`CoralStore ${operation} requires an explicit projectRoot.`);
+    }
+    return this.projectRoot;
+  }
+
+  private requirePluginRoot(operation: string): string {
+    if (this.pluginRoot === undefined || this.pluginRoot.length === 0) {
+      throw new Error(`CoralStore ${operation} requires an explicit pluginRoot.`);
+    }
+    return this.pluginRoot;
   }
 }

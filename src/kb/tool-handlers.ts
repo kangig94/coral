@@ -12,13 +12,7 @@ import {
   parseSummaryFromBody,
 } from './corpus/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
-import {
-  memoDir,
-  notePathFromName,
-  principlePathFromName,
-  sourcePathFromName,
-  communityPathFromName,
-} from './paths.js';
+import { memoDir } from './paths.js';
 import { promote as kbPromote } from './ops/promote.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
@@ -28,13 +22,7 @@ import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 import { type KbReadKind } from './read-contract.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
-import {
-  deriveKbErrorMessage,
-  kbError,
-  kbSuccess,
-  kbValidationError,
-  type KbToolResult,
-} from './result.js';
+import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/owner-id.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
@@ -121,24 +109,36 @@ function validateOwner(
 }
 
 function resolveSourcePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  return kbSubsystem?.kb.sourcePath(slug) ?? sourcePathFromName(slug);
+  if (kbSubsystem === undefined) {
+    throw new Error('KB subsystem is required to resolve source paths.');
+  }
+  return kbSubsystem.kb.sourcePath(slug);
 }
 
 function resolveNotePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  return kbSubsystem?.kb.notePath(slug) ?? notePathFromName(slug);
+  if (kbSubsystem === undefined) {
+    throw new Error('KB subsystem is required to resolve note paths.');
+  }
+  return kbSubsystem.kb.notePath(slug);
 }
 
 function resolveCommunityPath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  return kbSubsystem?.kb.communityPath(slug) ?? communityPathFromName(slug);
+  if (kbSubsystem === undefined) {
+    throw new Error('KB subsystem is required to resolve community paths.');
+  }
+  return kbSubsystem.kb.communityPath(slug);
 }
 
 function resolvePrinciplePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  return kbSubsystem?.kb.principlePath(slug) ?? principlePathFromName(slug);
+  if (kbSubsystem === undefined) {
+    throw new Error('KB subsystem is required to resolve principle paths.');
+  }
+  return kbSubsystem.kb.principlePath(slug);
 }
 
-function kbReadPaths(kbSubsystem?: KnowledgeBaseRuntime): Partial<KbReadPathResolver> | undefined {
+function kbReadPaths(kbSubsystem?: KnowledgeBaseRuntime): KbReadPathResolver {
   if (kbSubsystem === undefined) {
-    return undefined;
+    throw new Error('KB subsystem is required to resolve read paths.');
   }
 
   return {
@@ -156,13 +156,7 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   }
 
   return runKbAction(() =>
-    searchKb(
-      kbSubsystem.kb,
-      parsed.data.query,
-      parsed.data.top_k ?? 20,
-      parsed.data.scope ?? 'all',
-      parsed.data.mode,
-    ),
+    searchKb(kbSubsystem.kb, parsed.data.query, parsed.data.top_k ?? 20, parsed.data.scope ?? 'all', parsed.data.mode),
   );
 }
 

@@ -9,7 +9,6 @@ import { backendLog } from '../../infra/backend-log.js';
 import { isRecord } from '../../infra/json.js';
 import { readProcessEnv } from '../../infra/process-env.js';
 import { TransientHttpError } from '../../infra/http-errors.js';
-import { kbRuntimeDir } from '../paths.js';
 import { loadCoralEnv } from '../env.js';
 import type { EmbeddingSpec } from './needle-store.js';
 
@@ -145,10 +144,7 @@ function isOnnxRuntimeModule(value: unknown): value is OnnxRuntimeModule {
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_BASE_MS = 1_000;
 
-async function fetchWithTransientRetry(
-  input: string,
-  init?: RequestInit,
-): Promise<Response> {
+async function fetchWithTransientRetry(input: string, init?: RequestInit): Promise<Response> {
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= TRANSIENT_RETRY_LIMIT; attempt++) {
@@ -359,9 +355,7 @@ export function computeSpecId(
   dims: number,
   normalization: EmbeddingSpec['normalization'],
 ): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ provider, model, dims, normalization }))
-    .digest('hex');
+  return createHash('sha256').update(JSON.stringify({ provider, model, dims, normalization })).digest('hex');
 }
 
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
@@ -640,7 +634,7 @@ export function resolveEmbeddingProviderConfig(env: EnvReader = readProcessEnv):
 
 /** Creates the configured embedding provider or returns null when embeddings are disabled. */
 export async function createEmbeddingProvider(
-  runtimeDir: string = kbRuntimeDir(),
+  runtimeDir: string,
   config?: EmbeddingProviderConfig | null,
   env: EnvReader = readProcessEnv,
 ): Promise<EmbeddingProvider | null> {
@@ -687,13 +681,7 @@ export async function createEmbeddingProvider(
       );
     }
 
-    return new LocalOnnxProvider(
-      resolvedConfig.name,
-      model,
-      resolvedConfig.dims,
-      ort,
-      modelPath,
-    );
+    return new LocalOnnxProvider(resolvedConfig.name, model, resolvedConfig.dims, ort, modelPath);
   } catch (error: unknown) {
     if (error instanceof Error) {
       return warnAndReturnNull(error.message);

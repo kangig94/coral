@@ -162,6 +162,8 @@ Jobs are durable process attempts, not an async wrapper for every command. A com
 
 `kb source import` is job-backed because document conversion, staging, Corpus commit, and retrieval readiness can take real time even before needle is installed. `kb search`, `kb read`, memo operations, and note writes remain direct because their expected path is immediate and their authority changes are small. Direct KB list/read paths do not lazily repair or rebuild durable text artifacts; explicit `kb reindex` owns that durable work. If a future direct command gains long-running recovery semantics, the job boundary moves for that command only; the whole KB surface does not become job/wait by default.
 
+Direct reads are not ambient reads. The CLI/bootstrap edge resolves plugin root, build flavor, project root, Corpus markdown root, and KB runtime root before invoking KB/read-model code. KB path helpers and `CoralStore` do not silently choose `cwd`, `HOME`, or the user's default KB; that choice belongs at the local command/composition edge.
+
 ### 2.8 Extension Model (Equipment)
 
 Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Features that intrinsically need external resources (vector search needs an embedding provider; ANN at scale needs a native addon) are documented in README with a one-line setup per feature. Users opt into heavier capabilities via the `/equip <name>` skill, which routes to `coral-cli expansion equip <name>`.
@@ -1999,7 +2001,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 22a. `kb source import` is a job-owned ingest attempt. Its job terminal records execution/readiness success or failure; the imported source is authoritative only when the Corpus markdown file exists.
 
 **Coordinator & transport**:
-23. Local read-only CLI commands do not require a coordinator (SQLite readers use separate DB handles; Corpus reads are direct filesystem).
+23. Local read-only CLI commands do not require a coordinator (SQLite readers use separate DB handles; Corpus reads are direct filesystem), but their roots are explicit adapter inputs, not implicit cwd/home fallbacks inside domain/read-model code.
 24. Local mutating or live CLI commands always go through the coordinator (IPC or HTTP gateway).
 25. IPC and HTTP share identical coordinator RPC semantics; only wire format differs.
 26. Operational facts (index rebuilds, WAL checkpoints, snapshot rotations) are NOT domain events or Corpus mutations; they are logs.
@@ -2045,7 +2047,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Store**: the single SQLite database at `~/.coral/data/store/store.db` in prod and `~/.coral/data-dev/store/store.db` in dev. Holds events + projections for Journal domains. KB indexes are projections too but live under `~/.coral/data/kb/` (prod) or `~/.coral/data-dev/kb/` (dev) since they derive from Corpus, not Journal.
 - **Events table**: append-only SQL table keyed by `seq` (auto-increment). The only durable truth.
 - **Projection tables**: SQL read models (`projection_jobs`, `projection_sessions`, `projection_workflows`, etc.) maintained incrementally by event reducers in the same transaction that appends events.
-- **CoralStore**: unified read API covering **both authorities**, implemented in `read-model/coral-store.ts`. Journal reads go through domain-owned query modules over SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Multiple read handles can coexist; single writer (coordinator) owns mutations.
+- **CoralStore**: unified read API covering **both authorities**, implemented in `read-model/coral-store.ts`. Journal reads go through domain-owned query modules over SQLite (`events` + `projection_*` tables); Corpus reads go to explicitly resolved filesystem roots plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query, but the adapter constructing `CoralStore` must provide the project/plugin context for KB reads. Multiple read handles can coexist; single writer (coordinator) owns mutations.
 - **CoralCoordinator**: the single-writer daemon. Owns live state (admission, host pool, subscriptions) and is the only layer that opens a writable DB handle.
 - **Stream**: a logical sub-sequence of the events table identified by `(stream_kind, stream_id)` — e.g., `job/wf-1`, `session/s-42`, `workflow/wf-1`. Ordering is global via `seq`.
 - **Envelope**: the event header — `seq`, `ts`, `type`, `stream`, `namespace`, `refs`, `correlationId`, `causationSeq`, `bodyVersion`. Wraps a `body`.

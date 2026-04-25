@@ -69,6 +69,8 @@ Jobs are not an async wrapper for every command. They are durable work ledgers f
 | Internal coordinator job | KB source import, KB reindex | Coordinator service over jobs + KB |
 | Projection freshness | Orama/Needle catch-up | ConsumerDriver cursor wait |
 
+Direct KB reads are coordinator-free, not context-free. CLI/bootstrap adapters resolve plugin root, build flavor, project root, Corpus root, and KB runtime root before invoking KB query helpers or `read-model/CoralStore`; lower KB path helpers do not choose `cwd`, `HOME`, or `CORAL_KB_PATH` on their own.
+
 Projection freshness is not authority. A Corpus commit remains durable even if a retrieval consumer fails to catch up; callers that requested readiness observe that failure through the hosting command or job.
 
 ## Coordinator
@@ -148,6 +150,7 @@ These are the load-bearing boundaries that must not leak:
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
+- KB source import/reindex failure facts are recorded by coordinator-owned KB job recording glue as job progress cause events; the KB domain remains Corpus authority only.
 - Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
 - Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

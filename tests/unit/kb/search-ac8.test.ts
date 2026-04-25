@@ -93,8 +93,8 @@ function createRuntime(
   // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir(),
-    db: createKbTestDb(paths.kbRuntimeDir()),
+    runtimeDir: paths.kbRuntimeDir('prod'),
+    db: createKbTestDb(paths.kbRuntimeDir('prod')),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -182,8 +182,8 @@ describe('kb search AC8 mode branching', () => {
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    writeNote(paths.notesDir(), 'vector-note', {
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-note', {
       title: 'Vector Note',
       body: 'Archive only.',
     });
@@ -223,8 +223,8 @@ describe('kb search AC8 mode branching', () => {
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    writeNote(paths.notesDir(), 'rendering-guides', {
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-guides', {
       title: 'Rendering Guides',
       tags: ['gpu-device-memory'],
       body: 'Rendering guides keep frames stable.',

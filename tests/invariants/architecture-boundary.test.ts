@@ -145,6 +145,11 @@ const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle-backend.ts';
 const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal-materializer.ts';
+const KB_PATHS_MODULE = 'src/kb/paths.ts';
+const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
+const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
+const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
+const CONSUMER_DRIVER_SUPPORT_MODULE = 'src/coordinator/consumer-driver/support.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -241,7 +246,10 @@ function assertNoViolations(violations: BoundaryViolation[]): void {
 function collectRuntimeDeclarationsInTypesFiles(): string[] {
   const runtimeDeclarationPatterns: Array<[RegExp, string]> = [
     [/^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(/m, 'function declaration'],
-    [/^\s*(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|\w+)\s*=>)/m, 'function-valued const'],
+    [
+      /^\s*(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|\w+)\s*=>)/m,
+      'function-valued const',
+    ],
     [/^\s*export\s+(?:class|enum)\s+\w+\b/m, 'runtime export'],
   ];
 
@@ -306,13 +314,11 @@ function scanRetiredIdentifierResidue(filePath: string): string[] {
 
   function visit(node: ts.Node): void {
     if (
-      ts.isIdentifier(node)
-      && (
-        RETIRED_RECORD_IDENTIFIERS.has(node.text)
-        || RETIRED_PREFIX_IDENTIFIER_RE.test(node.text)
-        || RETIRED_BOUNDARY_HELPERS.has(node.text)
-        || node.text === 'KbSubsystem'
-      )
+      ts.isIdentifier(node) &&
+      (RETIRED_RECORD_IDENTIFIERS.has(node.text) ||
+        RETIRED_PREFIX_IDENTIFIER_RE.test(node.text) ||
+        RETIRED_BOUNDARY_HELPERS.has(node.text) ||
+        node.text === 'KbSubsystem')
     ) {
       matches.add(node.text);
     }
@@ -341,9 +347,7 @@ function collectRetiredRuntimeAliasResidue(): string[] {
   }
 
   const source = readFileSync(portsPath, 'utf-8');
-  return RETIRED_RUNTIME_ALIASES.filter((alias) =>
-    new RegExp(`\\bexport\\s+type\\s+${alias}\\s*=`).test(source),
-  );
+  return RETIRED_RUNTIME_ALIASES.filter((alias) => new RegExp(`\\bexport\\s+type\\s+${alias}\\s*=`).test(source));
 }
 
 function collectProductionStringResidue(tokens: readonly string[]): string[] {
@@ -382,10 +386,7 @@ function collectLaunchPoolDefinitions(): string[] {
 
 function collectDomainAmbientRuntimeAccess(): string[] {
   const scopedRoots = ['src/providers', 'src/workflow', 'src/kb', 'src/discuss'];
-  const allowed = new Set([
-    'src/kb/env.ts',
-    'src/discuss/transcript.ts',
-  ]);
+  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts']);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 
@@ -395,6 +396,27 @@ function collectDomainAmbientRuntimeAccess(): string[] {
     }
 
     return ambientPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8'));
+  }).sort();
+}
+
+function collectReadModelAmbientRuntimeAccess(): string[] {
+  const ambientPattern = /\bprocess\.cwd\s*\(|\bprocess\.env\b/u;
+  return PRODUCTION_SOURCE_FILES.filter((filePath) => {
+    if (!isWithinPath(filePath, 'src/read-model')) {
+      return false;
+    }
+
+    return ambientPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8'));
+  }).sort();
+}
+
+function collectKbOperationFailureWriters(): string[] {
+  return PRODUCTION_SOURCE_FILES.flatMap((filePath) => {
+    const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+    if (!source.includes('kb_operation_failed')) {
+      return [];
+    }
+    return [filePath];
   }).sort();
 }
 
@@ -503,6 +525,24 @@ describe('architecture boundary guard', () => {
   it('domain/provider modules receive time env and randomness through ports', () => {
     expect(collectDomainAmbientRuntimeAccess()).toEqual([]);
   });
+  it('kb paths and read-model reads do not silently choose ambient roots', () => {
+    const kbPathSource = readFileSync(resolve(REPO_ROOT, KB_PATHS_MODULE), 'utf8');
+    expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir|currentBuildFlavor)\s*\(/u);
+    expect(kbPathSource).not.toContain('currentBuildFlavor');
+    expect(kbPathSource).not.toContain('kbRoot');
+    expect(collectReadModelAmbientRuntimeAccess()).toEqual([]);
+  });
+  it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
+    expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
+  });
+  it('large coordinator transport and consumer-driver helpers stay split by responsibility', () => {
+    expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
+    expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_SUPPORT_MODULE);
+
+    const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
+    expect(durableTransportSource).not.toContain('createInterface');
+    expect(durableTransportSource).not.toContain('ProviderServerEntry');
+  });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(
       KB_ROOT,
@@ -560,10 +600,9 @@ describe('architecture boundary guard', () => {
     assertNoViolations(violations);
   });
   it('clean-slate rewrite residue must stay out of production sources', () => {
-    expect(collectProductionStringResidue([
-      RETIRED_STATUS_SCHEMA_FAULT,
-      RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
-    ])).toEqual([]);
+    expect(collectProductionStringResidue([RETIRED_STATUS_SCHEMA_FAULT, RETIRED_TEXT_ARTIFACT_LOCK_METHOD])).toEqual(
+      [],
+    );
   });
   it('kb corpus repair does not construct real runtime ports', () => {
     const violations = PARSED_IMPORT_EDGES.filter(
@@ -707,10 +746,7 @@ describe('architecture boundary guard', () => {
     expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_NORMALIZE))).toBe(false);
   });
   it('the retired request-context owners must remain deleted', () => {
-    for (const retiredPath of [
-      RETIRED_INFRA_REQUEST_CONTEXT,
-      RETIRED_TRANSPORT_REQUEST_CONTEXT,
-    ]) {
+    for (const retiredPath of [RETIRED_INFRA_REQUEST_CONTEXT, RETIRED_TRANSPORT_REQUEST_CONTEXT]) {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
       expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
     }
@@ -840,10 +876,10 @@ describe('architecture boundary guard', () => {
   it('production keeps helper-style filenames out of src/', () => {
     const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter(
       (filePath) =>
-        filePath.endsWith('/helper.ts')
-        || filePath.endsWith('/helpers.ts')
-        || filePath.endsWith('/shared.ts')
-        || filePath.endsWith('/shared-utils.ts'),
+        filePath.endsWith('/helper.ts') ||
+        filePath.endsWith('/helpers.ts') ||
+        filePath.endsWith('/shared.ts') ||
+        filePath.endsWith('/shared-utils.ts'),
     );
     expect(helperLikeFiles).toEqual([]);
   });

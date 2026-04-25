@@ -2,13 +2,9 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { EquipmentView } from './equipment-contract.js';
+import { currentBuildFlavor } from '../infra/paths.js';
 import { kbRuntimeDir } from '../kb/paths.js';
-import {
-  readEquipmentStatus,
-  activateExpansion,
-  deactivateExpansion,
-  type ActivationDeps,
-} from './activate.js';
+import { readEquipmentStatus, activateExpansion, deactivateExpansion, type ActivationDeps } from './activate.js';
 import {
   catalogEntrySchema,
   catalogResultSchema,
@@ -23,10 +19,7 @@ import {
 import { encodeInstallError } from './errors.js';
 import { getCatalogEntry, listCatalogEntries, type CatalogBinding } from './catalog.js';
 import { installExpansion, uninstallExpansion } from './install.js';
-import {
-  inspectGithubBinaryInstall,
-  type GithubBinaryConfig,
-} from './strategies/github-binary.js';
+import { inspectGithubBinaryInstall, type GithubBinaryConfig } from './strategies/github-binary.js';
 import { createExpansionInstallContext, type ExpansionInstallContext } from './strategies/strategy.js';
 
 const INSTALL_ONLY_STATUS_DESCRIPTIONS: Record<'installing' | 'not_installed' | 'installed', string> = {
@@ -62,17 +55,11 @@ function deactivateExpansionWithDeps(name: string, activation?: ActivationDeps) 
   return activation === undefined ? deactivateExpansion(name) : deactivateExpansion(name, activation);
 }
 
-function installExpansionWithOptions(
-  name: string,
-  opts: Parameters<typeof installExpansion>[1] | undefined,
-) {
+function installExpansionWithOptions(name: string, opts: Parameters<typeof installExpansion>[1] | undefined) {
   return opts === undefined ? installExpansion(name) : installExpansion(name, opts);
 }
 
-function uninstallExpansionWithOptions(
-  name: string,
-  opts: Parameters<typeof uninstallExpansion>[1] | undefined,
-) {
+function uninstallExpansionWithOptions(name: string, opts: Parameters<typeof uninstallExpansion>[1] | undefined) {
   return opts === undefined ? uninstallExpansion(name) : uninstallExpansion(name, opts);
 }
 
@@ -80,7 +67,9 @@ function buildMutationOptions(
   ctx: ExpansionInstallContext,
   opts: WorkflowOptions,
   extra: { update?: boolean } = {},
-): { runtime?: Runtime; logger?: ExpansionInstallContext['logger']; lockTimeoutMs?: number; update?: boolean } | undefined {
+):
+  | { runtime?: Runtime; logger?: ExpansionInstallContext['logger']; lockTimeoutMs?: number; update?: boolean }
+  | undefined {
   const resolved = {
     ...(opts.runtime === undefined ? {} : { runtime: ctx.runtime }),
     ...(opts.logger === undefined ? {} : { logger: opts.logger }),
@@ -138,10 +127,10 @@ function hasDurableEquipmentState(ctx: ExpansionInstallContext, name: string): b
 
 function resolveOnboarding(config: unknown): Onboarding | undefined {
   if (
-    typeof config === 'object'
-    && config !== null
-    && 'onboarding' in config
-    && typeof (config as { onboarding?: unknown }).onboarding === 'object'
+    typeof config === 'object' &&
+    config !== null &&
+    'onboarding' in config &&
+    typeof (config as { onboarding?: unknown }).onboarding === 'object'
   ) {
     return (config as { onboarding?: Onboarding }).onboarding;
   }
@@ -171,8 +160,8 @@ function parseDotEnv(raw: string): Record<string, string> {
     const key = normalized.slice(0, separator).trim();
     let value = normalized.slice(separator + 1).trim();
     if (
-      value.length >= 2
-      && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
     ) {
       value = value.slice(1, -1);
     }
@@ -190,10 +179,10 @@ function readOptionalEnvFile(envPath: string, runtime: Runtime): Record<string, 
     return parseDotEnv(runtime.storage.readFileSync(envPath, 'utf-8'));
   } catch (error: unknown) {
     if (
-      typeof error === 'object'
-      && error !== null
-      && 'code' in error
-      && (error as { code?: unknown }).code === 'ENOENT'
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'ENOENT'
     ) {
       return {};
     }
@@ -221,8 +210,9 @@ function isOnboardingSatisfied(onboarding: Onboarding, runtime: Runtime): boolea
     return false;
   }
 
-  const rule = onboarding.requiredEnv.find((entry) => entry.provider === provider)
-    ?? onboarding.requiredEnv.find((entry) => entry.provider === 'default');
+  const rule =
+    onboarding.requiredEnv.find((entry) => entry.provider === provider) ??
+    onboarding.requiredEnv.find((entry) => entry.provider === 'default');
   if (!rule) {
     return false;
   }
@@ -230,10 +220,15 @@ function isOnboardingSatisfied(onboarding: Onboarding, runtime: Runtime): boolea
   return rule.env.every((key) => normalizeValue(env[key]) !== null);
 }
 
-function maybeAttachOnboarding(result: InstallResult, binding: CatalogBinding<unknown>, ctx: ExpansionInstallContext): InstallResult {
-  const onboarding = 'onboarding' in result && result.onboarding !== undefined
-    ? result.onboarding
-    : resolveOnboarding(binding.resolveConfig(ctx.runtime));
+function maybeAttachOnboarding(
+  result: InstallResult,
+  binding: CatalogBinding<unknown>,
+  ctx: ExpansionInstallContext,
+): InstallResult {
+  const onboarding =
+    'onboarding' in result && result.onboarding !== undefined
+      ? result.onboarding
+      : resolveOnboarding(binding.resolveConfig(ctx.runtime));
   if (onboarding === undefined) {
     return result;
   }
@@ -244,7 +239,7 @@ function maybeAttachOnboarding(result: InstallResult, binding: CatalogBinding<un
       ...onboarding,
       localRuntime: {
         ...onboarding.localRuntime,
-        targetDir: kbRuntimeDir(),
+        targetDir: kbRuntimeDir(currentBuildFlavor()),
       },
     },
   });
@@ -263,7 +258,16 @@ function buildEquipmentEntry(
   const onboarding = resolveOnboarding(config);
   const durableLocalState = version !== undefined || hasDurableEquipmentState(ctx, binding.entry.id);
 
-  let status: Extract<CatalogEntry['status'], 'inactive' | 'unavailable' | 'disabled_pending_reinstall' | 'installing' | 'equipped' | 'catching_up' | 'not_equipped'>;
+  let status: Extract<
+    CatalogEntry['status'],
+    | 'inactive'
+    | 'unavailable'
+    | 'disabled_pending_reinstall'
+    | 'installing'
+    | 'equipped'
+    | 'catching_up'
+    | 'not_equipped'
+  >;
   let statusDescription: string | undefined;
   if (passive !== null) {
     status = passive.status;
@@ -296,14 +300,15 @@ function buildEquipmentEntry(
 
 function buildInstallOnlyEntry(binding: CatalogBinding<unknown>, ctx: ExpansionInstallContext): CatalogEntry {
   const config = binding.resolveConfig(ctx.runtime);
-  const installState = binding.strategyKind === 'github-binary'
-    ? inspectGithubBinaryInstall(ctx, config as GithubBinaryConfig)
-    : {
-        installed: binding.strategy.isInstalled(ctx, config),
-        version: binding.strategy.currentVersion(ctx, config),
-        method: null,
-        command: null,
-      };
+  const installState =
+    binding.strategyKind === 'github-binary'
+      ? inspectGithubBinaryInstall(ctx, config as GithubBinaryConfig)
+      : {
+          installed: binding.strategy.isInstalled(ctx, config),
+          version: binding.strategy.currentVersion(ctx, config),
+          method: null,
+          command: null,
+        };
   const status = installLockExists(ctx, binding.entry.id)
     ? 'installing'
     : installState.installed
@@ -325,7 +330,9 @@ function shouldPauseForOnboarding(
   result: InstallResult,
   runtime: Runtime,
 ): result is Extract<InstallResult, { onboarding?: Onboarding }> {
-  return 'onboarding' in result && result.onboarding !== undefined && !isOnboardingSatisfied(result.onboarding, runtime);
+  return (
+    'onboarding' in result && result.onboarding !== undefined && !isOnboardingSatisfied(result.onboarding, runtime)
+  );
 }
 
 export async function list(opts: WorkflowOptions = {}): Promise<InstallResponse> {
@@ -335,9 +342,8 @@ export async function list(opts: WorkflowOptions = {}): Promise<InstallResponse>
     const passive = bindings.some((binding) => binding.entry.activation === 'equipment')
       ? await readEquipmentStatusWithDeps(undefined, opts.activation)
       : { status: 'available' as const, equipment: [] };
-    const equipmentByName = passive.status === 'available'
-      ? new Map(passive.equipment.map((entry) => [entry.name, entry]))
-      : null;
+    const equipmentByName =
+      passive.status === 'available' ? new Map(passive.equipment.map((entry) => [entry.name, entry])) : null;
 
     return catalogResultSchema.parse({
       status: 'catalog',
@@ -367,17 +373,20 @@ export async function info(name: string, opts: WorkflowOptions = {}): Promise<In
     }
 
     const ctx = createContext(opts.runtime, opts.logger);
-    const pkg = binding.entry.activation === 'equipment'
-      ? (() => {
-          const read = readEquipmentStatusWithDeps(name, opts.activation);
-          return read.then((passive) => buildEquipmentEntry(
-            binding,
-            ctx,
-            passive.status === 'available' ? passive.equipment[0] ?? null : null,
-            passive.status === 'unavailable',
-          ));
-        })()
-      : Promise.resolve(buildInstallOnlyEntry(binding, ctx));
+    const pkg =
+      binding.entry.activation === 'equipment'
+        ? (() => {
+            const read = readEquipmentStatusWithDeps(name, opts.activation);
+            return read.then((passive) =>
+              buildEquipmentEntry(
+                binding,
+                ctx,
+                passive.status === 'available' ? (passive.equipment[0] ?? null) : null,
+                passive.status === 'unavailable',
+              ),
+            );
+          })()
+        : Promise.resolve(buildInstallOnlyEntry(binding, ctx));
 
     return infoResultSchema.parse({
       status: 'info',

@@ -40,9 +40,19 @@ function createRuntime(
 ) {
   return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir(),
-    db: createKbTestDb(paths.kbRuntimeDir()),
+    runtimeDir: paths.kbRuntimeDir('prod'),
+    db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+}
+
+function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths']) {
+  const root = process.env.CORAL_KB_PATH!;
+  return {
+    notePath: (slug: string) => paths.notePathFromName(slug, root),
+    sourcePath: (slug: string) => paths.sourcePathFromName(slug, root),
+    communityPath: (slug: string) => paths.communityPathFromName(slug, root),
+    principlePath: (slug: string) => paths.principlePathFromName(slug, root),
+  };
 }
 
 function setMtime(path: string, mtime: Date): void {
@@ -94,10 +104,10 @@ describe('kb reindex', () => {
   it('rebuilds the JSON index unconditionally in text mode without warning by default', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.principlesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.principlesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeFileSync(
-      join(paths.notesDir(), 'coral-kb-mode.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-mode.md'),
       `---
 tags: [coral, kb]
 principles: [contract-first-design]
@@ -115,7 +125,7 @@ Keep the JSON index authoritative.
       'utf-8',
     );
     writeFileSync(
-      join(paths.principlesDir(), 'contract-first-design.md'),
+      join(paths.principlesDir(process.env.CORAL_KB_PATH!), 'contract-first-design.md'),
       `---
 createdAt: 2026-03-20
 updatedAt: 2026-03-20
@@ -140,9 +150,9 @@ Make the contract explicit first.
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
 
     const result = await reindex(kb);
 
@@ -183,11 +193,11 @@ Make the contract explicit first.
   it('indexes communities as first-class entries during text rebuild', async () => {
     const { reindex, createKbRuntime, paths, readEntry } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.communitiesDir(), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     const writeCommunityFile = () => {
       writeFileSync(
-        join(paths.communitiesDir(), 'graph-rag.md'),
+        join(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag.md'),
         `---
 createdAt: 2026-04-02
 updatedAt: 2026-04-02
@@ -243,10 +253,10 @@ Shared retrieval patterns.
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
-    expect(readEntry({ note: 'communities:graph-rag' })).toEqual({
+      entityMeta: {},
+      relationships: [],
+    });
+    expect(readEntry({ note: 'communities:graph-rag' }, { paths: createReadPaths(paths) })).toEqual({
       kind: 'community',
       note: 'graph-rag',
       title: 'Graph RAG',
@@ -271,9 +281,9 @@ Shared retrieval patterns.
   it('loads the entity graph during reindex and reports entity coverage', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeFileSync(
-      join(paths.notesDir(), 'graph-rag-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'graph-rag-note.md'),
       `---
 tags: [graph-rag, retrieval]
 principles: []
@@ -331,10 +341,10 @@ Body.
   it('repairs entity-graph-driven topology on ensureIndex after a manual entity graph edit', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.notesDir(), 'graph-rag-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'graph-rag-note.md'),
       `---
 tags: [graph-rag, retrieval, indexing]
 principles: []
@@ -422,10 +432,10 @@ Body.
   it('repairs entity-graph-driven topology on reindex after a manual entity graph edit', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.notesDir(), 'graph-rag-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'graph-rag-note.md'),
       `---
 tags: [graph-rag, retrieval, indexing]
 principles: []
@@ -521,10 +531,10 @@ Body.
   it('rebuilds text mode cleanly when the vector store is unavailable', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.principlesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.principlesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeFileSync(
-      join(paths.notesDir(), 'coral-kb-mode.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-mode.md'),
       `---
 tags: [coral]
 principles: [contract-first-design]
@@ -539,7 +549,7 @@ entrySeq: 11
       'utf-8',
     );
     writeFileSync(
-      join(paths.principlesDir(), 'contract-first-design.md'),
+      join(paths.principlesDir(process.env.CORAL_KB_PATH!), 'contract-first-design.md'),
       `---
 createdAt: 2026-03-20
 updatedAt: 2026-03-20
@@ -562,12 +572,12 @@ Make the contract explicit first.
   it('skips notes with malformed frontmatter instead of crashing', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.principlesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.principlesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     // Valid note
     writeFileSync(
-      join(paths.notesDir(), 'valid-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'valid-note.md'),
       `---
 tags: [test]
 principles: []
@@ -585,7 +595,7 @@ Content here.
 
     // Malformed note: source is a bare string instead of an array
     writeFileSync(
-      join(paths.notesDir(), 'bad-source.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
       `---
 tags: [test]
 principles: []
@@ -613,11 +623,11 @@ This note has source as a bare string.
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.sourcesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.notesDir(), 'valid-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'valid-note.md'),
       `---
 tags: [test]
 principles: []
@@ -633,7 +643,7 @@ Content here.
       'utf-8',
     );
     writeFileSync(
-      join(paths.notesDir(), 'bad-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
       `---
 tags: [test
 principles: []
@@ -649,7 +659,7 @@ This note has malformed frontmatter.
       'utf-8',
     );
     writeFileSync(
-      join(paths.sourcesDir(), 'bad-source.md'),
+      join(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
       `---
 title: Bad Source
 type: spec
@@ -684,10 +694,10 @@ entrySeq: nope
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.notesDir(), 'valid-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'valid-note.md'),
       `---
 tags: [test]
 principles: []
@@ -703,7 +713,7 @@ Content here.
       'utf-8',
     );
     writeFileSync(
-      join(paths.notesDir(), 'bad-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
       `---
 tags: [test
 principles: []
@@ -730,7 +740,10 @@ This note has malformed frontmatter.
     expect(pendingRepair?.[0]?.observedContentHash).toMatch(/^[a-f0-9]{64}$/);
     const detectedAt = pendingRepair?.[0]?.detectedAt;
     expect(detectedAt).toBeDefined();
-    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) + 60_000));
+    setMtime(
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
+      new Date(Date.parse(detectedAt!) + 60_000),
+    );
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
@@ -750,10 +763,10 @@ This note has malformed frontmatter.
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState, writeCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.notesDir(), 'valid-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'valid-note.md'),
       `---
 tags: [test]
 principles: []
@@ -769,7 +782,7 @@ Content here.
       'utf-8',
     );
     writeFileSync(
-      join(paths.notesDir(), 'bad-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
       `---
 tags: [test
 principles: []
@@ -818,7 +831,7 @@ This note has malformed frontmatter.
     expect(detectedAt).toBeDefined();
 
     writeFileSync(
-      join(paths.notesDir(), 'bad-note.md'),
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
       `---
 tags: [test, repaired]
 principles: []
@@ -833,8 +846,11 @@ This note is valid now.
 `,
       'utf-8',
     );
-    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) - 60_000));
-    setMtime(paths.notesDir(), new Date(Date.parse(detectedAt!) - 60_000));
+    setMtime(
+      join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
+      new Date(Date.parse(detectedAt!) - 60_000),
+    );
+    setMtime(paths.notesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt!) - 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
@@ -864,10 +880,10 @@ This note is valid now.
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.sourcesDir(), { recursive: true });
+    mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     writeFileSync(
-      join(paths.sourcesDir(), 'bad-source.md'),
+      join(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
       `---
 title: Bad Source
 type: spec
@@ -892,7 +908,7 @@ Malformed source frontmatter.
     ]);
 
     writeFileSync(
-      join(paths.sourcesDir(), 'bad-source.md'),
+      join(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
       `---
 title: Repaired Source
 type: spec
@@ -905,8 +921,11 @@ Source body.
 `,
       'utf-8',
     );
-    setMtime(join(paths.sourcesDir(), 'bad-source.md'), new Date(Date.parse(detectedAt!) - 60_000));
-    setMtime(paths.sourcesDir(), new Date(Date.parse(detectedAt!) - 60_000));
+    setMtime(
+      join(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
+      new Date(Date.parse(detectedAt!) - 60_000),
+    );
+    setMtime(paths.sourcesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt!) - 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 

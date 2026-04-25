@@ -25,6 +25,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/backend-world.ts',
   'src/coordinator/composition/create-backend-core.ts',
   'src/coordinator/composition/execution-services.ts',
+  'src/coordinator/consumer-driver/support.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
@@ -42,6 +43,8 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
+  'src/coordinator/live/process-helpers.ts',
+  'src/coordinator/live/provider-server-transport.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/live/provider-hosts/idle.ts',
   'src/coordinator/live/provider-hosts/lease.ts',
@@ -56,6 +59,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort-service.ts',
   'src/coordinator/services/job-launch-service.ts',
   'src/coordinator/services/job-wait-service.ts',
+  'src/coordinator/services/kb-job-recorder.ts',
   'src/coordinator/services/kb-reindex-service.ts',
   'src/coordinator/services/kb-source-import-service.ts',
   'src/coordinator/services/recovery-actions.ts',
@@ -77,9 +81,7 @@ const CONTRACT_TARGETS = new Set([
   'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);
-const TRANSPORT_TARGETS = new Set([
-  'src/transport/ipc/server.ts',
-]);
+const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts']);
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
@@ -136,10 +138,10 @@ describe('coordinator topology invariants', () => {
       }
 
       if (
-        target.startsWith('src/coordinator/')
-        || target.startsWith('src/store/')
-        || target.startsWith('src/runtime/')
-        || target.startsWith('src/infra/')
+        target.startsWith('src/coordinator/') ||
+        target.startsWith('src/store/') ||
+        target.startsWith('src/runtime/') ||
+        target.startsWith('src/infra/')
       ) {
         return false;
       }

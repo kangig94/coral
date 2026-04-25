@@ -11,8 +11,14 @@ import {
   parseSourceFrontmatter,
   parseSummaryFromBody,
 } from './corpus/frontmatter.js';
-import { type CommunityFrontmatter, type KbNoteFrontmatter, type KbReadInput, type KbReadResult, type KbSourceFrontmatter } from './entry-types.js';
-import { memoDir, notePathFromName, principlePathFromName, sourcePathFromName, communityPathFromName } from './paths.js';
+import {
+  type CommunityFrontmatter,
+  type KbNoteFrontmatter,
+  type KbReadInput,
+  type KbReadResult,
+  type KbSourceFrontmatter,
+} from './entry-types.js';
+import { memoDir } from './paths.js';
 import { expandKbReadSelector, parseKbSelector, type KbResolvedReadSelector } from './read-contract.js';
 import type { RuntimeStoragePort } from '../runtime/ports.js';
 
@@ -28,7 +34,7 @@ export type KbReadPathResolver = {
 export type KbReadOptions = {
   projectRoot?: string;
   storage?: KbReadStorage;
-  paths?: Partial<KbReadPathResolver>;
+  paths?: KbReadPathResolver;
 };
 
 export type KbLoadedNote = {
@@ -58,13 +64,11 @@ const nodeStorage: KbReadStorage = {
 
 const MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
-function resolveReadPaths(paths?: Partial<KbReadPathResolver>): KbReadPathResolver {
-  return {
-    notePath: paths?.notePath ?? ((note) => notePathFromName(note)),
-    sourcePath: paths?.sourcePath ?? ((source) => sourcePathFromName(source)),
-    communityPath: paths?.communityPath ?? ((community) => communityPathFromName(community)),
-    principlePath: paths?.principlePath ?? ((principle) => principlePathFromName(principle)),
-  };
+function resolveReadPaths(paths?: KbReadPathResolver): KbReadPathResolver {
+  if (paths === undefined) {
+    throw new Error('KB read paths must be provided explicitly.');
+  }
+  return paths;
 }
 
 export function loadKbNote(notePath: string): KbLoadedNote {
@@ -99,11 +103,7 @@ export function loadKbCommunity(communityPath: string): KbLoadedCommunity {
   };
 }
 
-function readSourceEntry(
-  source: string,
-  storage: KbReadStorage,
-  paths: KbReadPathResolver,
-): KbReadResult | null {
+function readSourceEntry(source: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
   const sourcePath = paths.sourcePath(source);
   if (!storage.existsSync(sourcePath)) {
     return null;
@@ -121,11 +121,7 @@ function readSourceEntry(
   };
 }
 
-function readCommunityEntry(
-  community: string,
-  storage: KbReadStorage,
-  paths: KbReadPathResolver,
-): KbReadResult | null {
+function readCommunityEntry(community: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
   const communityPath = paths.communityPath(community);
   if (!storage.existsSync(communityPath)) {
     return null;

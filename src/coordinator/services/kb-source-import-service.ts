@@ -1,6 +1,4 @@
-import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
-import { nowIsoString } from '../../infra/time.js';
 import { prepareSourceImport } from '../../kb/ops/source-import.js';
 import { persistPreparedSource } from '../../kb/ops/source-store.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
@@ -8,9 +6,8 @@ import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
-import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';
+import { KbJobRecorder, normalizeKbFailureDetail } from './kb-job-recorder.js';
 
 export type KbSourceImportRequest = {
   filePath: string;
@@ -51,9 +48,7 @@ type KbSourceImportRunResult =
   | { ok: true; data: KbSourceImportCompleted }
   | { ok: false; message: string; detail?: unknown };
 
-type ParseKbSourceImportRequestResult =
-  | { ok: true; data: KbSourceImportRequest }
-  | { ok: false; message: string };
+type ParseKbSourceImportRequestResult = { ok: true; data: KbSourceImportRequest } | { ok: false; message: string };
 
 const SOURCE_IMPORT_REQUEST_KEYS = new Set(['filePath', 'slug', 'readiness', 'async']);
 const SOURCE_IMPORT_READINESS = new Set<string>(sourceImportReadinessValues);
@@ -103,51 +98,29 @@ export function parseKbSourceImportRequest(args: Record<string, unknown>): Parse
   };
 }
 
-function normalizeErrorDetail(error: unknown): { message: string; stack?: string } {
-  if (error instanceof Error) {
-    return {
-      message: error.message,
-      ...(error.stack === undefined ? {} : { stack: error.stack }),
-    };
-  }
-  return { message: errorMessage(error) };
-}
-
 export class KbSourceImportService {
-  constructor(private readonly deps: KbSourceImportServiceDeps) {}
+  private readonly recorder: KbJobRecorder;
+
+  constructor(private readonly deps: KbSourceImportServiceDeps) {
+    this.recorder = new KbJobRecorder(deps);
+  }
 
   start(
     request: KbSourceImportRequest,
     ctx: { projectRoot: string },
     kbSubsystem: KnowledgeBaseRuntime,
   ): KbToolResult | Promise<KbToolResult> {
-    const jobId = this.deps.runtime.ids.uuid();
-    const createdAt = nowIsoString(this.deps.runtime.time);
-    this.deps.progressStore.appendLaunchRequested(jobId, {
-      jobId,
-      sessionId: null,
-      provider: null,
+    const { jobId, startedAtMs } = this.recorder.startInternalJob({
       projectRoot: ctx.projectRoot,
-      backendNamespace: this.deps.backendNamespace,
-      bundleHash: this.deps.bundleHash,
-      jobKind: 'kb',
-      pool: 'default',
-      enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
       operation: 'kb.source_import',
       request: {
         filePath: request.filePath,
         ...(request.slug === undefined ? {} : { slug: request.slug }),
         readiness: request.readiness,
       },
-      createdAt,
-    });
-    this.deps.progressStore.appendRuntimeStarted(jobId, {
-      transport: 'internal',
-      operation: 'kb.source_import',
-      startTime: nowIsoString(this.deps.runtime.time),
     });
 
-    const run = this.run(jobId, request, ctx, kbSubsystem, this.deps.runtime.time.now());
+    const run = this.run(jobId, request, ctx, kbSubsystem, startedAtMs);
     if (request.async) {
       void run;
       return kbSuccess({
@@ -179,7 +152,7 @@ export class KbSourceImportService {
       const prepared = await prepareSourceImport(
         request.filePath,
         request.slug,
-        (line) => this.appendProgress(jobId, ctx.projectRoot, line),
+        (line) => this.recorder.appendMessage(jobId, ctx.projectRoot, line),
         kbSubsystem.kb.runtimeDir,
         this.deps.runtime,
       );
@@ -192,7 +165,7 @@ export class KbSourceImportService {
         snapshot,
       });
 
-      this.appendCompleted(jobId, ctx.projectRoot, startedAtMs, `Imported: ${persisted.path}`);
+      this.recorder.appendCompleted(jobId, startedAtMs, `Imported: ${persisted.path}`);
       return {
         ok: true,
         data: {
@@ -204,95 +177,25 @@ export class KbSourceImportService {
         },
       };
     } catch (error: unknown) {
-      const detail = normalizeErrorDetail(error);
-      const causeRef = this.appendFailureCause(jobId, ctx.projectRoot, request, detail);
-      this.appendFailed(jobId, ctx.projectRoot, startedAtMs, causeRef);
+      const detail = normalizeKbFailureDetail(error);
+      const causeRef = this.recorder.appendKbOperationFailureCause({
+        jobId,
+        projectRoot: ctx.projectRoot,
+        operation: 'source_import',
+        message: `KB source import failed: ${detail.message}`,
+        detail: {
+          operation: 'source_import',
+          filePath: request.filePath,
+          readiness: request.readiness,
+          cause: detail,
+        },
+      });
+      this.recorder.appendFailed(jobId, startedAtMs, causeRef);
       return {
         ok: false,
         message: detail.message,
         detail,
       };
     }
-  }
-
-  private appendProgress(jobId: string, projectRoot: string, message: string): void {
-    this.deps.progressStore.appendEvent({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.deps.backendNamespace,
-      project: projectRoot,
-      refs: { jobId },
-      bodyVersion: 1,
-      body: {
-        kind: 'message',
-        message,
-        ts: nowIsoString(this.deps.runtime.time),
-      },
-    });
-  }
-
-  private appendFailureCause(
-    jobId: string,
-    projectRoot: string,
-    request: KbSourceImportRequest,
-    detail: { message: string; stack?: string },
-  ): CauseRef {
-    const [event] = this.deps.progressStore.appendEventsWithResult([
-      {
-        type: 'job.progress.emitted',
-        stream: { kind: 'job', id: jobId },
-        namespace: this.deps.backendNamespace,
-        project: projectRoot,
-        refs: { jobId },
-        bodyVersion: 1,
-        body: {
-          kind: 'domain',
-          stage: 'kb_operation_failed',
-          message: `KB source import failed: ${detail.message}`,
-          ts: nowIsoString(this.deps.runtime.time),
-          detail: {
-            operation: 'source_import',
-            filePath: request.filePath,
-            readiness: request.readiness,
-            cause: detail,
-          },
-        },
-      },
-    ]);
-
-    if (event === undefined) {
-      throw new Error(`Failed to append KB source import failure cause for ${jobId}`);
-    }
-
-    return {
-      stream: { kind: 'job', id: jobId },
-      seq: event.seq,
-    };
-  }
-
-  private appendCompleted(jobId: string, _projectRoot: string, startedAtMs: number, content: string): void {
-    this.appendTerminal(jobId, startedAtMs, {
-      kind: 'completed',
-    }, content);
-  }
-
-  private appendFailed(jobId: string, _projectRoot: string, startedAtMs: number, causeRef: CauseRef): void {
-    this.appendTerminal(jobId, startedAtMs, {
-      kind: 'failed',
-      causeRef,
-    }, '');
-  }
-
-  private appendTerminal(
-    jobId: string,
-    startedAtMs: number,
-    outcome: TerminalOutcome,
-    content: string,
-  ): void {
-    this.deps.progressStore.appendTerminal(jobId, null, {
-      outcome,
-      durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-      content,
-    }, phaseForOutcome(outcome));
   }
 }

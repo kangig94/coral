@@ -220,8 +220,9 @@ describe('kb-tools', () => {
   });
 
   it('reads a note by slug via the per-kind note handler', () => {
+    const kbSubsystem = createKbSubsystem();
     setMockFile(
-      notePathFromName('contract-first-design'),
+      notePathFromName('contract-first-design', KB_ROOT),
       `---
 tags: [contracts, kb]
 principles: [single-source-of-truth]
@@ -236,7 +237,7 @@ State contracts first.
 `,
     );
 
-    expect(handleKbNoteRead('contract-first-design', testContext, testRuntime)).toEqual({
+    expect(handleKbNoteRead('contract-first-design', testContext, testRuntime, kbSubsystem)).toEqual({
       ok: true,
       data: {
         kind: 'note',
@@ -251,7 +252,7 @@ State contracts first.
   });
 
   it('returns not_found for a missing note read', () => {
-    expectNotFound(handleKbNoteRead('missing-note', testContext, testRuntime));
+    expectNotFound(handleKbNoteRead('missing-note', testContext, testRuntime, createKbSubsystem()));
   });
 
   it('reads a source by slug via the per-kind source handler', () => {
@@ -397,7 +398,7 @@ Memo body.
 `,
     );
     setMockFile(
-      notePathFromName(slug),
+      notePathFromName(slug, KB_ROOT),
       `---
 tags: [contracts]
 principles: [single-source-of-truth]
@@ -412,7 +413,7 @@ Note body.
 `,
     );
 
-    expect(handleKbRead({ note: slug }, testContext, testRuntime)).toEqual({
+    expect(handleKbRead({ note: slug }, testContext, testRuntime, createKbSubsystem())).toEqual({
       ok: true,
       data: {
         kind: 'memo',

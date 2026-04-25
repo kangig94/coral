@@ -93,8 +93,8 @@ function createRuntime(
   // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
   kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir(),
-    db: createKbTestDb(paths.kbRuntimeDir()),
+    runtimeDir: paths.kbRuntimeDir('prod'),
+    db: createKbTestDb(paths.kbRuntimeDir('prod')),
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
@@ -431,19 +431,19 @@ describe('kb search', () => {
   it('returns relevant results for a single keyword in text mode', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'rendering-guides', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-guides', {
       title: 'Rendering Guides',
       tags: ['graphics'],
       body: 'Guiding contracts keep rendering predictable.',
     });
-    writeNote(paths.notesDir(), 'pipeline-checklist', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'pipeline-checklist', {
       title: 'Pipeline Checklist',
       tags: ['ops'],
       body: 'Rendering checklists help teams ship stable frames.',
     });
-    writeNote(paths.notesDir(), 'contract-log', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'contract-log', {
       title: 'Contract Log',
       tags: ['ops'],
       body: 'Audit notes only.',
@@ -462,17 +462,17 @@ describe('kb search', () => {
   it('uses pairwise assertions for multi-keyword BM25 ordering', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'rendering-guiding-contracts', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-guiding-contracts', {
       title: 'Rendering Guiding Contracts',
       body: 'Rendering guiding contracts keep teams aligned.',
     });
-    writeNote(paths.notesDir(), 'rendering-guiding', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-guiding', {
       title: 'Rendering Guiding',
       body: 'Rendering guidance keeps pipelines readable.',
     });
-    writeNote(paths.notesDir(), 'contracts-only', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'contracts-only', {
       title: 'Contracts Only',
       body: 'Contracts need audits.',
     });
@@ -491,17 +491,17 @@ describe('kb search', () => {
   it('returns subset hits at threshold 1, ranks stronger matches first, and keeps snippets for subset content hits', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'wfpg-cone-aperture', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'wfpg-cone-aperture', {
       title: 'WFPG Cone Aperture',
       body: 'WFPG cone aperture work keeps the calibration stable.',
     });
-    writeNote(paths.notesDir(), 'wfpg-aperture-notes', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'wfpg-aperture-notes', {
       title: 'WFPG Aperture Notes',
       body: 'WFPG measurements focus on aperture changes during calibration.',
     });
-    writeNote(paths.notesDir(), 'single-term', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'single-term', {
       title: 'Single Term',
       body: 'Cone checks only.',
     });
@@ -525,9 +525,9 @@ describe('kb search', () => {
   it('derives matchedBy from token overlap across filename, principle, tag, title, and content', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'contract-first-design-surface', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'contract-first-design-surface', {
       title: 'Workflow Memo',
       tags: ['tokenized-tag'],
       principles: ['contract-first-design'],
@@ -545,9 +545,9 @@ describe('kb search', () => {
   it('finds content match and snippet for accented body text via Orama-aligned token anchor', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'cafe-memo', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'cafe-memo', {
       title: 'Cafe Memo',
       body: 'café',
     });
@@ -564,9 +564,9 @@ describe('kb search', () => {
   it('treats hyphenated metadata as equivalent to whitespace queries', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'contract-first-design', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'contract-first-design', {
       title: 'Reference Note',
       tags: ['contract-first-design'],
       principles: ['contract-first-design'],
@@ -584,14 +584,14 @@ describe('kb search', () => {
   it('seeds graph ranking from aliases and bounded one-hop expansion instead of raw token overlap alone', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'memory-entry', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'memory-entry', {
       title: 'Opaque Memory Entry',
       tags: ['gpu-device-memory'],
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(), 'runtime-entry', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'runtime-entry', {
       title: 'Opaque Runtime Entry',
       tags: ['cuda-runtime-api'],
       body: 'Archive only.',
@@ -639,15 +639,15 @@ describe('kb search', () => {
   it('injects fresh community summaries into related note results when the graph and summaries are current', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.communitiesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'graph-rag-overview', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'graph-rag-overview', {
       title: 'Graph RAG Overview',
       tags: ['graph-rag', 'retrieval'],
       body: 'Retrieval behavior depends on graph structure.',
     });
-    writeNote(paths.notesDir(), 'retrieval-eval', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'retrieval-eval', {
       title: 'Retrieval Evaluation',
       tags: ['retrieval'],
       body: 'Retrieval quality depends on graph traces.',
@@ -676,7 +676,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    writeCommunity(paths.communitiesDir(), 'graph-rag-context', {
+    writeCommunity(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag-context', {
       title: 'Graph RAG',
       members: ['graph-rag', 'retrieval'],
       summary: 'Shared graph-backed retrieval patterns.',
@@ -700,15 +700,15 @@ describe('kb search', () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState, writeCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.communitiesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'retrieval-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'retrieval-note', {
       title: 'Retrieval Note',
       tags: ['retrieval'],
       body: 'Shared retrieval patterns appear here.',
     });
-    writeCommunity(paths.communitiesDir(), 'graph-rag', {
+    writeCommunity(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag', {
       title: 'Graph RAG',
       members: ['retrieval'],
       summary: 'Shared retrieval patterns.',
@@ -736,9 +736,9 @@ describe('kb search', () => {
   it('rebuilds graph-aware search state after ensureIndex observes a manual entity graph edit', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'memory-entry', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'memory-entry', {
       title: 'Opaque Memory Entry',
       tags: ['gpu-device-memory'],
       body: 'Archive only.',
@@ -785,18 +785,18 @@ describe('kb search', () => {
   it('fuses Orama and vector ranks with RRF for note and source entries', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.sourcesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'rendering-alpha', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-alpha', {
       title: 'Rendering Alpha',
       body: 'Rendering guides keep frames stable.',
     });
-    writeNote(paths.notesDir(), 'beta-archive', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'beta-archive', {
       title: 'Beta Archive',
       body: 'Rendering notes keep pipelines aligned.',
     });
-    writeSource(paths.sourcesDir(), 'gamma-reference', {
+    writeSource(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'gamma-reference', {
       title: 'Gamma Reference',
       body: 'Archive only.',
     });
@@ -822,13 +822,13 @@ describe('kb search', () => {
   it('routes explicit vector search through Orama cosine without equipment', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'vector-alpha', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-alpha', {
       title: 'Vector Alpha',
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(), 'vector-beta', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-beta', {
       title: 'Vector Beta',
       body: 'History only.',
     });
@@ -885,13 +885,13 @@ describe('kb search', () => {
   it('routes explicit vector search through needle when equipment content manifests match', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'needle-alpha', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
       title: 'Needle Alpha',
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(), 'needle-beta', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-beta', {
       title: 'Needle Beta',
       body: 'Archive only.',
     });
@@ -914,13 +914,13 @@ describe('kb search', () => {
   it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'alpha-archive', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'alpha-archive', {
       title: 'Alpha',
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(), 'beta-history', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'beta-history', {
       title: 'Beta',
       body: 'History only.',
     });
@@ -971,9 +971,9 @@ describe('kb search', () => {
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'semantic-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'semantic-note', {
       title: 'Semantic Note',
       body: 'Semantic retrieval target.',
     });
@@ -1000,14 +1000,14 @@ describe('kb search', () => {
   it('filters vector-only hits to the requested source scope', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.sourcesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'vector-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-note', {
       title: 'Vector Note',
       body: 'Archive only.',
     });
-    writeSource(paths.sourcesDir(), 'vector-source', {
+    writeSource(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'vector-source', {
       title: 'Vector Source',
       body: 'History only.',
     });
@@ -1031,15 +1031,15 @@ describe('kb search', () => {
   it('keeps communities text-only in all scope while allowing vector-backed note results', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
-    mkdirSync(paths.communitiesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'latent-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'latent-note', {
       title: 'Latent Note',
       body: 'Archive only.',
     });
     const writeCommunities = () => {
-      writeCommunity(paths.communitiesDir(), 'graph-rag', {
+      writeCommunity(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag', {
         title: 'Graph RAG',
         members: ['graph-rag', 'retrieval'],
         summary: 'Shared retrieval patterns.',
@@ -1065,10 +1065,10 @@ describe('kb search', () => {
   it('keeps community-only searches in pure text mode even when vector search is configured', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.communitiesDir(), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
     const writeCommunities = () => {
-      writeCommunity(paths.communitiesDir(), 'graph-rag', {
+      writeCommunity(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag', {
         title: 'Graph RAG',
         members: ['graph-rag', 'retrieval'],
         summary: 'Shared retrieval patterns.',
@@ -1093,9 +1093,9 @@ describe('kb search', () => {
   it('keeps hybrid search enabled when only metadataSeq advances beyond the vector snapshot', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'hybrid-metadata-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'hybrid-metadata-note', {
       title: 'Hybrid Metadata Note',
       body: 'Semantic retrieval target.',
     });
@@ -1129,9 +1129,9 @@ describe('kb search', () => {
   it('falls back to text mode when the vector snapshot lags behind contentSeq', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'stale-vector-note', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'stale-vector-note', {
       title: 'Stale Vector Note',
       body: 'Rendering guides keep frames stable.',
     });
@@ -1165,9 +1165,9 @@ describe('kb search', () => {
   it('falls back to text mode when vector query embedding fails', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(), 'rendering-guides', {
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'rendering-guides', {
       title: 'Rendering Guides',
       body: 'Rendering guides keep frames stable.',
     });

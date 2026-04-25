@@ -126,6 +126,8 @@ Not every command becomes a job. Jobs are for work that is long-running, observa
 
 `kb source import` is job-backed because even without Needle it can spend time reading and converting large documents before committing Corpus markdown. With retrieval readiness, it also waits for Orama or Needle consumers. By contrast, KB search/read, note write, memo operations, and principle reads are direct unless a future implementation gives them durable work to recover. Direct list/read commands may build transient in-memory views, but explicit `kb reindex` owns durable text-artifact repair.
 
+Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin root, build flavor, project root, Corpus markdown root, and KB runtime root before calling KB/read-model code. KB path helpers and `read-model/CoralStore` do not silently fall back to the current working directory or the user's home KB.
+
 ## Primary Execution Flows
 
 ### Session lifecycle
@@ -192,7 +194,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Area | Owns truth | May write | May read/compose | Must not own |
 | --- | --- | --- | --- | --- |
 | `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives and composed validator execution | Domain registries | Product read facade or domain policy |
-| `read-model/` | No truth; composed product reads | Nothing authoritative | Domain read queries + KB reads | Writes or recovery |
+| `read-model/` | No truth; composed product reads | Nothing authoritative | Domain read queries + KB reads with explicit roots | Writes, recovery, or ambient root selection |
 | `jobs/` | Job lifecycle, terminal outcomes, wait/reconcile vocabulary | Job streams/projections through store substrate | Session/workflow refs by typed query/composition | Provider process mechanics or transport |
 | `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
 | `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |

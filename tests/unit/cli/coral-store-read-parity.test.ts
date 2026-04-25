@@ -37,9 +37,9 @@ async function seedKbSearchSnapshot(): Promise<void> {
   const realRuntime = createRealRuntime();
   const kb = runtime.createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: kbPaths.kbRuntimeDir(),
+    runtimeDir: kbPaths.kbRuntimeDir('prod'),
     db: openStoreDatabase({
-      path: join(kbPaths.kbRuntimeDir(), 'store.db'),
+      path: join(kbPaths.kbRuntimeDir('prod'), 'store.db'),
       storage: realRuntime.storage,
       schemasDir: ensureStoreSchemasDir(realRuntime.storage),
     }),
@@ -236,7 +236,7 @@ describe('cli coral-store read parity', () => {
 
   it('degrades direct-read kb search when the Orama snapshot is absent', async () => {
     const [{ kbRuntimeDir }] = await Promise.all([import('#src/kb/paths.js')]);
-    rmSync(kbRuntimeDir(), { recursive: true, force: true });
+    rmSync(kbRuntimeDir('prod'), { recursive: true, force: true });
 
     const { searchKnowledgeBase } = await import('#src/kb/queries.js');
     const result = await searchKnowledgeBase({ query: 'authoritative', mode: 'vector' });
@@ -281,10 +281,7 @@ This note must not be read from a dev plugin.
     delete process.env.CORAL_KB_PATH;
 
     const { readKnowledgeBaseEntry } = await import('#src/kb/queries.js');
-    const result = readKnowledgeBaseEntry(
-      { note: 'coral-kb-mode' },
-      { projectRoot, pluginRoot: devPluginRoot },
-    );
+    const result = readKnowledgeBaseEntry({ note: 'coral-kb-mode' }, { projectRoot, pluginRoot: devPluginRoot });
 
     expect(result.title).toBe('KB Mode');
     expect(result.content).toContain('Keep the JSON index authoritative.');

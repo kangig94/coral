@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { coralRoot, currentBuildFlavor, kbRoot, projectDataDir } from '../infra/paths.js';
+import { coralRoot, projectDataDir } from '../infra/paths.js';
 
 /** Strip trailing `.md` extension if present. Idempotent. */
 export function stripMdExt(name: string): string {
@@ -21,35 +21,35 @@ function markdownPath(root: string, name: string, label: string): string {
   return assertWithin(root, resolve(root, `${stripMdExt(name)}.md`), label);
 }
 
-export function notesDir(root: string = kbRoot()): string {
+export function notesDir(root: string): string {
   return join(root, 'notes');
 }
 
-export function principlesDir(root: string = kbRoot()): string {
+export function principlesDir(root: string): string {
   return join(root, 'principles');
 }
 
-export function communitiesDir(root: string = kbRoot()): string {
+export function communitiesDir(root: string): string {
   return join(root, 'communities');
 }
 
-export function kbRuntimeDir(flavor: BuildFlavor = currentBuildFlavor()): string {
+export function kbRuntimeDir(flavor: BuildFlavor): string {
   return join(coralRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
 }
 
-export function oramaSnapshotDir(runtimeRoot: string = kbRuntimeDir()): string {
+export function oramaSnapshotDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'orama');
 }
 
-export function needleIndexDir(runtimeRoot: string = kbRuntimeDir()): string {
+export function needleIndexDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'needle');
 }
 
-export function needleStagingDir(runtimeRoot: string = kbRuntimeDir()): string {
+export function needleStagingDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'needle-staging');
 }
 
-export function sourcesDir(root: string = kbRoot()): string {
+export function sourcesDir(root: string): string {
   return join(root, 'sources');
 }
 
@@ -62,26 +62,26 @@ export function memoPathFromContext(projectRoot: string, memo: string): string {
   return assertWithin(root, resolve(root, memo), 'Memo path');
 }
 
-export function notePathFromParts(domain: string, topic: string, root: string = kbRoot()): string {
+export function notePathFromParts(domain: string, topic: string, root: string): string {
   return notePathFromName(`${domain}-${topic}`, root);
 }
 
-export function notePathFromName(note: string, root: string = kbRoot()): string {
+export function notePathFromName(note: string, root: string): string {
   return markdownPath(notesDir(root), note, 'KB note path');
 }
 
-export function principlePathFromName(principle: string, root: string = kbRoot()): string {
+export function principlePathFromName(principle: string, root: string): string {
   return markdownPath(principlesDir(root), principle, 'KB principle path');
 }
 
-export function communityPathFromName(community: string, root: string = kbRoot()): string {
+export function communityPathFromName(community: string, root: string): string {
   return markdownPath(communitiesDir(root), community, 'KB community path');
 }
 
-export function sourcePathFromName(source: string, root: string = kbRoot()): string {
+export function sourcePathFromName(source: string, root: string): string {
   return markdownPath(sourcesDir(root), source, 'KB source path');
 }
 
-export function sourceImportStageDir(runtimeRoot: string = kbRuntimeDir()): string {
+export function sourceImportStageDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'source-import-staging');
 }
