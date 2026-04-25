@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as DiscoveryApiModule from '#src/coordinator/discovery-api.js';
+import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
-import type { CoordinatorDiscoveryRecord } from '#src/coordinator/discovery-api.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
-  readPassiveDiscovery: vi.fn<(flavor: 'prod' | 'dev') => CoordinatorDiscoveryRecord | null>(),
+  readDiscoveryRecord: vi.fn<(flavor: 'prod' | 'dev') => CoordinatorDiscoveryRecord | null>(),
   createIpcClient: vi.fn(),
 }));
 
@@ -17,11 +17,11 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/coordinator/discovery-api.js', async () => {
-  const actual = await vi.importActual<typeof DiscoveryApiModule>('#src/coordinator/discovery-api.js');
+vi.mock('#src/infra/backend-discovery.js', async () => {
+  const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/backend-discovery.js');
   return {
     ...actual,
-    readPassiveDiscovery: mockState.readPassiveDiscovery,
+    readDiscoveryRecord: mockState.readDiscoveryRecord,
   };
 });
 
@@ -54,7 +54,7 @@ describe('expansion activation (AC6)', () => {
 
   beforeEach(() => {
     mockState.ensure.mockReset();
-    mockState.readPassiveDiscovery.mockReset();
+    mockState.readDiscoveryRecord.mockReset();
     mockState.createIpcClient.mockReset();
     delete process.env.CORAL_FLAVOR;
   });
@@ -112,10 +112,10 @@ describe('expansion activation (AC6)', () => {
   it('returns unavailable when passive discovery cannot be read', async () => {
     const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';
-    mockState.readPassiveDiscovery.mockReturnValue(null);
+    mockState.readDiscoveryRecord.mockReturnValue(null);
 
     await expect(activation.readEquipmentStatus('needle')).resolves.toEqual({ status: 'unavailable' });
-    expect(mockState.readPassiveDiscovery).toHaveBeenCalledWith('dev');
+    expect(mockState.readDiscoveryRecord).toHaveBeenCalledWith('dev');
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
 
@@ -126,9 +126,9 @@ describe('expansion activation (AC6)', () => {
     delete process.env.CORAL_FLAVOR;
 
     mockState.createIpcClient.mockReset();
-    mockState.readPassiveDiscovery.mockReset();
+    mockState.readDiscoveryRecord.mockReset();
     vi.resetModules();
-    vi.doUnmock('#src/coordinator/discovery-api.js');
+    vi.doUnmock('#src/infra/backend-discovery.js');
 
     try {
       const [{ setBuildFlavor }, { writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
@@ -166,7 +166,7 @@ describe('expansion activation (AC6)', () => {
     const request = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('connect failed'), { code: 'ipc_connect_failed' }));
-    mockState.readPassiveDiscovery.mockReturnValue(makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }));
+    mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }));
     mockState.createIpcClient.mockReturnValue({ request });
 
     await expect(activation.readEquipmentStatus()).resolves.toEqual({ status: 'unavailable' });

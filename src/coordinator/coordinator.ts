@@ -32,7 +32,6 @@ import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
-import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
@@ -174,7 +173,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => nowDate(runtime.time),
           }),
-        notifyCorpusMutation: createNotifyCorpusMutation(getConsumerDriver()),
+        notifyCorpusMutation: async (publication) => {
+          const driver = getConsumerDriver();
+          if (publication.changedLanes.length === 1) {
+            driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
+            return;
+          }
+          driver.notifyCorpus(publication.snapshot);
+        },
         onCorpusPublishFailure: (failure) => {
           curateSchedulerHealth.onCorpusPublishFailure(failure);
         },

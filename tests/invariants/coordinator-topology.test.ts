@@ -30,8 +30,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
   'src/coordinator/coordinator.ts',
-  'src/coordinator/corpus-notify.ts',
-  'src/coordinator/discovery-api.ts',
   'src/coordinator/equipment/lifecycle.ts',
   'src/coordinator/equipment/rpc.ts',
   'src/coordinator/equipment/slots.ts',

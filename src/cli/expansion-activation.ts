@@ -7,7 +7,7 @@ import {
 } from '../expansion/equipment-contract.js';
 import { installResultSchema } from '../expansion/contracts.js';
 import type { ActivationDeps, EquipmentStatus } from '../expansion/activate.js';
-import { readPassiveDiscovery } from '../coordinator/discovery-api.js';
+import { readDiscoveryRecord } from '../infra/backend-discovery.js';
 import { getSettledBuildFlavor } from '../infra/paths.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createIpcClient } from '../transport/ipc/client.js';
@@ -49,7 +49,12 @@ export function createCliExpansionActivation(): ActivationDeps {
 
     async readEquipmentStatus(name): Promise<EquipmentStatus> {
       const flavor = getSettledBuildFlavor() ?? resolveBuildFlavor(process.env);
-      const record = readPassiveDiscovery(flavor);
+      let record;
+      try {
+        record = readDiscoveryRecord(flavor);
+      } catch {
+        record = null;
+      }
       if (record === null) {
         return { status: 'unavailable' };
       }

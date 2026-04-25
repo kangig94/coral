@@ -3,7 +3,7 @@ import { gzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '#src/coordinator/discovery-api.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import type { ActivationDeps } from '#src/expansion/activate.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
 import { installExpansion, uninstallExpansion } from '#src/expansion/install.js';
