@@ -20,12 +20,12 @@ import {
   communityPathFromName,
 } from './paths.js';
 import { promote as kbPromote } from './ops/promote.js';
+import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources } from './ops/source-store.js';
-import { isNoteEntry } from './entry-types.js';
 import { update as kbUpdate } from './ops/update.js';
 import { readCurateRetryQueue } from './curate/retry.js';
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 import { type KbReadKind } from './read-contract.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
 import {
@@ -449,53 +449,7 @@ export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBas
   }
 
   return runKbAction(async () => {
-    const index = await kbSubsystem.kb.ensureIndex();
-    const allNames = Object.keys(index.principles).sort(compareLocale);
-    const total = allNames.length;
-    let names = allNames;
-
-    if (parsed.data.query?.trim()) {
-      const loweredQuery = parsed.data.query.toLowerCase();
-      names = allNames.filter((name) => name.toLowerCase().includes(loweredQuery));
-    }
-
-    names = names.slice(0, parsed.data.top_k ?? 100);
-    if (parsed.data.verbose !== true) {
-      return { principles: names, total };
-    }
-
-    const selected = new Set(names);
-    const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
-    const orphanRefs = new Set<string>();
-    const noteEntries = Object.values(index.entries)
-      .filter(isNoteEntry)
-      .sort((left, right) => compareLocale(left.slug, right.slug));
-
-    for (const noteRecord of noteEntries) {
-      for (const principle of noteRecord.principles) {
-        if (selected.has(principle)) {
-          notesByPrinciple.get(principle)?.push(noteRecord.slug);
-          continue;
-        }
-
-        if (!(principle in index.principles)) {
-          orphanRefs.add(principle);
-        }
-      }
-    }
-
-    const warning =
-      orphanRefs.size === 0 ? undefined : `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}`;
-
-    return {
-      principles: names.map((name) => ({
-        name,
-        statement: index.principles[name],
-        notes: notesByPrinciple.get(name) ?? [],
-      })),
-      total,
-      ...(warning === undefined ? {} : { warning }),
-    };
+    return listPrinciples(kbSubsystem.kb, parsed.data);
   });
 }
 

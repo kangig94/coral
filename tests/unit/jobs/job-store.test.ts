@@ -11,6 +11,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -98,6 +99,57 @@ function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: 
   }
 
   return statuses.filter(({ status }) => isLivePhase(status.phase) && status.backendNamespace === namespace).length;
+}
+
+function initProviderJob(store: JobStore, jobId: string, sessionId: string): void {
+  store.initJob({
+    jobId,
+    sessionId,
+    provider: 'codex',
+    projectRoot: `/workspace/${jobId}`,
+    backendNamespace: 'test-ns',
+  });
+}
+
+function terminalInput(jobId: string, sessionId: string): CoralEventInput {
+  return {
+    type: 'job.terminal.recorded',
+    stream: { kind: 'job', id: jobId },
+    namespace: 'test-ns',
+    project: `/workspace/${jobId}`,
+    refs: { jobId, sessionId },
+    bodyVersion: 1,
+    body: {
+      terminal: {
+        content: 'done',
+        outcome: { kind: 'completed' },
+      },
+    },
+  };
+}
+
+function progressInput(jobId: string, sessionId: string): CoralEventInput {
+  return {
+    type: 'job.progress.emitted',
+    stream: { kind: 'job', id: jobId },
+    namespace: 'test-ns',
+    project: `/workspace/${jobId}`,
+    refs: { jobId, sessionId },
+    bodyVersion: 1,
+    body: {
+      kind: 'message',
+      message: 'late progress',
+    },
+  };
+}
+
+function expectTerminalOrderViolation(run: () => unknown, jobId: string, type: string): void {
+  expect(run).toThrowError(
+    expect.objectContaining({
+      code: 'job_terminal_order_violation',
+      context: expect.objectContaining({ jobId, type }),
+    }),
+  );
 }
 
 describe('JobStore', () => {
@@ -211,5 +263,137 @@ describe('JobStore', () => {
     expect(store.liveJobCountByNamespace('beta')).toBe(referenceLiveCountByNamespace(statuses, 'beta'));
     expect(store.liveJobCountByNamespace('override')).toBe(referenceLiveCountByNamespace(statuses, 'override'));
     expect(store.liveJobCountByNamespace('')).toBe(0);
+  });
+
+  it('rejects duplicate terminal events for the same job stream', () => {
+    const { store } = createStore();
+    const jobId = 'job-duplicate-terminal';
+    const sessionId = 'session-duplicate-terminal';
+    initProviderJob(store, jobId, sessionId);
+
+    store.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+
+    expectTerminalOrderViolation(
+      () => store.appendTerminal(jobId, sessionId, { content: 'again', outcome: { kind: 'completed' } }, 'completed'),
+      jobId,
+      'job.terminal.recorded',
+    );
+  });
+
+  it('rejects progress after a terminal event has been recorded', () => {
+    const { store } = createStore();
+    const jobId = 'job-late-progress';
+    const sessionId = 'session-late-progress';
+    initProviderJob(store, jobId, sessionId);
+
+    store.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+
+    expectTerminalOrderViolation(
+      () => store.appendProgress(jobId, sessionId, 'too late'),
+      jobId,
+      'job.progress.emitted',
+    );
+  });
+
+  it('rejects job events after terminal in the same append batch', () => {
+    const { store } = createStore();
+    const jobId = 'job-batch-terminal-last';
+    const sessionId = 'session-batch-terminal-last';
+    initProviderJob(store, jobId, sessionId);
+
+    expectTerminalOrderViolation(
+      () => store.appendEventsWithResult([terminalInput(jobId, sessionId), progressInput(jobId, sessionId)]),
+      jobId,
+      'job.progress.emitted',
+    );
+  });
+
+  it('rejects duplicate terminal events in the same append batch', () => {
+    const { store } = createStore();
+    const jobId = 'job-batch-duplicate-terminal';
+    const sessionId = 'session-batch-duplicate-terminal';
+    initProviderJob(store, jobId, sessionId);
+
+    expectTerminalOrderViolation(
+      () => store.appendEventsWithResult([terminalInput(jobId, sessionId), terminalInput(jobId, sessionId)]),
+      jobId,
+      'job.terminal.recorded',
+    );
+  });
+
+  it('allows launch rejection to be followed by a terminal outcome', () => {
+    const { store } = createStore();
+    const jobId = 'job-rejected-terminal';
+    const sessionId = 'session-rejected-terminal';
+    initProviderJob(store, jobId, sessionId);
+
+    const [rejected] = store.appendEventsWithResult([
+      {
+        type: 'job.launch.rejected',
+        stream: { kind: 'job', id: jobId },
+        namespace: 'test-ns',
+        project: `/workspace/${jobId}`,
+        refs: { jobId, sessionId },
+        bodyVersion: 1,
+        body: {
+          reason: 'busy',
+          message: 'busy',
+          provider: 'codex',
+          globalActive: 1,
+          globalLimit: 1,
+        },
+      },
+    ]);
+
+    expect(rejected?.type).toBe('job.launch.rejected');
+    expect(store.readStatus(jobId)?.phase).toBe('error');
+
+    expect(
+      store.appendTerminal(
+        jobId,
+        sessionId,
+        {
+          content: 'failed',
+          outcome: {
+            kind: 'failed',
+            causeRef: {
+              stream: { kind: 'job', id: jobId },
+              seq: rejected.seq,
+            },
+          },
+        },
+        'error',
+      ),
+    ).toBeGreaterThan(rejected.seq);
+  });
+
+  it('allows an abort event to be followed by a terminal outcome', () => {
+    const { store } = createStore();
+    const jobId = 'job-aborted-terminal';
+    const sessionId = 'session-aborted-terminal';
+    initProviderJob(store, jobId, sessionId);
+
+    const [aborted] = store.appendEventsWithResult([
+      {
+        type: 'job.aborted',
+        stream: { kind: 'job', id: jobId },
+        namespace: 'test-ns',
+        project: `/workspace/${jobId}`,
+        refs: { jobId, sessionId },
+        bodyVersion: 1,
+        body: { reason: 'user_abort' },
+      },
+    ]);
+
+    expect(aborted?.type).toBe('job.aborted');
+    expect(store.readStatus(jobId)?.phase).toBe('aborted');
+    expect(
+      store.appendTerminal(
+        jobId,
+        sessionId,
+        { content: '', outcome: { kind: 'aborted', reason: 'user_abort' } },
+        'aborted',
+      ),
+    ).toBeGreaterThan(aborted.seq);
   });
 });

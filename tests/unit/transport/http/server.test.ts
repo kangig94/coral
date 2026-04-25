@@ -1150,7 +1150,7 @@ describe('execution backend server', () => {
 
     const response = await handleKbPrinciples({ query: 'contract', verbose: true, top_k: 5 }, {
       kb: {
-        ensureIndex: vi.fn(async () => ({
+        readIndex: vi.fn(() => ({
           entries: {
             'note:b-note': {
               kind: 'note',
@@ -1187,6 +1187,8 @@ describe('execution backend server', () => {
             'contract-first-design': 'State contracts first.',
             'single-source-of-truth': 'Keep one authority.',
           },
+          entityMeta: {},
+          relationships: [],
         })),
       } as never,
       curateScheduler: {

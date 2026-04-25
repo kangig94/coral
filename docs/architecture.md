@@ -118,13 +118,13 @@ Not every command becomes a job. Jobs are for work that is long-running, observa
 
 | Class | Examples | Surface | Rule |
 | --- | --- | --- | --- |
-| Direct read | `kb search`, `kb read`, `jobs`, `discuss watch` | Return result immediately | No job id; may use `read-model/CoralStore` or KB query helpers. |
-| Direct mutation | KB note/memo write/delete | Return result after authority commit | No durable job unless conversion, readiness, or recovery needs exceed the command. |
+| Direct read | `kb search`, `kb read`, `jobs`, `discuss watch` | Return result immediately | No job id; may use `read-model/CoralStore` or KB query helpers. KB list/read paths do not persist derived rebuild artifacts. |
+| Direct mutation | KB note write/delete; memo write/delete | Return result after the small write | Corpus writes use the KB mutation lock. Memos are project-scoped scratch artifacts, not Corpus authority. |
 | Provider/session job | `codex`, `claude`, workflow atoms | Return job id; `wait` observes terminal state | User-facing agent work is Journal-observable and recoverable. |
 | Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Used when source conversion, indexing, or readiness can take time. |
 | Projection freshness wait | Orama/Needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness wait is not itself truth; failure reports against the hosting command/job. |
 
-`kb source import` is job-backed because even without Needle it can spend time reading and converting large documents before committing Corpus markdown. With retrieval readiness, it also waits for Orama or Needle consumers. By contrast, KB search/read, note write, memo operations, and principle reads are direct unless a future implementation gives them durable work to recover.
+`kb source import` is job-backed because even without Needle it can spend time reading and converting large documents before committing Corpus markdown. With retrieval readiness, it also waits for Orama or Needle consumers. By contrast, KB search/read, note write, memo operations, and principle reads are direct unless a future implementation gives them durable work to recover. Direct list/read commands may build transient in-memory views, but explicit `kb reindex` owns durable text-artifact repair.
 
 ## Primary Execution Flows
 
@@ -164,7 +164,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
-- KB markdown is the Corpus authority for notes, sources, principles, communities, and memos. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads and note/memo mutations stay direct commands.
+- KB markdown is the Corpus authority for notes, sources, principles, and communities. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, and memo operations stay direct commands.
 - Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer; Needle is optional equipment for the `kb.vector` slot. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling equipment status.
 
 ## Module Map
@@ -185,7 +185,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
 | Knowledge base | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers. |
-| Shared / infra | Low-level helpers, settled path resolution, and shared adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
+| Infrastructure | Low-level helpers, settled path resolution, and adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
 
 ## Ownership Matrix
 

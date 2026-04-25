@@ -154,13 +154,13 @@ Jobs are durable process attempts, not an async wrapper for every command. A com
 
 | Class | Examples | Surface | Authority relationship |
 |---|---|---|---|
-| Direct read | `kb search`, `kb read`, `kb memo read`, `jobs`, `discuss watch` | Return result immediately | Reads an authority or projection; creates no Journal fact. |
-| Direct mutation | KB note/memo write/delete, lightweight metadata edits | Return after authority commit | Writes Corpus under mutation lock; creates no job unless durable work is needed. |
+| Direct read | `kb search`, `kb read`, `kb memo read`, `jobs`, `discuss watch` | Return result immediately | Reads an authority or projection; creates no Journal fact. Direct KB list/read paths may build transient in-memory views, but do not persist derived artifacts. |
+| Direct mutation | KB note write/delete, lightweight metadata edits; project memo write/delete | Return after the small authority write | Corpus writes use the KB mutation lock. Memos are project-scoped scratch artifacts, not Corpus authority. Creates no job unless durable work is needed. |
 | Provider/session job | Codex/Claude launches, workflow atoms | Return job id; `wait` observes terminal state | Journal records launch, progress, terminal, and continuity references. |
 | Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Journal records the process attempt; Corpus holds the imported/rebuilt knowledge truth. |
 | Projection freshness wait | Orama/needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness is not authority; failure is reported by the hosting command/job. |
 
-`kb source import` is job-backed because document conversion, staging, Corpus commit, and retrieval readiness can take real time even before needle is installed. `kb search`, `kb read`, memo operations, and note writes remain direct because their expected path is immediate and their authority changes are small. If a future direct command gains long-running recovery semantics, the job boundary moves for that command only; the whole KB surface does not become job/wait by default.
+`kb source import` is job-backed because document conversion, staging, Corpus commit, and retrieval readiness can take real time even before needle is installed. `kb search`, `kb read`, memo operations, and note writes remain direct because their expected path is immediate and their authority changes are small. Direct KB list/read paths do not lazily repair or rebuild durable text artifacts; explicit `kb reindex` owns that durable work. If a future direct command gains long-running recovery semantics, the job boundary moves for that command only; the whole KB surface does not become job/wait by default.
 
 ### 2.8 Extension Model (Equipment)
 
@@ -535,15 +535,19 @@ KB's authority is the Corpus (§6.4). Journal events referencing KB entries use 
 ### 6.1 Jobs (`stream.kind = 'job'`)
 
 ```ts
-job.launch.requested   { instruction, agent }
-job.queue.queued       { reason: 'seat_exhausted' | 'host_locked' }
-job.queue.admitted     { admittedAt }
-job.runtime.started    { pid, hostKey? }
-job.progress.emitted   { message, stage?, detail? }
-job.terminal.recorded  { terminal: JobTerminal, diagnostics: JobDiagnostics }
+job.launch.requested   { jobId, jobKind, provider?, projectRoot, request?, createdAt, ... }
+job.launch.rejected    { reason, message, provider, globalActive, globalLimit }
+job.queue.queued       { queuePosition, runningJobIds }
+job.queue.admitted     { queuePosition? }
+job.runtime.started    { transport?, operation?, pid?, startedAt, ... }
+job.progress.emitted   { kind: 'message' | 'domain' | 'missing_launch_record' | 'recovery_parse_failed', ... }
+job.aborted            { reason }
+job.terminal.recorded  { terminal: JobTerminal, diagnostics?, continuity? }
 ```
 
 **Why the queue split (`queued` vs `admitted`)**: queueing is a first-class state, not an implementation detail. `queued` names the reason (host lock, seat exhaustion) for observability; `admitted` names the transition. Projections can answer "how long was this job queued" without log-grepping.
+
+Each job stream records **exactly one** `job.terminal.recorded` body, and that body is last on that job stream. `job.launch.rejected` and `job.aborted` are causal/domain events that can precede the terminal body; they are not substitutes for the terminal body.
 
 **`job.progress.emitted` carries domain-specific failure detail**: when a job performs a domain operation (KB source import, KB curation step, provider-hosted KB mutation, etc.) and hits a failure, the failure is recorded as a rich progress event. In the implementation's discriminated progress body this is `kind: 'domain'`; `stage` names the semantic stage (e.g., `kb_operation_failed`); `detail` carries domain payload (e.g., `{ operation, entryId, cause }`). The terminal outcome then uses `failed { causeRef }` pointing back at this progress event on the same stream — self-stream causeRef is the normal pattern for job-local failure chains. This is why there is no separate `kb/<id>` stream: KB content is Corpus authority, while slow process-like KB attempts and KB work hosted by a running job report their failures on the hosting `job/<id>` stream. Fast direct KB commands that do not create a job return structured command errors instead of becoming Journal truth.
 
@@ -567,14 +571,19 @@ A child job launched by a workflow carries envelope-level references, not body f
 - `refs.workflowSlotId` — points to the specific slot within that plan.
 - `refs.parentJobId` — points to the workflow job (a distinct job that materializes the workflow's execution).
 
-The child launch event's **body** is identical to any other job launch (`{ instruction, agent }`). Syntax-shaped metadata like `stepIndex`, `atomIndex`, and `label` do not appear on the launch event — they are plan-owned (§6.5) and derived via `refs.workflowSlotId` at render time. This is the strict application of "stream identity is truth, labels are presentation" to workflow composition.
+The child launch event's **body** is the canonical `JobLaunchRequestBody` used by any other job launch. Syntax-shaped metadata like `stepIndex`, `atomIndex`, and `label` do not appear on the launch event — they are plan-owned (§6.5) and derived via `refs.workflowSlotId` at render time. This is the strict application of "stream identity is truth, labels are presentation" to workflow composition.
 
 ### 6.2 Sessions (`stream.kind = 'session'`)
 
 ```ts
-session.opened                   { controller, provider, scope_key }
-session.continuity.checkpointed  { conversationRef, resumable, providerContinuity }
-session.closed                   { reason }
+session.opened                   { entry, controller, provider, scope_key }
+session.continuity.checkpointed  { entry, snapshot }
+session.claimed                  { entry, jobId }
+session.claim.released           { entry, jobId }
+session.interrupted              { fault | { entry?, fault } }
+session.provider_failed          { ...provider failure fault }
+session.adapter_unparseable      { ...adapter parse fault }
+session.closed                   { entry?, reason }
 ```
 
 **Why continuity is a full snapshot, not a patch**:
@@ -587,7 +596,7 @@ Session scope lookup is O(1) via `projection_sessions`, populated by the reducer
 
 ### 6.3 Discuss (`stream.kind = 'discuss'`)
 
-Preserves the existing discuss event vocabulary (`discuss.seeded`, `discuss.speech.posted`, `discuss.synthesis.recorded`, etc.). The reducer and projections in `src/discuss/` are already correct; only the envelope wraps them now. Follow-up answer collection is `Promise.all` across independent agents; any per-flow deviation must be explicitly documented.
+Discuss Journal event types are `discuss.${kind}` over the live discuss domain vocabulary: `session.created`, `bidding.opened`, `bid.submitted`, `participants.expelled`, `bid.round.closed`, `speech.recorded`, `speech.timed_out`, `epoch.summary.recorded`, `must_answer.carry_forward.set`, `follow_up.queue.set`, `follow_up.answered`, `session.ended`, `session.synthesized`, and agent run/job lifecycle events. The reducer and projections in `src/discuss/` own that vocabulary; the Journal envelope carries it without inventing legacy aliases. Follow-up answer collection is `Promise.all` across independent agents; any per-flow deviation must be explicitly documented.
 
 ### 6.4 KB Corpus (not a Journal stream)
 
@@ -613,6 +622,8 @@ The KB domain does not live on the Journal. Its authority is the **Corpus** — 
   needle-staging/                   ← needle staging area for snapshot builds
   equipment_cursors                 ← in store.db (SQLite); tracked per Corpus consumer
 ```
+
+Project memos are deliberately outside this tree. They live under the project data directory as scratch capture artifacts for review/promotion. A memo becomes long-term KB only when promoted into a Corpus note/source; until then it is neither Corpus authority nor a CorpusConsumer input.
 
 **Freshness counters** (versions, not events):
 
@@ -697,6 +708,8 @@ Repair operations that mutate the Corpus go through the standard Corpus mutation
 
 ```ts
 workflow.plan.declared  { plan: WorkflowPlan }
+workflow.plan.revised   { plan: WorkflowPlan }
+workflow.drain.entered  { firstFailureSlotId, drainDeadline }
 workflow.completed      { outcome: 'completed' | 'failed' | 'aborted'; causeRef? }
 ```
 
@@ -1201,7 +1214,7 @@ src/
 
   store/                             ← SQL/Journal substrate over SQLite event DB
     db.ts                            — SQLite connection factory (WAL mode)
-    schema.ts                        — TypeScript row types mirroring the applied SQL schema
+    schema.ts                        — narrow TypeScript row contracts used by store helpers
     schema-loader.ts                 — locates and applies numbered SQL schema files
     envelope.ts                      — Zod validator for event envelope + upcaster registry
     schemas/                         — SQL schema authority; numbered files applied in order
@@ -1241,29 +1254,31 @@ src/
       query-coerce.ts                — query-param coercion
       sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
 
-  runtime/                           ← 6-subport Runtime abstraction
+  runtime/                           ← port interfaces + concrete runtime adapters
     invocation-context.ts            — transport-independent project/plugin/env invocation input
     ports.ts                         — time, storage, paths, process, ids, env
     real.ts                          — production implementations
+    durable-runtime.ts               — durable child-process runtime result contracts
+    spawn.ts, exec-builder.ts        — spawn/exec construction helpers
+    cli-busy.ts, errors.ts           — runtime-local process/error helpers
 
-  infra/                             ← fs/process/time/ids; no domain knowledge
+  infra/                             ← flat low-level helpers; no domain knowledge
     build-flavor.ts                  — BuildFlavor + CORAL_FLAVOR resolution authority
     backend-discovery.ts             — coordinator discovery record read/write
     backend-log.ts                   — backend-local structured logging
-    project-source.ts                — project root + scoping
     plugin-registry.ts               — installed plugin discovery
-    ids/                             — id generation + patterns
-    fs/                              — atomic writes, directory locks, file tails
-    process/                         — child-env, alive-checks, constants, errors
-    json/                            — parse guards, type guards
-    text/                            — truncation, formatting
-    time.ts                          — clock abstraction (real impl)
+    paths.ts, store-paths.ts         — path/flavor layout
+    identifiers.ts                   — id generation + patterns
+    fs-errors.ts, fs-lock.ts         — low-level filesystem errors/locks
+    child-env.ts, process/           — child env and process helpers
+    json.ts, error-format.ts         — parse guards and error rendering
+    time.ts, format-progress.ts      — time and small formatting helpers
 
   jobs/                              ← domain: jobs events + projections + shell
     consumer.ts                      — Journal projection consumer registration for jobs
-    job-store.ts                     — journal query/read-through seam with draft fallback for recovery
+    job-store.ts                     — journal append/read seam; enforces terminal event ordering
     events.ts                        — jobs event body schemas + projection_jobs reducers
-    outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef + describers
+    outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef re-export + describers
     read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
@@ -1328,6 +1343,7 @@ src/
       corpus-state.ts                — persisted Corpus snapshot cursors
       schema.ts                      — Corpus state row contracts
     queries.ts                       — Corpus read/search/list/diagnose facade for read paths
+    direct-read-index.ts             — transient/persisted list index selection for no-mutation reads
     orama-factory.ts, orama-schema.ts — Orama construction/schema shared by base retrieval surfaces
     search/                          — search backend abstraction (equipment-aware)
       contract.ts                    — SearchBackend interface (fts, vector, hybrid)
@@ -1339,7 +1355,7 @@ src/
       needle-backend.ts              — equipment implementation; dynamically imported by lifecycle activation
       hybrid.ts                      — RRF fusion over active FTS + vector backends
     ops/                             — user-facing operations (coordinator-mediated writes)
-      memo.ts, promote.ts, update.ts, delete.ts
+      memo.ts, principles-list.ts, promote.ts, update.ts, delete.ts
       source-import.ts, source-store.ts
       reindex.ts                     — full Corpus rescan + projection rebuild
       search.ts                      — search entrypoint (routes via search/router.ts)
@@ -1438,7 +1454,7 @@ tools/
 - `src/shared/` — every file relocates to a domain or `infra/` or `testing/`
 - `src/client/` — replaced by domain-owned read queries + `read-model/` + `transport/ipc/client.ts` + `transport/http/client.ts`
 - `src/bridge/` transport — replaced by `transport/`
-- `recovery-core.ts` — replaced by `jobs/reconcile/` + `store/replay.ts`
+- `recovery-core.ts` — replaced by `jobs/reconcile/` + `store/rebuild.ts`
 
 ### 10.1a Large-module decomposition (>500 lines as a review signal)
 
@@ -1486,7 +1502,7 @@ These principles prevent `shared/` re-emergence without introducing a central re
 3. When a concept genuinely spans two domains, it belongs in the lower domain on the import DAG. If no domain is clearly lower, split the concept.
 4. `infra/*` owns only utility types (paths, errors, ids). Domain types never live there.
 5. `runtime/*` owns only port interfaces. Concrete implementations do not add to this layer.
-6. The only cross-cutting union type is `CauseRef` (`{stream, seq}`), declared in `src/jobs/outcome.ts` alongside `TerminalOutcome`. All other fault information lives on domain events — there is no central fault union.
+6. The only cross-cutting reference vocabulary is `CauseRef` (`{stream, seq}`), declared in `src/causality/cause-ref.ts` and re-exported where domain APIs need it. All other fault information lives on domain events — there is no central fault union.
 
 The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`shared.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold, (d) leaf `types.ts` files contain declarations only. That is the whole enforcement surface — no normative registry, no CI gate on a map.
 

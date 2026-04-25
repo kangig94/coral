@@ -4,7 +4,7 @@
 
 Claude Code already knows how to code. Coral teaches it how *you* work.
 
-Coral is a CLI-first plugin backed by a persistent HTTP daemon for orchestration, sessions, discussion, and knowledge-base workflows.
+Coral is a CLI-first plugin backed by a persistent local coordinator for orchestration, sessions, discussion, and knowledge-base workflows.
 
 ## Install
 

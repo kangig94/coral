@@ -53,7 +53,7 @@ Equipment is a coordinator-owned seam for optional runtime add-ons, not a separa
 
 ## Knowledge Base
 
-The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, memo lifecycle, source persistence, and background curation (community detection, entity consolidation). Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). Explicit reindex is also coordinator-owned as an internal `kb.reindex` job: the KB op rebuilds text artifacts, and the coordinator service waits for base-search freshness. These jobs are Journal-observable process attempts, not provider/session jobs.
+The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, source persistence, background curation (community detection, entity consolidation), and the project-scoped memo scratch lifecycle. Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). Explicit reindex is also coordinator-owned as an internal `kb.reindex` job: the KB op rebuilds text artifacts, and the coordinator service waits for base-search freshness. These jobs are Journal-observable process attempts, not provider/session jobs.
 
 The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional equipment CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
@@ -63,8 +63,8 @@ Jobs are not an async wrapper for every command. They are durable work ledgers f
 
 | Class | Examples | Owner |
 | --- | --- | --- |
-| Direct read | KB search/read, `jobs`, discuss watch | Read model or KB query helpers |
-| Direct mutation | KB note/memo write/delete | KB Corpus mutation lock |
+| Direct read | KB search/read/list, `jobs`, discuss watch | Read model or KB query helpers; no durable artifact rebuild |
+| Direct mutation | KB note write/delete; memo write/delete | Corpus lock for KB notes; project data dir for memos |
 | Provider/session job | Codex/Claude launches, workflow atoms | Jobs + sessions + provider adapters |
 | Internal coordinator job | KB source import, KB reindex | Coordinator service over jobs + KB |
 | Projection freshness | Orama/Needle catch-up | ConsumerDriver cursor wait |
@@ -77,9 +77,9 @@ The coordinator layer owns process lifecycle, startup reconcile sequencing, Cons
 
 Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
 
-## Shared and Infrastructure
+## Infrastructure
 
-Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and shared equipment paths.
+Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and equipment paths without becoming a generic domain dumping ground.
 
 ## Ownership Matrix
 
@@ -134,7 +134,7 @@ KB runtime
   -> read-only equipment activation port (`KbRuntime.getEquipmentView()`)
   -> base Orama CorpusConsumer surface (`KbRuntime.getBaseRetrievalSurface()`)
 
-shared / infra
+infra / runtime / causality
   -> lowest common layer reused everywhere
 ```
 

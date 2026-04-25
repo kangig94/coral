@@ -8,6 +8,7 @@ import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/fron
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import { buildSourceIndexEntry } from '../corpus/index-records.js';
+import { readKnowledgeBaseListIndex } from '../direct-read-index.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
 import {
@@ -116,7 +117,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
 }
 
 export async function listSources(kb: KbRuntime): Promise<KbSourceListResult> {
-  const index = kb.readIndex() ?? (await kb.ensureIndex());
+  const index = readKnowledgeBaseListIndex(kb);
   const sources = Object.values(index.entries)
     .filter(isSourceEntry)
     .sort((left, right) => compareLocale(left.slug, right.slug))
