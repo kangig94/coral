@@ -39,7 +39,7 @@ export type KbSourceImportReadinessWaiter = (params: {
 }) => Promise<void>;
 
 export interface KbSourceImportServiceDeps {
-  runtime: Pick<Runtime, 'ids' | 'time' | 'storage'>;
+  runtime: Pick<Runtime, 'ids' | 'time' | 'storage' | 'env' | 'process'>;
   progressStore: JobProgressStore;
   backendNamespace: string;
   bundleHash: string;
@@ -180,6 +180,7 @@ export class KbSourceImportService {
         request.slug,
         (line) => this.appendProgress(jobId, ctx.projectRoot, line),
         kbSubsystem.kb.runtimeDir,
+        this.deps.runtime,
       );
       const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug);
       kbSubsystem.curateScheduler.scheduleDeferredCommit();
@@ -296,9 +297,11 @@ export class KbSourceImportService {
       refs: { jobId },
       bodyVersion: 1,
       body: {
-        outcome,
-        durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-        content,
+        terminal: {
+          outcome,
+          durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
+          content,
+        },
       },
     });
   }

@@ -205,7 +205,6 @@ export function finalizeDeadAdoptedJob({
             {
               ...(result.continuity ? { continuity: result.continuity } : {}),
               diagnostics: materialized.diagnostics,
-              ...(materialized.exitCode === undefined ? {} : { exitCode: materialized.exitCode }),
             },
           );
         })
@@ -235,9 +234,7 @@ export function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalProjection(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      service.completeRecoveredJob(jobId, sessionId, persistedPayload, phase, {
-        exitCode: exitRecord.exitCode,
-      });
+      service.completeRecoveredJob(jobId, sessionId, persistedPayload, phase);
       return;
     }
 
@@ -256,9 +253,7 @@ export function finalizeDeadAdoptedJob({
             },
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
-    service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, phaseForOutcome(outcome), {
-      exitCode: exitRecord.exitCode,
-    });
+    service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, phaseForOutcome(outcome));
     return;
   }
 

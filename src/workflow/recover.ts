@@ -22,22 +22,46 @@ import {
   workflowCompletedBodySchema,
   workflowCompletedEvent,
   workflowDrainEnteredBodySchema,
-  workflowPlanRevisedEvent,
 } from './events.js';
 import { executePlannedSteps } from './executor.js';
 import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
-import type { PlanSlot, WorkflowPlan } from './plan.js';
+import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
 import { appendWorkflowEvents } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 export { recoverStaleAtom } from './stale-recovery.js';
 
-function slotKind(slot: PlanSlot): 'agent' | 'prompt' {
-  return slot.label === slot.instruction ? 'agent' : 'prompt';
+type WorkflowSlotJobRow = {
+  job_id: string;
+  workflow_slot: string;
+  last_seq: number;
+};
+
+function readSlotJobIds(db: BetterSqlite3.Database, plan: WorkflowPlan): Map<string, string> {
+  const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
+  const rows = db
+    .prepare(
+      `SELECT job_id, workflow_slot, last_seq
+         FROM projection_jobs
+        WHERE parent_workflow_job_id = ?
+          AND workflow_slot IS NOT NULL
+        ORDER BY workflow_slot ASC, last_seq DESC`,
+    )
+    .all(plan.workflowId) as WorkflowSlotJobRow[];
+  const selected = new Map<string, string>();
+
+  for (const row of rows) {
+    if (!slotIds.has(row.workflow_slot) || selected.has(row.workflow_slot)) {
+      continue;
+    }
+    selected.set(row.workflow_slot, row.job_id);
+  }
+
+  return selected;
 }
 
-function slotCoralOp(slot: PlanSlot): string {
-  return slotKind(slot) === 'prompt' ? 'workflow-literal' : `coral:${slot.instruction}`;
+function compileSlotsForRecovery(db: BetterSqlite3.Database, plan: WorkflowPlan): CompiledPlanSlot[] {
+  return compileWorkflowPlan(plan, { jobIds: readSlotJobIds(db, plan) });
 }
 
 function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: string): JobProjectionDetail {
@@ -52,35 +76,35 @@ function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: str
 }
 
 function buildLaunchedAtomsForStep(
-  plan: WorkflowPlan,
+  slots: readonly CompiledPlanSlot[],
   stepIndex: number,
   detailsByJob: Map<string, JobProjectionDetail>,
 ): LaunchedAtom[] {
-  const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
+  const stepSlots = slots.filter((slot) => slot.stepIndex === stepIndex);
   return stepSlots.map((slot, atomIndex) => {
     const detail = detailForJob(detailsByJob, slot.jobId);
     return {
       slotId: slot.slotId,
       jobId: slot.jobId,
-      sessionId: detail.launch?.sessionId ?? slot.continuityRef ?? `unknown-session:${slot.slotId}`,
+      sessionId: detail.launch?.sessionId ?? `unknown-session:${slot.slotId}`,
       providerName: slot.provider,
-      coralOp: slotCoralOp(slot),
+      coralOp: slot.kind === 'prompt' ? 'workflow-literal' : `coral:${slot.instruction}`,
       agent: slot.label,
       tagName: slot.tagName,
       stepIndex: slot.stepIndex,
       atomIndex,
       atomKey: slot.atomKey,
-      kind: slotKind(slot),
+      kind: slot.kind,
     };
   });
 }
 
-function completedOutputForSlot(slot: PlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
+function completedOutputForSlot(slot: CompiledPlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
   return detailForJob(detailsByJob, slot.jobId).exit?.content ?? null;
 }
 
 function summarizeCompletedSteps(
-  plan: WorkflowPlan,
+  slots: readonly CompiledPlanSlot[],
   detailsByJob: Map<string, JobProjectionDetail>,
 ): {
   activeStepIndex: number;
@@ -89,10 +113,10 @@ function summarizeCompletedSteps(
 } {
   const stepDetails: StepDetail[] = [];
   let stepPrompt = '';
-  const maxStepIndex = plan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
+  const finalStepIndex = slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
 
-  for (let stepIndex = 0; stepIndex <= maxStepIndex; stepIndex += 1) {
-    const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
+  for (let stepIndex = 0; stepIndex <= finalStepIndex; stepIndex += 1) {
+    const stepSlots = slots.filter((slot) => slot.stepIndex === stepIndex);
     if (stepSlots.length === 0) continue;
 
     const completed = stepSlots.map((slot) => completedOutputForSlot(slot, detailsByJob));
@@ -104,7 +128,7 @@ function summarizeCompletedSteps(
       };
     }
 
-    const launchedAtoms = buildLaunchedAtomsForStep(plan, stepIndex, detailsByJob);
+    const launchedAtoms = buildLaunchedAtomsForStep(slots, stepIndex, detailsByJob);
     const results = new Map<string, string>();
     launchedAtoms.forEach((atom, index) => {
       results.set(atom.atomKey, completed[index] ?? '');
@@ -119,14 +143,14 @@ function summarizeCompletedSteps(
   }
 
   return {
-    activeStepIndex: maxStepIndex + 1,
+    activeStepIndex: finalStepIndex + 1,
     stepPrompt,
     stepDetails,
   };
 }
 
 function firstTerminalFailure(
-  plan: WorkflowPlan,
+  slots: readonly CompiledPlanSlot[],
   drain: { firstFailureSlotId: string; drainDeadline: number } | null,
   detailsByJob: Map<string, JobProjectionDetail>,
 ): {
@@ -141,8 +165,8 @@ function firstTerminalFailure(
   drainDeadline?: number;
 } | null {
   const targetSlot =
-    (drain ? plan.slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined) ??
-    plan.slots.find((slot) => {
+    (drain ? slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined) ??
+    slots.find((slot) => {
       const detail = detailForJob(detailsByJob, slot.jobId);
       const outcome = detail.exit?.outcome;
       return outcome && outcome.kind !== 'completed';
@@ -166,7 +190,7 @@ function firstTerminalFailure(
 
   return {
     aborted: terminal.outcome.kind === 'aborted',
-    message: `Step ${targetSlot.stepIndex}, atom '${targetSlot.label}' failed: ${describeTerminalFailure(result, { exitCode: terminal.exitCode })}`,
+    message: `Step ${targetSlot.stepIndex}, atom '${targetSlot.label}' failed: ${describeTerminalFailure(result)}`,
     failedStep: targetSlot.stepIndex,
     failedAtom: targetSlot.label,
     failedJobId: targetSlot.jobId,
@@ -196,14 +220,15 @@ async function resumeWorkflow(
     return null;
   }
 
+  const compiledSlots = compileSlotsForRecovery(db, plan);
   const slotDetailsByJob = loadJobProjectionDetails(
     db,
-    plan.slots.map((slot) => slot.jobId),
+    compiledSlots.map((slot) => slot.jobId),
     readCtx,
   );
-  const summary = summarizeCompletedSteps(plan, slotDetailsByJob);
-  const maxStepIndex = plan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
-  if (summary.activeStepIndex > maxStepIndex) {
+  const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
+  const finalStepIndex = maxStepIndex(plan);
+  if (summary.activeStepIndex > finalStepIndex) {
     appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
     return {
       finalOutput: summary.stepPrompt,
@@ -211,8 +236,8 @@ async function resumeWorkflow(
     };
   }
 
-  const stepSlots = plan.slots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
-  const activeAtoms = buildLaunchedAtomsForStep(plan, summary.activeStepIndex, slotDetailsByJob);
+  const stepSlots = compiledSlots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
+  const activeAtoms = buildLaunchedAtomsForStep(compiledSlots, summary.activeStepIndex, slotDetailsByJob);
   const missingProjection = stepSlots.some((slot) => {
     const projection = readProjectionJob(db, slot.jobId);
     const detail = detailForJob(slotDetailsByJob, slot.jobId);
@@ -254,7 +279,7 @@ async function resumeWorkflow(
     }
   }
 
-  const failure = firstTerminalFailure(plan, drain, slotDetailsByJob);
+  const failure = firstTerminalFailure(compiledSlots, drain, slotDetailsByJob);
   const waitState = {
     completedOutputs,
     cursor: { afterSeq: pendingCursorSeqs.length === 0 ? 0 : Math.min(...pendingCursorSeqs) },
@@ -295,19 +320,9 @@ async function resumeWorkflow(
     staleCheckIntervalMs: options.staleCheckIntervalMs,
     initialState: waitState,
     completedStepDetails: summary.stepDetails,
+    workflowJobId: plan.workflowId,
     onProgress: (message) => options.onProgress(plan.workflowId, message),
     recoverStaleAtom,
-    onStaleSwap: (state) => {
-      const revisedPlan: WorkflowPlan = {
-        workflowId: plan.workflowId,
-        slots: plan.slots.map((slot) => {
-          const revised = state.atoms.find((atom) => atom.slotId === slot.slotId);
-          return revised ? { ...slot, jobId: revised.jobId, continuityRef: revised.sessionId } : slot;
-        }),
-      };
-      appendWorkflowEvents(db, [workflowPlanRevisedEvent(plan.workflowId, revisedPlan)]);
-      plan = revisedPlan;
-    },
   });
 
   const mergedResults = new Map(completedOutputs);

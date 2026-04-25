@@ -34,7 +34,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 | --- | --- |
 | Jobs | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation, cross-namespace adoption. |
 | Sessions | Session persistence and continuity — open, checkpoint, interrupt, provider failure, close, atomic storage, lookup by id or ref. |
-| Workflow | DSL parsing, plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection. |
+| Workflow | DSL parsing, semantic plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection. |
 | Discuss | Multi-agent discussion loop — pure state machine at the core, imperative shell around it for persistence, bids, speeches, follow-ups, synthesis, and snapshots. |
 
 ## Provider Adapters
@@ -54,6 +54,8 @@ The KB mutation lock commits Corpus state and text artifacts only. It does not i
 ## Coordinator
 
 The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
+
+Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
 
 ## Shared and Infrastructure
 

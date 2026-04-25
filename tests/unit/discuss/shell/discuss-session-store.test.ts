@@ -5,8 +5,8 @@ import type { DiscussCreateInput, Result } from '#src/discuss/session-types.js';
 import {
   DiscussSessionStore,
   DiscussStaleWriteError,
-  createInMemoryDiscussJournal,
 } from '#src/discuss/shell/session-store.js';
+import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';

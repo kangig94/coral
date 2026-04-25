@@ -13,6 +13,8 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = 'wait-aborted' as const;
 const TIMED_OUT = 'wait-timed-out' as const;
+const JOURNAL_POLL = 'wait-journal-poll' as const;
+const JOURNAL_POLL_INTERVAL_MS = 250;
 
 function compareProgressSeq(left: JobProgress, right: JobProgress): number {
   if (left.seq !== right.seq) {
@@ -115,6 +117,33 @@ function createTimeoutWaiter(
   };
 }
 
+function createJournalPollWaiter(
+  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  timeoutMs: number,
+): { promise: Promise<typeof JOURNAL_POLL>; dispose(): void } {
+  let settled = false;
+  let timeoutHandle: ReturnType<RuntimeTimePort['setTimeout']> | null = null;
+  const promise = new Promise<typeof JOURNAL_POLL>((resolve) => {
+    timeoutHandle = time.setTimeout(() => {
+      settled = true;
+      timeoutHandle = null;
+      resolve(JOURNAL_POLL);
+    }, Math.max(0, timeoutMs));
+  });
+
+  return {
+    promise,
+    dispose() {
+      if (settled || timeoutHandle === null) {
+        return;
+      }
+      time.clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+      settled = true;
+    },
+  };
+}
+
 export interface WaitCoordinatorDeps {
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
@@ -154,6 +183,30 @@ export class WaitCoordinator {
       backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
       return defaultResultPathFor(jobId);
     }
+  }
+
+  private readPendingHistory(
+    pending: ReadonlySet<string>,
+    observedSeq: number,
+    maxSeq: number,
+  ): JobProgress[] {
+    const { readJobProgress } = this.deps;
+    return [...pending]
+      .flatMap((jobId) =>
+        readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq),
+      )
+      .sort(compareProgressSeq);
+  }
+
+  private toWaitEvent(
+    event: JobProgress,
+    pending: ReadonlySet<string>,
+  ): WaitStreamEvent {
+    if (event.type === 'progress') {
+      return toProgressWaitEvent(event);
+    }
+
+    return toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
@@ -248,7 +301,7 @@ export class WaitCoordinator {
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { launchCoordinator, jobPools, readJobProgress, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    const { launchCoordinator, jobPools, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
@@ -299,19 +352,14 @@ export class WaitCoordinator {
         }
       }
 
-      const initialHistory = [...pending]
-        .flatMap((jobId) =>
-          readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= catchUpMaxSeq),
-        )
-        .sort(compareProgressSeq);
+      const initialHistory = this.readPendingHistory(pending, observedSeq, catchUpMaxSeq);
       for (const event of initialHistory) {
         observedSeq = Math.max(observedSeq, event.seq);
-        if (event.type === 'progress') {
-          yield toProgressWaitEvent(event);
+        const waitEvent = this.toWaitEvent(event, pending);
+        yield waitEvent;
+        if (waitEvent.type === 'progress') {
           continue;
         }
-
-        yield toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
         return;
       }
       observedSeq = Math.max(observedSeq, catchUpMaxSeq);
@@ -329,15 +377,36 @@ export class WaitCoordinator {
         }
 
         const abortWaiter = createAbortWaiter(abortSignal);
+        const pollWaiter = createJournalPollWaiter(
+          this.deps.time,
+          Math.min(JOURNAL_POLL_INTERVAL_MS, Math.max(0, deadlineMs - now)),
+        );
         const next = await Promise.race([
           pendingNext,
           timeoutWaiter.promise,
+          pollWaiter.promise,
           ...(abortWaiter ? [abortWaiter.promise] : []),
         ]);
         abortWaiter?.dispose();
+        pollWaiter.dispose();
 
         if (next === ABORTED) {
           return;
+        }
+
+        if (next === JOURNAL_POLL) {
+          const maxSeq = getCurrentJournalSeq();
+          const replayed = this.readPendingHistory(pending, observedSeq, maxSeq);
+          for (const event of replayed) {
+            observedSeq = Math.max(observedSeq, event.seq);
+            const waitEvent = this.toWaitEvent(event, pending);
+            yield waitEvent;
+            if (waitEvent.type === 'terminal') {
+              return;
+            }
+          }
+          observedSeq = Math.max(observedSeq, maxSeq);
+          continue;
         }
 
         if (next === TIMED_OUT) {

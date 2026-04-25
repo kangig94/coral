@@ -93,8 +93,6 @@ type JobExitProjection = {
   content: string;
   durationMs: number;
   diagnostics: JobDiagnostics;
-  exitCode?: number | null;
-  signal?: string | null;
   endTime: string;
   continuity?: JobContinuitySnapshot | null;
 };
@@ -139,8 +137,6 @@ type DecodedTerminalRow = {
   record: JobTerminal;
   diagnostics: JobTerminalDiagnostics;
   continuity: JobContinuitySnapshot | null;
-  exitCode?: number | null;
-  signal?: string | null;
 };
 
 const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const;
@@ -468,23 +464,18 @@ function emptyDiagnostics(): JobDiagnostics {
   return { progressFaults: [] };
 }
 
-function diagnosticsFromTerminalBody(body: ReturnType<typeof jobTerminalRecordedBodySchema.parse>): JobTerminalDiagnostics {
-  return {
-    ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
-    ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
-  };
-}
-
 function mergeDiagnostics(
   base: JobDiagnostics,
   patch: JobTerminalDiagnostics,
 ): JobDiagnostics {
   const warnings = patch.warnings ?? base.warnings;
   const usage = patch.usage ?? base.usage;
+  const processExit = patch.processExit ?? base.processExit;
   return {
     progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
     ...(warnings === undefined ? {} : { warnings: [...warnings] }),
     ...(usage === undefined ? {} : { usage: { ...usage } }),
+    ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
   };
 }
 
@@ -502,15 +493,9 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
 
   const body = decodeBody(row, jobTerminalRecordedBodySchema, ctx);
   return {
-    record: normalizeJobTerminal({
-      content: body.content ?? '',
-      durationMs: body.durationMs,
-      outcome: body.outcome,
-    }),
-    diagnostics: diagnosticsFromTerminalBody(body),
+    record: normalizeJobTerminal(body.terminal),
+    diagnostics: body.diagnostics ?? {},
     continuity: body.continuity ?? null,
-    ...(body.exitCode === undefined ? {} : { exitCode: body.exitCode }),
-    ...(body.signal === undefined ? {} : { signal: body.signal }),
   };
 }
 
@@ -523,9 +508,7 @@ function toJobExitProjection(
     ...terminal.record,
     durationMs: terminal.record.durationMs ?? 0,
     diagnostics,
-    ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
     continuity: terminal.continuity,
-    signal: terminal.signal,
     endTime: row.ts,
   };
 }

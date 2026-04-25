@@ -29,8 +29,6 @@ export type InitJobOptions = {
 export type TerminalWriteOptions = {
   continuity?: JobContinuitySnapshot | null;
   diagnostics?: JobTerminalDiagnostics;
-  exitCode?: number | null;
-  signal?: string | null;
 };
 
 export interface JobProgressStore {

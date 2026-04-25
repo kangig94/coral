@@ -164,9 +164,11 @@ export class KbReindexService {
       refs: { jobId },
       bodyVersion: 1,
       body: {
-        outcome,
-        durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-        content,
+        terminal: {
+          outcome,
+          durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
+          content,
+        },
       },
     });
   }

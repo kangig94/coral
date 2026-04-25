@@ -13,7 +13,13 @@ import type {
 } from './entry-types.js';
 import { isNoteEntry } from './entry-types.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
-import { createDefaultKbQueryRuntime, getDefaultKbQueryDb, type KbQueryContext } from './query-runtime.js';
+import {
+  createDefaultKbQueryRuntime,
+  createDefaultKbReadPaths,
+  getDefaultKbQueryDb,
+  resolveQueryProjectRoot,
+  type KbQueryContext,
+} from './query-runtime.js';
 import { readEntry } from './read.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { listMemos } from './ops/memo.js';
@@ -34,8 +40,10 @@ export function readKnowledgeBaseEntry(
   selector: KbReadInput,
   context: KbQueryContext = {},
 ): KbReadResult {
-  void context.pluginRoot;
-  return readEntry(selector, { projectRoot: context.projectRoot ?? process.cwd() });
+  return readEntry(selector, {
+    projectRoot: resolveQueryProjectRoot(context),
+    paths: createDefaultKbReadPaths(context),
+  });
 }
 
 export async function listKnowledgeBasePrinciples(

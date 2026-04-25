@@ -1,16 +1,13 @@
-import { execFile, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { basename, delimiter, extname, join } from 'node:path'
-import { promisify } from 'node:util'
 import { nowIsoString } from '../../infra/time.js'
+import { createRealRuntime } from '../../runtime/real.js'
+import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeProcessPort, RuntimeTimePort } from '../../runtime/ports.js'
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js'
 import { kbRuntimeDir, sourceImportStageDir } from '../paths.js'
 import type { KbSourceFrontmatter } from '../entry-types.js'
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js'
 
-const execFileP = promisify(execFile)
 const LEADING_ATX_H1 = /^#(?!#)\s+(.+?)\s*#*\s*(?:\r?\n+|$)/
 const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/
 const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i
@@ -37,6 +34,18 @@ export type PreparedSourceImport = {
   meta: KbSourceFrontmatter
 }
 
+export type SourceImportRuntime = {
+  env: Pick<RuntimeEnvPort, 'fullSnapshot' | 'homedir' | 'platform'>
+  process: Pick<RuntimeProcessPort, 'exec'>
+  ids: Pick<RuntimeIdsPort, 'uuid'>
+  time: Pick<RuntimeTimePort, 'now'>
+}
+
+export type SourceImportContext = {
+  runtime: SourceImportRuntime
+  runtimeRoot: string
+}
+
 type TurndownServiceLike = {
   turndown(input: string): string
 }
@@ -49,29 +58,45 @@ type MammothLike = {
 
 // CLI-only source import converters. Keep npm conversion dependencies isolated here.
 export interface Converter {
-  isAvailable(): Promise<boolean>
-  install(log: (msg: string) => void): Promise<void>
-  convert(filePath: string): Promise<ConversionResult>
+  isAvailable(ctx: SourceImportContext): Promise<boolean>
+  install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>
+  convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>
 }
 
-function commandEnv(): NodeJS.ProcessEnv {
-  const homeDir = process.env.HOME ?? process.env.USERPROFILE
-  const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin')
+function createDefaultSourceImportRuntime(): SourceImportRuntime {
+  const runtime = createRealRuntime()
   return {
-    ...process.env,
-    PATH: [localBinDir, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
+    env: runtime.env,
+    process: runtime.process,
+    ids: runtime.ids,
+    time: runtime.time,
   }
 }
 
-async function resolveCommandPath(command: string): Promise<string | undefined> {
-  const locator = process.platform === 'win32' ? 'where' : 'which'
+function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
+  const env = { ...runtime.env.fullSnapshot() }
+  const homeDir = runtime.env.homedir()
+  const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin')
+  return {
+    ...env,
+    PATH: [localBinDir, env.PATH ?? ''].filter(Boolean).join(delimiter),
+  }
+}
+
+async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<string | undefined> {
+  const locator = ctx.runtime.env.platform() === 'win32' ? 'where' : 'which'
 
   try {
-    const { stdout } = await execFileP(locator, [command], {
-      encoding: 'utf8',
-      env: commandEnv(),
+    const result = await ctx.runtime.process.exec(locator, [command], {
+      encoding: 'utf-8',
+      env: commandEnv(ctx.runtime),
+      inheritEnv: false,
       timeout: 10_000,
     })
+    if (result.status !== 0) {
+      return undefined
+    }
+    const { stdout } = result
     return stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -81,40 +106,41 @@ async function resolveCommandPath(command: string): Promise<string | undefined> 
   }
 }
 
-async function commandExists(command: string): Promise<boolean> {
-  return (await resolveCommandPath(command)) !== undefined
+async function commandExists(command: string, ctx: SourceImportContext): Promise<boolean> {
+  return (await resolveCommandPath(command, ctx)) !== undefined
 }
 
-async function runCommand(command: string, args: string[], displayName: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: commandEnv(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk
-    })
-    child.stderr?.setEncoding('utf8')
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk
-    })
-    child.once('error', (error) => {
-      reject(error)
-    })
-    child.once('close', (code) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-
-      const output = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
-      reject(new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`))
-    })
+async function runCommand(command: string, args: string[], displayName: string, ctx: SourceImportContext): Promise<void> {
+  const result = await ctx.runtime.process.exec(command, args, {
+    encoding: 'utf-8',
+    env: commandEnv(ctx.runtime),
+    inheritEnv: false,
+    maxBuffer: 20 * 1024 * 1024,
   })
+  if (result.status === 0) {
+    return
+  }
+
+  const output = [result.stderr.trim(), result.stdout.trim(), result.error?.message].filter(Boolean).join('\n')
+  const code = result.status === null ? 'unknown' : String(result.status)
+  throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`)
+}
+
+async function createPdfOutputDir(ctx: SourceImportContext): Promise<string> {
+  const pdfTempRoot = join(ctx.runtimeRoot, 'source-import-pdf')
+  await mkdir(pdfTempRoot, { recursive: true })
+  return await mkdtemp(join(pdfTempRoot, 'marker-'))
+}
+
+async function stagePreparedSourceMarkdown(
+  stageRoot: string,
+  markdown: string,
+  runtime: SourceImportRuntime,
+): Promise<string> {
+  await mkdir(stageRoot, { recursive: true })
+  const stagedPath = join(stageRoot, `${runtime.ids.uuid()}.md`)
+  await writeFile(stagedPath, markdown, 'utf8')
+  return stagedPath
 }
 
 async function findFirstMarkdownFile(root: string): Promise<string | undefined> {
@@ -320,34 +346,29 @@ function renderSourceMarkdown(meta: KbSourceFrontmatter, body: string): string {
   return `${frontmatter}${heading}\n\n${normalizedBody}\n`
 }
 
-async function stagePreparedSourceMarkdown(stageRoot: string, markdown: string): Promise<string> {
-  await mkdir(stageRoot, { recursive: true })
-  const stagedPath = join(stageRoot, `${randomUUID()}.md`)
-  await writeFile(stagedPath, markdown, 'utf8')
-  return stagedPath
-}
-
 export async function prepareSourceImport(
   filePath: string,
   slug?: string,
   log: (msg: string) => void = () => {},
   runtimeRoot: string = kbRuntimeDir(),
+  runtime: SourceImportRuntime = createDefaultSourceImportRuntime(),
 ): Promise<PreparedSourceImport> {
   const ext = extname(filePath).toLowerCase()
+  const ctx: SourceImportContext = { runtime, runtimeRoot }
   const converter = resolveConverter(ext)
 
   log(`Converting ${filePath}`)
-  if (!(await converter.isAvailable())) {
+  if (!(await converter.isAvailable(ctx))) {
     log(`Installing converter dependencies for ${ext || 'source'} import`)
-    await converter.install(log)
+    await converter.install(log, ctx)
   }
 
-  const converted = await converter.convert(filePath)
+  const converted = await converter.convert(filePath, ctx)
   const meta: KbSourceFrontmatter = {
     title: converted.title,
     type: inferSourceType(ext),
     tags: [],
-    importedAt: nowIsoString(),
+    importedAt: nowIsoString(runtime.time),
   }
   const normalizedSlug = assertSourceSlug(slug ?? toKebabCase(meta.title), 'source')
 
@@ -355,6 +376,7 @@ export async function prepareSourceImport(
   const stagedPath = await stagePreparedSourceMarkdown(
     sourceImportStageDir(runtimeRoot),
     renderSourceMarkdown(meta, converted.markdown),
+    runtime,
   )
 
   return {
@@ -365,15 +387,15 @@ export async function prepareSourceImport(
 }
 
 export class MarkdownCopyConverter implements Converter {
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return true
   }
 
-  async install(log: (msg: string) => void): Promise<void> {
+  async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
     void log
   }
 
-  async convert(filePath: string): Promise<ConversionResult> {
+  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
     const rawMarkdown = normalizeTextInput(await readFile(filePath, 'utf8'))
     const withoutFrontmatter = stripLeadingFrontmatter(rawMarkdown)
     const { title, body } = splitLeadingMarkdownTitle(withoutFrontmatter)
@@ -386,15 +408,15 @@ export class MarkdownCopyConverter implements Converter {
 }
 
 export class HtmlTurndownConverter implements Converter {
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return missingPackages(['turndown']).length === 0
   }
 
-  async install(log: (msg: string) => void): Promise<void> {
+  async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
     assertPackagesInstalled(['turndown'], log)
   }
 
-  async convert(filePath: string): Promise<ConversionResult> {
+  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
     const html = normalizeTextInput(await readFile(filePath, 'utf8'))
     const title = extractHtmlTitle(html)
     if (!title) {
@@ -409,15 +431,15 @@ export class HtmlTurndownConverter implements Converter {
 }
 
 export class DocxMammothConverter implements Converter {
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return missingPackages(['mammoth', 'turndown']).length === 0
   }
 
-  async install(log: (msg: string) => void): Promise<void> {
+  async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
     assertPackagesInstalled(['mammoth', 'turndown'], log)
   }
 
-  async convert(filePath: string): Promise<ConversionResult> {
+  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
     const mammoth = await loadMammoth()
     const result = await mammoth.convertToHtml({ path: filePath })
     const html = normalizeTextInput(result.value)
@@ -434,45 +456,45 @@ export class DocxMammothConverter implements Converter {
 }
 
 export class PdfMarkerConverter implements Converter {
-  async isAvailable(): Promise<boolean> {
-    return commandExists('marker_single')
+  async isAvailable(ctx: SourceImportContext): Promise<boolean> {
+    return commandExists('marker_single', ctx)
   }
 
-  async install(log: (msg: string) => void): Promise<void> {
-    let uvCommand = await resolveCommandPath('uv')
+  async install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void> {
+    let uvCommand = await resolveCommandPath('uv', ctx)
 
     if (!uvCommand) {
       log('Installing uv...')
-      if (process.platform === 'win32') {
-        await runCommand('powershell', ['-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'uv installer')
+      if (ctx.runtime.env.platform() === 'win32') {
+        await runCommand('powershell', ['-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'uv installer', ctx)
       } else {
-        await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], 'uv installer')
+        await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], 'uv installer', ctx)
       }
 
-      uvCommand = await resolveCommandPath('uv')
+      uvCommand = await resolveCommandPath('uv', ctx)
       if (!uvCommand) {
         throw new Error('uv was not found after installation')
       }
     }
 
     log('Installing Python 3.12 + Marker...')
-    await runCommand(uvCommand, ['tool', 'install', 'marker-pdf', '--python', '3.12'], 'uv tool install marker-pdf')
+    await runCommand(uvCommand, ['tool', 'install', 'marker-pdf', '--python', '3.12'], 'uv tool install marker-pdf', ctx)
 
-    if (!(await commandExists('marker_single'))) {
+    if (!(await commandExists('marker_single', ctx))) {
       throw new Error('marker_single was not found after installing marker-pdf')
     }
   }
 
-  async convert(filePath: string): Promise<ConversionResult> {
-    const markerCommand = await resolveCommandPath('marker_single')
+  async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    const markerCommand = await resolveCommandPath('marker_single', ctx)
     if (!markerCommand) {
       throw new Error('marker_single is not available')
     }
 
-    const outputDir = await mkdtemp(join(tmpdir(), 'coral-kb-pdf-'))
+    const outputDir = await createPdfOutputDir(ctx)
 
     try {
-      await runCommand(markerCommand, [filePath, '--output_dir', outputDir], 'marker_single')
+      await runCommand(markerCommand, [filePath, '--output_dir', outputDir], 'marker_single', ctx)
       const markdownPath = await findFirstMarkdownFile(outputDir)
       if (!markdownPath) {
         throw new Error('marker_single did not produce a markdown file')

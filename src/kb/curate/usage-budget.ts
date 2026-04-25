@@ -1,29 +1,40 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { RuntimeStoragePort } from '../../runtime/ports.js';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
 
-function defaultHomeDir(): string | undefined {
-  return process.env.HOME ?? process.env.USERPROFILE;
-}
+export type UsageBudgetStorage = Pick<RuntimeStoragePort, 'readFileSync'>;
 
-export function isUsageBudgetExhausted(homeDir = defaultHomeDir()): boolean {
+export type UsageBudgetOptions = {
+  homeDir?: string;
+  now?: () => number;
+  storage?: UsageBudgetStorage;
+};
+
+const nodeStorage: UsageBudgetStorage = { readFileSync };
+
+export function isUsageBudgetExhausted({
+  homeDir,
+  now = Date.now,
+  storage = nodeStorage,
+}: UsageBudgetOptions = {}): boolean {
   if (homeDir === undefined) {
     return false;
   }
 
   try {
     const cachePath = join(homeDir, '.claude', 'hud', '.coral-cache.json');
-    const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
+    const raw = JSON.parse(storage.readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
     const entry = raw.claude as
       | { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean }
       | undefined;
     if (!entry?.ts || !entry.data || entry.error) {
       return false;
     }
-    if (Date.now() - entry.ts > USAGE_CACHE_STALE_MS) {
+    if (now() - entry.ts > USAGE_CACHE_STALE_MS) {
       return false;
     }
     const { fiveHour, weekly } = entry.data;

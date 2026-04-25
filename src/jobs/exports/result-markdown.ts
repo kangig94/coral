@@ -21,13 +21,13 @@ export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadC
     .get(jobId) as Pick<EventsRow, 'type' | 'body' | 'body_version' | 'stream_kind' | 'stream_id'> | undefined;
   const body = event ? decodeBody(event, jobTerminalRecordedBodySchema, ctx) : null;
 
-  const content = body?.content?.trimEnd();
+  const content = body?.terminal.content.trimEnd();
   if (content && content.length > 0) {
     return `${content}\n`;
   }
 
-  if (body?.outcome) {
-    return `${describeTerminalOutcome(body.outcome)}\n`;
+  if (body?.terminal.outcome) {
+    return `${describeTerminalOutcome(body.terminal.outcome)}\n`;
   }
 
   return '';

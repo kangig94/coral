@@ -13,7 +13,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
-import { buildWorkflowPlan, replacePlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
+import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { appendWorkflowEvents } from '#src/workflow/projections.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/command.js';
@@ -57,12 +57,8 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
 }
 
 function createWorkflowPlan(): WorkflowPlan {
-  const basePlan = buildWorkflowPlan('workflow-1', parseExpression('architect'), {
-    createJobId: () => 'atom-1',
+  return buildWorkflowPlan('workflow-1', parseExpression('architect'), {
     defaultProvider: 'codex',
-  });
-  return replacePlanSlot(basePlan, basePlan.slots[0].slotId, {
-    continuityRef: 'session-atom-1',
   });
 }
 
@@ -77,6 +73,7 @@ function createHarness(options: {
   const runtime = new SimulationRuntime();
   const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
+  const atomJobId = plan.slots[0].slotId;
   appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)]);
 
   progressStore.initJob({
@@ -91,7 +88,7 @@ function createHarness(options: {
 
   if (options.atomPhase !== null) {
     progressStore.initJob({
-      jobId: plan.slots[0].jobId,
+      jobId: atomJobId,
       sessionId: 'session-atom-1',
       provider: 'codex',
       projectRoot: PROJECT_ROOT,
@@ -104,9 +101,9 @@ function createHarness(options: {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id, phase, session_id, provider, project_root, backend_namespace,
-         job_kind, created_at, last_seq
+         job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
 	       )
-	       VALUES (?, ?, ?, ?, ?, ?, 'provider', '2026-04-20T00:00:00.000Z', ?)
+	       VALUES (?, ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
 	       ON CONFLICT(job_id) DO UPDATE SET
 	         phase = excluded.phase,
 	         session_id = excluded.session_id,
@@ -114,15 +111,19 @@ function createHarness(options: {
 	         project_root = excluded.project_root,
 	         backend_namespace = excluded.backend_namespace,
 	         job_kind = excluded.job_kind,
+	         parent_workflow_job_id = excluded.parent_workflow_job_id,
+	         workflow_slot = excluded.workflow_slot,
 	         created_at = excluded.created_at,
 	         last_seq = excluded.last_seq`,
     ).run(
-      plan.slots[0].jobId,
+      atomJobId,
       options.projectionPhase,
       'session-atom-1',
       'codex',
       PROJECT_ROOT,
       BACKEND_NAMESPACE,
+      plan.workflowId,
+      plan.slots[0].slotId,
       options.projectionLastSeq ?? 7,
     );
   }
@@ -176,7 +177,7 @@ describe('workflow recovery branch rules (AC4)', () => {
       expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: ['atom-1'],
+        jobIds: [harness.plan.slots[0].slotId],
         timeoutSeconds: 1,
         cursor: { afterSeq: 17 },
       });
@@ -200,7 +201,7 @@ describe('workflow recovery branch rules (AC4)', () => {
       expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: ['atom-1'],
+        jobIds: [harness.plan.slots[0].slotId],
         timeoutSeconds: 1,
         cursor: { afterSeq: 23 },
       });
@@ -225,12 +226,12 @@ describe('workflow recovery branch rules (AC4)', () => {
         'codex',
         'architect',
         expect.objectContaining({
-          jobId: 'atom-1',
+          jobId: harness.plan.slots[0].slotId,
           workflowSlotId: harness.plan.slots[0].slotId,
         }),
         harness.createInvocationContext(PROJECT_ROOT),
       );
-      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith('atom-1', expect.any(Number));
+      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
     } finally {
       harness.db.close();

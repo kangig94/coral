@@ -89,15 +89,18 @@ describe('jobs queries', () => {
         refs: { sessionId: 'session-completed' },
         bodyVersion: 1,
         body: {
-          outcome: { kind: 'completed' },
-          durationMs: 3210,
-          content: 'done',
-          exitCode: 0,
-          warnings: ['soft warning'],
-          usage: {
-            inputTokens: 12,
-            outputTokens: 34,
-            costUsd: 0.56,
+          terminal: {
+            outcome: { kind: 'completed' },
+            durationMs: 3210,
+            content: 'done',
+          },
+          diagnostics: {
+            warnings: ['soft warning'],
+            usage: {
+              inputTokens: 12,
+              outputTokens: 34,
+              costUsd: 0.56,
+            },
           },
           continuity: {
             conversationRef: 'thread-completed',

@@ -20,6 +20,7 @@ export type WaitForAtomsOptions = {
   workDir?: string;
   onProgress: (message: string) => void;
   completedStepDetails?: StepDetail[];
+  workflowJobId?: string;
   initialState?: Partial<WaitInternalState>;
   onAtomTerminal?: (state: WaitInternalState) => void;
   onStaleSwap?: (state: WaitInternalState) => void;
@@ -35,6 +36,7 @@ export type WaitStaleRecoveryHandler = (
     signal?: AbortSignal;
     staleTimeoutMs: number;
     workDir?: string;
+    workflowJobId?: string;
     onProgress: (message: string) => void;
     buildPartialStepDetails: () => StepDetail[];
   },
@@ -232,6 +234,7 @@ export async function awaitWaitCycle(
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
       workDir: options.workDir,
+      workflowJobId: options.workflowJobId,
       onProgress: options.onProgress,
       buildPartialStepDetails: buildPartialStepDetailsForCycle,
     });

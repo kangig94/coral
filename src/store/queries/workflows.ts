@@ -189,20 +189,11 @@ function selectChildRowsBySlot(
   plan: WorkflowPlan,
   rows: readonly WorkflowChildJobRow[],
 ): Map<string, WorkflowChildJobRow> {
-  const slotsById = new Map(plan.slots.map((slot) => [slot.slotId, slot]));
+  const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
   const selected = new Map<string, WorkflowChildJobRow>();
 
   for (const row of rows) {
-    const slot = slotsById.get(row.workflow_slot);
-    if (!slot) continue;
-
-    const current = selected.get(row.workflow_slot);
-    if (!current) {
-      selected.set(row.workflow_slot, row);
-      continue;
-    }
-
-    if (row.job_id === slot.jobId && current.job_id !== slot.jobId) {
+    if (slotIds.has(row.workflow_slot) && !selected.has(row.workflow_slot)) {
       selected.set(row.workflow_slot, row);
     }
   }

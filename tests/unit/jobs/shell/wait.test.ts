@@ -143,6 +143,11 @@ function createService(
     backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
+    subscribeJobEvents?: (options: {
+      afterSeq: number;
+      jobIds: readonly string[];
+      abortSignal?: AbortSignal;
+    }) => AsyncIterable<JobProgress>;
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
@@ -201,7 +206,7 @@ function createService(
     sessionLookup: createSessionLookup(runtime),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
-    subscribeJobEvents,
+      subscribeJobEvents: options.subscribeJobEvents ?? subscribeJobEvents,
     getCurrentJournalSeq,
   });
 }
@@ -886,6 +891,54 @@ describe('ExecutionService wait', () => {
     });
     expect(_existsSync(resultPath)).toBe(true);
     expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
+  });
+
+  it('waitStream polls durable journal catch-up when live notifications are missed', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse('2026-03-06T00:00:00.000Z'));
+      const silentSubscribe = async function* ({
+        abortSignal,
+      }: {
+        afterSeq: number;
+        jobIds: readonly string[];
+        abortSignal?: AbortSignal;
+      }): AsyncIterable<JobProgress> {
+        await new Promise<void>((resolve) => {
+          if (abortSignal?.aborted) {
+            resolve();
+            return;
+          }
+          abortSignal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const service = createService(ctx, { subscribeJobEvents: silentSubscribe });
+      const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+      const iterator = service
+        .waitStream({ jobIds: [jobId], timeoutSeconds: 1 })
+        [Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      progressStore.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'terminal',
+          jobId,
+          seq: expect.any(Number),
+          remainingJobIds: [],
+          resultPath: jobResultPath(jobId),
+          result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
+          continuity: null,
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('waitStream does not synthesize terminal events from terminal status without Journal evidence', async () => {

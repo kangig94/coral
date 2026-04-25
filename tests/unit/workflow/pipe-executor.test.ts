@@ -6,7 +6,7 @@ import { parseExpression } from '#src/workflow/parser.js';
 import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
 import { WorkflowExecutionError, formatStepOutput, toSessionHandles, type LaunchedAtom, type WorkflowExecutionPort } from '#src/workflow/command.js';
-import type { PlanSlot } from '#src/workflow/plan.js';
+import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/recover.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
 
@@ -95,16 +95,19 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
   };
 }
 
-function planSlot(overrides: Partial<PlanSlot> = {}): PlanSlot {
+function planSlot(overrides: Partial<CompiledPlanSlot> = {}): CompiledPlanSlot {
   return {
     slotId: 'workflow-1:0:0',
+    dependencies: [],
     jobId: 'planned-job-1',
     stepIndex: 0,
     tagName: 'architect',
     atomKey: '0:0',
     label: 'architect',
+    kind: 'agent',
     provider: 'codex',
     instruction: 'architect',
+    agent: 'architect',
     ...overrides,
   };
 }
@@ -560,6 +563,7 @@ describe('workflow pipe executor', () => {
       const result = await executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         staleTimeoutMs: 1,
         staleCheckIntervalMs: 1,
+        workflowJobId: 'workflow-1',
       });
 
       expect(result.finalOutput).toBe('DONE');
@@ -569,6 +573,8 @@ describe('workflow pipe executor', () => {
           sessionId: 'session-1',
           prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
           cwd: ctx.projectRoot,
+          parentWorkflowJobId: 'workflow-1',
+          workflowSlotId: 'workflow-1:0:0',
         },
         ctx,
       );

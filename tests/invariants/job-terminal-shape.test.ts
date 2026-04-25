@@ -34,12 +34,17 @@ describe('job terminal shape invariant', () => {
     const content = readFileSync(RESULT_PATH, 'utf-8');
     const diagnosticsMatch = content.match(/export interface JobTerminalDiagnostics \{(?<body>[\s\S]*?)\n\}/);
     const diagnosticsSchemaMatch = content.match(
-      /export const jobDiagnosticsSchema = z\s+\.object\(\{(?<body>[\s\S]*?)\n\s{2}\}\)\s+\.strict\(\);/,
+      /export const jobTerminalDiagnosticsSchema = z\s+\.object\(\{(?<body>[\s\S]*?)\n\s{2}\}\)\s+\.strict\(\);/,
+    );
+    const aggregateDiagnosticsSchemaMatch = content.match(
+      /export const jobDiagnosticsSchema = jobTerminalDiagnosticsSchema\s+\.extend\(\{(?<body>[\s\S]*?)\n\s{2}\}\)\s+\.strict\(\);/,
     );
     expect(diagnosticsMatch).not.toBeNull();
     expect(diagnosticsSchemaMatch).not.toBeNull();
+    expect(aggregateDiagnosticsSchemaMatch).not.toBeNull();
     expect(diagnosticsMatch?.groups?.body ?? '').not.toContain('workflow');
     expect(diagnosticsSchemaMatch?.groups?.body ?? '').not.toContain('workflow');
+    expect(aggregateDiagnosticsSchemaMatch?.groups?.body ?? '').not.toContain('workflow');
   });
 
   it('does not read terminal metadata from JobTerminal instances in the jobs layer', () => {

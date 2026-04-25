@@ -18,7 +18,7 @@ import {
   workflowPlanRevisedEvent,
   workflowRegistry,
 } from '#src/workflow/events.js';
-import { buildWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
+import { buildWorkflowPlan, compileWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/store/queries/workflows.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
@@ -37,16 +37,10 @@ describe('workflow reducer equivalence (AC4)', () => {
       const upcasters = createEmptyRegistry();
 
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
-        createJobId: (() => {
-          const ids = ['job-1', 'job-2'];
-          let index = 0;
-          return () => ids[index++] ?? `job-${index}`;
-        })(),
         defaultProvider: 'codex',
       });
       const revisedPlan = replacePlanSlot(declaredPlan, declaredPlan.slots[1].slotId, {
-        jobId: 'job-2b',
-        continuityRef: 'session-2b',
+        provider: 'claude',
       });
 
       const appended = appendEvents(
@@ -109,12 +103,13 @@ describe('workflow reducer equivalence (AC4)', () => {
       const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const upcasters = createEmptyRegistry();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
-        createJobId: (() => {
-          const ids = ['job-1', 'job-2'];
-          let index = 0;
-          return () => ids[index++] ?? `job-${index}`;
-        })(),
         defaultProvider: 'codex',
+      });
+      const plannedSlots = compileWorkflowPlan(plan, {
+        jobIds: new Map([
+          [plan.slots[0].slotId, 'job-1'],
+          [plan.slots[1].slotId, 'job-2'],
+        ]),
       });
       const causeRef = { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 };
 
@@ -122,7 +117,7 @@ describe('workflow reducer equivalence (AC4)', () => {
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', plan),
-          ...plan.slots.map((slot) => ({
+          ...plannedSlots.map((slot) => ({
             type: 'job.launch.requested' as const,
             stream: { kind: 'job' as const, id: slot.jobId },
             refs: { sessionId: `session-${slot.jobId}`, parentJobId: plan.workflowId, workflowSlotId: slot.slotId },
@@ -151,9 +146,11 @@ describe('workflow reducer equivalence (AC4)', () => {
             refs: { sessionId: 'session-job-1', parentJobId: plan.workflowId, workflowSlotId: plan.slots[0].slotId },
             bodyVersion: 1,
             body: {
-              outcome: { kind: 'completed' as const },
-              durationMs: 1,
-              content: 'done',
+              terminal: {
+                outcome: { kind: 'completed' as const },
+                durationMs: 1,
+                content: 'done',
+              },
             },
           },
           {
@@ -162,9 +159,11 @@ describe('workflow reducer equivalence (AC4)', () => {
             refs: { sessionId: 'session-job-2', parentJobId: plan.workflowId, workflowSlotId: plan.slots[1].slotId },
             bodyVersion: 1,
             body: {
-              outcome: { kind: 'failed' as const, causeRef },
-              durationMs: 2,
-              content: '',
+              terminal: {
+                outcome: { kind: 'failed' as const, causeRef },
+                durationMs: 2,
+                content: '',
+              },
             },
           },
           workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef }),

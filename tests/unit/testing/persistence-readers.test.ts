@@ -268,9 +268,11 @@ describe('readProgressLog', () => {
         {
           type: 'job.terminal.recorded',
           body: {
-            outcome: { kind: 'completed' },
-            durationMs: 1,
-            content: 'done',
+            terminal: {
+              outcome: { kind: 'completed' },
+              durationMs: 1,
+              content: 'done',
+            },
           },
         },
       ],

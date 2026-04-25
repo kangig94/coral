@@ -141,11 +141,11 @@ describe('wait SSE reconnect', () => {
           refs: { sessionId },
           bodyVersion: 1,
           body: {
-            outcome: { kind: 'completed' },
-            durationMs: 12,
-            content: 'done',
-            exitCode: 0,
-            signal: null,
+            terminal: {
+              outcome: { kind: 'completed' },
+              durationMs: 12,
+              content: 'done',
+            },
           },
         },
       ]);
@@ -317,9 +317,11 @@ describe('wait SSE reconnect', () => {
           refs: { sessionId },
           bodyVersion: 1,
           body: {
-            outcome: { kind: 'completed' },
-            durationMs: 4,
-            content: 'done-after-race',
+            terminal: {
+              outcome: { kind: 'completed' },
+              durationMs: 4,
+              content: 'done-after-race',
+            },
           },
         },
       ]);

@@ -171,8 +171,8 @@ bridge/manifest.json                           -> backend bundle hash + build fl
 ~/.coral/run*/coordinator.json                 -> active coordinator discovery record
 ~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock
 projection_sessions in store.db                -> projected provider session continuity and scope
+projection_discuss in store.db                 -> projected discuss snapshots and source indexes
 <os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
-~/.coral/projects/<source-slug>/discuss/       -> discuss storage
 ~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
 ~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging

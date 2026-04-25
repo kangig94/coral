@@ -99,11 +99,11 @@ describe('jobs reducer equivalence (AC1)', () => {
             refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: {
-              outcome: { kind: 'provider_exit', code: 17, note: 'forced timeout' },
-              durationMs: 3210,
-              content: 'partial output',
-              exitCode: 17,
-              note: 'forced timeout',
+              terminal: {
+                outcome: { kind: 'provider_exit', code: 17, note: 'forced timeout' },
+                durationMs: 3210,
+                content: 'partial output',
+              },
             },
           },
         ],

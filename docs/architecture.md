@@ -123,9 +123,9 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 ### Workflow
 
 1. `coral-cli workflow ...` posts to `POST /workflow`
-2. The workflow domain compiles the DSL into a plan (parse → normalize → AST)
+2. The workflow domain compiles the DSL into a semantic plan (slot id, dependencies, provider, instruction, optional agent)
 3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
-4. Workflow state is persisted as Journal events with a projection row per workflow; `coral-cli wait` reads the same job store
+4. Workflow state is persisted as Journal events with a projection row per workflow; child job identity is derived from `parentWorkflowJobId` + `workflowSlotId`, not stored in the plan; `coral-cli wait` reads the same job store
 
 ### Discuss and KB
 
@@ -206,8 +206,8 @@ Shared / infra layer
 | `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 | `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db` | Journal authority and projection tables |
 | `projection_sessions` in `store.db` | Projected provider sessions, continuation profiles, and project `scope_key` |
+| `projection_discuss` in `store.db` | Projected discuss snapshots and source-scoped discovery/summary state |
 | `<os-tmpdir>/coral-jobs/<jobId>/` | Job runtime scratch dir; `result.md` remains the durable wait/follow artifact |
-| `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
 | `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
@@ -225,6 +225,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 - `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
 Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
+`job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
 
 CLI wait output surfaces the outcome through five exhaustive headers:
 

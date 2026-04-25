@@ -1,6 +1,7 @@
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobProgress, JobTerminal } from '../records.js';
+import { normalizeJobTerminal } from '../result.js';
 
 export type JobEvent = JobProgress;
 
@@ -45,10 +46,8 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
   }
 
   const body = event.body as {
-    content?: string;
-    durationMs?: number;
+    terminal: JobTerminal;
     continuity?: JobContinuitySnapshot | null;
-    outcome: JobTerminal['outcome'];
   };
 
   return {
@@ -57,11 +56,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     seq: event.seq,
     type: 'terminal',
     ts: event.ts,
-    result: {
-      content: body.content ?? '',
-      durationMs: body.durationMs ?? 0,
-      outcome: body.outcome,
-    },
+    result: normalizeJobTerminal(body.terminal),
     continuity: body.continuity ?? null,
   };
 }

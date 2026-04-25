@@ -14,9 +14,9 @@ import {
   type WorkflowExecutionPort,
 } from './command.js';
 import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
-import { workflowCompletedEvent, workflowDrainEnteredEvent, workflowPlanDeclaredEvent, workflowPlanRevisedEvent } from './events.js';
+import { workflowCompletedEvent, workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
 import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
-import { buildWorkflowPlan, type WorkflowPlan } from './plan.js';
+import { buildWorkflowPlan, maxStepIndex, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
@@ -38,38 +38,6 @@ type FinalizedStep = {
   stepDetails: StepDetail[];
   stepPrompt: string;
 };
-
-function applyPlanRevision(
-  plan: WorkflowPlan,
-  nextAtoms: readonly LaunchedAtom[],
-): WorkflowPlan {
-  const replacements = new Map(nextAtoms.map((atom) => [atom.slotId, atom]));
-  if (replacements.size === 0) return plan;
-
-  return {
-    workflowId: plan.workflowId,
-    slots: plan.slots.map((slot) => {
-      const atom = replacements.get(slot.slotId);
-      if (!atom) return slot;
-      return {
-        ...slot,
-        jobId: atom.jobId,
-        continuityRef: atom.sessionId,
-      };
-    }),
-  };
-}
-
-function maybeAppendPlanRevised(
-  workflowId: string | undefined,
-  previousPlan: WorkflowPlan,
-  nextPlan: WorkflowPlan,
-  journal?: WorkflowJournal,
-): void {
-  if (!workflowId || !journal) return;
-  if (JSON.stringify(previousPlan) === JSON.stringify(nextPlan)) return;
-  journal.append([workflowPlanRevisedEvent(workflowId, nextPlan)]);
-}
 
 function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<string, string>): string {
   const output = results.get(atom.atomKey);
@@ -94,6 +62,7 @@ async function drainLaunchedAtoms(
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
     workDir?: string;
+    workflowJobId?: string;
     onProgress: (message: string) => void;
   },
 ): Promise<StepDetail[]> {
@@ -109,6 +78,7 @@ async function drainLaunchedAtoms(
       workDir: options.workDir,
       onProgress: options.onProgress,
       completedStepDetails: [],
+      workflowJobId: options.workflowJobId,
       recoverStaleAtom,
     });
     return buildStepDetailsForAtoms(launchedAtoms, results);
@@ -121,7 +91,6 @@ async function drainLaunchedAtoms(
 }
 
 async function awaitLaunchedStepResults(
-  plan: WorkflowPlan,
   launchedAtoms: LaunchedAtom[],
   stepIndex: number,
   executionSvc: WorkflowExecutionPort,
@@ -135,10 +104,8 @@ async function awaitLaunchedStepResults(
     completedStepDetails: StepDetail[];
     workflowJobId?: string;
     journal?: WorkflowJournal;
-    onPlanChange: (nextPlan: WorkflowPlan) => void;
   },
 ): Promise<Map<string, string>> {
-  let workingPlan = plan;
   try {
     return await waitForAtoms(launchedAtoms, executionSvc, ctx, {
       signal: options.signal,
@@ -147,6 +114,7 @@ async function awaitLaunchedStepResults(
       workDir: options.workDir,
       onProgress: options.onProgress,
       completedStepDetails: options.completedStepDetails,
+      workflowJobId: options.workflowJobId,
       recoverStaleAtom,
       onFailureDrain: (_state, failure) => {
         if (!options.workflowJobId || !options.journal || !failure.failedSlotId) return;
@@ -156,15 +124,6 @@ async function awaitLaunchedStepResults(
             drainDeadline: Date.now() + 15_000,
           }),
         ]);
-      },
-      onStaleSwap: (state) => {
-        const previousPlan = workingPlan;
-        const nextPlan = applyPlanRevision(workingPlan, state.atoms);
-        if (nextPlan !== previousPlan) {
-          options.onPlanChange(nextPlan);
-          workingPlan = nextPlan;
-          maybeAppendPlanRevised(options.workflowJobId, previousPlan, nextPlan, options.journal);
-        }
       },
     });
   } catch (error) {
@@ -201,13 +160,13 @@ export async function executePlannedSteps(
 ): Promise<PipelineResult & { plan: WorkflowPlan }> {
   const stepDetails: StepDetail[] = [...(options.completedStepDetails ?? [])];
   let stepPrompt = initialPrompt;
-  let workingPlan = plan;
+  const workingPlan = plan;
   const allLaunchedAtoms: LaunchedAtom[] = [];
-  const maxStepIndex = workingPlan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
+  const finalStepIndex = maxStepIndex(workingPlan);
   const startStepIndex = options.startStepIndex ?? 0;
 
   try {
-    for (let stepIndex = startStepIndex; stepIndex <= maxStepIndex; stepIndex += 1) {
+    for (let stepIndex = startStepIndex; stepIndex <= finalStepIndex; stepIndex += 1) {
       options.onProgress(`step ${stepIndex} started`);
 
       const { launchedAtoms, launchError } = await launchStepAtoms(
@@ -222,10 +181,6 @@ export async function executePlannedSteps(
           signal: options.signal,
           workflowJobId: options.workflowJobId,
           completedStepDetails: stepDetails,
-          onPlanChange: (nextPlan) => {
-            maybeAppendPlanRevised(options.workflowJobId, workingPlan, nextPlan, options.journal);
-            workingPlan = nextPlan;
-          },
         },
       );
       allLaunchedAtoms.push(...launchedAtoms);
@@ -239,12 +194,13 @@ export async function executePlannedSteps(
               staleTimeoutMs: options.staleTimeoutMs,
               staleCheckIntervalMs: options.staleCheckIntervalMs,
               workDir: options.workDir,
+              workflowJobId: options.workflowJobId,
               onProgress: options.onProgress,
             }),
         });
       }
 
-      const stepResults = await awaitLaunchedStepResults(workingPlan, launchedAtoms, stepIndex, executionSvc, ctx, {
+      const stepResults = await awaitLaunchedStepResults(launchedAtoms, stepIndex, executionSvc, ctx, {
         signal: options.signal,
         staleTimeoutMs: options.staleTimeoutMs,
         staleCheckIntervalMs: options.staleCheckIntervalMs,
@@ -253,9 +209,6 @@ export async function executePlannedSteps(
         completedStepDetails: stepDetails,
         workflowJobId: options.workflowJobId,
         journal: options.journal,
-        onPlanChange: (nextPlan) => {
-          workingPlan = nextPlan;
-        },
       });
       const completedStep = finalizeStep(stepIndex, launchedAtoms, stepResults);
       stepDetails.push(...completedStep.stepDetails);
@@ -290,7 +243,6 @@ export async function executePipeline(
     staleCheckIntervalMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
-    createJobId?: () => string;
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
@@ -298,7 +250,6 @@ export async function executePipeline(
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const workflowId = options.workflowJobId ?? randomUUID();
   const plan = buildWorkflowPlan(workflowId, ast, {
-    createJobId: options.createJobId,
     defaultProvider: defaultProviderName,
   });
 

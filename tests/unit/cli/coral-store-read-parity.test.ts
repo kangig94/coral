@@ -247,4 +247,46 @@ describe('cli coral-store read parity', () => {
       warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
   });
+
+  it('resolves direct-read kb read root from plugin flavor when CORAL_KB_PATH is unset', async () => {
+    const devPluginRoot = join(tempHome, 'dev-plugin');
+    const devKbRoot = join(tempHome, '.coral', 'kb-dev');
+    const prodKbRoot = join(tempHome, '.coral', 'kb');
+
+    mkdirSync(join(devPluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(devPluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'dev-test', flavor: 'dev' }),
+      'utf8',
+    );
+
+    writeKbFixtures(devKbRoot);
+    mkdirSync(join(prodKbRoot, 'notes'), { recursive: true });
+    writeFileSync(
+      join(prodKbRoot, 'notes', 'coral-kb-mode.md'),
+      `---
+tags: [prod]
+principles: []
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-21T00:00:00.000Z
+entrySeq: 99
+---
+# Production Root
+
+This note must not be read from a dev plugin.
+`,
+      'utf8',
+    );
+
+    delete process.env.CORAL_KB_PATH;
+
+    const { readKnowledgeBaseEntry } = await import('#src/kb/queries.js');
+    const result = readKnowledgeBaseEntry(
+      { note: 'coral-kb-mode' },
+      { projectRoot, pluginRoot: devPluginRoot },
+    );
+
+    expect(result.title).toBe('KB Mode');
+    expect(result.content).toContain('Keep the JSON index authoritative.');
+  });
 });

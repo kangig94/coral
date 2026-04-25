@@ -19,6 +19,10 @@ export type JobTerminalInput = JobTerminal;
 export interface JobTerminalDiagnostics {
   warnings?: string[];
   usage?: UsageSummary;
+  processExit?: {
+    exitCode: number | null;
+    signal: string | null;
+  };
 }
 
 export interface JobDiagnostics extends JobTerminalDiagnostics {
@@ -33,11 +37,23 @@ export const jobTerminalSchema = z
   })
   .strict();
 
-export const jobDiagnosticsSchema = z
+export const jobTerminalDiagnosticsSchema = z
   .object({
-    progressFaults: z.array(jobProgressFaultSchema),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
+    processExit: z
+      .object({
+        exitCode: z.number().nullable(),
+        signal: z.string().nullable(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const jobDiagnosticsSchema = jobTerminalDiagnosticsSchema
+  .extend({
+    progressFaults: z.array(jobProgressFaultSchema),
   })
   .strict();
 

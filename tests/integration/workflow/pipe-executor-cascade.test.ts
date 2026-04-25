@@ -10,7 +10,6 @@ import { ProgressStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { pluginRootNamespace } from '#src/infra/paths.js';
-import { createSessionLookup } from '#src/sessions/lookup.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
@@ -106,7 +105,10 @@ describe('pipe executor coral cascade invariant', () => {
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
-          sessionLookup: createSessionLookup(runtime),
+          sessionLookup: {
+            listSessionRefs: () => [],
+            readSessionEntry: () => null,
+          },
           ...createTestJobJournalDeps(progressStore, runtime),
         },
       );

@@ -92,7 +92,6 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
 export type MaterializedProviderTerminal = {
   terminal: JobTerminalInput;
   diagnostics: JobTerminalDiagnostics;
-  exitCode?: number | null;
 };
 
 export function materializeProviderTerminal(
@@ -113,8 +112,10 @@ export function materializeProviderTerminal(
     diagnostics: {
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
+      ...(terminal.terminal.exitCode === undefined
+        ? {}
+        : { processExit: { exitCode: terminal.terminal.exitCode, signal: null } }),
     },
-    ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
   };
 }
 

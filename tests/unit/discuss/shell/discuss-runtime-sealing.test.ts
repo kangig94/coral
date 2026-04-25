@@ -22,8 +22,9 @@ import { getWatchState, startDiscussSession, submitManualBid } from '#src/discus
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import { knownDiscussSources } from '#src/discuss/shell/session-read-service.js';
-import { DiscussSessionStore, createInMemoryDiscussJournal } from '#src/discuss/shell/session-store.js';
+import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { toJournalInput } from '#src/discuss/store-registry.js';
+import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';

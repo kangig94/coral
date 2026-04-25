@@ -1,7 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
-import { MAX_BUFFER } from '../infra/process-constants.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
@@ -14,13 +13,12 @@ import {
   jobLaunchRejectedSchema,
   jobDomainProgressSchema,
   phaseForOutcome,
-  terminalOutcomeSchema,
   type JobLaunchRejected,
   type JobProgressFault,
 } from './outcome.js';
-import { usageSummarySchema } from '../providers/contract.js';
 import {
   jobDiagnosticsSchema,
+  jobTerminalDiagnosticsSchema,
   jobTerminalSchema,
   normalizeJobTerminal,
   type JobDiagnostics,
@@ -64,15 +62,8 @@ export const jobProgressBodySchema = z.discriminatedUnion('kind', [
 
 export const jobTerminalRecordedBodySchema = z
   .object({
-    outcome: terminalOutcomeSchema,
-    durationMs: z.number(),
-    content: z.string().max(MAX_BUFFER).optional(),
-    exitCode: z.number().nullable().optional(),
-    signal: z.string().nullable().optional(),
-    code: z.number().optional(),
-    note: z.string().optional(),
-    warnings: z.array(z.string()).optional(),
-    usage: usageSummarySchema.optional(),
+    terminal: jobTerminalSchema,
+    diagnostics: jobTerminalDiagnosticsSchema.optional(),
     continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .strict();
@@ -120,20 +111,19 @@ function emptyDiagnostics(): JobDiagnostics {
 }
 
 function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagnostics {
-  return {
-    ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
-    ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
-  };
+  return body.diagnostics ?? {};
 }
 
 function mergeDiagnostics(
   current: JobDiagnostics | undefined,
   patch: JobTerminalDiagnostics,
 ): JobDiagnostics {
+  const processExit = patch.processExit ?? current?.processExit;
   return {
     progressFaults: [...(current?.progressFaults ?? [])],
     ...(patch.warnings === undefined ? {} : { warnings: [...patch.warnings] }),
     ...(patch.usage === undefined ? {} : { usage: { ...patch.usage } }),
+    ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
   };
 }
 
@@ -328,6 +318,9 @@ function reducerForProgress(): Reducer<JobProgressBody> {
       progressFaults: [...(previous?.diagnostics.progressFaults ?? []), event.body as JobProgressFault],
       ...(previous?.diagnostics.warnings === undefined ? {} : { warnings: [...previous.diagnostics.warnings] }),
       ...(previous?.diagnostics.usage === undefined ? {} : { usage: { ...previous.diagnostics.usage } }),
+      ...(previous?.diagnostics.processExit === undefined
+        ? {}
+        : { processExit: { ...previous.diagnostics.processExit } }),
     };
 
     upsertProjectionJob(db, event, { diagnostics });
@@ -337,14 +330,10 @@ function reducerForProgress(): Reducer<JobProgressBody> {
 function reducerForTerminal(): Reducer<JobTerminaledBody> {
   return (db, event) => {
     const previous = readProjectionJob(db, event.stream.id);
-    const terminal = normalizeJobTerminal({
-      content: event.body.content ?? '',
-      outcome: event.body.outcome,
-      durationMs: event.body.durationMs,
-    });
+    const terminal = normalizeJobTerminal(event.body.terminal);
     const diagnostics = mergeDiagnostics(previous?.diagnostics, terminalDiagnosticsFromBody(event.body));
     upsertProjectionJob(db, event, {
-      phase: phaseForOutcome(event.body.outcome),
+      phase: phaseForOutcome(event.body.terminal.outcome),
       terminal,
       diagnostics,
     });

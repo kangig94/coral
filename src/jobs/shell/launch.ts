@@ -606,7 +606,6 @@ export class LaunchOrchestrator {
     this.writeJobTerminal(jobId, sessionId, materialized.terminal, phase, {
       continuity,
       diagnostics: materialized.diagnostics,
-      ...(materialized.exitCode === undefined ? {} : { exitCode: materialized.exitCode }),
     });
   }
 

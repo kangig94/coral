@@ -252,7 +252,11 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
-    if (isUsageBudgetExhausted()) {
+    if (isUsageBudgetExhausted({
+      homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
+      now: Date.now,
+      storage: storagePort,
+    })) {
       return;
     }
     const runController = new AbortController();

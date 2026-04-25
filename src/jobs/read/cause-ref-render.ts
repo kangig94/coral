@@ -60,11 +60,13 @@ function extractCauseRef(event: CoralEvent): CauseRef | null {
     return direct;
   }
 
-  if (!isRecord(event.body.outcome)) {
+  if (!isRecord(event.body.terminal) || !isRecord(event.body.terminal.outcome)) {
     return null;
   }
 
-  return event.body.outcome.kind === 'failed' ? parseCauseRef(event.body.outcome.causeRef) : null;
+  return event.body.terminal.outcome.kind === 'failed'
+    ? parseCauseRef(event.body.terminal.outcome.causeRef)
+    : null;
 }
 
 function ensureSentence(text: string): string {
@@ -115,8 +117,8 @@ function describeEvent(event: CoralEvent): string {
       }
       return describeJobProgressFault(event.body as Parameters<typeof describeJobProgressFault>[0]);
     case 'job:job.terminal.recorded':
-      return isRecord(event.body) && isRecord(event.body.outcome)
-        ? describeTerminalOutcome(event.body.outcome as Parameters<typeof describeTerminalOutcome>[0], {
+      return isRecord(event.body) && isRecord(event.body.terminal) && isRecord(event.body.terminal.outcome)
+        ? describeTerminalOutcome(event.body.terminal.outcome as Parameters<typeof describeTerminalOutcome>[0], {
             describeCauseRef: (ref) => `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`,
           })
         : 'Job terminal recorded.';

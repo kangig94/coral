@@ -93,14 +93,17 @@ describe('describeCauseRef (AC8)', () => {
         type: 'job.terminal.recorded',
         stream: { kind: 'job', id: 'job-1' },
         body: {
-          outcome: {
-            kind: 'failed',
-            causeRef: {
-              stream: { kind: 'session', id: 'session-1' },
-              seq: 3,
+          terminal: {
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: { kind: 'session', id: 'session-1' },
+                seq: 3,
+              },
             },
+            content: '',
+            durationMs: 500,
           },
-          durationMs: 500,
         },
       });
 
@@ -186,14 +189,17 @@ describe('describeCauseRef (AC8)', () => {
         type: 'job.terminal.recorded',
         stream: { kind: 'job', id: 'job-missing-link' },
         body: {
-          outcome: {
-            kind: 'failed',
-            causeRef: {
-              stream: { kind: 'session', id: 'session-missing-link' },
-              seq: 2,
+          terminal: {
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: { kind: 'session', id: 'session-missing-link' },
+                seq: 2,
+              },
             },
+            content: '',
+            durationMs: 10,
           },
-          durationMs: 10,
         },
       });
 

@@ -327,9 +327,11 @@ function appendTerminalEvent(
     refs: { jobId: overrides.jobId, sessionId: overrides.sessionId },
     bodyVersion: 1,
     body: {
-      outcome: overrides.outcome,
-      durationMs: 0,
-      content: overrides.content ?? '',
+      terminal: {
+        outcome: overrides.outcome,
+        durationMs: 0,
+        content: overrides.content ?? '',
+      },
     },
   });
 }

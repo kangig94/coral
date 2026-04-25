@@ -505,9 +505,10 @@ export class JobStore implements JobProgressStore {
     if (!exit) {
       return null;
     }
+    const processExit = exit.diagnostics.processExit;
     return {
-      exitCode: exit.exitCode ?? null,
-      signal: exit.signal ?? null,
+      exitCode: processExit?.exitCode ?? (exit.outcome.kind === 'provider_exit' ? exit.outcome.code : null),
+      signal: processExit?.signal ?? null,
       endTime: exit.endTime,
     };
   }
@@ -602,20 +603,9 @@ export class JobStore implements JobProgressStore {
       },
       bodyVersion: 1,
       body: {
-        outcome: terminal.outcome,
-        durationMs: terminal.durationMs,
-        content: terminal.content,
-        exitCode: options.exitCode,
-        signal: options.signal,
-        warnings: diagnostics?.warnings,
-        usage: diagnostics?.usage,
+        terminal,
+        diagnostics,
         continuity,
-        ...(terminal.outcome.kind === 'provider_exit'
-          ? {
-              code: terminal.outcome.code,
-              note: terminal.outcome.note,
-            }
-          : {}),
       },
     }]);
     return appended?.seq ?? 0;

@@ -63,12 +63,14 @@ export function adoptOrphanedCrossNamespaceJobs(
         },
         bodyVersion: 1,
         body: {
-          outcome: {
-            kind: 'job_fault',
-            fault: { kind: 'wrapper_lost' },
+          terminal: {
+            outcome: {
+              kind: 'job_fault',
+              fault: { kind: 'wrapper_lost' },
+            },
+            durationMs: 0,
+            content: '',
           },
-          durationMs: 0,
-          content: '',
         },
       });
       adopted += 1;

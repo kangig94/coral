@@ -79,6 +79,12 @@ export async function recoverStaleAtom(
         sessionId: atom.sessionId,
         prompt: STALE_RESUME_PROMPT,
         cwd: options.workDir ?? ctx.projectRoot,
+        ...(options.workflowJobId === undefined
+          ? {}
+          : {
+              parentWorkflowJobId: options.workflowJobId,
+              workflowSlotId: atom.slotId,
+            }),
       },
       ctx,
     );

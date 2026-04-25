@@ -154,9 +154,11 @@ function seedCompletedJob(
           refs: { jobId, sessionId },
           bodyVersion: 1,
           body: {
-            outcome: { kind: 'completed' },
-            durationMs: 0,
-            content: `${jobId}-done`,
+            terminal: {
+              outcome: { kind: 'completed' },
+              durationMs: 0,
+              content: `${jobId}-done`,
+            },
           },
         },
       ],

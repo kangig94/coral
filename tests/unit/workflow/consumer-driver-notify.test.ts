@@ -55,13 +55,10 @@ describe('workflow consumer-driver notify', () => {
           slots: [
             {
               slotId: 'workflow-1:0:0',
-              jobId: 'job-1',
-              stepIndex: 0,
-              tagName: 'architect',
-              atomKey: '0:0',
-              label: 'architect',
+              dependencies: [],
               provider: 'codex',
               instruction: 'architect',
+              agent: 'architect',
             },
           ],
         }),

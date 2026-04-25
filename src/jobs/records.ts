@@ -25,9 +25,7 @@ export type JobKind = 'provider' | 'workflow' | 'kb';
 
 export interface JobExit extends JobTerminal {
   diagnostics: JobDiagnostics;
-  exitCode?: number | null;
   continuity?: JobContinuitySnapshot | null;
-  signal?: string | null;
   endTime: string;
 }
 

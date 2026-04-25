@@ -1,5 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { WorkflowPlan, PlanSlot } from './plan.js';
+import { slotsForStep, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
 import {
   WorkflowExecutionError,
   createWorkflowExecutionError,
@@ -13,7 +13,7 @@ import { describeTerminalFailure } from './command.js';
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 
 type LaunchContext = {
-  slot: PlanSlot;
+  slot: CompiledPlanSlot;
   atomIndex: number;
   stepPrompt: string;
   context?: string;
@@ -23,7 +23,6 @@ type LaunchContext = {
   signal?: AbortSignal;
   completedStepDetails: StepDetail[];
   workflowJobId?: string;
-  onSlotJobChanged?: (slotId: string, nextJobId: string, nextSessionId: string) => void;
 };
 
 type StepLaunchResult = {
@@ -31,8 +30,8 @@ type StepLaunchResult = {
   launchError: unknown | null;
 };
 
-function isPromptSlot(slot: PlanSlot): boolean {
-  return slot.label !== slot.instruction;
+function isPromptSlot(slot: CompiledPlanSlot): boolean {
+  return slot.kind === 'prompt';
 }
 
 export async function readLaunchFailureMessage(
@@ -118,10 +117,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     );
   }
 
-  if (decision.job !== slot.jobId) {
-    context.onSlotJobChanged?.(slot.slotId, decision.job, decision.session);
-  }
-
   return {
     slotId: slot.slotId,
     jobId: decision.job,
@@ -149,13 +144,11 @@ export async function launchStepAtoms(
     signal?: AbortSignal;
     workflowJobId?: string;
     completedStepDetails: StepDetail[];
-    onPlanChange?: (nextPlan: WorkflowPlan) => void;
   },
 ): Promise<StepLaunchResult> {
   const launchedAtoms: LaunchedAtom[] = [];
   let launchError: unknown = null;
-  let nextPlan = plan;
-  const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
+  const stepSlots = slotsForStep(plan, stepIndex);
 
   await Promise.all(
     stepSlots.map(async (slot, atomIndex) => {
@@ -171,16 +164,6 @@ export async function launchStepAtoms(
           signal: options.signal,
           completedStepDetails: options.completedStepDetails,
           workflowJobId: options.workflowJobId,
-          onSlotJobChanged: (slotId, nextJobId, nextSessionId) => {
-            nextPlan = {
-              workflowId: nextPlan.workflowId,
-              slots: nextPlan.slots.map((candidate) =>
-                candidate.slotId === slotId
-                  ? { ...candidate, jobId: nextJobId, continuityRef: nextSessionId }
-                  : candidate,
-              ),
-            };
-          },
         });
         launchedAtoms.push(launched);
       } catch (error) {
@@ -188,10 +171,6 @@ export async function launchStepAtoms(
       }
     }),
   );
-
-  if (nextPlan !== plan) {
-    options.onPlanChange?.(nextPlan);
-  }
 
   launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
   return { launchedAtoms, launchError };
