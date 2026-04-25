@@ -1,8 +1,26 @@
 # Architecture
 
-Coral is a local CLI + coordinator system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
+Coral is a coding-assistant plugin for Claude Code and Codex. Its purpose is to help LLM agents do software work better: plan/review workflows, side-effect and bug discovery, multi-perspective discussion, durable job observation, session continuity, and long-term project memory through KB.
+
+Internally, Coral is a local coding-agent coordination layer. Claude Code reaches Coral through hooks, slash-command skills, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 
 Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
+
+## Design Frame
+
+The product frame is coding assistance. The architecture frame is local coordination. "Control plane" in this document is internal vocabulary: the coordinator owns local decisions, live state, recovery sequencing, and capability activation so Claude/Codex do not have to manage those concerns inside prompts or shell glue.
+
+| Product capability | Internal owner |
+| --- | --- |
+| Plan/review workflow | Workflow plan + jobs execution |
+| Side-effect and bug discovery | Workflow slots, provider jobs, wait/follow |
+| Idea digging and multi-agent review | Discuss domain and shell |
+| Long-term coding memory | KB Corpus authority + retrieval projections |
+| Provider continuity | Sessions authority |
+| Long-running observable work | Jobs authority |
+| Optional sharper retrieval | Coordinator-owned equipment slot |
+
+This frame constrains new code: first name the truth owner, then decide whether the work is direct, durable, or projection freshness, then compose cross-domain behavior only in the coordinator or CLI.
 
 ## Runtime Layout
 
@@ -94,6 +112,20 @@ Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatc
 
 `POST /kb/index` rebuilds KB text artifacts through an internal coordinator-owned `kb.reindex` job and waits for base-search readiness before returning. The job is recorded for recovery and observability, but it is not a provider/session job.
 
+## Work Classification
+
+Not every command becomes a job. Jobs are for work that is long-running, observable, resumable, or recovery-relevant. Immediate reads and small mutations remain direct commands.
+
+| Class | Examples | Surface | Rule |
+| --- | --- | --- | --- |
+| Direct read | `kb search`, `kb read`, `jobs`, `discuss watch` | Return result immediately | No job id; may use `read-model/CoralStore` or KB query helpers. |
+| Direct mutation | KB note/memo write/delete | Return result after authority commit | No durable job unless conversion, readiness, or recovery needs exceed the command. |
+| Provider/session job | `codex`, `claude`, workflow atoms | Return job id; `wait` observes terminal state | User-facing agent work is Journal-observable and recoverable. |
+| Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Used when source conversion, indexing, or readiness can take time. |
+| Projection freshness wait | Orama/Needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness wait is not itself truth; failure reports against the hosting command/job. |
+
+`kb source import` is job-backed because even without Needle it can spend time reading and converting large documents before committing Corpus markdown. With retrieval readiness, it also waits for Orama or Needle consumers. By contrast, KB search/read, note write, memo operations, and principle reads are direct unless a future implementation gives them durable work to recover.
+
 ## Primary Execution Flows
 
 ### Session lifecycle
@@ -149,10 +181,28 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
 | Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
 | Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |
+| Causality | Cross-stream event-reference vocabulary (`CauseRef`) shared below jobs/sessions/workflow without store access. |
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
 | Knowledge base | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers. |
 | Shared / infra | Low-level helpers, settled path resolution, and shared adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
+
+## Ownership Matrix
+
+| Area | Owns truth | May write | May read/compose | Must not own |
+| --- | --- | --- | --- | --- |
+| `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives only | Domain query modules | Product read facade or domain policy |
+| `read-model/` | No truth; composed product reads | Nothing authoritative | Domain read queries + KB reads | Writes or recovery |
+| `jobs/` | Job lifecycle, terminal outcomes, wait/reconcile vocabulary | Job streams/projections through store substrate | Session/workflow refs by typed query/composition | Provider process mechanics or transport |
+| `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
+| `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |
+| `discuss/` | Discuss events, state machine, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle |
+| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Coordinator equipment ownership |
+| `coordinator/` | Live state, startup order, equipment slots, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain facades/contracts | Domain vocabulary |
+| `transport/` | Wire parsing, validation, response mapping | Nothing authoritative | Coordinator ports and domain contracts | Business behavior |
+| `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Backend lifecycle truth |
+| `infra/` / `runtime/` | Low-level path, flavor, I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
+| `causality/` | Cross-stream event-reference vocabulary | Nothing authoritative | Domain event/fault models | Store/database access |
 
 ## Dependency Sketch
 
@@ -193,8 +243,8 @@ KB runtime
   -> Coordinator notify seam
   -> CorpusConsumer freshness / health bridge
 
-Shared / infra layer
-  -> Shared foundation consumed by all layers
+Foundation layer
+  -> Infra/runtime/causality primitives consumed by higher layers
   -> Domain upcasters own read-time body transforms
 ```
 
@@ -213,6 +263,10 @@ Shared / infra layer
 | `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
+
+## Rewrite Policy
+
+The rewrite branch is clean-slate. Legacy module paths, compatibility shims, and fallback aliases are not kept for convenience. If an old path no longer represents the owner, it is deleted and guarded by invariants. When implementation reveals a better owner than the document predicted, update the document and code together rather than preserving a transitional layer.
 
 ## Terminal Outcome Model
 

@@ -2,6 +2,8 @@
 
 A high-level map of what each area of the codebase is for. This document describes stable seams — composition roots, domain facades, and public contracts. Implementation files evolve inside each area without requiring doc updates.
 
+Coral's product identity is a coding-assistant plugin for Claude Code and Codex. Its internal architecture is a local coding-agent coordination layer: the coordinator owns live decisions and recovery, domains own truth vocabulary, transport carries requests, and the CLI is the local operator surface.
+
 ## Composition Roots
 
 | Entry | Bundle | Role |
@@ -25,6 +27,10 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 ## Journal
 
 The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
+
+## Causality
+
+Cross-stream event references live below the domains in `causality/`. `CauseRef` is vocabulary, not storage: domains can point at originating Journal events without importing `store/`, database handles, or each other's shells.
 
 ## Domains
 
@@ -51,6 +57,20 @@ The KB domain owns the Corpus markdown authority, text and vector search contrac
 
 The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional equipment CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
+## Work Classes
+
+Jobs are not an async wrapper for every command. They are durable work ledgers for long-running, observable, or recovery-relevant attempts.
+
+| Class | Examples | Owner |
+| --- | --- | --- |
+| Direct read | KB search/read, `jobs`, discuss watch | Read model or KB query helpers |
+| Direct mutation | KB note/memo write/delete | KB Corpus mutation lock |
+| Provider/session job | Codex/Claude launches, workflow atoms | Jobs + sessions + provider adapters |
+| Internal coordinator job | KB source import, KB reindex | Coordinator service over jobs + KB |
+| Projection freshness | Orama/Needle catch-up | ConsumerDriver cursor wait |
+
+Projection freshness is not authority. A Corpus commit remains durable even if a retrieval consumer fails to catch up; callers that requested readiness observe that failure through the hosting command or job.
+
 ## Coordinator
 
 The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
@@ -60,6 +80,23 @@ Workflow plans persist only semantic slots: slot id, dependencies, provider, ins
 ## Shared and Infrastructure
 
 Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and shared equipment paths.
+
+## Ownership Matrix
+
+| Area | Owns | Does not own |
+| --- | --- | --- |
+| `store/` | SQL schema, Journal append/reducer substrate | Product read facade, domain policy |
+| `read-model/` | Composed read API | Writes, recovery, domain truth |
+| `jobs/` | Job lifecycle and terminal vocabulary | Provider process mechanics |
+| `sessions/` | Continuity and scope | Job terminal policy |
+| `workflow/` | Plan and slot semantics | Provider/session persistence |
+| `discuss/` | Discussion state and shell loop | Coordinator lifecycle |
+| `kb/` | Corpus authority and query semantics | Equipment slot ownership |
+| `coordinator/` | Live state, startup order, cross-domain assembly | Domain vocabulary |
+| `transport/` | Wire parsing and response mapping | Business behavior |
+| `cli/` | User command surface and local startup glue | Backend/domain truth |
+| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports | Domain concepts |
+| `causality/` | Cross-stream event-reference vocabulary | Store/database access |
 
 ## Dependency Outline
 
@@ -110,5 +147,6 @@ These are the load-bearing boundaries that must not leak:
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
+- Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
 - Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

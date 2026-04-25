@@ -16,6 +16,12 @@
 **One sentence**:
 Coral is **one coordinator and two authorities** — a Journal (SQLite event database) for process-like state, a Corpus (markdown filesystem) for knowledge content — where process domains are event-sourced with causal-graph fault propagation, knowledge is filesystem-authoritative with content-hash diff sync, and equipment sharpens projections without changing the command surface.
 
+**Product frame**:
+Coral is a coding-assistant plugin for Claude Code and Codex. Its purpose is better software work by LLM agents: plan/review workflow, early side-effect and bug discovery, multi-perspective discussion, durable observation of long-running work, provider continuity, and long-term project memory through KB.
+
+**Architectural frame**:
+Internally, Coral is a **local coding-agent coordination layer**. The coordinator acts as a local control plane for live decisions, recovery sequencing, provider/session continuity, durable jobs, KB publication, projection freshness, and optional runtime capabilities. This is implementation vocabulary, not product positioning: Coral is not an infrastructure platform for users to operate; it is a plugin whose internal shape prevents prompt glue and ad-hoc shell scripts from owning state they cannot recover.
+
 **Why it exists**:
 The current Coral architecture has six well-documented pain points: `src/execution/` is a god-directory, `TerminalResult` mixes concerns, the provider layer has three overlapping paths, persistence is fragmented across six files per job, `src/shared/` is a catch-all, and the CLI always pretends coordination is HTTP even locally. Each is a symptom of the same disease: there is no canonical boundary for *what is truth* and *who owns live state*. This design establishes that boundary — and recognizes that Coral has two distinct truths, not one.
 
@@ -123,7 +129,40 @@ This is the sole asymmetry the two-authority model admits, and it is honest: Jou
    - Journal: pure replay over events + reconciliation (append new facts when world disagrees).
    - Corpus: rescan filesystem, diff content hashes, rebuild projections (no history reconstruction).
 
-### 2.6 Extension Model (Equipment)
+### 2.6 Ownership Matrix
+
+The rewrite is judged by ownership, not by file count. Every module should answer four questions: what truth it owns, what it may write, what it may compose, and what it must not absorb.
+
+| Area | Owns truth | May write | May read/compose | Must not own |
+|---|---|---|---|---|
+| `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives only | Domain query modules | Product read facade, domain policy, CLI behavior |
+| `read-model/` | No authority; product read composition | Nothing authoritative | Domain read queries + KB read helpers | Writes, recovery, domain truth |
+| `jobs/` | Job lifecycle, terminal outcomes, wait/reconcile vocabulary | Job streams/projections through the Journal substrate | Cause refs and domain-owned read queries | Provider process mechanics, transport formatting |
+| `sessions/` | Provider continuity, session scope, resumability | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
+| `workflow/` | Durable plan, slots, dependency semantics | Workflow streams/projections | Child jobs through coordinator composition | Provider/session persistence |
+| `discuss/` | Discuss events, reducer, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle or transport |
+| `kb/` | Corpus markdown authority and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Equipment slot ownership, coordinator startup |
+| `coordinator/` | Live state, startup order, equipment slots, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain facades/contracts | Domain vocabulary or wire formatting |
+| `transport/` | No truth; carriage only | Nothing authoritative | Coordinator ports and domain contracts | Business behavior, startup, recovery |
+| `cli/` | User command surface and local startup/activation glue | No domain truth directly | IPC/HTTP clients and `read-model/CoralStore` | Backend/domain truth |
+| `infra/` / `runtime/` | Low-level paths, build flavor, process/env/I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
+| `causality/` | Cross-stream event-reference vocabulary | Nothing authoritative | Domain event/fault models | Store/database access |
+
+### 2.7 Work Classification
+
+Jobs are durable process attempts, not an async wrapper for every command. A command becomes a job only when the work is long-running, externally observable, resumable, or recovery-relevant.
+
+| Class | Examples | Surface | Authority relationship |
+|---|---|---|---|
+| Direct read | `kb search`, `kb read`, `kb memo read`, `jobs`, `discuss watch` | Return result immediately | Reads an authority or projection; creates no Journal fact. |
+| Direct mutation | KB note/memo write/delete, lightweight metadata edits | Return after authority commit | Writes Corpus under mutation lock; creates no job unless durable work is needed. |
+| Provider/session job | Codex/Claude launches, workflow atoms | Return job id; `wait` observes terminal state | Journal records launch, progress, terminal, and continuity references. |
+| Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Journal records the process attempt; Corpus holds the imported/rebuilt knowledge truth. |
+| Projection freshness wait | Orama/needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness is not authority; failure is reported by the hosting command/job. |
+
+`kb source import` is job-backed because document conversion, staging, Corpus commit, and retrieval readiness can take real time even before needle is installed. `kb search`, `kb read`, memo operations, and note writes remain direct because their expected path is immediate and their authority changes are small. If a future direct command gains long-running recovery semantics, the job boundary moves for that command only; the whole KB surface does not become job/wait by default.
+
+### 2.8 Extension Model (Equipment)
 
 Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Features that intrinsically need external resources (vector search needs an embedding provider; ANN at scale needs a native addon) are documented in README with a one-line setup per feature. Users opt into heavier capabilities via the `/equip <name>` skill, which routes to `coral-cli expansion equip <name>`.
 
@@ -271,7 +310,7 @@ CREATE TABLE kb_corpus_state (
   last_mutation TEXT    NOT NULL    -- ISO 8601
 );
 
--- Equipment projection cursors (async push model; see §2.6)
+-- Equipment projection cursors (async push model; see §2.8)
 -- Cursor interpretation depends on the consumer's authority:
 -- - Journal consumers: cursor is events.seq
 -- - Corpus consumers: cursor is corpus contentSeq (or metadataSeq)
