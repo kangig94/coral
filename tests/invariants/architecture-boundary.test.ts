@@ -280,6 +280,12 @@ function listFilesRecursive(root: string, predicate: (filePath: string) => boole
   });
 }
 
+function collectSrcMarkdownFiles(): string[] {
+  return listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('.md'))
+    .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
+    .sort();
+}
+
 function collectTestQuarantineResidue(): string[] {
   const marker = ['@', 'fla', 'ky'].join('');
   const retryConfig = /\b(?:describe|it|test)\s*\([^)]*,\s*\{\s*retry\s*:/s;
@@ -655,6 +661,9 @@ describe('architecture boundary guard', () => {
     );
     expect(srcTestArtifacts).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, 'src/testing'))).toBe(false);
+  });
+  it('human prose docs must stay out of src', () => {
+    expect(collectSrcMarkdownFiles()).toEqual([]);
   });
   it('the retired kb api shim must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_KB_API);
