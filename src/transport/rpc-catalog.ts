@@ -44,7 +44,7 @@ import {
   sessionCreateSchema,
   sessionForkRequestSchema,
   sessionMessageRequestSchema,
-} from '../sessions/api.js';
+} from '../sessions/command-schemas.js';
 import type { RpcPorts } from './rpc-ports.js';
 import { workflowRequestSchema } from './rpc-workflow.js';
 

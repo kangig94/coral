@@ -13,9 +13,9 @@ import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '#src/discuss/shell/ru
 import {
   abortDiscussSession,
   getWatchState,
-  recoverPersistedSessionsFromStore,
   startDiscussSession,
 } from '#src/discuss/shell/operations.js';
+import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { detachSession, getSession } from '#src/discuss/shell/registry.js';
 import {
   DEFAULT_TOPIC,

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as AgentResolutionMod from '#src/jobs/shell/agent-resolution.js';
+import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
@@ -22,7 +22,7 @@ import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import { type AgentRef } from '#src/jobs/shell/agent-resolution.js';
+import { type AgentRef } from '#src/jobs/agent-resolution.js';
 import {
   LaunchCoordinator,
   getMaxWorkers,
@@ -79,8 +79,8 @@ vi.mock('#src/providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('#src/jobs/shell/agent-resolution.js', async () => {
-  const actual = await vi.importActual<typeof AgentResolutionMod>('#src/jobs/shell/agent-resolution.js');
+vi.mock('#src/jobs/agent-resolution.js', async () => {
+  const actual = await vi.importActual<typeof AgentResolutionMod>('#src/jobs/agent-resolution.js');
   return {
     ...actual,
     resolveAgent: mockState.resolveAgent,

@@ -1,6 +1,6 @@
-import type { Runtime } from '../../runtime/ports.js';
-import type { SessionEntry } from '../entry.js';
-import type { SessionLookup } from '../lookup-contract.js';
+import type { Runtime } from '../runtime/ports.js';
+import type { SessionEntry } from './entry.js';
+import type { SessionLookup } from './lookup-contract.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 

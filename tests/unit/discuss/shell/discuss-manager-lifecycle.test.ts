@@ -10,9 +10,11 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import {
   abortDiscussSession,
+} from '#src/discuss/shell/operations.js';
+import {
   persistAbortEndForShutdown,
   recoverPersistedSessionsFromStore,
-} from '#src/discuss/shell/operations.js';
+} from '#src/discuss/shell/recovery.js';
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import {

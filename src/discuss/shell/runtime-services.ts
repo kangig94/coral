@@ -7,8 +7,8 @@ import type { JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './context.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussLoop from './loop.js';
-import * as discussOperations from './operations.js';
-import type { RecoveredDiscussResume } from './operations.js';
+import * as discussRecovery from './recovery.js';
+import type { RecoveredDiscussResume } from '../recovery-contract.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
 import { toJournalInput } from '../store-registry.js';
@@ -157,13 +157,13 @@ export function createDiscussRuntime({
     onShutdown: async (mode: 'handoff' | 'hard') => {
       const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources(readHelpersDeps)] : [];
 
-      await clearAllDiscuss(world.discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
+      await clearAllDiscuss(world.discussRegistry, mode, discussRecovery.persistAbortEndForShutdown);
 
       if (mode !== 'hard') {
         return;
       }
 
-      await discussOperations.persistAbortEndForPersistedShutdownCandidates(
+      await discussRecovery.persistAbortEndForPersistedShutdownCandidates(
         discussSourcesAtShutdown,
         getDiscussStoreForSource,
         (snapshot) =>

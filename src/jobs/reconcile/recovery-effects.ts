@@ -1,18 +1,14 @@
 import {
   type JobLifecycleFault,
   type JobProgressFault,
-  type TerminalOutcome,
 } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
+import type { JobLaunch, JobStatus, JobTerminalInput } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
-import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import {
   jobRecoveryNeedsDomainEvent,
   materializeJobRecoveryFault,
-  materializeProviderFailureCause,
-  type RuntimeIngestOptions,
-} from '../shell/fault-materializer.js';
+} from '../terminal-materializer.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
@@ -87,53 +83,4 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
     },
     createdAt: status.updatedAt,
   };
-}
-
-export type MaterializedProviderTerminal = {
-  terminal: JobTerminalInput;
-  diagnostics: JobTerminalDiagnostics;
-};
-
-export function materializeProviderTerminal(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  terminal: ProviderTerminalEventBody,
-  options: RuntimeIngestOptions,
-): MaterializedProviderTerminal {
-  const warnings = [
-    ...(terminal.terminal.warnings ?? []),
-    ...(terminal.diagnostics.warnings ?? []),
-  ];
-  return {
-    terminal: {
-      content: terminal.terminal.content,
-      ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
-      outcome: materializeProviderOutcome(progressStore, terminal, options),
-    },
-    diagnostics: {
-      ...(warnings.length === 0 ? {} : { warnings }),
-      ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
-      ...(terminal.terminal.exitCode === undefined
-        ? {}
-        : { processExit: { exitCode: terminal.terminal.exitCode, signal: null } }),
-    },
-  };
-}
-
-function materializeProviderOutcome(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  terminal: ProviderTerminalEventBody,
-  options: RuntimeIngestOptions,
-): TerminalOutcome {
-  const { outcome } = terminal.terminal;
-  switch (outcome.kind) {
-    case 'completed':
-      return { kind: 'completed' };
-    case 'aborted':
-      return { kind: 'aborted', reason: outcome.reason };
-    case 'failed':
-      if (terminal.failureCause === undefined) {
-        throw new Error('Provider terminal failed without a canonical failureCause.');
-      }
-      return materializeProviderFailureCause(progressStore, terminal.failureCause, options);
-  }
 }

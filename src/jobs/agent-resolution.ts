@@ -1,6 +1,6 @@
 import { join, resolve, sep } from 'node:path';
-import { AGENT_IDENT_RE } from '../../infra/identifiers.js';
-import type { RuntimeStoragePort } from '../../runtime/ports.js';
+import { AGENT_IDENT_RE } from '../infra/identifiers.js';
+import type { RuntimeStoragePort } from '../runtime/ports.js';
 
 export type AgentRef = { readonly namespace: string | null; readonly name: string };
 

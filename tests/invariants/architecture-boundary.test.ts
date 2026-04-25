@@ -26,8 +26,11 @@ const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const WORKFLOW_ROOT = 'src/workflow';
 const JOBS_ROOT = 'src/jobs';
 const JOBS_RECONCILE_ROOT = 'src/jobs/reconcile';
+const JOBS_SHELL_ROOT = 'src/jobs/shell';
 const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
+const COORDINATOR_SERVICES_ROOT = 'src/coordinator/services';
+const RUNTIME_ROOT = 'src/runtime';
 const EXECUTION_ROOT = ['src', 'execution'].join('/');
 const CLIENT_ROOT = ['src', 'client'].join('/');
 const SKILLS_ROOT = ['src', 'skills'].join('/');
@@ -40,6 +43,7 @@ const RETIRED_RUNTIME_MODULE = ['src', 'execution', 'runtime.ts'].join('/');
 const RETIRED_RUNTIME_PORTS = ['src', 'shared', 'runtime-ports.ts'].join('/');
 const RETIRED_RUNTIME_FLAVOR = ['src', 'runtime', 'flavor.ts'].join('/');
 const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
+const RETIRED_SESSIONS_API = ['src', 'sessions', 'api.ts'].join('/');
 const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
 const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
@@ -99,6 +103,11 @@ const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('
 const RETIRED_STORE_MIGRATIONS_DIR = ['src', 'store', 'migrations'].join('/');
 const RETIRED_STORE_SCHEMAS_MODULE = ['src', 'store', 'schemas.ts'].join('/');
 const RETIRED_SESSION_JSON_READER = ['src', 'sessions', 'shell', 'session-read.ts'].join('/');
+const RETIRED_JOBS_SHELL_FAULT_MATERIALIZER = ['src', 'jobs', 'shell', 'fault-materializer.ts'].join('/');
+const RETIRED_JOBS_SHELL_CONTRACTS = ['src', 'jobs', 'shell', 'contracts.ts'].join('/');
+const RETIRED_JOBS_SHELL_AGENT_RESOLUTION = ['src', 'jobs', 'shell', 'agent-resolution.ts'].join('/');
+const RETIRED_SESSIONS_SHELL_RESOLVE = ['src', 'sessions', 'shell', 'resolve.ts'].join('/');
+const RETIRED_DISCUSS_RECONCILE = ['src', 'discuss', 'reconcile.ts'].join('/');
 const RETIRED_BRIDGE_MANIFEST = ['src', 'infra', 'bridge-manifest.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
@@ -135,6 +144,7 @@ const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle-backend.ts';
+const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal-materializer.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -348,6 +358,17 @@ function collectProductionStringResidue(tokens: readonly string[]): string[] {
   });
 }
 
+function collectRawTerminalRecordedWriters(): string[] {
+  return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
+    const source = readFileSync(filePath, 'utf-8');
+    if (!/type:\s*['"]job\.terminal\.recorded['"]/u.test(source)) {
+      return [];
+    }
+
+    return [toCanonicalSrcPath(REPO_ROOT, filePath)];
+  }).sort();
+}
+
 describe('architecture boundary guard', () => {
   it('workflow/ may only import from providers/catalog (allowlist of exactly one path)', () => {
     // Established by e34d8d8.
@@ -382,6 +403,57 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+  it('jobs/reconcile does not import jobs shell modules', () => {
+    const violations = collectViolations(
+      JOBS_RECONCILE_ROOT,
+      'jobs/reconcile owns recovery planning/effects without depending on jobs shell I/O',
+      'move shared job materialization contracts under jobs/ instead of jobs/shell/.',
+      (target) => isWithinPath(target, JOBS_SHELL_ROOT),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('coordinator services depend on domain ports, not domain shell implementations', () => {
+    const violations = collectViolations(
+      COORDINATOR_SERVICES_ROOT,
+      'coordinator/services consumes domain ports/contracts, not shell implementations',
+      'move the service dependency to a domain-owned contract or inject the shell implementation from the composition root.',
+      (target) =>
+        isWithinPath(target, JOBS_SHELL_ROOT) ||
+        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        target.startsWith('src/discuss/shell/'),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('job terminal materializer remains a pure domain translator, not a god module', () => {
+    const violations = collectViolations(
+      JOBS_TERMINAL_MATERIALIZER,
+      'jobs/terminal-materializer may only translate domain failures into job outcomes',
+      'keep I/O, runtime access, shell orchestration, and coordinator policy outside terminal-materializer.',
+      (target) =>
+        isWithinPath(target, COORDINATOR_ROOT) ||
+        isWithinPath(target, JOBS_SHELL_ROOT) ||
+        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        isWithinPath(target, RUNTIME_ROOT),
+    );
+    const source = readFileSync(resolve(REPO_ROOT, JOBS_TERMINAL_MATERIALIZER), 'utf8');
+    const forbiddenRuntimeTokens = [
+      '.appendEvent(',
+      '.appendTerminal(',
+      '.readStatus(',
+      '.loadJobProjectionDetail(',
+      '.getDb(',
+      '.readLaunchProjection(',
+      '.appendLaunchRequested(',
+    ].filter((token) => source.includes(token));
+
+    assertNoViolations(violations);
+    expect(forbiddenRuntimeTokens).toEqual([]);
+  });
+  it('raw job.terminal.recorded writes stay owned by the job store', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual(['src/jobs/job-store.ts']);
   });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(
@@ -420,7 +492,7 @@ describe('architecture boundary guard', () => {
       PROVIDERS_ROOT,
       'providers must not depend on jobs/shell ownership',
       'depend on provider-owned ports or lower-level job contracts outside jobs/shell.',
-      (target) => isWithinPath(target, 'src/jobs/shell'),
+      (target) => isWithinPath(target, JOBS_SHELL_ROOT),
     );
 
     assertNoViolations(violations);
@@ -611,6 +683,7 @@ describe('architecture boundary guard', () => {
       RETIRED_COMMAND_HELPERS,
       RETIRED_COORDINATOR_EXECUTION_SHARED,
       RETIRED_RUNTIME_FLAVOR,
+      RETIRED_SESSIONS_API,
       RETIRED_HTTP_CONTRACTS,
       RETIRED_HTTP_WAIT_STREAM,
       RETIRED_HTTP_TOOL_RESPONSE,
@@ -629,6 +702,11 @@ describe('architecture boundary guard', () => {
       RETIRED_STORE_MIGRATIONS_DIR,
       RETIRED_STORE_SCHEMAS_MODULE,
       RETIRED_SESSION_JSON_READER,
+      RETIRED_JOBS_SHELL_FAULT_MATERIALIZER,
+      RETIRED_JOBS_SHELL_CONTRACTS,
+      RETIRED_JOBS_SHELL_AGENT_RESOLUTION,
+      RETIRED_SESSIONS_SHELL_RESOLVE,
+      RETIRED_DISCUSS_RECONCILE,
       RETIRED_TRANSPORT_SHARED_CONTEXT,
       RETIRED_COORDINATOR_CALLER_CONTEXT,
       RETIRED_STORE_CORPUS_CONSUMER,

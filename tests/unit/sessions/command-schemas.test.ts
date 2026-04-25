@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sessionCreateSchema, sessionForkSchema, sessionMessageSchema } from '#src/sessions/api.js';
+import { sessionCreateSchema, sessionForkSchema, sessionMessageSchema } from '#src/sessions/command-schemas.js';
 
 describe('session wire schemas', () => {
   it('sessionCreateSchema exposes the documented field set', () => {

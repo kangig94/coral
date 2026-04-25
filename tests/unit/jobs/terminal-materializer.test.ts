@@ -11,7 +11,7 @@ import {
   materializeJobRecoveryFault,
   materializeProviderFailureCause,
   materializeSessionInterrupted,
-} from '#src/jobs/shell/fault-materializer.js';
+} from '#src/jobs/terminal-materializer.js';
 
 function createAppendRecorder(): {
   readonly events: CoralEventInput[];
@@ -48,7 +48,7 @@ const OPTIONS = {
   workflowSlotId: 'slot-1',
 } as const;
 
-describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
+describe('terminal-materializer canonical output boundary (AC3.6, AC3.7)', () => {
   it.each([
     [{ kind: 'ghost_launch' }, { kind: 'job_fault', fault: { kind: 'ghost_launch' } }],
     [{ kind: 'wrapper_lost' }, { kind: 'job_fault', fault: { kind: 'wrapper_lost' } }],

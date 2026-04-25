@@ -28,7 +28,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { getSessionById, resolveSession } from '#src/sessions/shell/resolve.js';
+import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
 const runtime = createRealRuntime();

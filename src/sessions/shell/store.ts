@@ -3,7 +3,6 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
-import type { ProviderInstruction } from '../../providers/contract.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
@@ -16,9 +15,9 @@ import {
   DEFAULT_SESSION_CONTROLLER,
   sessionControllerFromProfile,
   sessionEntrySchema,
-  type SessionControllerProfile,
   type SessionEntry,
 } from '../entry.js';
+import type { SessionAllocateOptions } from '../allocation-contract.js';
 import { sessionsRegistry } from '../events.js';
 import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
@@ -30,20 +29,6 @@ import {
   listProjectionSessionEntries,
   readProjectionSession,
 } from '../projections.js';
-
-export type SessionAllocateOptions = {
-  provider: string;
-  name: string;
-  model?: string;
-  cwd: string;
-  projectRoot: string;
-  backendNamespace: string;
-  agentName?: string;
-  instruction?: ProviderInstruction;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  controllerProfile?: SessionControllerProfile;
-};
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;

@@ -3,26 +3,15 @@ import type {
   ProviderEventBody,
   ProviderTerminalEventBody,
 } from '../../providers/contract.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
 import { backendLog } from '../../infra/backend-log.js';
-
-type SessionContinuityApi = {
-  checkpointJobContinuityAtomic(
-    sessionId: string,
-    options: {
-      expectedActiveJobId: string;
-      expectedVersion: number;
-      snapshot: ContinuitySnapshot;
-    },
-  ): Promise<{ ok: true; nextVersion: number } | { ok: false }>;
-};
 
 export async function consumeJobStream(options: {
   jobId: string;
   sessionId: string;
   initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
-  sessionApi: SessionContinuityApi;
+  sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic'>;
   appendProgress(message: string): void;
   appendTerminal(event: ProviderTerminalEventBody): void;
 }): Promise<{

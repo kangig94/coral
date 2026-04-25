@@ -17,7 +17,7 @@ import {
 } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { discussReconcile } from '../../discuss/reconcile.js';
+import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
 import type { BackendCoreOptions, CreateServerFn, FetchFn } from './backend-core-types.js';
 
@@ -172,7 +172,7 @@ export function resolveBackendDefaults(
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});
-  const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussReconcile.runStartup;
+  const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussRecovery.runStartup;
   const createServerFn: CreateServerFn = options.createServerFn ?? createServer;
   const createIdleTimer: NonNullable<BackendCoreOptions['createIdleTimer']> =
     options.createIdleTimer ??

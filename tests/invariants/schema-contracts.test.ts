@@ -5,7 +5,7 @@ import {
   sessionCreateSchema,
   sessionForkSchema,
   sessionMessageSchema,
-} from '#src/sessions/api.js';
+} from '#src/sessions/command-schemas.js';
 import { workflowCommandSchema } from '#src/workflow/input.js';
 import { workflowRequestSchema } from '#src/transport/rpc-workflow.js';
 

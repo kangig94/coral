@@ -18,9 +18,9 @@ import {
   resolveAgent,
   stripAgentMetadata,
   type AgentResolutionContext,
-} from '../../jobs/shell/agent-resolution.js';
-import type { SessionAllocateOptions } from '../../sessions/shell/store.js';
-import type { SessionManager } from '../../sessions/shell/store.js';
+} from '../../jobs/agent-resolution.js';
+import type { SessionAllocateOptions } from '../../sessions/allocation-contract.js';
+import type { SessionClaimAtomicPort } from '../../sessions/execution-contract.js';
 import {
   describeSessionInterrupted,
   type SessionInterruptedFault,
@@ -28,11 +28,11 @@ import {
 import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/internal/execution-contract.js';
-import { rejectLaunch, SessionClaimError } from '../../jobs/shell/contracts.js';
+import { rejectLaunch } from '../../jobs/launch-rejection.js';
+import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { SessionEntry } from '../../sessions/api.js';
-import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
-import { materializeSessionInterrupted } from '../../jobs/shell/fault-materializer.js';
+import type { SessionEntry } from '../../sessions/entry.js';
+import { materializeSessionInterrupted } from '../../jobs/terminal-materializer.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
@@ -229,7 +229,7 @@ export async function runProviderPreflight(
 
 export async function claimJobAtomic(
   deps: {
-    sessionManager: Pick<SessionManager, 'claimForJobAtomic'>;
+    sessionManager: SessionClaimAtomicPort;
   },
   session: SessionEntry,
   jobId: string,

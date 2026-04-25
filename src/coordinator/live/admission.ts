@@ -14,28 +14,16 @@ import {
 } from './durable-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit } from './worker-limits.js';
+import type {
+  AdmissionResult,
+  AdmittedHandle,
+  LaunchPermit,
+  LaunchPool,
+  QueuedHandle,
+} from '../../jobs/admission-contract.js';
 
-export type LaunchPool = 'default' | 'discuss' | 'curate';
+export type { LaunchPool } from '../../jobs/admission-contract.js';
 const MAX_QUEUE_SIZE = 20;
-
-export type LaunchPermit = { type: 'immediate' };
-
-export type QueuedHandle = {
-  outcome: 'queued';
-  position: number;
-  type: 'queued';
-  queuePosition: number;
-  waitForPermit: () => Promise<void>;
-  cancel: () => void;
-};
-
-export type AdmittedHandle = {
-  outcome: 'admitted';
-  permit: LaunchPermit;
-  type: 'immediate';
-};
-
-export type AdmissionResult = AdmittedHandle | QueuedHandle | 'queue_full';
 
 type QueuedLaunchEntry = {
   jobId: string;

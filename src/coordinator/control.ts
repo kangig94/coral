@@ -8,7 +8,7 @@ import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
-import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
+import type { RecoveredDiscussResume } from '../discuss/recovery-contract.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';

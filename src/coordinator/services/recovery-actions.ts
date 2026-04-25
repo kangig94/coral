@@ -11,10 +11,13 @@ import type { RecoveryAction } from '../../jobs/reconcile/plan.js';
 import type { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
-import { SessionManager } from '../../sessions/shell/store.js';
+import { releaseSessionJobClaim } from '../../sessions/job-release.js';
 import type { RecoveryCapableService } from '../contracts.js';
-import { markJobAsError, materializeProviderTerminal } from '../../jobs/reconcile/recovery-effects.js';
-import { materializeJobRecoveryFault } from '../../jobs/shell/fault-materializer.js';
+import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
+import {
+  materializeJobRecoveryFault,
+  materializeProviderTerminal,
+} from '../../jobs/terminal-materializer.js';
 import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
@@ -66,9 +69,14 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         }
       }
       if (action.status.sessionId !== null) {
-        SessionManager.forProduction(action.status.projectRoot, runtime, undefined, emitSessionReleased, {
+        releaseSessionJobClaim({
+          projectRoot: action.status.projectRoot,
+          runtime,
+          emitSessionReleased,
           db: progressStore.getDb(),
-        }).releaseJob(action.status.sessionId, action.status.jobId);
+          sessionId: action.status.sessionId,
+          jobId: action.status.jobId,
+        });
       }
       switch (action.fault.kind) {
         case 'missing_launch_record':
@@ -112,9 +120,14 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         return;
       }
 
-      SessionManager.forProduction(session.projectRoot, runtime, undefined, emitSessionReleased, {
+      releaseSessionJobClaim({
+        projectRoot: session.projectRoot,
+        runtime,
+        emitSessionReleased,
         db: progressStore.getDb(),
-      }).releaseJob(action.sessionId, action.jobId);
+        sessionId: action.sessionId,
+        jobId: action.jobId,
+      });
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
         log(`Released terminal session claim: ${action.sessionId}\n`);

@@ -9,7 +9,7 @@ import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
-import type { TerminalOutcome } from '../../jobs/outcome.js';
+import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';
 
 export type KbSourceImportRequest = {
@@ -270,14 +270,14 @@ export class KbSourceImportService {
     };
   }
 
-  private appendCompleted(jobId: string, projectRoot: string, startedAtMs: number, content: string): void {
-    this.appendTerminal(jobId, projectRoot, startedAtMs, {
+  private appendCompleted(jobId: string, _projectRoot: string, startedAtMs: number, content: string): void {
+    this.appendTerminal(jobId, startedAtMs, {
       kind: 'completed',
     }, content);
   }
 
-  private appendFailed(jobId: string, projectRoot: string, startedAtMs: number, causeRef: CauseRef): void {
-    this.appendTerminal(jobId, projectRoot, startedAtMs, {
+  private appendFailed(jobId: string, _projectRoot: string, startedAtMs: number, causeRef: CauseRef): void {
+    this.appendTerminal(jobId, startedAtMs, {
       kind: 'failed',
       causeRef,
     }, '');
@@ -285,25 +285,14 @@ export class KbSourceImportService {
 
   private appendTerminal(
     jobId: string,
-    projectRoot: string,
     startedAtMs: number,
     outcome: TerminalOutcome,
     content: string,
   ): void {
-    this.deps.progressStore.appendEvent({
-      type: 'job.terminal.recorded',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.deps.backendNamespace,
-      project: projectRoot,
-      refs: { jobId },
-      bodyVersion: 1,
-      body: {
-        terminal: {
-          outcome,
-          durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-          content,
-        },
-      },
-    });
+    this.deps.progressStore.appendTerminal(jobId, null, {
+      outcome,
+      durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
+      content,
+    }, phaseForOutcome(outcome));
   }
 }

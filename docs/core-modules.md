@@ -1,6 +1,6 @@
 # Core Modules
 
-A high-level map of what each area of the codebase is for. This document describes stable seams — composition roots, domain facades, and public contracts. Implementation files evolve inside each area without requiring doc updates.
+A high-level map of what each area of the codebase is for. This document describes stable seams — composition roots, domain owner modules, and public contracts. Implementation files evolve inside each area without requiring doc updates.
 
 Coral's product identity is a coding-assistant plugin for Claude Code and Codex. Its internal architecture is a local coding-agent coordination layer: the coordinator owns live decisions and recovery, domains own truth vocabulary, transport carries requests, and the CLI is the local operator surface.
 
@@ -8,7 +8,7 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 
 | Entry | Bundle | Role |
 | --- | --- | --- |
-| Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain facades, lifecycle, and IPC/HTTP transport routes. |
+| Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes. |
 | CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
 | Claude appserver helper | `bridge/coral-claude-appserver.cjs` | Runtime for the Claude appserver-hosted provider lane. |
 
@@ -18,7 +18,7 @@ The CLI parses commands, follows detached launches via the `jobs.wait` IPC subsc
 
 ## Backend
 
-The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
+The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through explicit owner modules/contracts.
 
 ## Runtime
 
@@ -34,7 +34,7 @@ Cross-stream event references live below the domains in `causality/`. `CauseRef`
 
 ## Domains
 
-Each domain is self-contained: its own contract (events, projection, read-models), its own functional core (pure state transitions), its own imperative shell (persistence, loop control, external effects), and a single coordinator-facing facade (commands / queries / reconcile or the domain-appropriate equivalent). Domains do not import each other; cross-domain composition happens at the backend layer only.
+Each domain is self-contained: its own contract (events, projection, read-models), its own functional core (pure state transitions), its own imperative shell (persistence, loop control, external effects), and explicit coordinator-facing owner modules for commands, queries, recovery, and ports. Domains do not import each other; cross-domain composition happens at the backend layer only. A facade is an ownership surface, not a requirement to keep `api.ts` barrels or compatibility shims.
 
 | Domain | Responsibility |
 | --- | --- |
@@ -73,7 +73,7 @@ Projection freshness is not authority. A Corpus commit remains durable even if a
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
 
 Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
 
@@ -108,11 +108,11 @@ CLI
 
 transport IPC/HTTP routes
   -> coordinator API + control ports
-  -> domain facades (workflow / discuss / KB)
+  -> domain owner modules/contracts (workflow / discuss / KB)
 
 coordinator API
-  -> jobs domain facade
-  -> sessions domain facade
+  -> jobs domain owner modules/contracts
+  -> sessions domain owner modules/contracts
   -> provider adapters
   -> equipment lifecycle service
   -> live launch / host management
@@ -143,7 +143,7 @@ infra / runtime / causality
 These are the load-bearing boundaries that must not leak:
 
 - The Runtime interface is the only channel for I/O inside the backend.
-- Each domain facade is the only coordinator-facing surface for its domain.
+- Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.

@@ -16,7 +16,7 @@ import {
 import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
 import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
-import type { SessionEntry } from '../../sessions/api.js';
+import type { SessionEntry } from '../../sessions/entry.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type {
@@ -26,11 +26,11 @@ import type {
   ExecutionProviderHostManager,
 } from '../contracts.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../jobs/progress-store-contract.js';
-import type { SessionManager } from '../../sessions/shell/store.js';
+import type { SessionRecoveryPort } from '../../sessions/execution-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
-import { toProviderRequest } from '../../jobs/shell/contracts.js';
+import type { JobAbortRegistryPort } from '../../jobs/abort-registry-contract.js';
+import type { RecoveredJobLifecyclePort } from '../../jobs/job-runner-contract.js';
+import { toProviderRequest } from '../../jobs/provider-request.js';
 import {
   APP_SERVER_RECOVERY_POLICY,
   FINALIZE_CONTINUITY_MAX_RETRIES,
@@ -55,8 +55,8 @@ function requireProviderLaunchRecord(launchRecord: JobLaunch, operation: string)
 
 export interface RecoveryServiceDeps {
   runtime: Runtime;
-  sessionManager: SessionManager;
-  abortRegistry: AbortRegistry;
+  sessionManager: SessionRecoveryPort;
+  abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
@@ -64,7 +64,7 @@ export interface RecoveryServiceDeps {
   launchCoordinator: ExecutionLaunchCoordinator;
   providerRegistry: ProviderCatalog;
   jobPools: Map<string, LaunchPool>;
-  launchOrchestrator: LaunchOrchestrator;
+  launchOrchestrator: RecoveredJobLifecyclePort;
   acquireServer?: (
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },

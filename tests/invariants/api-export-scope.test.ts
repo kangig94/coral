@@ -7,7 +7,6 @@ import ts from 'typescript';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const COORDINATOR_ROOT_PATH = join(REPO_ROOT, 'src/coordinator/coordinator.ts');
 const CONTRACTS_PATH = join(REPO_ROOT, 'src/coordinator/contracts.ts');
-const SESSIONS_API_PATH = join(REPO_ROOT, 'src/sessions/api.ts');
 const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
   'createBackendCore',
   'listInstantiatedExecutionServices',
@@ -121,10 +120,4 @@ describe('coordinator api export scope invariant (AC12)', () => {
     ).toEqual([]);
   });
 
-  it('does not re-export SessionManager from sessions/api.ts', () => {
-    const source = readFileSync(SESSIONS_API_PATH, 'utf-8');
-
-    expect(source).not.toMatch(/export\s+type\s+\{[^}]*\bSessionManager\b/);
-    expect(source).not.toMatch(/export\s+\{[^}]*\bSessionManager\b/);
-  });
 });

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { BackendClient, BackendToolHttpError } from '#src/transport/http/client.js';
-import * as AgentResolution from '#src/jobs/shell/agent-resolution.js';
+import * as AgentResolution from '#src/jobs/agent-resolution.js';
 import type { MutableRuntimeState } from '#src/coordinator/control.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';

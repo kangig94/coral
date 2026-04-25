@@ -1,7 +1,7 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, DiscussService, LiveDiscussSession } from './context.js';
-import { isWithinLiveSessionBoundary } from './operations.js';
+import { isWithinLiveSessionBoundary } from '../recovery-contract.js';
 
 export type AttachedDiscussSession = {
   projectRoot: string;

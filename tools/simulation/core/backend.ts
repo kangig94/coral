@@ -36,7 +36,7 @@ import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
 import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/backend-core-types.js';
 import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
-import { discussReconcile } from '../../../src/discuss/reconcile.js';
+import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openBackendStoreDb } from '../../../src/store/db.js';
@@ -539,7 +539,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;
       if (scenario.recoverPersistedDiscuss === 'default') {
-        return discussReconcile.runStartup(deps);
+        return discussRecovery.runStartup(deps);
       }
       return [];
     },

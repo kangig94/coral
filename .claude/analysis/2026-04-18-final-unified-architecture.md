@@ -142,7 +142,7 @@ The rewrite is judged by ownership, not by file count. Every module should answe
 | `workflow/` | Durable plan, slots, dependency semantics | Workflow streams/projections | Child jobs through coordinator composition | Provider/session persistence |
 | `discuss/` | Discuss events, reducer, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle or transport |
 | `kb/` | Corpus markdown authority and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Equipment slot ownership, coordinator startup |
-| `coordinator/` | Live state, startup order, equipment slots, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain facades/contracts | Domain vocabulary or wire formatting |
+| `coordinator/` | Live state, startup order, equipment slots, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary or wire formatting |
 | `transport/` | No truth; carriage only | Nothing authoritative | Coordinator ports and domain contracts | Business behavior, startup, recovery |
 | `cli/` | User command surface and local startup/activation glue | No domain truth directly | IPC/HTTP clients and `read-model/CoralStore` | Backend/domain truth |
 | `infra/` / `runtime/` | Low-level paths, build flavor, process/env/I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
@@ -1195,7 +1195,7 @@ src/
       kb-source-import-service.ts, kb-reindex-service.ts,
       workflow-execution-service.ts, recovery-service.ts,
       recovery-actions.ts, recovery-coordinator.ts, recovery-snapshot.ts,
-      continuity-consumer.ts, execution-policies.ts
+      execution-policies.ts
     equipment/                       — active equipment slot lifecycle + RPC surface
       slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts
     corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver
@@ -1280,12 +1280,22 @@ src/
     consumer.ts                      — Journal projection consumer registration for jobs
     job-store.ts                     — journal append/read seam over jobsRegistry
     events.ts                        — jobs event body schemas + terminal-order append validator + projection_jobs reducers
-    outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef re-export + describers
+    outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef-aware describers
     read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
+    admission-contract.ts            — launch admission/queue port contract
+    agent-resolution.ts              — resolve agent by id
+    abort-registry-contract.ts       — abort signal registry port
+    job-runner-contract.ts           — provider/workflow/recovery lifecycle ports
+    launch-rejection.ts              — LaunchDecision rejection helper
+    provider-request.ts              — persisted launch → ProviderRequest mapper
+    session-claim.ts                 — session job-claim error/options owned by jobs
+    terminal-write-error.ts          — terminal append failure error
     result.ts                        — JobTerminal + JobDiagnostics
-    wait.ts                          — WaitCursor + wait body types
+    terminal-materializer.ts         — provider/session/recovery terminal cause materialization
+    wait.ts                          — WaitCursor + wait body types + terminal wait defaults
+    wait-port.ts                     — wait coordinator port contract
     records.ts                       — job record DTOs shared across readers and shells
     exports/
       result-artifact.ts             — canonical `<os-tmpdir>/coral-jobs/<jobId>/result.md` path + atomic writes
@@ -1295,31 +1305,35 @@ src/
       plan.ts                        — classify world-state divergence
       registry.ts                    — known classifications
       cross-namespace-adoption.ts    — cross-ns orphan adoption
-      recovery-effects.ts            — recovery-only job transitions + terminal materialization
+      recovery-effects.ts            — recovery-only job transitions
       errors.ts                      — reconciliation-local error types
       (world snapshot/actions/orchestration live under coordinator/services/recovery-*.ts)
     shell/                           — imperative I/O over jobs domain
       abort-registry.ts              — in-memory abort signal registry
-      agent-resolution.ts            — resolve agent by id
-      continuity-consumer.ts         — wait continuity consumer wiring
-      contracts.ts                   — shell wait/launch contracts
-      fault-materializer.ts          — lifecycle fault event materialization
+      continuity-consumer.ts         — provider stream continuity checkpoint consumer
       launch.ts                      — launch job helper
       event-subscription.ts          — journal-backed wait/reconnect event streaming
       wait.ts                        — wait stream helper
 
   sessions/                          ← domain: session events + projections
     entry.ts                         — SessionEntry + controller profiles
+    allocation-contract.ts           — session allocation input contract
+    command-schemas.ts               — sessions transport/CLI request schemas
     events.ts                        — session event body schemas
     continuity.ts                    — continuity snapshot type
+    execution-contract.ts            — coordinator-facing session execution/recovery ports
+    job-release.ts                   — session-owned job claim release helper
+    job-claim-contract.ts            — session-owned job claim/read port consumed by jobs shell
     projections.ts                   — SessionView reducer
+    resolve.ts                       — session resolution by id/ref
     shell/
       store.ts                       — session store helpers
-      resolve.ts                     — session resolution by id/ref
 
   discuss/                           ← unchanged domain core; template
     state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
+    recovery-contract.ts             — recovered resume contract and live-boundary predicate
     shell/                           — imperative shell (moved from execution/discuss/)
+      recovery.ts                    — startup recovery + shutdown abort persistence
 
   kb/                                ← Corpus-authority domain (markdown is truth)
     contracts.ts                     — public KB types
@@ -1468,7 +1482,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 
 | Current | Size | Decomposed destinations |
 |---|---|---|
-| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
+| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
 | `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/response.ts`, `transport/server-ports.ts`, `transport/validation.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
 | `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts` (see §10 coordinator entry). |
@@ -2014,6 +2028,8 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
+47. Raw `job.terminal.recorded` object construction is owned by `jobs/job-store.ts`. All other producers finalize through jobs-owned append/materialization APIs.
+48. `coordinator/services/**` consumes domain ports/contracts, not domain shell implementation classes. Shell implementations are wired at composition roots.
 
 ---
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { AgentResolutionContext } from '#src/jobs/shell/agent-resolution.js';
+import type { AgentResolutionContext } from '#src/jobs/agent-resolution.js';
 import {
   AgentNamespaceNotFoundError,
   AgentNotFoundError,
@@ -12,7 +12,7 @@ import {
   parseAgentRef,
   resolveAgent,
   stripAgentMetadata,
-} from '#src/jobs/shell/agent-resolution.js';
+} from '#src/jobs/agent-resolution.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const runtime = createRealRuntime();

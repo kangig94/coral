@@ -161,7 +161,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 
 ### Discuss and KB
 
-- `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
+- `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes explicit coordinator-facing owner modules for commands, reads, and recovery rather than a compatibility `api.ts` facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
 - KB markdown is the Corpus authority for notes, sources, principles, and communities. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, and memo operations stay direct commands.
@@ -198,7 +198,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |
 | `discuss/` | Discuss events, state machine, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle |
 | `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Coordinator equipment ownership |
-| `coordinator/` | Live state, startup order, equipment slots, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain facades/contracts | Domain vocabulary |
+| `coordinator/` | Live state, startup order, equipment slots, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary |
 | `transport/` | Wire parsing, validation, response mapping | Nothing authoritative | Coordinator ports and domain contracts | Business behavior |
 | `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Backend lifecycle truth |
 | `infra/` / `runtime/` | Low-level path, flavor, I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
@@ -214,7 +214,7 @@ CLI layer
 
 Transport IPC/HTTP surface
   -> Coordinator API + control ports
-  -> Domain facades/contracts (workflow / discuss / KB / jobs / sessions)
+  -> Domain owner modules/contracts (workflow / discuss / KB / jobs / sessions)
 
 Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
   -> Jobs shells / queries / recovery
@@ -226,8 +226,8 @@ Coordinator startup
   -> Open Journal
   -> Register Journal projection consumers
   -> Drain freshness to the current Journal head
-  -> jobsReconcile.runStartup
-  -> discussReconcile.runStartup
+  -> jobs recovery coordinator startup
+  -> discuss shell recovery startup
   -> workflowRecover.resumeAll
   -> Absorb KB Corpus edits into text artifacts
   -> Register KB CorpusConsumers
@@ -281,6 +281,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
 Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
 `job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
+Raw `job.terminal.recorded` object construction is owned by `jobs/job-store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.
 
 CLI wait output surfaces the outcome through five exhaustive headers:
 

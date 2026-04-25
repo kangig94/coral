@@ -1,10 +1,10 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
-import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
-import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';
+import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEvent, type WaitStreamOnceResult, type WaitStreamRequest } from '../wait.js';
+import type { LaunchCoordinatorPort, LaunchPool } from '../admission-contract.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
-import type { SessionManager } from '../../sessions/shell/store.js';
+import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -145,8 +145,8 @@ function createJournalPollWaiter(
 }
 
 export interface WaitCoordinatorDeps {
-  sessionManager: SessionManager;
-  launchCoordinator: LaunchCoordinator;
+  sessionManager: SessionJobReadPort;
+  launchCoordinator: LaunchCoordinatorPort;
   eventBus: JobEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;

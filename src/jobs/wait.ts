@@ -1,6 +1,8 @@
 import type { JobTerminal } from './records.js';
 import type { JobContinuitySnapshot } from './continuity.js';
 
+export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
+
 export type WaitCursor = {
   afterSeq: number;
 };

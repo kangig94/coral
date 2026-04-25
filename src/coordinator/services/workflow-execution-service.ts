@@ -5,7 +5,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { SessionManager } from '../../sessions/shell/store.js';
+import type { SessionWorkflowPort } from '../../sessions/execution-contract.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import {
   type WorkflowCommand,
@@ -27,9 +27,11 @@ import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
 import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
-import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { TerminalWriteError, type LaunchOrchestrator } from '../../jobs/shell/launch.js';
-import { SessionClaimError, rejectLaunch } from '../../jobs/shell/contracts.js';
+import type { JobAbortRegistryPort } from '../../jobs/abort-registry-contract.js';
+import type { WorkflowJobLifecyclePort } from '../../jobs/job-runner-contract.js';
+import { TerminalWriteError } from '../../jobs/terminal-write-error.js';
+import { rejectLaunch } from '../../jobs/launch-rejection.js';
+import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import {
   buildSessionControllerProfile,
@@ -40,14 +42,14 @@ import type { WorkflowExecutionPort } from '../../workflow/internal/execution-co
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
-  sessionManager: SessionManager;
-  abortRegistry: AbortRegistry;
+  sessionManager: SessionWorkflowPort;
+  abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
   providerRegistry: ProviderCatalog;
   appendEvents: AppendEventsFn;
-  launchOrchestrator: LaunchOrchestrator;
+  launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
 }
 

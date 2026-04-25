@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as AgentResolutionMod from '#src/jobs/shell/agent-resolution.js';
+import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred as _createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
 import type {
@@ -37,7 +37,7 @@ import {
   AgentNotFoundError as _AgentNotFoundError,
   InvalidAgentRefError as _InvalidAgentRefError,
   type AgentRef,
-} from '#src/jobs/shell/agent-resolution.js';
+} from '#src/jobs/agent-resolution.js';
 import {
   LaunchCoordinator,
   getMaxWorkers,
@@ -88,8 +88,8 @@ vi.mock('#src/providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('#src/jobs/shell/agent-resolution.js', async () => {
-  const actual = await vi.importActual<typeof AgentResolutionMod>('#src/jobs/shell/agent-resolution.js');
+vi.mock('#src/jobs/agent-resolution.js', async () => {
+  const actual = await vi.importActual<typeof AgentResolutionMod>('#src/jobs/agent-resolution.js');
   return {
     ...actual,
     resolveAgent: mockState.resolveAgent,

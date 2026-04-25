@@ -1,4 +1,4 @@
-import type { WaitCoordinator } from '../../jobs/shell/wait.js';
+import type { JobWaitPort } from '../../jobs/wait-port.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgress } from '../../jobs/records.js';
 import { deriveLaunchReadiness, type LaunchReadiness } from '../../jobs/launch-readiness.js';
@@ -7,7 +7,7 @@ import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '.
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
-  waitCoordinator: WaitCoordinator;
+  waitCoordinator: JobWaitPort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   subscribeJobEvents: (options: {
     afterSeq: number;

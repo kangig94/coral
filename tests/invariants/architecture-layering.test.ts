@@ -31,7 +31,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/records.ts',
   'src/jobs/wait.ts',
   'src/jobs/wait-stream-event.ts',
-  'src/sessions/api.ts',
+  'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
   'src/discuss/session-types.ts',
@@ -62,7 +62,7 @@ const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/services/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
-  'src/sessions/api.ts',
+  'src/jobs/admission-contract.ts',
   'src/kb/contracts.ts',
   'src/kb/state/corpus-state.ts',
   'src/providers/contract.ts',
@@ -78,9 +78,14 @@ const DOMAIN_ROOT_DIRS = [
   'src/providers',
   'src/expansion',
 ] as const;
+const DOMAIN_SHELL_ROOTS = DOMAIN_ROOT_DIRS.map((root) => `${root}/shell/`);
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
+}
+
+function shellOwner(path: string): string | null {
+  return DOMAIN_SHELL_ROOTS.find((root) => path.startsWith(root)) ?? null;
 }
 
 function collectViolations(predicate: (source: string, target: string) => boolean): string[] {
@@ -185,5 +190,15 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     );
 
     expect(banned).toEqual([]);
+  });
+
+  it('domain shell modules do not import sibling shell modules', () => {
+    const violations = collectViolations((source, target) => {
+      const sourceOwner = shellOwner(source);
+      const targetOwner = shellOwner(target);
+      return sourceOwner !== null && targetOwner !== null && sourceOwner !== targetOwner;
+    });
+
+    expect(violations).toEqual([]);
   });
 });

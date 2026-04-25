@@ -1,18 +1,20 @@
-import type { AppendedEvent } from '../../store/append.js';
-import type { CoralEventInput } from '../../store/envelope.js';
-import type { ProviderFailureCause } from '../../providers/fault.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
+import type { AppendedEvent } from '../store/append.js';
+import type { CoralEventInput } from '../store/envelope.js';
+import type { CauseRef } from '../causality/cause-ref.js';
+import type { ProviderTerminalEventBody } from '../providers/contract.js';
+import type { ProviderFailureCause } from '../providers/fault.js';
 import type {
   JobLifecycleFault,
   JobLaunchRejected,
   JobProgressFault,
   TerminalOutcome,
-} from '../outcome.js';
+} from './outcome.js';
+import type { JobTerminalDiagnostics, JobTerminalInput } from './records.js';
 import type {
   SessionAdapterUnparseableFault,
   SessionInterruptedFault,
   SessionProviderFailedFault,
-} from '../../sessions/fault.js';
+} from '../sessions/fault.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;
@@ -36,6 +38,11 @@ type RuntimeAppendStore = Pick<
   { appendEventsWithResult(events: readonly CoralEventInput[]): readonly AppendResultRow[] },
   'appendEventsWithResult'
 >;
+
+export type MaterializedProviderTerminal = {
+  terminal: JobTerminalInput;
+  diagnostics: JobTerminalDiagnostics;
+};
 
 function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
@@ -227,5 +234,49 @@ export function materializeProviderFailureCause(
         failure.body,
         options,
       );
+  }
+}
+
+export function materializeProviderTerminal(
+  progressStore: RuntimeAppendStore,
+  terminal: ProviderTerminalEventBody,
+  options: RuntimeIngestOptions,
+): MaterializedProviderTerminal {
+  const warnings = [
+    ...(terminal.terminal.warnings ?? []),
+    ...(terminal.diagnostics.warnings ?? []),
+  ];
+  return {
+    terminal: {
+      content: terminal.terminal.content,
+      ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+      outcome: materializeProviderOutcome(progressStore, terminal, options),
+    },
+    diagnostics: {
+      ...(warnings.length === 0 ? {} : { warnings }),
+      ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
+      ...(terminal.terminal.exitCode === undefined
+        ? {}
+        : { processExit: { exitCode: terminal.terminal.exitCode, signal: null } }),
+    },
+  };
+}
+
+function materializeProviderOutcome(
+  progressStore: RuntimeAppendStore,
+  terminal: ProviderTerminalEventBody,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  const { outcome } = terminal.terminal;
+  switch (outcome.kind) {
+    case 'completed':
+      return { kind: 'completed' };
+    case 'aborted':
+      return { kind: 'aborted', reason: outcome.reason };
+    case 'failed':
+      if (terminal.failureCause === undefined) {
+        throw new Error('Provider terminal failed without a canonical failureCause.');
+      }
+      return materializeProviderFailureCause(progressStore, terminal.failureCause, options);
   }
 }

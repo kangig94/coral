@@ -22,20 +22,22 @@ import { writeResultArtifact } from '../exports/result-artifact.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
   AcceptedAdmission,
-  ClaimJobOptions,
-  LaunchCoordinator,
   LaunchPool,
   QueuedHandle,
-} from './contracts.js';
+  LaunchCoordinatorPort,
+} from '../admission-contract.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { type SessionManager } from '../../sessions/shell/store.js';
+import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
-import { materializeProviderTerminal } from '../reconcile/recovery-effects.js';
-import { SessionClaimError, rejectLaunch, toProviderRequest } from './contracts.js';
+import { materializeProviderTerminal } from '../terminal-materializer.js';
+import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
+import { rejectLaunch } from '../launch-rejection.js';
+import { toProviderRequest } from '../provider-request.js';
+import { TerminalWriteError } from '../terminal-write-error.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 
@@ -52,16 +54,6 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-export class TerminalWriteError extends Error {
-  constructor(
-    readonly jobId: string,
-    readonly cause: unknown,
-  ) {
-    super(`Failed to append terminal event for ${jobId}: ${errorMessage(cause)}`);
-    this.name = 'TerminalWriteError';
-  }
-}
-
 function runProviderExecution(
   provider: ProviderSpec,
   request: ProviderRequest,
@@ -73,8 +65,8 @@ function runProviderExecution(
 export interface LaunchOrchestratorDeps {
   abortRegistry: AbortRegistry;
   progressStore: JobProgressStore;
-  sessionManager: SessionManager;
-  launchCoordinator: LaunchCoordinator;
+  sessionManager: SessionJobClaimPort;
+  launchCoordinator: LaunchCoordinatorPort;
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
   backendNamespace: string;
   bundleHash: string;

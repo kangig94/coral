@@ -52,7 +52,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/lock.ts',
   'src/coordinator/ownership-checker.ts',
   'src/coordinator/recording/observer.ts',
-  'src/coordinator/services/continuity-consumer.ts',
   'src/coordinator/services/execution-policies.ts',
   'src/coordinator/services/job-abort-service.ts',
   'src/coordinator/services/job-launch-service.ts',
@@ -69,10 +68,9 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/workflow-cleanup.ts',
 ]);
 
-const DOMAIN_API_TARGETS = new Set([
-  'src/sessions/api.ts',
-]);
+const DOMAIN_API_TARGETS = new Set<string>();
 const CONTRACT_TARGETS = new Set([
+  'src/jobs/admission-contract.ts',
   'src/kb/contracts.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',

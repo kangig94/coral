@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '#src/discuss/events.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
-import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/operations.js';
+import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { getSession } from '#src/discuss/shell/registry.js';
 import { handleSynthesis } from '#src/discuss/shell/synthesis-flow.js';
 import {

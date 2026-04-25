@@ -1,4 +1,5 @@
 import { formatError } from '../../infra/error-format.js';
+import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
 import type { ProgressStore } from '../job-store.js';
 
 /**
@@ -13,7 +14,7 @@ import type { ProgressStore } from '../job-store.js';
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  progressStore: Pick<ProgressStore, 'appendEvent' | 'getDb' | 'loadJobProjectionDetail'>,
+  progressStore: Pick<ProgressStore, 'appendTerminal' | 'getDb' | 'loadJobProjectionDetail'>,
   log: (message: string) => void,
 ): number {
   const db = progressStore.getDb();
@@ -50,29 +51,15 @@ export function adoptOrphanedCrossNamespaceJobs(
         continue;
       }
 
-      progressStore.appendEvent({
-        type: 'job.terminal.recorded',
-        stream: { kind: 'job', id: row.job_id },
-        namespace: currentNamespace,
-        project: launch.projectRoot,
-        refs: {
-          jobId: row.job_id,
-          ...(launch.sessionId === null ? {} : { sessionId: launch.sessionId }),
-          ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
-          ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
-        },
-        bodyVersion: 1,
-        body: {
-          terminal: {
-            outcome: {
-              kind: 'job_fault',
-              fault: { kind: 'wrapper_lost' },
-            },
-            durationMs: 0,
-            content: '',
-          },
-        },
-      });
+      const outcome = {
+        kind: 'job_fault',
+        fault: { kind: 'wrapper_lost' },
+      } satisfies TerminalOutcome;
+      progressStore.appendTerminal(row.job_id, launch.sessionId, {
+        outcome,
+        durationMs: 0,
+        content: '',
+      }, phaseForOutcome(outcome));
       adopted += 1;
       log(`Finalized foreign-namespace job ${row.job_id} from ${row.origin_namespace}\n`);
     } catch (error: unknown) {

@@ -1,16 +1,14 @@
 import type { ProviderSpec } from '../../providers/contract.js';
-import type { SessionEntry } from '../../sessions/api.js';
+import type { SessionEntry } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { SessionManager } from '../../sessions/shell/store.js';
-import { getSessionById } from '../../sessions/shell/resolve.js';
-import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
-import {
-  rejectLaunch,
-  type AcceptedAdmission,
-} from '../../jobs/shell/contracts.js';
+import type { SessionExecutionPort } from '../../sessions/execution-contract.js';
+import { getSessionById } from '../../sessions/resolve.js';
+import type { ProviderJobLaunchPort } from '../../jobs/job-runner-contract.js';
+import { rejectLaunch } from '../../jobs/launch-rejection.js';
+import type { AcceptedAdmission } from '../../jobs/admission-contract.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
@@ -33,7 +31,7 @@ import {
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
-  sessionManager: SessionManager;
+  sessionManager: SessionExecutionPort;
   backendNamespace: string;
   bundleHash: string;
   providerRegistry: ProviderCatalog;
@@ -42,7 +40,7 @@ export interface JobLaunchServiceDeps {
   };
   progressStore: JobProgressStore;
   sessionLookup?: SessionLookup;
-  launchOrchestrator: LaunchOrchestrator;
+  launchOrchestrator: ProviderJobLaunchPort;
 }
 
 export class JobLaunchService {
