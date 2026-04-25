@@ -6,7 +6,7 @@ import {
   buildRecordingFilePath,
   recordSpawn,
   saveRecording,
-} from '../infra/process/spawn-recording.js';
+} from '../infra/spawn-recording.js';
 
 export type EmittingRuntimeObserver = RuntimeObserver & {
   emit(event: SpawnEvent): void;

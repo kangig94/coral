@@ -1,8 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { decodeStoredBody, type StoreReadContext } from '../body-codec.js';
-import { rowToCoralEvent, type CoralEvent, type StreamKind } from '../envelope.js';
-import type { EventsRow } from '../schema.js';
+import { decodeStoredBody, type StoreReadContext } from './body-codec.js';
+import { rowToCoralEvent, type CoralEvent, type StreamKind } from './envelope.js';
+import type { EventsRow } from './schema.js';
 
 export interface EventsFilter {
   streamKind?: StreamKind;

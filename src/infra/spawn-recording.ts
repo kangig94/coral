@@ -1,5 +1,5 @@
 import { basename, dirname } from 'node:path';
-import type { InfraChildProcessLike, InfraChildStdinLike, InfraStoragePort } from '../port-types.js';
+import type { InfraChildProcessLike, InfraChildStdinLike, InfraStoragePort } from './port-types.js';
 
 type SpawnRecordingEvent = {
   timestamp: number;

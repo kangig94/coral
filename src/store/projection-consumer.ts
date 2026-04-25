@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerRegistrationKind } from './consumer-contract.js';
 import type { StoreReadContext } from './body-codec.js';
-import { getEventsSince } from './queries/events.js';
+import { getEventsSince } from './event-queries.js';
 import { applyReducer, composeReducers, type ComposedReducers, type DomainEventRegistry } from './reducers.js';
 import { createDefaultUpcasterRegistry } from './upcasters.js';
 

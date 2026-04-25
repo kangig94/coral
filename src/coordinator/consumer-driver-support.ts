@@ -1,6 +1,6 @@
-import { documentedCoralSetupError, type CoralSetupError } from '../../runtime/errors.js';
-import type { ConsumerApplyError, ConsumerRegistrationKind } from '../../store/consumer-contract.js';
-import type { CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../../kb/contracts.js';
+import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
+import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
+import type { CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contracts.js';
 
 export function isCorpusInterest(value: unknown): value is CorpusInterest {
   return value === 'content' || value === 'metadata' || value === 'both';

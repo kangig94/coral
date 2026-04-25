@@ -20,7 +20,7 @@ import {
   renderConsumerId,
   shouldNotifyCorpusConsumer,
   toConsumerApplyError,
-} from './consumer-driver/support.js';
+} from './consumer-driver-support.js';
 
 export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contracts.js';
 export type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';

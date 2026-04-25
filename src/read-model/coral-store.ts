@@ -2,8 +2,8 @@ import type { Database } from 'better-sqlite3';
 
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
-import type { EventsFilter, EventsPage } from '../store/queries/events.js';
-import { getEvent, getEventsSince } from '../store/queries/events.js';
+import type { EventsFilter, EventsPage } from '../store/event-queries.js';
+import { getEvent, getEventsSince } from '../store/event-queries.js';
 import {
   loadJobDetail,
   loadJobProjectionDetail,
@@ -11,7 +11,7 @@ import {
   readJobProgress,
   type JobDetail,
   type JobsListFilters,
-} from '../jobs/read/queries.js';
+} from '../jobs/read-queries.js';
 import {
   diagnoseKnowledgeBase,
   listKnowledgeBaseMemos,

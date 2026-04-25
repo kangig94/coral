@@ -1,5 +1,5 @@
 import type { MockDurableScript, MockSpawnScript } from './core/mock-script-types.js';
-import { normalizeSpawnRecording, type SpawnRecording } from '../../src/infra/process/spawn-recording.js';
+import { normalizeSpawnRecording, type SpawnRecording } from '../../src/infra/spawn-recording.js';
 
 function findFirstEvent(
   recording: SpawnRecording,
@@ -77,4 +77,4 @@ export function recordingToDurableScript(recording: SpawnRecording): MockDurable
   };
 }
 
-export type { SpawnRecording } from '../../src/infra/process/spawn-recording.js';
+export type { SpawnRecording } from '../../src/infra/spawn-recording.js';

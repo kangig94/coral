@@ -45,7 +45,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const { appendEvents } = await import('../store/append.js');
     const { composeReducers } = await import('../store/reducers.js');
     const { createEmptyRegistry } = await import('../store/envelope.js');
-    const { getEvent } = await import('../store/queries/events.js');
+    const { getEvent } = await import('../store/event-queries.js');
     const runtime = createRealRuntime();
     const db = openStoreDatabase({
       path: storePath,

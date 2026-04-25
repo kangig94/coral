@@ -25,7 +25,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/backend-world.ts',
   'src/coordinator/composition/create-backend-core.ts',
   'src/coordinator/composition/execution-services.ts',
-  'src/coordinator/consumer-driver/support.ts',
+  'src/coordinator/consumer-driver-support.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',

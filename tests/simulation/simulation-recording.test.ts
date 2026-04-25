@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { loadRecording, recordSpawn, saveRecording } from '#src/infra/process/spawn-recording.js';
+import { loadRecording, recordSpawn, saveRecording } from '#src/infra/spawn-recording.js';
 import type { ChildProcessLike } from '#src/runtime/ports.js';
 import { recordingToDurableScript, recordingToSpawnScript } from '#tools/simulation/recording.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';

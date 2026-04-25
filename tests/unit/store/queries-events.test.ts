@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { appendEvents, type AppendInput } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { getEvent, getEventsSince } from '#src/store/queries/events.js';
+import { getEvent, getEventsSince } from '#src/store/event-queries.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';

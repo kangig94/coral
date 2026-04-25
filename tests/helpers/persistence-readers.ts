@@ -7,7 +7,7 @@ import type { JobProgress, JobStatus } from '#src/jobs/records.js';
 import { sessionEntrySchema, type SessionEntry } from '#src/sessions/entry.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/store-paths.js';
-import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read/queries.js';
+import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 const nodeDiscussReaderStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'> = {

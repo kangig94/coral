@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../src/runtime/durable-runtime.js';
-import { attachSpawnRecordingMetadata } from '../../../src/infra/process/spawn-recording.js';
+import { attachSpawnRecordingMetadata } from '../../../src/infra/spawn-recording.js';
 import { nowIsoString } from '../../../src/infra/time.js';
 import type {
   ChildOutputChunk,

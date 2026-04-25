@@ -149,7 +149,7 @@ const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
 const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
-const CONSUMER_DRIVER_SUPPORT_MODULE = 'src/coordinator/consumer-driver/support.ts';
+const CONSUMER_DRIVER_SUPPORT_MODULE = 'src/coordinator/consumer-driver-support.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -836,7 +836,7 @@ describe('architecture boundary guard', () => {
     const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
     const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
     const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/progress-store-contract.ts'), 'utf8');
-    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read/queries.ts'), 'utf8');
+    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read-queries.ts'), 'utf8');
     const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
 
     expect(waitContract).toContain('afterSeq: number');
