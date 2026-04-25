@@ -12,10 +12,10 @@ import {
   WAIT_TIMEOUT_SECONDS,
   type AbortOptions,
   type WaitOptions,
-} from '../command-client.js';
-import { emitError, getTerminalContext } from '../command-output.js';
-import { parseJobIds } from '../command-input.js';
-import { flushPendingReadStoreNote } from '../read-coral-store.js';
+} from '../dispatch.js';
+import { emitError, getTerminalContext } from '../emit.js';
+import { parseJobIds } from '../flags.js';
+import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError } from '../errors.js';
 import {
   formatAbortResult,

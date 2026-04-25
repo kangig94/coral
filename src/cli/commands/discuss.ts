@@ -9,9 +9,9 @@ import {
   type DiscussSeedOptions,
   type DiscussStartOptions,
   type DiscussWatchOptions,
-} from '../command-client.js';
-import { emitError } from '../command-output.js';
-import { parseIntegerFlag } from '../command-input.js';
+} from '../dispatch.js';
+import { emitError } from '../emit.js';
+import { parseIntegerFlag } from '../flags.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,

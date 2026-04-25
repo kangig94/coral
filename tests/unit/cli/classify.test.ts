@@ -5,8 +5,8 @@ import {
   commandClassExemptions,
   commandClassMap,
   commandContainerPaths,
-} from '#src/cli/command-class-map.js';
-import { buildProgram } from '#src/cli/main.js';
+} from '#src/cli/classify.js';
+import { buildProgram } from '#src/cli/program.js';
 
 describe('command class coverage', () => {
   it('classifies every transport-routed leaf command directly or through provider-family resolution', () => {

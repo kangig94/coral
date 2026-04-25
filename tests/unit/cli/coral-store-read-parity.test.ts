@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as MainMod from '#src/cli/main.js';
+import type * as MainMod from '#src/cli/program.js';
 
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -24,7 +24,7 @@ function toText(chunk: string | Uint8Array): string {
 
 async function loadMainModule(): Promise<MainModule> {
   vi.resetModules();
-  return import('#src/cli/main.js');
+  return import('#src/cli/program.js');
 }
 
 async function seedKbSearchSnapshot(): Promise<void> {

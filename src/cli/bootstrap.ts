@@ -1,5 +1,6 @@
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
-import { buildProgram, emitError } from './main.js';
+import { emitError } from './emit.js';
+import { buildProgram } from './program.js';
 
 const program = buildProgram();
 

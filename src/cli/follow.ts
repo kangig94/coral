@@ -14,7 +14,7 @@ import { TransientHttpError, isTransientStreamError } from '../infra/http-errors
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
-import { getSharedReadCoralStore } from './read-coral-store.js';
+import { getSharedReadCoralStore } from './read-store.js';
 import {
   formatLaunch,
   formatWaitProgress,

@@ -4,7 +4,7 @@ import { Command } from 'commander';
 
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { assertCommandClassCoverage } from './command-class-map.js';
+import { assertCommandClassCoverage } from './classify.js';
 import { registerBackendCommands } from './commands/backend.js';
 import { registerDiscussCommands } from './commands/discuss.js';
 import { registerExpansionCommands } from './commands/expansion.js';
@@ -12,7 +12,6 @@ import { registerKbCommands } from './commands/kb.js';
 import { registerProviderCommands } from './commands/provider.js';
 import { registerSessionCommands } from './commands/session.js';
 import { registerWorkflowCommands } from './commands/workflow.js';
-export { emitAcceptedLaunchResponse, emitError, getOutputFormat, isAcceptedLaunchResponse } from './command-output.js';
 
 export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();

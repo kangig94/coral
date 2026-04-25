@@ -8,9 +8,9 @@ import { buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope, formatLaunch } from './format.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject } from './parse.js';
-import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-coral-store.js';
-import type { AbortCapableClient } from './command-client.js';
-import { getPluginRoot } from './command-client.js';
+import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
+import type { AbortCapableClient } from './dispatch.js';
+import { getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 

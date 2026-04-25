@@ -1,13 +1,13 @@
 import type { Command } from 'commander';
 
 import type { ProviderRegistry } from '../../providers/registry.js';
-import { markProviderCommand } from '../command-class-map.js';
+import { markProviderCommand } from '../classify.js';
 import { UsageError } from '../errors.js';
-import { getProviderNames, makeClient, type ProviderRunOptions } from '../command-client.js';
-import { emitError, handleLaunchResult } from '../command-output.js';
+import { getProviderNames, makeClient, type ProviderRunOptions } from '../dispatch.js';
+import { emitError, handleLaunchResult } from '../emit.js';
 import {
   resolveInput,
-} from '../command-input.js';
+} from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {

@@ -18,12 +18,12 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   })),
 }));
 
-vi.mock('#src/cli/read-coral-store.js', () => ({
+vi.mock('#src/cli/read-store.js', () => ({
   getSharedReadCoralStore: vi.fn(() => mockState.readStore),
 }));
 
 import { ensure } from '#src/transport/ipc/ensure.js';
-import { makeClient } from '#src/cli/command-client.js';
+import { makeClient } from '#src/cli/dispatch.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;

@@ -17,9 +17,9 @@ import {
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
-} from '../command-client.js';
-import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../command-output.js';
-import { parseIntegerFlag, resolveFilePath } from '../command-input.js';
+} from '../dispatch.js';
+import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
+import { parseIntegerFlag, resolveFilePath } from '../flags.js';
 import {
   formatKbDiagnose,
   formatKbDelete,

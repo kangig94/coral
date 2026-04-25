@@ -46,14 +46,14 @@ import type {
   ReindexResult,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { getSharedReadCoralStore } from './read-coral-store.js';
+import { getSharedReadCoralStore } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { UsageError } from './errors.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
-import { classifyCommand, commandPath } from './command-class-map.js';
+import { classifyCommand, commandPath } from './classify.js';
 
 type SessionRequestOptions = {
   provider?: string;

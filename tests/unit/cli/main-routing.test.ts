@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as CommandClientMod from '#src/cli/command-client.js';
-import type * as CommandOutputMod from '#src/cli/command-output.js';
+import type * as CommandClientMod from '#src/cli/dispatch.js';
+import type * as CommandOutputMod from '#src/cli/emit.js';
 import type * as ErrorsMod from '#src/cli/errors.js';
-import type * as MainMod from '#src/cli/main.js';
+import type * as MainMod from '#src/cli/program.js';
 import { installErrorSchema, installResultSchema } from '#src/expansion/contracts.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobStatus } from '#src/jobs/records.js';
@@ -104,8 +104,8 @@ vi.mock('#src/expansion/workflow.js', () => ({
   update: mockState.expansionUpdate,
 }));
 
-vi.mock('#src/cli/command-client.js', async () => {
-  const actual = await vi.importActual<typeof CommandClientMod>('#src/cli/command-client.js');
+vi.mock('#src/cli/dispatch.js', async () => {
+  const actual = await vi.importActual<typeof CommandClientMod>('#src/cli/dispatch.js');
 
   return {
     ...actual,
@@ -147,8 +147,8 @@ vi.mock('#src/cli/command-client.js', async () => {
   };
 });
 
-vi.mock('#src/cli/command-output.js', async () => {
-  const actual = await vi.importActual<typeof CommandOutputMod>('#src/cli/command-output.js');
+vi.mock('#src/cli/emit.js', async () => {
+  const actual = await vi.importActual<typeof CommandOutputMod>('#src/cli/emit.js');
   const errors = await vi.importActual<typeof ErrorsMod>('#src/cli/errors.js');
 
   return {
@@ -179,7 +179,7 @@ function toText(chunk: string | Uint8Array): string {
 
 async function loadMainModule(): Promise<MainModule> {
   vi.resetModules();
-  return import('#src/cli/main.js');
+  return import('#src/cli/program.js');
 }
 
 async function parseWithExpansionNormalization(program: Command, argv: string[]): Promise<void> {

@@ -23,10 +23,10 @@ describe('cli bootstrap', () => {
       : vi.fn().mockRejectedValue(options.parseError);
     const program = { parseAsync };
 
-    vi.doMock('#src/cli/main.js', () => ({
+    vi.doMock('#src/cli/program.js', () => ({
       buildProgram: () => program,
-      emitError,
     }));
+    vi.doMock('#src/cli/emit.js', () => ({ emitError }));
 
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
@@ -74,10 +74,10 @@ describe('cli bootstrap', () => {
       new CommanderError(2, 'commander.missingMandatoryOptionValue', "error: required option '--jobs <ids>' not specified"),
     );
     const program = { parseAsync };
-    vi.doMock('#src/cli/main.js', () => ({
+    vi.doMock('#src/cli/program.js', () => ({
       buildProgram: () => program,
-      emitError,
     }));
+    vi.doMock('#src/cli/emit.js', () => ({ emitError }));
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
     await import('#src/cli/bootstrap.js');
