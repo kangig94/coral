@@ -1,10 +1,10 @@
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../infra/process-constants.js';
+import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/launch.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
-import { appendBuffer, gracefulKill, requirePipedHandles } from './process-helpers.js';
+import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-helpers.js';
 
 export { spawnProviderServerTransport } from './provider-server-transport.js';
 export type {
@@ -187,7 +187,6 @@ export async function spawnDurableJobTransport(params: {
   const { runtime, options, pool, cleanupHandles, releaseLaunch } = params;
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
-  let killTimer: ReturnType<Runtime['time']['setTimeout']> | null = null;
   let cleanupKey: symbol | null = null;
 
   try {
@@ -206,9 +205,7 @@ export async function spawnDurableJobTransport(params: {
     });
     cleanupKey = Symbol();
     cleanupHandles.set(cleanupKey, () => {
-      runtime.process.kill(durable.pid, 'SIGTERM');
-      const escalation = runtime.time.setTimeout(() => runtime.process.kill(durable.pid, 'SIGKILL'), SIGTERM_GRACE_MS);
-      escalation.unref?.();
+      gracefulKillByPid(runtime, durable.pid);
     });
 
     let abortedBySignal = false;
@@ -251,11 +248,7 @@ export async function spawnDurableJobTransport(params: {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
-        runtime.process.kill(durable.pid, 'SIGTERM');
-        killTimer = runtime.time.setTimeout(() => {
-          runtime.process.kill(durable.pid, 'SIGKILL');
-        }, SIGTERM_GRACE_MS);
-        killTimer.unref?.();
+        gracefulKillByPid(runtime, durable.pid);
       };
 
       if (options.signal.aborted) abortHandler();
@@ -298,7 +291,6 @@ export async function spawnDurableJobTransport(params: {
     if (cleanupKey !== null) {
       cleanupHandles.delete(cleanupKey);
     }
-    if (killTimer) runtime.time.clearTimeout(killTimer);
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);
     }

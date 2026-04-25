@@ -4,16 +4,13 @@
 
 import type { EventDescriber, EventDescriberMap } from '../causality/render.js';
 import { assertNever } from '../infra/error-format.js';
+import { ensureSentence } from '../infra/format-progress.js';
 import { isRecord } from '../infra/json.js';
 import {
   continuitySentenceFragment,
   type SessionContinuityState,
   type SessionProviderFailureReason,
 } from './fault.js';
-
-function ensureSentence(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`;
-}
 
 // AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { assertNever } from '../infra/error-format.js';
+import { ensureSentence } from '../infra/format-progress.js';
 import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
@@ -105,10 +106,6 @@ export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'co
     default:
       return assertNever(outcome);
   }
-}
-
-function ensureSentence(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 function renderCauseRefFallback(ref: CauseRef): string {

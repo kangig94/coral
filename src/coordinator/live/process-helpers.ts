@@ -17,6 +17,18 @@ export function gracefulKill(child: ChildProcessLike, runtime: Runtime): void {
   child.on('close', () => runtime.time.clearTimeout(killTimer));
 }
 
+/**
+ * PID-based variant of {@link gracefulKill} for callers that detached the
+ * child handle (e.g., durable transports that hand the spawned PID off to a
+ * background watcher). Fires-and-forgets the SIGKILL escalation; the returned
+ * timer is unref'd so it never holds the event loop alive on its own.
+ */
+export function gracefulKillByPid(runtime: Runtime, pid: number): void {
+  runtime.process.kill(pid, 'SIGTERM');
+  const escalation = runtime.time.setTimeout(() => runtime.process.kill(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+  escalation.unref?.();
+}
+
 export function requirePipedHandles(
   child: ChildProcessLike,
   command: string,

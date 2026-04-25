@@ -5,6 +5,7 @@
 // a cycle, since those domains import `CauseRef` from this module.
 
 import type { CoralEvent } from '../store/envelope.js';
+import { isRecord } from '../infra/json.js';
 import { causeRefSchema, type CauseRef } from './cause-ref.js';
 
 export type EventDescriber = (event: CoralEvent) => string;
@@ -67,10 +68,6 @@ function markerForCycle(ref: CauseRef): string {
 
 function markerForMissing(ref: CauseRef): string {
   return `<missing ${ref.stream.kind}/${ref.stream.id}/${ref.seq}>`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseCauseRef(value: unknown): CauseRef | null {

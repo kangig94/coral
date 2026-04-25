@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { isRecord } from '../../infra/json.js';
 import { needleIndexDir } from '../paths.js';
 
 export const NEEDLE_STORE_SCHEMA_VERSION = 1;
@@ -89,10 +90,6 @@ export class NeedleAddonLoadError extends Error {
     this.code = options.code;
     Object.setPrototypeOf(this, NeedleAddonLoadError.prototype);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function isEmbeddingSpec(value: unknown): value is EmbeddingSpec {

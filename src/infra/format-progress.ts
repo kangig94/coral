@@ -62,6 +62,10 @@ export function truncate(text: string, maxLen = 80): string {
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 }
 
+export function ensureSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
