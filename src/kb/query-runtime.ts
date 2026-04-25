@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import { kbRoot } from '../infra/paths.js';
+import { kbRoot } from "./paths.js";
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { openBackendStoreDb } from '../store/db.js';

@@ -6,7 +6,7 @@ import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '#src/cli/main.js';
 
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';

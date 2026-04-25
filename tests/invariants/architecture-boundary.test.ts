@@ -398,7 +398,14 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // inject.ts renders INJECT.md template substitutions at request-prep time
   // and must read process.env to derive the build flavor for {{CORAL_KB}};
   // the function has no runtime in scope.
-  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/providers/inject.ts']);
+  // kb/paths.ts owns the CORAL_KB_PATH env override (vault root) — that env
+  // read is the contract, not a leak.
+  const allowed = new Set([
+    'src/kb/env.ts',
+    'src/discuss/transcript.ts',
+    'src/providers/inject.ts',
+    'src/kb/paths.ts',
+  ]);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 
@@ -545,9 +552,11 @@ describe('architecture boundary guard', () => {
   });
   it('kb paths and read-model reads do not silently choose ambient roots', () => {
     const kbPathSource = readFileSync(resolve(REPO_ROOT, KB_PATHS_MODULE), 'utf8');
-    expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir|currentBuildFlavor)\s*\(/u);
+    // kbRoot/kbRuntimeDir are *defined* in kb/paths.ts; what we forbid is
+    // *calling* them as ambient lookups (i.e. using the result of a no-arg
+    // call as data). Match `= kbRoot()` / `= kbRuntimeDir()` patterns.
+    expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir)\s*\(\s*\)/u);
     expect(kbPathSource).not.toContain('currentBuildFlavor');
-    expect(kbPathSource).not.toContain('kbRoot');
     expect(collectReadModelAmbientRuntimeAccess()).toEqual([]);
   });
   it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
@@ -863,21 +872,16 @@ describe('architecture boundary guard', () => {
     expect(simulationWorld).not.toContain('createReplayCursor');
     expect(simulationWorld).not.toContain('replayFrom');
   });
-  it('retired install-scoped path helpers stay out of infra/paths.ts', () => {
-    const pathsSource = readFileSync(resolve(REPO_ROOT, 'src/infra/paths.ts'), 'utf8');
-
-    expect(pathsSource).not.toContain('installationDirForNamespace');
-    expect(pathsSource).not.toContain('installationDir(');
-    expect(pathsSource).not.toContain('backendInfoPath(');
-    expect(pathsSource).not.toContain('backendLockPath(');
-    expect(pathsSource).not.toContain('sessionBase(');
-    expect(pathsSource).not.toContain('.claude');
+  it('infra/paths.ts is permanently retired (use coral-paths/coral-root and per-domain path modules)', () => {
+    expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
   });
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
       'src/infra/backend-discovery.ts',
-      'src/infra/paths.ts',
+      'src/infra/coral-paths.ts',
+      'src/infra/coral-root.ts',
       'src/infra/plugin-registry.ts',
+      'src/kb/paths.ts',
       'src/runtime/real.ts',
     ]);
     const offenders = PRODUCTION_SOURCE_FILES.filter((filePath) => {

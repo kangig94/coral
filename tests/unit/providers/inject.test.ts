@@ -18,8 +18,15 @@ vi.mock('node:fs', async () => {
   };
 });
 
-vi.mock('#src/infra/paths.js', () => ({
-  kbRoot: () => '/mock/kb',
+vi.mock('#src/kb/paths.js', async () => {
+  const actual = await vi.importActual<typeof import('#src/kb/paths.js')>('#src/kb/paths.js');
+  return {
+    ...actual,
+    kbRoot: () => '/mock/kb',
+  };
+});
+
+vi.mock('#src/infra/project-source.js', () => ({
   projectDataDir: (dir: string) => `/mock/projects/${dir.replace(/\//g, '-')}`,
   resolveProjectSource: () => 'mock/source',
 }));

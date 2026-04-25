@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { readBuildFlavor, readBundleHash } from '#src/infra/bundle-manifest.js';
 
 const tempRoots: string[] = [];

@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -51,7 +51,7 @@ async function loadModules() {
     import('#src/coordinator/execution-service.js'),
     import('#src/coordinator/live/admission.js'),
     import('#src/coordinator/event-bus.js'),
-    import('#src/infra/paths.js'),
+    import('#src/infra/plugin-identity.js'),
     import('#src/sessions/lookup.js'),
     import('#src/sessions/read-queries.js'),
     import('#src/providers/registry.js'),

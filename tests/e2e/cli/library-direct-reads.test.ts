@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { memoDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { CoralStore } from '#src/read-model/coral-store.js';

@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';

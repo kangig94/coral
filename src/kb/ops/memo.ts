@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveProjectSource } from '../../infra/paths.js';
+import { resolveProjectSource } from "../../infra/project-source.js";
 import { SYSTEM_TIME_PORT, nowDate } from '../../infra/time.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';

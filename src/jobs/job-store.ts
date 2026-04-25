@@ -8,7 +8,7 @@ import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
-import { jobsDir } from '../infra/paths.js';
+import { jobsDir } from "./paths.js";
 import { ensureResultMarkdownArtifact } from './result-export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';

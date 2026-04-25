@@ -1,6 +1,26 @@
+import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { coralRoot, projectDataDir } from '../infra/paths.js';
+import { coralRoot } from '../infra/coral-paths.js';
+import { projectDataDir } from '../infra/project-source.js';
+
+/**
+ * Returns the KB markdown root (the "vault"). Honors CORAL_KB_PATH env
+ * override at the leaf level so users can point at a synced/shared vault
+ * without disturbing the machine-local runtime tree (kbRuntimeDir below).
+ *
+ * The vault and the runtime dir are a load-bearing pair — see KB note
+ * `coral-kb-configured-root-contract`. Keep them defined together.
+ */
+export function kbRoot(flavor: BuildFlavor, baseDir?: string): string {
+  if (baseDir !== undefined) {
+    return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
+  }
+
+  const custom = process.env.CORAL_KB_PATH;
+  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
+  return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
+}
 
 /** Strip trailing `.md` extension if present. Idempotent. */
 export function stripMdExt(name: string): string {

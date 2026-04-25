@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { kbRoot, projectDataDir, resolveProjectSource } from '../infra/paths.js';
+import { kbRoot } from "../kb/paths.js";
+import { projectDataDir, resolveProjectSource } from "../infra/project-source.js";
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { isOwnerId } from '../infra/owner-id.js';
 

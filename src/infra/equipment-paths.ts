@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { BuildFlavor } from './build-flavor.js';
-import { coralRoot } from './paths.js';
+import { coralRoot } from './coral-root.js';
 
 export const EQUIPMENT_ADDON_FILENAMES = {
   needle: 'coral-needle.node',

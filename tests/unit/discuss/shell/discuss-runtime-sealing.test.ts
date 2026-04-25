@@ -8,7 +8,7 @@ import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#s
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {

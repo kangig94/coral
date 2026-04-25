@@ -6,7 +6,7 @@ import type { CoralEventInput } from '../../store/envelope.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
-import { pluginRootNamespace } from '../../infra/paths.js';
+import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';

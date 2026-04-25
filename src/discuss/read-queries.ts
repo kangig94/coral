@@ -9,7 +9,7 @@ import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
 } from './persistence-types.js';
-import { resolveProjectSource } from '../infra/paths.js';
+import { resolveProjectSource } from "../infra/project-source.js";
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 

@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import { kbRoot } from '../infra/paths.js';
+import { kbRoot } from "./paths.js";
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntimeActivationSnapshot, KbRuntime } from './contracts.js';

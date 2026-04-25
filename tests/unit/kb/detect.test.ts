@@ -19,15 +19,15 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths, infraPaths] = await Promise.all([
+  const [runtime, paths] = await Promise.all([
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
-    import('#src/infra/paths.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
-    infraPaths,
+    // kbRoot now lives alongside kbRuntimeDir in kb/paths.ts
+    infraPaths: paths,
   };
 }
 

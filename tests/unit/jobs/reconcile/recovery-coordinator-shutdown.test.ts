@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { jobsDir } from '#src/infra/paths.js';
+import { jobsDir } from "#src/jobs/paths.js";
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
@@ -55,7 +55,7 @@ async function loadModules() {
     import('#src/coordinator/startup-error.js'),
     import('#src/coordinator/live/admission.js'),
     import('#src/coordinator/event-bus.js'),
-    import('#src/infra/paths.js'),
+    import('#src/infra/plugin-identity.js'),
     import('#src/sessions/lookup.js'),
     import('#src/providers/registry.js'),
   ]);

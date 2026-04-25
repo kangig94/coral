@@ -31,12 +31,9 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import {
-  jobsDir,
-  pluginRootNamespace,
-  projectDataDir,
-  resolveProjectSource,
-} from '#src/infra/paths.js';
+import { jobsDir } from "#src/jobs/paths.js";
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { projectDataDir, resolveProjectSource } from "#src/infra/project-source.js";
 import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import type { JobLaunch } from '#src/jobs/records.js';

@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pluginRootNamespace } from '../../infra/paths.js';
+import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/coordinator-paths.js';
 import { type LockRecord } from '../../infra/lock-record.js';

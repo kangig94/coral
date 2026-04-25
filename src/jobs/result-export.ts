@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 
 import type { Database } from 'better-sqlite3';
 
-import { jobsDir } from '../infra/paths.js';
+import { jobsDir } from "./paths.js";
 import type { StoragePort } from '../runtime/ports.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';

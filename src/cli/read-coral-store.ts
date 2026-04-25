@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { existsSync } from 'node:fs';
 
-import { pluginRootNamespace } from '../infra/paths.js';
+import { pluginRootNamespace } from "../infra/plugin-identity.js";
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';

@@ -19,7 +19,8 @@ import { providerRequestFailed, providerSessionUnavailable } from '#src/provider
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
+import { jobsDir } from "#src/jobs/paths.js";
+import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { type AgentRef } from '#src/jobs/agent-resolution.js';
