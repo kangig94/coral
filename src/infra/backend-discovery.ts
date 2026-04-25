@@ -3,8 +3,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
-import type { CoralPaths } from './coral-paths.js';
-import { composeCoralPaths } from './coral-paths.js';
+import type { CoralPaths } from './path/compose.js';
+import { composeCoralPaths } from './path/compose.js';
 import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';

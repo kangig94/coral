@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { catalogEntrySchema } from '#src/expansion/contracts.js';
-import { EQUIPMENT_ADDON_FILENAMES } from '#src/infra/equipment-paths.js';
+import { EQUIPMENT_ADDON_FILENAMES } from '#src/infra/path/equipment.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
   CATALOG,

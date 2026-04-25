@@ -8,7 +8,7 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../../src/runtime/ports.js';
-import { composeCoralPaths, type CoralPaths } from '../../../src/infra/coral-paths.js';
+import { composeCoralPaths, type CoralPaths } from '../../../src/infra/path/compose.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
 import { cloneSpawnEvent } from '../../../src/runtime/spawn.js';
 import { hashToken } from '../../../src/infra/hash.js';

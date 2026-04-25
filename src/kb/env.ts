@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { coralRoot } from "../infra/coral-root.js";
+import { coralRoot } from "../infra/path/root.js";
 
 export function coralEnvPath(): string {
   return join(coralRoot(), '.env');

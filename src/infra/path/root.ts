@@ -1,15 +1,16 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import type { BuildFlavor } from './build-flavor.js';
+import type { BuildFlavor } from '../build-flavor.js';
 
 /**
  * Resolves the Coral root directory (`~/.coral` by default). Tests pass an
  * explicit `baseDir` override to point at a tmp dir.
  *
- * Lives in its own file because every flavor-aware path family needs it,
- * and putting it in `coral-paths.ts` (the composer) would create cycles
- * (coral-paths -> store-paths -> coral-paths and so on).
+ * Lives in its own file (cycle-break sibling) because every flavor-aware path
+ * family in this subdir needs it; folding it into `compose.ts` would create
+ * `compose -> store -> compose` cycles. Same precedent as
+ * `kb/corpus/manifest-types.ts`.
  */
 export function coralRoot(baseDir?: string): string {
   return baseDir ?? join(homedir(), '.coral');
@@ -21,10 +22,10 @@ export function coralRoot(baseDir?: string): string {
  * machine-local runtime tree (kbRuntimeDir).
  *
  * Single canonical implementation — both `kb/paths.ts:kbRoot` (KB domain
- * caller) and `infra/coral-paths.ts:corpusPaths` (CoralPaths composer)
+ * caller) and `infra/path/compose.ts:corpusPaths` (CoralPaths composer)
  * delegate here. Per Principle #7 (No Ambiguity): a vault path resolver
  * has exactly one home, and that home must be at a layer both callers can
- * import without violating the layering rules — i.e. infra.
+ * import without violating the layering rules — i.e. infra/path.
  */
 export function kbVaultRoot(flavor: BuildFlavor, baseDir?: string): string {
   if (baseDir !== undefined) {

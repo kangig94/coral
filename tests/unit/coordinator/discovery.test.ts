@@ -3,7 +3,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',

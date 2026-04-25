@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 
-import { coralRoot } from './coral-root.js';
+import { coralRoot } from './path/root.js';
 
 const projectSourceCache = new Map<string, string>();
 

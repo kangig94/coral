@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { acquireLock, releaseLock, type LockRecord } from '#src/coordinator/lock.js';
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 
 function makeEnoent(path: string): NodeJS.ErrnoException {
   const error = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;

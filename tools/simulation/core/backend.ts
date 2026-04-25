@@ -34,8 +34,8 @@ import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/ev
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
 import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';
-import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/backend-core-types.js';
-import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
+import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/core-types.js';
+import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';

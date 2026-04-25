@@ -1,9 +1,9 @@
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/coral-paths.js';
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
-import { equipmentPaths } from '#src/infra/equipment-paths.js';
-import { storePaths } from '#src/infra/store-paths.js';
+import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/path/compose.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { equipmentPaths } from '#src/infra/path/equipment.js';
+import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
   it('returns a frozen record covering all five path families', () => {

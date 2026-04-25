@@ -1,11 +1,11 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { coralRoot, kbVaultRoot } from '../infra/coral-root.js';
+import { coralRoot, kbVaultRoot } from '../infra/path/root.js';
 import { projectDataDir } from '../infra/project-source.js';
 
 /**
  * KB-domain re-export of the vault root. The canonical implementation
- * lives in `infra/coral-root.ts:kbVaultRoot` so that the CoralPaths
+ * lives in `infra/path/root.ts:kbVaultRoot` so that the CoralPaths
  * composer (which can't depend upward on kb/) shares the exact same
  * env-override semantics.
  *

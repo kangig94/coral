@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
-import { composeCoralPaths } from '#src/infra/coral-paths.js';
+import { composeCoralPaths } from '#src/infra/path/compose.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 
 const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'equipment'] as const;

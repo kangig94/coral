@@ -16,7 +16,7 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 
 function baseDirOfLength(length: number): string {
   return `/${'a'.repeat(length - 1)}`;

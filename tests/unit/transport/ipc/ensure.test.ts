@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 
 const mockState = vi.hoisted(() => ({

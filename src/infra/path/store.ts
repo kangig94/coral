@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
-import type { BuildFlavor } from './build-flavor.js';
-import { coralRoot } from './coral-root.js';
+import type { BuildFlavor } from '../build-flavor.js';
+import { coralRoot } from './root.js';
 
 export interface StorePaths {
   dbDir: string;

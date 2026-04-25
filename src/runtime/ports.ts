@@ -1,5 +1,5 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { CoralPaths } from '../infra/coral-paths.js';
+import type { CoralPaths } from '../infra/path/compose.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimeTimerHandle {

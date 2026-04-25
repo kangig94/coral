@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import type { Runtime } from '../runtime/ports.js';
 import { catalogEntrySchema, onboardingSchema, type CatalogEntry, type Onboarding } from './contracts.js';
-import { EQUIPMENT_ADDON_FILENAMES } from '../infra/equipment-paths.js';
+import { EQUIPMENT_ADDON_FILENAMES } from '../infra/path/compose.js';
 import { equipmentAddonStrategy, type EquipmentAddonConfig } from './strategies/equipment-addon.js';
 import { githubBinaryStrategy, type GithubBinaryConfig } from './strategies/github-binary.js';
 import type { Strategy } from './strategies/strategy.js';

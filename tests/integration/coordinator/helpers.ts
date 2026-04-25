@@ -7,8 +7,8 @@ import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type { LockRecord } from '#src/infra/lock-record.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
-import { storePaths } from '#src/infra/store-paths.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { storePaths } from '#src/infra/path/store.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {

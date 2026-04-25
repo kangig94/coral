@@ -1,9 +1,9 @@
 import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { BuildFlavor } from './build-flavor.js';
-import { hashToken } from './hash.js';
-import { coralRoot } from './coral-root.js';
+import type { BuildFlavor } from '../build-flavor.js';
+import { hashToken } from '../hash.js';
+import { coralRoot } from './root.js';
 
 export interface CoordinatorPaths {
   runDir: string;

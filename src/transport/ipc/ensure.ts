@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { createRealRuntime } from '../../runtime/real.js';
-import type { CoordinatorPaths } from '../../infra/coordinator-paths.js';
+import type { CoordinatorPaths } from '../../infra/path/compose.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';

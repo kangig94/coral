@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentPaths } from "#src/infra/equipment-paths.js";
+import { equipmentPaths } from "#src/infra/path/equipment.js";
 
 const mockState = vi.hoisted(() => ({
   installExpansion: vi.fn(),

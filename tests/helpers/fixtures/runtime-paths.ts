@@ -1,4 +1,4 @@
-import { composeCoralPaths } from '#src/infra/coral-paths.js';
+import { composeCoralPaths } from '#src/infra/path/compose.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 

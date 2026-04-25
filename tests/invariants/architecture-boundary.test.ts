@@ -876,14 +876,45 @@ describe('architecture boundary guard', () => {
     expect(simulationWorld).not.toContain('createReplayCursor');
     expect(simulationWorld).not.toContain('replayFrom');
   });
-  it('infra/paths.ts is permanently retired (use coral-paths/coral-root and per-domain path modules)', () => {
+  it('infra/paths.ts is permanently retired (use infra/path/compose and per-domain path modules)', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
+  });
+  it('production src/ imports infra/path/ subdir only via compose.ts (sibling files stay subdir-internal)', () => {
+    // The infra/path/ subdir is the path subsystem: compose.ts is the public
+    // composer (used by runtime port construction); root/store/coordinator/
+    // equipment are private family builders. External src/ callers must go
+    // through composeCoralPaths so that flavor-aware path resolution stays
+    // funneled through one entry point. KB has a documented exception for
+    // root.ts (cycle-break primitive needed for kbRuntimeDir).
+    const COMPOSE_PUBLIC = 'src/infra/path/compose.ts';
+    const ALLOWED_INTERNAL_IMPORTERS: Record<string, ReadonlySet<string>> = {
+      'src/infra/path/root.ts': new Set([
+        'src/kb/paths.ts',
+        'src/kb/env.ts',
+        'src/infra/project-source.ts',
+      ]),
+    };
+    const offenders: string[] = [];
+    for (const edge of PARSED_IMPORT_EDGES) {
+      if (edge.source.startsWith('src/infra/path/')) {
+        continue;
+      }
+      if (!edge.target.startsWith('src/infra/path/') || edge.target === COMPOSE_PUBLIC) {
+        continue;
+      }
+      const allowed = ALLOWED_INTERNAL_IMPORTERS[edge.target];
+      if (allowed?.has(edge.source)) {
+        continue;
+      }
+      offenders.push(`${edge.source} -> ${edge.target}`);
+    }
+    expect(offenders).toEqual([]);
   });
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
       'src/infra/backend-discovery.ts',
-      'src/infra/coral-paths.ts',
-      'src/infra/coral-root.ts',
+      'src/infra/path/compose.ts',
+      'src/infra/path/root.ts',
       'src/infra/plugin-registry.ts',
       'src/kb/paths.ts',
       'src/runtime/real.ts',

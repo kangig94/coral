@@ -5,7 +5,7 @@ import { gzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { equipmentPaths } from "#src/infra/equipment-paths.js";
+import { equipmentPaths } from "#src/infra/path/equipment.js";
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';

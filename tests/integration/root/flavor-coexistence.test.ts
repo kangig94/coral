@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { composeCoralPaths } from '#src/infra/coral-paths.js';
-import { equipmentPaths } from '#src/infra/equipment-paths.js';
+import { composeCoralPaths } from '#src/infra/path/compose.js';
+import { equipmentPaths } from '#src/infra/path/equipment.js';
 
 function assertDistinctPathPair(prodPath: string, devPath: string): void {
   expect(prodPath).not.toBe(devPath);

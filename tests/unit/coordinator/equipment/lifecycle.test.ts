@@ -9,7 +9,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '#src/coordinator/equipment/lifecycle.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
-import { equipmentPaths } from "#src/infra/equipment-paths.js";
+import { equipmentPaths } from "#src/infra/path/equipment.js";
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';

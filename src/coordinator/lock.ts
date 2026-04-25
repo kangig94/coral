@@ -3,7 +3,7 @@ import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
-import { coordinatorPaths } from '../infra/coordinator-paths.js';
+import { composeCoralPaths } from '../infra/path/compose.js';
 import type { LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
@@ -29,7 +29,7 @@ export class BackendAlreadyRunningError extends Error {
 }
 
 export function backendLockPath(pluginRoot: string): string {
-  return coordinatorPaths(readBuildFlavor(pluginRoot)).lockFile;
+  return composeCoralPaths(readBuildFlavor(pluginRoot)).coordinator.lockFile;
 }
 
 type LockSnapshot = {
