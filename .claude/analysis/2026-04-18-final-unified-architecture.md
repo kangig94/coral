@@ -231,7 +231,7 @@ The Corpus authority (§2.2, §6.4) uses the filesystem directly and is document
 
 ```sql
 -- The journal: append-only event log
-CREATE TABLE events (
+CREATE TABLE IF NOT EXISTS events (
   seq            INTEGER PRIMARY KEY AUTOINCREMENT,  -- global total order
   ts             TEXT    NOT NULL,                   -- ISO 8601
   type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
@@ -245,15 +245,15 @@ CREATE TABLE events (
   body_version   INTEGER NOT NULL DEFAULT 1,         -- per-type schema version
   body           BLOB    NOT NULL                    -- JSON payload
 );
-CREATE INDEX events_stream ON events(stream_kind, stream_id, seq);
-CREATE INDEX events_type   ON events(type, seq);
-CREATE INDEX events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
+CREATE INDEX IF NOT EXISTS events_stream ON events(stream_kind, stream_id, seq);
+CREATE INDEX IF NOT EXISTS events_type   ON events(type, seq);
+CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
 
 -- Projection tables (read models). Rebuildable from events.
 -- projection_jobs materializes stable-at-launch identity fields plus lifecycle
 -- summary so list/filter queries are single-query operations. Event bodies stay
 -- authoritative; the projection is derived via reducer dispatch + replay identity.
-CREATE TABLE projection_jobs (
+CREATE TABLE IF NOT EXISTS projection_jobs (
   job_id                  TEXT PRIMARY KEY,
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
@@ -269,11 +269,11 @@ CREATE TABLE projection_jobs (
   created_at              TEXT NOT NULL,
   last_seq                INTEGER NOT NULL
 );
-CREATE INDEX projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
-CREATE INDEX projection_jobs_session ON projection_jobs(session_id);
-CREATE INDEX projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
+CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
+CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
+CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
 
-CREATE TABLE projection_sessions (
+CREATE TABLE IF NOT EXISTS projection_sessions (
   session_id       TEXT PRIMARY KEY,
   controller       TEXT NOT NULL,
   provider         TEXT NOT NULL,
@@ -284,20 +284,20 @@ CREATE TABLE projection_sessions (
   last_seq         INTEGER NOT NULL
 );
 
-CREATE TABLE projection_discuss (
+CREATE TABLE IF NOT EXISTS projection_discuss (
   discuss_id TEXT PRIMARY KEY,
   state      TEXT NOT NULL,        -- JSON (reducer output)
   last_seq   INTEGER NOT NULL
 );
 
-CREATE TABLE projection_workflows (
+CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
   plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
   last_seq    INTEGER NOT NULL
 );
 
 -- Metadata
-CREATE TABLE meta (
+CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
@@ -308,7 +308,7 @@ CREATE TABLE meta (
 -- snapshot_id and the manifest hashes pin the most recent atomic snapshot
 -- swap so consumers can detect snapshot identity changes that happen at the
 -- same seq (e.g., compaction without content change).
-CREATE TABLE kb_corpus_state (
+CREATE TABLE IF NOT EXISTS kb_corpus_state (
   id                     INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
   snapshot_id            TEXT,
   content_seq            INTEGER NOT NULL,
@@ -327,7 +327,7 @@ CREATE TABLE kb_corpus_state (
 --   'metadata' for tag-only changes, 'both' otherwise) so a metadata-only
 --   bump never wakes a content consumer. `lane` is a hint used to short-
 --   circuit fan-out when a publication carries a single lane.
-CREATE TABLE equipment_cursors (
+CREATE TABLE IF NOT EXISTS equipment_cursors (
   consumer_id            TEXT PRIMARY KEY,      -- 'orama-base', 'needle-vector'
   authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
   lane                   TEXT,                  -- NULL for journal and 'both' corpus consumers
@@ -346,7 +346,7 @@ CREATE TABLE equipment_cursors (
 -- Tracks which expansion currently owns each equipment slot and its
 -- install/error state for diagnostics. The KB router reads this through
 -- KbRuntime.getEquipmentView().
-CREATE TABLE equipment_state (
+CREATE TABLE IF NOT EXISTS equipment_state (
   name               TEXT PRIMARY KEY,
   state              TEXT NOT NULL,
   installed_at       TEXT,
@@ -365,7 +365,7 @@ CREATE TABLE equipment_state (
 -- The two community_*_topology_hash columns let curate skip community
 -- detection / summary regeneration when the underlying graph hasn't
 -- structurally changed (cheaper than always re-running).
-CREATE TABLE kb_curate_scheduler (
+CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   id                                   INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through_seq                INTEGER,
   processed_through_entry_id           TEXT,
@@ -387,7 +387,7 @@ CREATE TABLE kb_curate_scheduler (
 -- Active curate claim: the in-flight checkpoint a curate worker is
 -- currently processing. Singleton; coordinator single-writer ensures only
 -- one claim exists at a time.
-CREATE TABLE kb_curate_active_claim (
+CREATE TABLE IF NOT EXISTS kb_curate_active_claim (
   id                 INTEGER PRIMARY KEY CHECK (id = 1),
   through_seq        INTEGER NOT NULL CHECK (through_seq > 0),
   through_entry_id   TEXT    NOT NULL,
@@ -397,7 +397,7 @@ CREATE TABLE kb_curate_active_claim (
 
 -- Per-community input fingerprints. Lets summary regeneration skip
 -- communities whose member-set fingerprint is unchanged.
-CREATE TABLE kb_curate_community_summary_input_fingerprints (
+CREATE TABLE IF NOT EXISTS kb_curate_community_summary_input_fingerprints (
   community_slug TEXT PRIMARY KEY,
   fingerprint    TEXT NOT NULL
 );
@@ -407,7 +407,7 @@ CREATE TABLE kb_curate_community_summary_input_fingerprints (
 -- O(log n) "who is due now" scans. The classification fields
 -- (canonical_incident, signals_json, repair_hint) feed the corpus repair
 -- pipeline (§6.4.1) so retry attempts know what to try.
-CREATE TABLE kb_curate_retry_queue (
+CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
   entry_id              TEXT PRIMARY KEY,
   entry_seq             INTEGER,
   reason                TEXT NOT NULL,
@@ -420,12 +420,12 @@ CREATE TABLE kb_curate_retry_queue (
   retry_not_before      TEXT NOT NULL,
   retry_count           INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
+CREATE INDEX IF NOT EXISTS kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
 
 -- Curate discovery backlog: principle-statement candidates queued for the
 -- next curate pass to attach to source notes. Two tables because each
 -- backlog entry can reference many source notes.
-CREATE TABLE kb_curate_discovery_backlog (
+CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog (
   entry_id        TEXT PRIMARY KEY,
   principle_slug  TEXT NOT NULL,
   statement       TEXT NOT NULL,
@@ -434,7 +434,7 @@ CREATE TABLE kb_curate_discovery_backlog (
   UNIQUE(principle_slug, statement)
 );
 
-CREATE TABLE kb_curate_discovery_backlog_notes (
+CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
   backlog_entry_id TEXT NOT NULL REFERENCES kb_curate_discovery_backlog(entry_id) ON DELETE CASCADE,
   note_id          TEXT NOT NULL,
   PRIMARY KEY(backlog_entry_id, note_id)
@@ -1320,6 +1320,9 @@ src/
       admission.ts                   — launch admission (seat/host pool)
       provider-hosts/                — app-server host pool (lease, idle, drain, recovery; 16K file decomposed here)
         pool.ts, lease.ts, idle.ts, drain.ts, recovery.ts, state.ts
+      durable-transport.ts           — DurableExecutionTransport seam for cli-runner durable spawns
+      provider-server-transport.ts   — provider-server transport seam over the host pool
+      process-helpers.ts             — per-launch process helpers shared by transports
       idle.ts                        — idle-daemon eviction policy
       worker-limits.ts               — per-provider launch concurrency clamps
       curate-scheduler.ts            — periodic Corpus curation (discovery, community detection, repair retry).
@@ -1398,27 +1401,37 @@ src/
 
   jobs/                              ← domain: jobs events + projections + shell
     consumer.ts                      — Journal projection consumer registration for jobs
-    job-store.ts                     — journal append/read seam over jobsRegistry
+    job-store.ts                     — journal append/read seam over jobsRegistry; sole owner of raw
+                                       `job.terminal.recorded` construction (invariant #47)
     events.ts                        — jobs event body schemas + terminal-order append validator + projection_jobs reducers
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef-aware describers
     event-describers.ts              — per-event-type describer map for `job:*` events (consumed by the
                                        cause-ref renderer through read-model composition)
     read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
+    read-contracts.ts                — read-side contract types shared by jobs/read and consumers
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
+    launch-readiness.ts              — readiness predicates over launch+queue events
+    launch-rejection.ts              — LaunchDecision rejection helper
     admission-contract.ts            — launch admission/queue port contract
     agent-resolution.ts              — resolve agent by id
     abort-registry-contract.ts       — abort signal registry port
+    abort-result.ts                  — abort outcome shape consumed by abort handlers
     job-runner-contract.ts           — provider/workflow/recovery lifecycle ports
-    launch-rejection.ts              — LaunchDecision rejection helper
+    progress-store-contract.ts       — progress-store port consumed by coordinator services
     provider-request.ts              — persisted launch → ProviderRequest mapper
     session-claim.ts                 — session job-claim error/options owned by jobs
+    continuity.ts                    — provider continuity snapshot type owned by jobs (mirrors sessions/continuity)
     terminal-write-error.ts          — terminal append failure error
     result.ts                        — JobTerminal + JobDiagnostics
     terminal-materializer.ts         — provider/session/recovery terminal cause materialization
     wait.ts                          — WaitCursor + wait body types + terminal wait defaults
     wait-port.ts                     — wait coordinator port contract
+    wait-stream-event.ts             — wait stream envelope shape (progress / queued / waiting / terminal)
     records.ts                       — job record DTOs shared across readers and shells
+    event-bus.ts                     — typed in-process bus for `job:*` lifecycle notifications
+                                       (in-memory only; not the durable progress log retired in §1.4)
+    startup.ts                       — jobs-domain startup helpers consumed by coordinator boot
     exports/
       result-artifact.ts             — canonical `<os-tmpdir>/coral-jobs/<jobId>/result.md` path + atomic writes
       result-markdown.ts             — materialize/rebuild result.md from terminal events
@@ -1454,9 +1467,26 @@ src/
 
   discuss/                           ← unchanged domain core; template
     state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
+    consumer.ts                      — Journal projection consumer registration for discuss
+    store-registry.ts                — discuss DomainEventRegistry (per-kind entries)
     recovery-contract.ts             — shell-free live-boundary predicate
     shell/                           — imperative shell (moved from execution/discuss/)
       recovery.ts                    — recovered resume contract + startup recovery + shutdown abort persistence
+      bid-flow.ts, speech-flow.ts, followup-flow.ts, synthesis-flow.ts
+                                       — sub-workflow loops (one per discuss phase, decomposed per §10.1a)
+      session-store.ts               — persistence glue for discuss sessions
+      live-registry.ts               — attached-session + watch buffers
+      persistence.ts                 — atomic session-state persistence helpers
+      registry.ts                    — DiscussContextRegistry (live session map owned by coordinator)
+      session-read-service.ts        — read-side service collecting attached sessions for queries
+      runtime-build.ts               — discuss runtime composition (services + ports)
+      runtime-services.ts            — service surface consumed by coordinator composition
+      context.ts                     — per-session DiscussContext value
+      flow-primitives.ts             — shared step primitives across the four flows
+      loop.ts                        — top-level discuss loop driving the flows
+      operations.ts                  — discuss-domain operations (start, seed, end, …)
+      prompts.ts                     — discuss prompt templates and assembly
+      tools.ts                       — discuss-tool dispatch helpers
 
   kb/                                ← Corpus-authority domain (markdown is truth)
     contracts.ts                     — public KB types
@@ -1552,16 +1582,25 @@ src/
   workflow/                          ← owns syntax, plan, and execution semantics
     parser.ts                        — pipe syntax parser
     ast.ts                           — workflow AST types
+    input.ts                         — pipeline input → AST entrypoint
     normalize.ts                     — AST normalization (desugaring) → WorkflowPlan
+    compile.ts                       — compile WorkflowPlan into atom launch sequence
     plan.ts                          — WorkflowPlan + WorkflowSlot types + validation
     command.ts                       — workflow command schema
+    consumer.ts                      — Journal projection consumer registration for workflow
+    dispatch.ts                      — workflow command dispatch entrypoint
     events.ts                        — workflow event body schemas + projection_workflows reducers
     event-describers.ts              — per-event-type describer map for `workflow:*` events
     projections.ts                   — workflow journal append helper for tests/recovery over workflowRegistry
+    read-queries.ts                  — WorkflowView queries (plan + slot outcomes derived from child jobs)
     executor.ts                      — top-level orchestration: declares plan, schedules launches, emits workflow.completed
     launch.ts                        — atom launch + retry (intertwined per current code; §10.1a)
     wait.ts                          — await-step state + multi-atom wait + cascade
-    recover.ts                       — stale-atom recovery paths
+    recover.ts                       — workflow recovery + step resumption
+    stale-recovery.ts                — stale-atom recovery paths (split from recover.ts for cohesion)
+    internal/                        — workflow-internal contracts not exported to other domains
+      execution-contract.ts          — workflow execution port + WorkflowExecutionError
+      format.ts                      — workflow-local rendering helpers
 
   tools/testing/                     ← test helpers; never imported by production
     deferred.ts                      — test-only async primitive
@@ -1583,9 +1622,20 @@ tools/
     runner.ts                        — deterministic run loop
     recording.ts                     — event recording for replay diagnostics
     adversarial.ts                   — adversarial lifecycle/recovery scenario helpers
+    no-real-io.ts                    — sealing gate that fails on real-io leakage at type-check time
+    scenario-schema.ts               — Zod schema for scenario YAML
+    scenario-normalize.ts            — normalize parsed scenarios into runner input
+    scenario-http.ts                 — HTTP-shaped scenario step decoder
     core/
-      backend.ts, memory-storage.ts, mock-app-server.ts, mock-process.ts,
-      runtime-doubles.ts, virtual-time.ts
+      backend.ts                     — simulation backend composition
+      constants.ts                   — simulation defaults/limits
+      memory-storage.ts              — in-memory StoragePort
+      mock-app.ts                    — generic mock app harness
+      mock-app-server.ts             — claude app-server mock
+      mock-process.ts                — process port double
+      mock-script-types.ts           — scripted-step value types shared by mocks
+      runtime-doubles.ts             — runtime port doubles
+      virtual-time.ts                — deterministic virtual TimePort
 ```
 
 ### 10.1 What is deleted

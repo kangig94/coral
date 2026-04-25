@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS projection_discuss (
 
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
-  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, label, provider, instruction, ...}] }
+  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
+                                   -- labels are derived at render time from `slot.agent` (§12 invariant);
+                                   -- workflowId is event.stream.id, not stored in body.
   last_seq    INTEGER NOT NULL
 );
 

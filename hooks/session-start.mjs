@@ -43,8 +43,13 @@ try {
 
 function findGitRoot(cwd) {
   try {
+    // Bound git rev-parse against pathological mounts (NFS / WSL slow fs).
+    // Fail-open: any timeout, ENOENT, or non-zero exit returns undefined.
     return execSync('git rev-parse --show-toplevel', {
-      cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 2000,
     }).trim();
   } catch {
     return undefined;

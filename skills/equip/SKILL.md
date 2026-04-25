@@ -1,6 +1,6 @@
 ---
 name: equip
-description: One-touch install of Coral companion tooling and Needle KB runtime
+description: One-touch install of Coral companion tooling and KB runtime
 argument-hint: "[--list | [--update] <package> | uninstall <equipment-name>]"
 ---
 
