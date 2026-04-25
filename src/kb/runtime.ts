@@ -34,14 +34,16 @@ import {
   type KbIndex,
 } from './entry-types.js';
 import { createOramaBaseProjection } from './search/orama-backend.js';
-import { createCorpusStateMirror } from './runtime-state.js';
+import { createCorpusStateMirror } from './state/corpus-state.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import {
   applyMutationLane,
   captureIndexStateSnapshot,
+  commitMutationState,
   indexStateMatchesSnapshot,
   mergeMutationLane,
   mutationLanesFromDiff,
+  previewPendingMutationState,
   withoutTextStaleReason,
   type KbIndexStateSnapshot,
 } from './corpus/lanes.js';
@@ -54,6 +56,7 @@ import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
 import { OramaSnapshotStore } from './search/orama-snapshot.js';
 import {
+  buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,
   detectInboundSyncMutation,
   detectInboundSyncMutationFromFullCollectors,
@@ -61,14 +64,12 @@ import {
   isGitSyncResult,
   type InboundSyncMutationDiff,
 } from './corpus/inbound-sync.js';
-import { createKbRuntimePaths, type KbRuntimePaths } from './runtime-paths.js';
+import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
 import { pendingRepairNeedsRetry } from './runtime-pending-repair.js';
-import { buildInboundSyncIndexDelta } from './runtime-inbound-index.js';
 import {
   buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot,
   emptyRuntimeActivationSnapshot,
 } from './runtime-snapshot.js';
-import { commitMutationState, previewPendingMutationState } from './runtime-mutation-state.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import { readProcessEnv } from '../infra/process-env.js';
 import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';

@@ -192,3 +192,22 @@ export function persistCorpusState(
 
   return persistTxn.immediate(snapshot);
 }
+
+export interface CorpusStateMirror {
+  get(): KbCorpusSnapshot;
+  invalidate(): void;
+}
+
+export function createCorpusStateMirror(db: Database): CorpusStateMirror {
+  let cachedSnapshot: KbCorpusSnapshot | null = null;
+
+  return {
+    get(): KbCorpusSnapshot {
+      cachedSnapshot ??= readCorpusState(db);
+      return { ...cachedSnapshot };
+    },
+    invalidate(): void {
+      cachedSnapshot = null;
+    },
+  };
+}
