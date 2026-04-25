@@ -28,7 +28,7 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
-import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
+import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts/index.js';
 import {
   type EntityGraph,
   type KbIndex,

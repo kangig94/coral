@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import { commitMetadataTargets, commitMetadataTargetsLocked } from '#src/kb/curate/metadata-commit.js';
-import { readCurateState } from '#src/kb/curate/state.js';
+import { readCurateState } from '#src/kb/curate/state/index.js';
 import { applyNoteUpdateLocked, update } from '#src/kb/ops/update.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';

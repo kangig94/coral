@@ -1,5 +1,5 @@
 import type { KbDiagnoseResult } from './entry-types.js';
-import type { PendingRepair } from './curate/state.js';
+import type { PendingRepair } from './curate/state/index.js';
 
 function parseDiagnoseSignals(entry: PendingRepair): unknown {
   if (entry.signalsJson === undefined) {

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import * as GraphologyModule from 'graphology';
 import type { GraphConstructor } from 'graphology-types';
-import { compareLocale } from '../validation.js';
-import type { EntityGraph, KbIndex } from '../entry-types.js';
-import { uniqueSorted } from './community-identity.js';
-import type { TagGraph } from './community-types.js';
+import { compareLocale } from '../../validation.js';
+import type { EntityGraph, KbIndex } from '../../entry-types.js';
+import { uniqueSorted } from './identity.js';
+import type { TagGraph } from './contracts.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };

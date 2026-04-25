@@ -4,7 +4,7 @@ import type { AppendedEvent } from '../store/append.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import type { JobContinuitySnapshot } from './continuity.js';
 import type { JobPhase } from './phase.js';
-import type { JobProjectionDetail } from './read-contracts.js';
+import type { JobProjectionDetail } from './read-contract.js';
 import type { JobEventBus } from './event-bus.js';
 import type {
   JobTerminalDiagnostics,

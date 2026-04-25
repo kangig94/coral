@@ -1,4 +1,4 @@
-import type { JobProjectionDetail } from './read-contracts.js';
+import type { JobProjectionDetail } from './read-contract.js';
 
 export type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
 

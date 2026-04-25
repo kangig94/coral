@@ -14,7 +14,7 @@ import {
   noteCursor,
   type CurateCursor,
   type CurateState,
-} from './state.js';
+} from './state/index.js';
 import type {
   DiscoveryCurateClaimedEntry,
   DiscoveryProposal,

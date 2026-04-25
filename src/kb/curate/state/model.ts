@@ -2,14 +2,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
-import { errorMessage } from '../../infra/error-format.js';
-import { SYSTEM_TIME_PORT, nowIsoString } from '../../infra/time.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { SYSTEM_TIME_PORT, nowIsoString } from '../../../infra/time.js';
 import {
   noteEntryId,
   parseKbEntryId,
   sourceEntryId,
   type KbEntryId,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;

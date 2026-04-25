@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { parseKbEntryId } from '../entry-types.js';
-import { compareLocale } from '../validation.js';
+import { parseKbEntryId } from '../../entry-types.js';
+import { compareLocale } from '../../validation.js';
 
 export function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort(compareLocale);

@@ -1,6 +1,6 @@
 import type { KbRuntime } from '#src/kb/contracts.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
-import { runCommunitySubphase } from '#src/kb/curate/community.js';
+import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
 import { clearCurateRetryState, recordCurateFailure } from '#src/kb/curate/operations.js';
 import {
@@ -11,7 +11,7 @@ import {
 } from '#src/kb/curate/principles.js';
 import { claimCurateRun, runClassificationBatches } from '#src/kb/curate/runner.js';
 import { calculateCommunityBatchBackoffTicks } from '#src/kb/curate/scheduler.js';
-import { initializeCurateStateIfNeeded, type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state.js';
+import { initializeCurateStateIfNeeded, type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state/index.js';
 import type { ClassificationAssignment, CurateClaim, MetadataTarget, SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 
 export type CurateTestHandle = {

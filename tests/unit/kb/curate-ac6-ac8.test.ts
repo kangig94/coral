@@ -8,7 +8,7 @@ import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/cu
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
-import { readCurateState, writeCurateState } from '#src/kb/curate/state.js';
+import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';

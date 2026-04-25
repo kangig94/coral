@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExistingGeneratedCommunity } from '#src/kb/curate/community-detection.js';
+import type { ExistingGeneratedCommunity } from '#src/kb/curate/community/detection.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
 
 async function loadCommunityDetectionWithMock(
@@ -20,7 +20,7 @@ async function loadCommunityDetectionWithMock(
     }));
   }
 
-  return import('#src/kb/curate/community-detection.js');
+  return import('#src/kb/curate/community/detection.js');
 }
 
 afterEach(() => {

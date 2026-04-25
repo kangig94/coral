@@ -3,7 +3,7 @@ import {
   RELATIONSHIP_TYPES,
   type EntityType,
   type RelationshipType,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
 export function isKnownEntityType(value: string): value is EntityType {
   return (ENTITY_TYPES as readonly string[]).includes(value);

@@ -1,12 +1,12 @@
-import { isRecord, isStringArray } from '../../infra/json.js';
-import { parseKbEntryId } from '../entry-types.js';
-import { parseJsonArray, uniqueTrimmedList } from './content-normalize.js';
+import { isRecord, isStringArray } from '../../../infra/json.js';
+import { parseKbEntryId } from '../../entry-types.js';
+import { parseJsonArray, uniqueTrimmedList } from '../content-normalize.js';
 import type {
   ClassificationAssignment,
   ClassificationNewEntity,
   ClassificationRelationship,
-} from './pipeline-types.js';
-import { isKnownEntityType, isKnownRelationshipType } from './classification-schema.js';
+} from '../pipeline-types.js';
+import { isKnownEntityType, isKnownRelationshipType } from './schema.js';
 
 function parseClassificationNewEntities(value: unknown): Record<string, ClassificationNewEntity> {
   if (!isRecord(value)) {

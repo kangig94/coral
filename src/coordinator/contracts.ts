@@ -10,7 +10,7 @@ import type {
 } from '../jobs/admission-contract.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/progress-store-contract.js';
-import type { JobProjectionDetail } from '../jobs/read-contracts.js';
+import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import type {
   JobProgress,
 } from '../jobs/records.js';

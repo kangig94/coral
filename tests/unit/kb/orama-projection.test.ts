@@ -17,7 +17,7 @@ vi.mock('#src/kb/search/embedding.js', () => ({
   }),
 }));
 
-import { writeCurateState } from '#src/kb/curate/state.js';
+import { writeCurateState } from '#src/kb/curate/state/index.js';
 import {
   communityEntryId,
   noteEntryId,

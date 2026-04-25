@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as curateState from '#src/kb/curate/state.js';
+import * as curateState from '#src/kb/curate/state/index.js';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import {
   buildClassificationPrompt,
@@ -22,7 +22,7 @@ import {
 } from '#src/kb/curate/scheduler.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state.js';
+import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';

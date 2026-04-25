@@ -3,7 +3,7 @@ import {
   buildEntityRelationshipGraph,
   detectCommunities,
   renderCommunityDocument,
-} from '#src/kb/curate/community-detection.js';
+} from '#src/kb/curate/community/detection.js';
 import {
   extractBody,
   parseCommunityFrontmatter,

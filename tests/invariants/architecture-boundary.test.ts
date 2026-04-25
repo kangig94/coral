@@ -898,23 +898,23 @@ describe('architecture boundary guard', () => {
 
     expect(offenders).toEqual([]);
   });
-  it('production keeps store/index.ts as the only remaining index barrel', () => {
-    const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));
-    expect(liveIndexes).toEqual(['src/store/index.ts']);
-  });
   it('production keeps helper-style filenames out of src/', () => {
-    // Generic filenames become magnets — unrelated code accumulates because the
-    // name promises to host "anything that fits". Forbid the worst offenders.
-    // Domain-prefixed siblings like `manifest-types.ts` or `exec-types.ts` are
-    // allowed: the prefix declares scope so the file resists drift.
+    // Generic filenames become magnets when they describe NOTHING about content
+    // — `helpers.ts`, `utils.ts`, `shared.ts` invite "anything that fits" and
+    // accumulate unrelated logic. Forbid these outright.
+    //
+    // `index.ts` and `types.ts` are intentionally NOT forbidden: both are valid
+    // conventional names with clear semantics (entry point, type vocabulary).
+    // Discipline is on *content*, not *name*: if either file grows large or
+    // loses cohesion, it MUST be split. Add a per-file size invariant when a
+    // specific file is at risk (see `providers/contract.ts` cap below).
     const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter(
       (filePath) =>
         filePath.endsWith('/helper.ts') ||
         filePath.endsWith('/helpers.ts') ||
         filePath.endsWith('/shared.ts') ||
         filePath.endsWith('/shared-utils.ts') ||
-        filePath.endsWith('/utils.ts') ||
-        filePath.endsWith('/types.ts'),
+        filePath.endsWith('/utils.ts'),
     );
     expect(helperLikeFiles).toEqual([]);
   });

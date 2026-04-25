@@ -5,7 +5,7 @@ import type { JobQueueReadPort, LaunchPool } from '../admission-contract.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
-import type { JobProjectionDetail } from '../read-contracts.js';
+import type { JobProjectionDetail } from '../read-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../result-export.js';

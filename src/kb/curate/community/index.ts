@@ -1,8 +1,8 @@
-import { nowIsoString } from '../../infra/time.js';
-import type { KbCorpusSnapshot, KbRuntime } from '../contracts.js';
-import { recordMetadataMutation } from '../corpus/index-mutations.js';
-import { compareLocale } from '../validation.js';
-import { parseKbEntryId } from '../entry-types.js';
+import { nowIsoString } from '../../../infra/time.js';
+import type { KbCorpusSnapshot, KbRuntime } from '../../contracts.js';
+import { recordMetadataMutation } from '../../corpus/index-mutations.js';
+import { compareLocale } from '../../validation.js';
+import { parseKbEntryId } from '../../entry-types.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,
@@ -15,10 +15,10 @@ import {
   renderCommunityDocument,
   type CommunityDocument,
   type ExistingGeneratedCommunity,
-} from './community-detection.js';
-import { CURATE_STALE_REASON, runCurateClaude } from './operations.js';
-import { readCurateState, writeCurateState } from './state.js';
-import type { SpawnCliFn } from './pipeline-types.js';
+} from './detection.js';
+import { CURATE_STALE_REASON, runCurateClaude } from '../operations.js';
+import { readCurateState, writeCurateState } from '../state/index.js';
+import type { SpawnCliFn } from '../pipeline-types.js';
 
 export type RunCommunitySubphaseOptions = {
   signal?: AbortSignal;

@@ -40,7 +40,7 @@ import {
   type CurateCursor,
   type CurateState,
   type PendingDiscovery,
-} from './state.js';
+} from './state/index.js';
 import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate, SpawnCliFn } from './pipeline-types.js';
 
 type EnsurePrincipleDocumentResult = {

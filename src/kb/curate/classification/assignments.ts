@@ -1,5 +1,5 @@
-import { cloneEntityMetaRecord, cloneEntityRelationship, cloneKbIndex } from '../corpus/index-records.js';
-import { assertNonEmptyText, compareLocale } from '../validation.js';
+import { cloneEntityMetaRecord, cloneEntityRelationship, cloneKbIndex } from '../../corpus/index-records.js';
+import { assertNonEmptyText, compareLocale } from '../../validation.js';
 import {
   getEntry,
   isNoteEntry,
@@ -8,17 +8,17 @@ import {
   type EntityRelationship,
   type KbEntryId,
   type KbIndex,
-} from '../entry-types.js';
-import type { EntityConsolidationDelta } from './entity-consolidation.js';
-import { uniqueTrimmedList } from './content-normalize.js';
+} from '../../entry-types.js';
+import type { EntityConsolidationDelta } from '../entity-consolidation.js';
+import { uniqueTrimmedList } from '../content-normalize.js';
 import type {
   ClassificationAssignment,
   ClassificationNewEntity,
   ClassificationRelationship,
   CurateClaimedEntry,
   MetadataTarget,
-} from './pipeline-types.js';
-import { isKnownEntityType, isKnownRelationshipType } from './classification-schema.js';
+} from '../pipeline-types.js';
+import { isKnownEntityType, isKnownRelationshipType } from './schema.js';
 
 function classificationEntityNameSegments(value: string): string[] {
   return value.split('-').filter((segment) => segment.length > 0);

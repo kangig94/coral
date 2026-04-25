@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { errorMessage } from '../../infra/error-format.js';
-import { backendLog } from '../../infra/backend-log.js';
-import { readMalformedEntryRepair, type PendingRepair } from './state.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { readMalformedEntryRepair, type PendingRepair } from '../state/index.js';
 import {
   deriveNoteIdentity,
   extractBody,
@@ -12,13 +12,13 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from '../corpus/frontmatter.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/index-records.js';
-import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { stripMdExt } from '../paths.js';
-import { loadKbNote } from '../read.js';
-import { assertCommunitySlug, assertSourceSlug } from '../validation.js';
-import type { KbRuntime } from '../contracts.js';
+} from '../../corpus/frontmatter.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
+import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
+import { stripMdExt } from '../../paths.js';
+import { loadKbNote } from '../../read.js';
+import { assertCommunitySlug, assertSourceSlug } from '../../validation.js';
+import type { KbRuntime } from '../../contracts.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -28,7 +28,7 @@ import {
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type ReindexResult,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
 type LoadedArtifacts<T> = {
   entries: T[];

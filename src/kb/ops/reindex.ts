@@ -1,5 +1,5 @@
 import type { KbRuntime } from '../contracts.js';
-import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts.js';
+import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts/index.js';
 import type { ReindexResult } from '../entry-types.js';
 
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {

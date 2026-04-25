@@ -245,7 +245,7 @@ async function markCommunityStateFresh(kb: { readIndex: () => any }) {
   const [
     { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint },
     { readCurateState, writeCurateState },
-  ] = await Promise.all([import('#src/kb/curate/community-detection.js'), import('#src/kb/curate/state.js')]);
+  ] = await Promise.all([import('#src/kb/curate/community/detection.js'), import('#src/kb/curate/state/index.js')]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
 
@@ -698,7 +698,7 @@ describe('kb search', () => {
 
   it('filters stale community documents at query time for all and community scopes', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState, writeCurateState } = await import('#src/kb/curate/state.js');
+    const { readCurateState, writeCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });

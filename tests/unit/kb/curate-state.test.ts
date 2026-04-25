@@ -27,7 +27,7 @@ import {
   writeCurateState,
   type CurateState,
   type PendingRepair,
-} from '#src/kb/curate/state.js';
+} from '#src/kb/curate/state/index.js';
 import { readCurateDiscoveryBacklog } from '#src/kb/curate/discovery-backlog.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';

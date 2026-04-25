@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { unlinkIfExists } from '../../infra/fs-errors.js';
+import { unlinkIfExists } from '../../../infra/fs-errors.js';
 import {
   captureCommunityManifestDelta,
   captureRemovedCommunityManifestDelta,
-} from '../corpus/manifest-authority.js';
+} from '../../corpus/manifest-authority.js';
 import {
   extractBody,
   extractTitle,
@@ -12,12 +12,12 @@ import {
   parseMembersFromBody,
   parseSummaryFromBody,
   serializeCommunityFrontmatter,
-} from '../corpus/frontmatter.js';
-import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { stripMdExt } from '../paths.js';
-import type { KbMutationEffects, KbRuntime } from '../contracts.js';
-import type { CommunityDocument, DetectedCommunity, ExistingGeneratedCommunity } from './community-types.js';
+} from '../../corpus/frontmatter.js';
+import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
+import { writeFileAtomic } from '../../corpus/file-atomic.js';
+import { stripMdExt } from '../../paths.js';
+import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
+import type { CommunityDocument, DetectedCommunity, ExistingGeneratedCommunity } from './contracts.js';
 
 type BuildCommunityDocumentsOptions = {
   priorGeneratedCommunities: ExistingGeneratedCommunity[];

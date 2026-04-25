@@ -12,9 +12,9 @@ import {
   buildClassificationPrompt,
   buildPrincipleNames,
   takeClassificationBatchWithIndex,
-} from './classification-prompt.js';
-import { mergeAssignmentsIntoIndexGraph, validateAssignments } from './classification-assignments.js';
-import { parseClassificationResponseResult } from './classification-parse.js';
+} from './classification/prompt.js';
+import { mergeAssignmentsIntoIndexGraph, validateAssignments } from './classification/assignments.js';
+import { parseClassificationResponseResult } from './classification/parse.js';
 import { readClaimedEntry } from './claim-io.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { CurateJsonParseError, runCurateClaude } from './operations.js';
@@ -27,7 +27,7 @@ import {
   readCurateState,
   writeCurateState,
   type CurateCursor,
-} from './state.js';
+} from './state/index.js';
 import type {
   ClaimCandidate,
   ClassificationAssignment,

@@ -1,8 +1,8 @@
-import type { KbRuntime } from '../contracts.js';
-import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from '../entry-types.js';
-import { loadKbNote, loadKbSource } from '../read.js';
-import { compareLocale, stripMarkdownCodeFences } from '../validation.js';
-import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './community-identity.js';
+import type { KbRuntime } from '../../contracts.js';
+import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from '../../entry-types.js';
+import { loadKbNote, loadKbSource } from '../../read.js';
+import { compareLocale, stripMarkdownCodeFences } from '../../validation.js';
+import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './identity.js';
 
 const COMMUNITY_SUMMARY_DOCUMENT_LIMIT = 3;
 const COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS = 800;

@@ -5,8 +5,8 @@ import type { KbRuntime } from '../contracts.js';
 import {
   buildEntityConsolidationDelta,
   buildMetadataTargets,
-} from './classification-assignments.js';
-import { runCommunitySubphase } from './community.js';
+} from './classification/assignments.js';
+import { runCommunitySubphase } from './community/index.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
 import {
@@ -27,7 +27,7 @@ import {
   writeCurateState,
   type CurateCursor,
   type CurateState,
-} from './state.js';
+} from './state/index.js';
 import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
 
 export type {
@@ -46,9 +46,9 @@ export {
   chunkEntriesByPromptBudget,
   estimateClassificationBatchTokens,
   type ClassificationBatchShape,
-} from './classification-prompt.js';
-export { buildMetadataTargets, validateAssignments } from './classification-assignments.js';
-export { parseClassificationResponse } from './classification-parse.js';
+} from './classification/prompt.js';
+export { buildMetadataTargets, validateAssignments } from './classification/assignments.js';
+export { parseClassificationResponse } from './classification/parse.js';
 export {
   buildDiscoveryPrompt,
   parseDiscoveryResponse,

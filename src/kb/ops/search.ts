@@ -1,4 +1,4 @@
-import { areCommunityDocumentsFresh } from '../curate/text-artifacts.js';
+import { areCommunityDocumentsFresh } from '../curate/text-artifacts/index.js';
 import {
   normalizeOramaTerm,
   tokenizeQuery,

@@ -1,22 +1,22 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { isRecord } from '../../infra/json.js';
-import { readCurateState } from './state.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/index-records.js';
-import { extractBody, parseSourceFrontmatter } from '../corpus/frontmatter.js';
-import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { computeContentSurfaceHash } from '../corpus/snapshot.js';
-import { stripMdExt } from '../paths.js';
-import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
-import { loadKbNote } from '../read.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../contracts.js';
+import { isRecord } from '../../../infra/json.js';
+import { readCurateState } from '../state/index.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
+import { extractBody, parseSourceFrontmatter } from '../../corpus/frontmatter.js';
+import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
+import { computeContentSurfaceHash } from '../../corpus/snapshot.js';
+import { stripMdExt } from '../../paths.js';
+import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
+import { loadKbNote } from '../../read.js';
+import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contracts.js';
 import {
   isNoteEntry,
   isSourceEntry,
   noteEntryId,
   sourceEntryId,
   type KbIndex,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';

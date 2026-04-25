@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contracts.js';
 import type { KbEntryId } from '#src/kb/entry-types.js';
 
-vi.mock('#src/kb/curate/state.js', () => ({
+vi.mock('#src/kb/curate/state/index.js', () => ({
   readCurateState: () => ({
     communityTopologyHash: '',
     communitySummaryTopologyHash: '',
@@ -12,7 +12,7 @@ vi.mock('#src/kb/curate/state.js', () => ({
   }),
 }));
 
-vi.mock('#src/kb/curate/community-detection.js', () => ({
+vi.mock('#src/kb/curate/community/detection.js', () => ({
   computeCommunitySummaryInputFingerprints: () => ({}),
   computeCommunityTopologyFingerprint: () => '',
 }));

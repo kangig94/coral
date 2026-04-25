@@ -1,8 +1,8 @@
-import { readCurateState, writeCurateState, type PendingRepair } from './state.js';
-import { applyLaneMutation, detectTextArtifactRebuildInfo } from './text-artifacts-drift.js';
+import { readCurateState, writeCurateState, type PendingRepair } from '../state/index.js';
+import { applyLaneMutation, detectTextArtifactRebuildInfo } from './drift.js';
 import {
   prepareCommunityTopologyRefresh,
-} from './text-artifacts-community.js';
+} from './community.js';
 import {
   buildCounts,
   buildKbIndex,
@@ -10,19 +10,19 @@ import {
   loadNotes,
   loadPrinciples,
   loadSources,
-} from './text-artifacts-loaders.js';
-import type { KbIndexState, KbMutationEffects, KbRuntime } from '../contracts.js';
-import { nowIsoString } from '../../infra/time.js';
+} from './loaders.js';
+import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contracts.js';
+import { nowIsoString } from '../../../infra/time.js';
 import type {
   KbReindexCommunityRecord,
   KbReindexNoteRecord,
   KbReindexSourceRecord,
   ReindexResult,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
-export { areCommunityDocumentsFresh, isCommunitySummaryFresh } from './text-artifacts-community.js';
-export { detectTextArtifactRebuildInfo } from './text-artifacts-drift.js';
-export { loadCommunities } from './text-artifacts-loaders.js';
+export { areCommunityDocumentsFresh, isCommunitySummaryFresh } from './community.js';
+export { detectTextArtifactRebuildInfo } from './drift.js';
+export { loadCommunities } from './loaders.js';
 
 type ReindexCounts = Pick<
   ReindexResult,

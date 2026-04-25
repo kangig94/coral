@@ -621,7 +621,7 @@ This note has source as a bare string.
 
   it('persists malformed note and source files into pendingRepair during reindex rebuilds', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state.js');
+    const { readCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -692,7 +692,7 @@ entrySeq: nope
 
   it('does not retry unchanged pendingRepair files on every runtime access', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state.js');
+    const { readCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -761,7 +761,7 @@ This note has malformed frontmatter.
 
   it('automatically retries pendingRepair notes after file content changes without relying on mtimes', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState, writeCurateState } = await import('#src/kb/curate/state.js');
+    const { readCurateState, writeCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -878,7 +878,7 @@ This note is valid now.
 
   it('automatically retries pendingRepair sources after file content changes even when mtimes stay quiet', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state.js');
+    const { readCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 

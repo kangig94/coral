@@ -13,8 +13,8 @@ import {
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
 } from '../corpus/snapshot.js';
-import { areCommunityDocumentsFresh } from '../curate/text-artifacts.js';
-import type { CommunityDocument } from '../curate/community-detection.js';
+import { areCommunityDocumentsFresh } from '../curate/text-artifacts/index.js';
+import type { CommunityDocument } from '../curate/community/detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../corpus/frontmatter.js';
 import { cloneKbIndex } from '../corpus/index-records.js';
 import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';

@@ -42,7 +42,7 @@ import {
   type CurateCursor,
   type CurateRepairFrontier,
   type CurateState,
-} from './state.js';
+} from './state/index.js';
 import {
   consolidateEntityGraph,
   resolveCanonicalEntityId,

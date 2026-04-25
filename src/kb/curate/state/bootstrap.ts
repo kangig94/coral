@@ -1,14 +1,14 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { replaceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
-import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
-import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../index-state.js';
-import { stripMdExt } from '../paths.js';
-import { loadKbNote, loadKbSource } from '../read.js';
-import type { KbIndexState, KbRuntime } from '../contracts.js';
-import { nowIsoString } from '../../infra/time.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
+import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
+import { writeFileAtomic } from '../../corpus/file-atomic.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../../corpus/index-records.js';
+import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../../index-state.js';
+import { stripMdExt } from '../../paths.js';
+import { loadKbNote, loadKbSource } from '../../read.js';
+import type { KbIndexState, KbRuntime } from '../../contracts.js';
+import { nowIsoString } from '../../../infra/time.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -17,7 +17,7 @@ import {
   type KbIndex,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 import {
   compareCursor,
   noteCursor,
@@ -26,8 +26,8 @@ import {
   type CurateCursor,
   type CurateState,
   type PendingRepair,
-} from './state-model.js';
-import { readCurateState, writeCurateState } from './state-store.js';
+} from './model.js';
+import { readCurateState, writeCurateState } from './store.js';
 
 type CurateStateRuntime = Pick<
   KbRuntime,

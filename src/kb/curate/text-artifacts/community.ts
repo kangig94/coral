@@ -6,11 +6,11 @@ import {
   detectCommunities,
   generateCommunityFiles,
   loadExistingCommunityState,
-} from './community-detection.js';
-import { readCurateState, type CurateState } from './state.js';
-import type { KbMutationEffects, KbRuntime } from '../contracts.js';
-import { isCommunityEntry, type KbIndex } from '../entry-types.js';
-import { nowIsoString } from '../../infra/time.js';
+} from '../community/detection.js';
+import { readCurateState, type CurateState } from '../state/index.js';
+import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
+import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
+import { nowIsoString } from '../../../infra/time.js';
 
 export function isCommunitySummaryFresh(
   currentFingerprints: Readonly<Record<string, string>>,

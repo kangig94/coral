@@ -15,9 +15,10 @@
 6. **Hooks Stay Self-Contained**: Hook scripts are Node.js ESM modules. They read stdin, write `hookSpecificOutput` when active, fail open, and never import from `src/`.
 
 7. **No Ambiguity**: Every concept has exactly one canonical home. Two files that "could" hold the same thing — even if currently different — get forgotten with 100% probability in future development, and the more generic-named file absorbs everything. Apply this both ways:
-   - **Never create a generic-named file** (`paths.ts`, `helpers.ts`, `utils.ts`, `types.ts`) when domain-specific names exist. The generic name is a magnet. A *domain-prefixed* sibling (`exec-types.ts`, `manifest-types.ts`, `driver-types.ts`) is allowed: the prefix declares scope, so the file resists drift even when grouped under a generic-sounding directory.
+   - **Never create a content-blank file** (`paths.ts`, `helpers.ts`, `utils.ts`, `shared.ts`) — names that describe nothing about content invite "anything that fits" and accumulate unrelated logic. A *domain-prefixed* sibling (`exec-types.ts`, `manifest-types.ts`, `driver-types.ts`) is allowed: the prefix declares scope, so the file resists drift.
+   - **`index.ts` and `types.ts` ARE allowed anywhere** — both are conventional names with clear semantics (entry point, type vocabulary), and the parent directory provides scope. Discipline is on *content*, not *name*: by default split implementation across siblings; when either file grows large or loses cohesion, MUST split. Add a per-file size invariant in `tests/invariants/architecture-boundary.test.ts` when a specific file is at risk (see `providers/contract.ts` 450-line cap as precedent).
    - **Never split a single concept across two files** unless a cycle physically forces the split, and document the cycle when it does (e.g. `manifest-types.ts` exists only to break a `kb/contracts.ts ↔ manifest-authority.ts` cycle).
-   - When you find a generic-named file, redistribute its contents to per-domain modules and add an invariant asserting the file does not return (see `tests/invariants/architecture-boundary.test.ts` for the `infra/paths.ts` precedent).
+   - When you find a content-blank file, redistribute its contents to per-domain modules and add an invariant asserting the file does not return (see `tests/invariants/architecture-boundary.test.ts` for the `infra/paths.ts` precedent).
 
 ## Source Tree Policy
 

@@ -6,7 +6,7 @@ import type {
   RuntimeTimePort,
 } from '../../runtime/ports.js';
 import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
-import type { CurateCursor } from './state.js';
+import type { CurateCursor } from './state/index.js';
 
 export type SpawnCliResult = {
   stdout: string;

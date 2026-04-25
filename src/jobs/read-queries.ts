@@ -4,7 +4,7 @@ import type { JobContinuitySnapshot } from './continuity.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from './events.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
-import type { JobProjectionDetail } from './read-contracts.js';
+import type { JobProjectionDetail } from './read-contract.js';
 import {
   jobDiagnosticsSchema,
   normalizeJobTerminal,

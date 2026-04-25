@@ -12,8 +12,8 @@ export {
   type CurateBootstrapScanFailure,
   type ScannedNote,
   type ScannedSource,
-} from './state-bootstrap.js';
-export { readCurateState, writeCurateState } from './state-store.js';
+} from './bootstrap.js';
+export { readCurateState, writeCurateState } from './store.js';
 export {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -36,4 +36,4 @@ export {
   type CurateState,
   type PendingDiscovery,
   type PendingRepair,
-} from './state-model.js';
+} from './model.js';

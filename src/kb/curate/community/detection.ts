@@ -1,30 +1,30 @@
 import { createHash } from 'node:crypto';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
-import { compareLocale } from '../validation.js';
-import { communityEntryId, type KbIndex } from '../entry-types.js';
-import { communitySlugFromReference, uniqueSorted } from './community-identity.js';
-import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './community-graph.js';
-import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './community-types.js';
+import { compareLocale } from '../../validation.js';
+import { communityEntryId, type KbIndex } from '../../entry-types.js';
+import { communitySlugFromReference, uniqueSorted } from './identity.js';
+import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './graph.js';
+import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './contracts.js';
 export {
   buildCommunityDocuments,
   generateCommunityFiles,
   loadExistingCommunityState,
   renderCommunityDocument,
-} from './community-documents.js';
-export { buildEntityRelationshipGraph, computeGraphFingerprint } from './community-graph.js';
+} from './documents.js';
+export { buildEntityRelationshipGraph, computeGraphFingerprint } from './graph.js';
 export {
   computeCommunitySummaryInputFingerprintForCommunity,
   computeCommunitySummaryInputFingerprints,
   generateCommunitySummary,
-} from './community-summary.js';
+} from './summary.js';
 export type {
   CommunityDocument,
   DetectedCommunity,
   ExistingGeneratedCommunity,
   TagGraph,
   TagGraphEdge,
-} from './community-types.js';
+} from './contracts.js';
 
 type Louvain = {
   detailed(graph: TagGraph['graph'], options?: Record<string, unknown>): DetailedLouvainOutput;

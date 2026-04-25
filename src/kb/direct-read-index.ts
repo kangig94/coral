@@ -7,7 +7,7 @@ import {
   loadNotes,
   loadPrinciples,
   loadSources,
-} from './curate/text-artifacts-loaders.js';
+} from './curate/text-artifacts/loaders.js';
 
 function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const detectedAt = nowIsoString(kb.time);

@@ -1,11 +1,11 @@
 import type { KbRuntime } from '../contracts.js';
-import { normalizeCurateStateRepairFrontier, readCurateState, writeCurateState } from './state.js';
+import { normalizeCurateStateRepairFrontier, readCurateState, writeCurateState } from './state/index.js';
 import {
   applyClearCurateRetryState,
   applyRecordCurateFailure,
   type CurateCursor,
   type CurateState,
-} from './state.js';
+} from './state/index.js';
 import type { SpawnCliFn } from './pipeline-types.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';

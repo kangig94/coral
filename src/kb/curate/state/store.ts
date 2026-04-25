@@ -1,11 +1,11 @@
 import type {
   KbCurateActiveClaimRow,
   KbCurateCommunitySummaryInputFingerprintRow,
-} from '../state/schema.js';
-import type { KbRuntime } from '../contracts.js';
-import { parsePositiveInteger } from '../validation.js';
-import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from './discovery-backlog.js';
-import { readCurateRetryQueue, syncCurateRetryQueue } from './retry.js';
+} from '../../state/schema.js';
+import type { KbRuntime } from '../../contracts.js';
+import { parsePositiveInteger } from '../../validation.js';
+import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
+import { readCurateRetryQueue, syncCurateRetryQueue } from '../retry.js';
 import {
   compareCursor,
   cursorEntryKind,
@@ -13,9 +13,9 @@ import {
   kbEntryIdSchema,
   normalizeCurateStateRepairFrontier,
   type CurateState,
-} from './state-model.js';
-import { prepareCached, resolveSqliteDb } from './sqlite.js';
-import { readCurateSchedulerState, writeCurateSchedulerState } from './state-scheduler.js';
+} from './model.js';
+import { prepareCached, resolveSqliteDb } from '../sqlite.js';
+import { readCurateSchedulerState, writeCurateSchedulerState } from '../state-scheduler.js';
 
 type CurateStateTarget = Pick<KbRuntime, 'db'>;
 
