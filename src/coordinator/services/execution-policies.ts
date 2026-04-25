@@ -28,7 +28,7 @@ import {
 import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
-import { rejectLaunch } from '../../jobs/launch-rejection.js';
+import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { SessionEntry } from '../../sessions/entry.js';

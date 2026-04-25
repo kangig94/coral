@@ -8,7 +8,7 @@ import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { resultPathFor as defaultResultPathFor } from '../exports/result-artifact.js';
+import { resultPathFor as defaultResultPathFor } from '../result-export.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = 'wait-aborted' as const;

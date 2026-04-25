@@ -13,6 +13,15 @@ export type LaunchDecision =
   | { status: 'queued'; job: string; session: string; message?: undefined }
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
 
+export function rejectLaunch(code: string, message: string): LaunchDecision {
+  return {
+    status: 'rejected',
+    phase: 'preflight',
+    code,
+    message,
+  };
+}
+
 export interface JobLaunchRequest {
   prompt: string;
   name?: string;

@@ -10,7 +10,7 @@ import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
-import { ensureResultMarkdownArtifact } from './exports/result-markdown.js';
+import { ensureResultMarkdownArtifact } from './result-export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
 import { nowDate, nowIsoString } from '../infra/time.js';

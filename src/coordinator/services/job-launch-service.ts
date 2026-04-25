@@ -7,7 +7,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/execution-contract.js';
 import { getSessionById } from '../../sessions/resolve.js';
 import type { ProviderJobLaunchPort } from '../../jobs/job-runner-contract.js';
-import { rejectLaunch } from '../../jobs/launch-rejection.js';
+import { rejectLaunch } from '../../jobs/launch.js';
 import type { AcceptedAdmission } from '../../jobs/admission-contract.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';

@@ -14,7 +14,7 @@ import {
   type JobTerminalInput,
 } from '../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
-import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
+import { writeResultArtifact } from '../../jobs/result-export.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { nowIsoString } from '../../infra/time.js';
