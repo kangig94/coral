@@ -9,11 +9,11 @@ import {
   type NeedleBackend,
   type NeedleBackendModule,
   type NeedleBackendOptions,
-} from '../../kb/search/needle-contract.js';
+} from '../../kb/search/needle/contract.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { nowDate } from '../../infra/time.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
-import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
+import { NeedleAddonLoadError } from '../../kb/search/needle/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -107,7 +107,7 @@ type ActivateNeedleFn = (
 type CloseNeedleBackendFn = (runtime: KbRuntime) => Promise<void>;
 
 async function loadNeedleBackendModule(): Promise<NeedleBackendModule> {
-  return import('../../kb/search/needle-backend.js');
+  return import('../../kb/search/needle/backend.js');
 }
 
 const activateNeedle: ActivateNeedleFn = async (runtime, addonPath, options = {}) => {

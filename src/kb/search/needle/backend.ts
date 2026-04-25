@@ -1,24 +1,24 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readCorpusState } from '../state/corpus-state.js';
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { isRecord } from '../../infra/json.js';
-import { nowIsoString } from '../../infra/time.js';
-import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../contracts.js';
-import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
-import { needleIndexDir, needleStagingDir } from '../paths.js';
-import { loadKbNote, loadKbSource } from '../read.js';
-import { chunkEntry, type ChunkSeed } from './chunking.js';
-import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from './embedding.js';
-import { createNeedleStore, type NeedleStore } from './needle-store.js';
+import { readCorpusState } from '../../state/corpus-state.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { isRecord } from '../../../infra/json.js';
+import { nowIsoString } from '../../../infra/time.js';
+import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../../contracts.js';
+import { writeFileAtomic } from '../../corpus/file-atomic.js';
+import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../../entry-types.js';
+import { needleIndexDir, needleStagingDir } from '../../paths.js';
+import { loadKbNote, loadKbSource } from '../../read.js';
+import { chunkEntry, type ChunkSeed } from '../chunking.js';
+import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from '../embedding.js';
+import { createNeedleStore, type NeedleStore } from './store.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,
   type NeedleBackendOptions,
-} from './needle-contract.js';
-import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
+} from './contract.js';
+import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../contract.js';
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';

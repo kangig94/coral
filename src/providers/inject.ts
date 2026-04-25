@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { kbRoot } from "../kb/paths.js";
 import { projectDataDir, resolveProjectSource } from "../infra/project-source.js";
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import { isOwnerId } from '../infra/owner-id.js';
+import { isOwnerId } from '../infra/identifiers.js';
 
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');

@@ -7,7 +7,7 @@ import type {
   TextRetrievalResult,
   VectorRetrievalHit,
 } from './contract.js';
-import type { KbOramaDocument } from '../orama-factory.js';
+import type { KbOramaDocument } from '../orama-document-builder.js';
 import type { KbOramaDb } from '../orama-schema.js';
 import {
   getEntry,

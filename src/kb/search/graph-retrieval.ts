@@ -1,4 +1,4 @@
-import { normalizeWhitespace } from '../orama-factory.js';
+import { normalizeWhitespace } from '../orama-document-builder.js';
 import type {
   EntityGraph,
   KbIndex,

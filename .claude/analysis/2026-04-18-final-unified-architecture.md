@@ -1738,7 +1738,11 @@ When subdividing:
 
 **Subdivision rejection** — a few cases where subdividing makes the tree *worse*:
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
-- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) follow the same shape — events.ts, reducer.ts, projections.ts, read-queries.ts at the domain root. Don't subdivide one of them differently than the others; the cross-domain mirror is load-bearing.
+- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a *minimum* shape — `events.ts` (event vocabulary + DomainEventRegistry) and `read-queries.ts` (query API) at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
+  - `projections.ts` exists when the domain projects events to SQL tables and owns DB-write reducers (sessions/discuss/workflow). When it exists, it ALSO holds view builders and projection reads.
+  - `reducer.ts` exists only when the domain reconstructs in-memory state from events (a state-machine pattern — currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
+  - `paths.ts` exists when the domain owns filesystem paths (currently only `jobs/` for tmpdir job artifacts being phased out).
+  Don't gratuitously add files just to mirror discuss/'s shape across domains that don't have the same concerns. Don't subdivide one domain differently from the others *for its core projection surface* — but the per-domain extras above (parser/, recover/, etc.) are fine when they reflect actual responsibility, not invented uniformity.
 - "Pure label" subdirs (e.g., grouping unrelated files into `gateway/` or `io/` because they "feel related") add navigation cost without scope clarity.
 
 **Lifecycle/process-flow naming** — when a directory owns a pipeline, name files for the stage they sit at so the directory reads top-down as the request flow. Example: `cli/` reads `bootstrap → program → commands/ → flags → parse → classify → dispatch → format → emit → follow`. Each filename answers "what stage am I at?" without ambiguity.

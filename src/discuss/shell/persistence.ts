@@ -1,6 +1,6 @@
 import { buildWatchEvents } from '../projections.js';
 import { DiscussWatchReadError } from '../watch.js';
-import { buildDiscussWatchState } from '../watch-state.js';
+import { buildDiscussWatchState } from '../watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { Result } from '../session-types.js';
 import { backendLog } from '../../infra/backend-log.js';

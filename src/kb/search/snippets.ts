@@ -1,4 +1,4 @@
-import { normalizeWhitespace, tokenizeField } from '../orama-factory.js';
+import { normalizeWhitespace, tokenizeField } from '../orama-document-builder.js';
 import type { KbOramaTokenizer } from '../orama-schema.js';
 
 type SnippetAnchor = {

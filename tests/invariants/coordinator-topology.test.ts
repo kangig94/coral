@@ -19,10 +19,10 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap.ts',
-  'src/coordinator/composition/backend-control.ts',
-  'src/coordinator/composition/backend-core-types.ts',
-  'src/coordinator/composition/backend-defaults.ts',
-  'src/coordinator/composition/backend-world.ts',
+  'src/coordinator/composition/control.ts',
+  'src/coordinator/composition/core-types.ts',
+  'src/coordinator/composition/defaults.ts',
+  'src/coordinator/composition/world.ts',
   'src/coordinator/composition/create-backend-core.ts',
   'src/coordinator/composition/execution-services.ts',
   'src/coordinator/consumer-driver-support.ts',
@@ -50,7 +50,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/provider-hosts/state.ts',
   'src/coordinator/live/worker-limits.ts',
   'src/coordinator/lock.ts',
-  'src/coordinator/observer.ts',
+  'src/coordinator/spawn-observer.ts',
   'src/coordinator/ownership-checker.ts',
   'src/coordinator/services/execution-policies.ts',
   'src/coordinator/services/job-abort-service.ts',

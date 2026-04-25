@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbCachedOramaIndex } from '../contracts.js';
-import { createOramaDb } from '../orama-factory.js';
+import { createOramaDb } from '../orama-document-builder.js';
 import type { KbOramaDb } from '../orama-schema.js';
 import { oramaSnapshotDir } from '../paths.js';
 import { writeJsonAtomic } from '../corpus/index-store.js';

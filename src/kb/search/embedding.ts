@@ -10,7 +10,7 @@ import { isRecord } from '../../infra/json.js';
 import { readProcessEnv } from '../../infra/process-env.js';
 import { TransientHttpError } from '../../infra/http-errors.js';
 import { loadCoralEnv } from '../env.js';
-import type { EmbeddingSpec } from './needle-store.js';
+import type { EmbeddingSpec } from './needle/store.js';
 
 const GEMINI_PROVIDER_NAME = 'gemini';
 const GEMINI_DEFAULT_MODEL = 'gemini-embedding-001';

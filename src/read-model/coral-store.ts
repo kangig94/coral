@@ -20,7 +20,7 @@ import {
   readKnowledgeBaseEntry,
   searchKnowledgeBase,
 } from '../kb/queries.js';
-import { buildDiscussWatchState } from '../discuss/watch-state.js';
+import { buildDiscussWatchState } from '../discuss/watch.js';
 import type { WatchState } from '../discuss/watch.js';
 import {
   readDiscussDiscovery,

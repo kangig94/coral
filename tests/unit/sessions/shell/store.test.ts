@@ -20,7 +20,7 @@ import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { discussRegistry } from '#src/discuss/store-registry.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { sessionsRegistry } from '#src/sessions/events.js';

@@ -143,7 +143,7 @@ const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
-const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle-backend.ts';
+const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle/backend.ts';
 const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal-materializer.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
@@ -598,7 +598,7 @@ describe('architecture boundary guard', () => {
     expect(PARSED_IMPORT_EDGES.filter((edge) => edge.target === NEEDLE_BACKEND_TARGET)).toEqual([
       {
         source: 'src/coordinator/equipment/lifecycle.ts',
-        specifier: '../../kb/search/needle-backend.js',
+        specifier: '../../kb/search/needle/backend.js',
         target: NEEDLE_BACKEND_TARGET,
         via: 'DynamicImport',
         runtime: true,

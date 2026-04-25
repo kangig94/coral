@@ -4,7 +4,7 @@ import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
-import type { BackendWorld } from './backend-world.js';
+import type { BackendWorld } from './world.js';
 import type { ScopeCheckResult } from '../../transport/rpc/ports.js';
 
 type CreateBackendControlDeps = {

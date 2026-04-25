@@ -30,7 +30,7 @@ import { createProviderHostManager } from '../../../src/coordinator/live/provide
 import { ProgressStore } from '../../../src/jobs/job-store.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
-import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/store-registry.js';
+import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
 import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';

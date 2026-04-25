@@ -4,7 +4,7 @@ import type { Command } from 'commander';
 
 import type { KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug } from '../../kb/validation.js';
-import { assertOwnerId } from '../../infra/owner-id.js';
+import { assertOwnerId } from '../../infra/identifiers.js';
 import { UsageError } from '../errors.js';
 import {
   makeClient,

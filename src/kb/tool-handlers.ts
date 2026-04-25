@@ -24,7 +24,7 @@ import { type KbReadKind } from './read-contract.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { assertOwnerId } from '../infra/owner-id.js';
+import { assertOwnerId } from '../infra/identifiers.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import {

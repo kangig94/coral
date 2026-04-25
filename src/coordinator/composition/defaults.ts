@@ -19,7 +19,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
-import type { BackendCoreOptions, CreateServerFn, FetchFn } from './backend-core-types.js';
+import type { BackendCoreOptions, CreateServerFn, FetchFn } from './core-types.js';
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
 

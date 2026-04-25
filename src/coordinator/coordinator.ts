@@ -9,11 +9,11 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
-} from './observer.js';
+} from './spawn-observer.js';
 import {
   createBackendCore,
 } from './composition/create-backend-core.js';
-import type { BackendCoreOptions, BackendCoreResult } from './composition/backend-core-types.js';
+import type { BackendCoreOptions, BackendCoreResult } from './composition/core-types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './execution-service.js';
@@ -28,7 +28,7 @@ import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscr
 import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
-import { discussRegistry } from '../discuss/store-registry.js';
+import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
@@ -36,7 +36,7 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama-backend.js';
-import { NEEDLE_CONSUMER_ID } from '../kb/search/needle-contract.js';
+import { NEEDLE_CONSUMER_ID } from '../kb/search/needle/contract.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';

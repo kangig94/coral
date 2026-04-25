@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { ChunkRecord, EmbeddingSpec, NeedleStore } from '#src/kb/search/needle-store.js';
+import type { ChunkRecord, EmbeddingSpec, NeedleStore } from '#src/kb/search/needle/store.js';
 
 type PersistedNeedleStoreFakeState = {
   activeSpec: EmbeddingSpec | null;

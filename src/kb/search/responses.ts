@@ -1,4 +1,4 @@
-import { tokenizeField } from '../orama-factory.js';
+import { tokenizeField } from '../orama-document-builder.js';
 import {
   isCommunityEntry,
   type KbEntryId,

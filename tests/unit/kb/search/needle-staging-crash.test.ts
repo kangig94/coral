@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as EmbeddingModule from '#src/kb/search/embedding.js';
-import type * as NeedleStoreModule from '#src/kb/search/needle-store.js';
+import type * as NeedleStoreModule from '#src/kb/search/needle/store.js';
 
 import { ConsumerDriver, type ConsumerHandle } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
@@ -42,8 +42,8 @@ import {
   closeNeedleBackend,
   createNeedleBackend,
   NeedleBackendSimulatedCrashError,
-} from '#src/kb/search/needle-backend.js';
-import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle-contract.js';
+} from '#src/kb/search/needle/backend.js';
+import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
 
 const FIXED_NOW = new Date('2026-04-21T00:00:00.000Z');
 const tempRoots: string[] = [];
@@ -91,8 +91,8 @@ vi.mock('#src/kb/search/embedding.js', async () => {
   };
 });
 
-vi.mock('#src/kb/search/needle-store.js', async () => {
-  const actual = await vi.importActual<typeof NeedleStoreModule>('#src/kb/search/needle-store.js');
+vi.mock('#src/kb/search/needle/store.js', async () => {
+  const actual = await vi.importActual<typeof NeedleStoreModule>('#src/kb/search/needle/store.js');
 
   function persistStore(dbPath: string, state: PersistedMockStore): void {
     mkdirSync(dirname(dbPath), { recursive: true });

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { CoralEvent } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { reduceDiscussProjection } from '#src/discuss/projections.js';
-import { toJournalInput } from '#src/discuss/store-registry.js';
+import { toJournalInput } from '#src/discuss/event-registry.js';
 import type { DiscussDomainEvent } from '#src/discuss/events.js';
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');

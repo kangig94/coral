@@ -18,7 +18,7 @@ import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-d
 import { createDeferred } from '#tools/testing/deferred.js';
 
 import { makeEvent } from '#src/discuss/events.js';
-import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/store-registry.js';
+import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';

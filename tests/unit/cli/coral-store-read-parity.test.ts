@@ -30,7 +30,7 @@ async function loadMainModule(): Promise<MainModule> {
 async function seedKbSearchSnapshot(): Promise<void> {
   const [{ reindex }, { closeNeedleBackend }, runtime, kbPaths] = await Promise.all([
     import('#src/kb/ops/reindex.js'),
-    import('#src/kb/search/needle-backend.js'),
+    import('#src/kb/search/needle/backend.js'),
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
   ]);

@@ -2,7 +2,7 @@ import { areCommunityDocumentsFresh } from '../curate/text-artifacts/index.js';
 import {
   normalizeOramaTerm,
   tokenizeQuery,
-} from '../orama-factory.js';
+} from '../orama-document-builder.js';
 import type { KbRuntime } from '../contracts.js';
 import type {
   EntityGraph,

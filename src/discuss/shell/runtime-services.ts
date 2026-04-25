@@ -11,7 +11,7 @@ import * as discussRecovery from './recovery.js';
 import type { RecoveredDiscussResume } from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
-import { toJournalInput } from '../store-registry.js';
+import { toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';

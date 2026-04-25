@@ -8,7 +8,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import type { BackendIdentity } from '../control.js';
 import { TypedEventBus } from '../event-bus.js';
-import type { BackendCoreOptions } from './backend-core-types.js';
+import type { BackendCoreOptions } from './core-types.js';
 import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
@@ -19,12 +19,12 @@ import { createProviderHostManager, type ProviderHostManager } from '../live/pro
 import type { IdleTimer } from '../live/idle.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { BackendDefaultsPlan } from './backend-defaults.js';
+import type { BackendDefaultsPlan } from './defaults.js';
 import { composeReducers } from '../../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { sessionsRegistry } from '../../sessions/events.js';
-import { discussRegistry as discussStoreRegistry } from '../../discuss/store-registry.js';
+import { discussRegistry as discussStoreRegistry } from '../../discuss/event-registry.js';
 import { workflowRegistry } from '../../workflow/events.js';
 
 export interface BackendWorld {

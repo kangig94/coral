@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
-import { resolveBackendDefaults } from '#src/coordinator/composition/backend-defaults.js';
+import { resolveBackendDefaults } from '#src/coordinator/composition/defaults.js';
 import type { LockRecord } from '#src/coordinator/lock.js';
 
 const mockState = vi.hoisted(() => ({

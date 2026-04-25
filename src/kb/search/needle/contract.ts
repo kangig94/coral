@@ -1,6 +1,6 @@
-import type { ConsumerApplyError, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
-import type { VectorRetrieval } from './contract.js';
-import type { NeedleStore } from './needle-store.js';
+import type { ConsumerApplyError, CorpusConsumerRegistration, KbRuntime } from '../../contracts.js';
+import type { VectorRetrieval } from '../contract.js';
+import type { NeedleStore } from './store.js';
 
 export const NEEDLE_CONSUMER_ID = 'needle';
 

@@ -1,4 +1,4 @@
-import { discussRegistry } from '../discuss/store-registry.js';
+import { discussRegistry } from '../discuss/event-registry.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { workflowRegistry } from '../workflow/events.js';

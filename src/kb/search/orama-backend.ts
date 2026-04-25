@@ -18,7 +18,7 @@ import type { CommunityDocument } from '../curate/community/detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../corpus/frontmatter.js';
 import { cloneKbIndex } from '../corpus/index-records.js';
 import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
-import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-factory.js';
+import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -41,7 +41,7 @@ import {
   type SourceEntry,
 } from '../entry-types.js';
 
-export { createOramaDb, normalizeHyphens, normalizeOramaTerm, normalizeWhitespace, tokenizeField, tokenizeQuery, toOramaDocument, type KbOramaDocument } from '../orama-factory.js';
+export { createOramaDb, normalizeHyphens, normalizeOramaTerm, normalizeWhitespace, tokenizeField, tokenizeQuery, toOramaDocument, type KbOramaDocument } from '../orama-document-builder.js';
 export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from '../orama-schema.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [

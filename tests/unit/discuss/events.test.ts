@@ -6,7 +6,7 @@ import {
   makeEvent,
   type DiscussDomainEvent,
 } from '#src/discuss/events.js';
-import { toJournalInput } from '#src/discuss/store-registry.js';
+import { toJournalInput } from '#src/discuss/event-registry.js';
 
 const NOW = '2026-03-11T00:00:00.000Z';
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
-import { readPendingRepairRows, type PendingRepairRetryCandidate } from './curate/retry.js';
+import { readPendingRepairRows, type PendingRepairRetryCandidate } from '../../curate/retry.js';
 
 type PendingRepairRetryRuntime = {
   db: BetterSqlite3.Database;

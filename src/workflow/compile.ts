@@ -2,7 +2,7 @@ import { ZodError } from 'zod';
 
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { LaunchDecision } from '../jobs/launch.js';
-import { isOwnerId } from '../infra/owner-id.js';
+import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
 import type { WorkflowCommand } from './input.js';
 import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';

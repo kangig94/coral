@@ -29,7 +29,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/store-registry.js';
+import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
