@@ -8,7 +8,7 @@ import { setBuildFlavor } from '#src/infra/paths.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 import type { Onboarding } from '#src/expansion/contracts.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/expansion/paths.js';
+import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
 
 const mockState = vi.hoisted(() => ({
   installExpansion: vi.fn(),

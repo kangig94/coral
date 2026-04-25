@@ -5,6 +5,12 @@ import { SessionManager } from './shell/store.js';
 
 export type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 
+/**
+ * Sessions-domain port that coordinator services use to release a job claim
+ * without reaching into `sessions/shell/`. The wrapper exists for layering:
+ * coordinator/services may import from sessions contracts but not from
+ * sessions shell implementations.
+ */
 export function releaseSessionJobClaim(options: {
   projectRoot: string;
   runtime: Runtime;

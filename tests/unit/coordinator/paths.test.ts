@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { composeCoralPaths } from '#src/infra/coral-paths.js';
 import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
 import { corpusPaths } from '#src/infra/corpus-paths.js';
-import { equipmentPaths } from '#src/expansion/paths.js';
+import { equipmentPaths } from '#src/infra/equipment-paths.js';
 import { exportsPaths } from '#src/infra/exports-paths.js';
 import { storePaths } from '#src/infra/store-paths.js';
 

@@ -42,8 +42,9 @@ import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
-import { registerJobsConsumer } from '#src/jobs/consumer.js';
-import { registerWorkflowConsumer } from '#src/workflow/consumer.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -160,8 +161,8 @@ function setup(): {
   const db = new Database(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   const driver = new ConsumerDriver({ db, now: () => NOW });
-  registerJobsConsumer(driver, db);
-  registerWorkflowConsumer(driver, db);
+  registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
+  registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
   const readCtx: StoreReadContext = {
     schemas: new Map(),
     upcasters: createDefaultUpcasterRegistry(),

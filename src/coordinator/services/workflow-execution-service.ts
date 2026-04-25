@@ -17,7 +17,7 @@ import {
   type PipelineResult,
   type StepDetail,
   type WorkflowSessionHandle,
-} from '../../workflow/internal/execution-contract.js';
+} from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
 import {
   type JobTerminalDiagnostics,
@@ -38,7 +38,7 @@ import {
   claimJobAtomic,
   serializeWorkflowResult,
 } from './execution-policies.js';
-import type { WorkflowExecutionPort } from '../../workflow/internal/execution-contract.js';
+import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;

@@ -12,7 +12,6 @@ import type { RpcMethodSpec } from '../rpc-catalog.js';
 import type { WaitStreamRequest } from '../../jobs/wait.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
-import { queryParamsToObject } from './query-coerce.js';
 import { domainResultToHttp } from '../response.js';
 import { subscribeAll } from './sse-subscribe.js';
 
@@ -237,7 +236,7 @@ async function parseCatalogRequest(
 
   if (spec.http.method === 'GET' || spec.http.method === 'DELETE') {
     req.resume();
-    candidate = combineRouteInput(spec.http.method, queryParamsToObject(parsedUrl.searchParams), pathParams);
+    candidate = combineRouteInput(spec.http.method, Object.fromEntries(parsedUrl.searchParams), pathParams);
   } else {
     try {
       candidate = combineRouteInput(spec.http.method, await readJsonBody(req), pathParams);

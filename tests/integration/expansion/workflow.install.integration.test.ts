@@ -7,7 +7,7 @@ import type { CoordinatorDiscoveryRecord } from '#src/coordinator/discovery-api.
 import type { ActivationDeps } from '#src/expansion/activate.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
 import { installExpansion, uninstallExpansion } from '#src/expansion/install.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/expansion/paths.js';
+import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
 import { equip, info, list, unequip, update } from '#src/expansion/workflow.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';

@@ -12,7 +12,21 @@ import {
   type WorkflowExecutionPort,
 } from './command.js';
 import { describeTerminalFailure } from './command.js';
-import { formatAtomProgress, stripElapsedPrefix } from './internal/format.js';
+
+// Atom-progress formatters live next to the wait loop that consumes them.
+// Originally split into `workflow/internal/format.ts` alongside two unused
+// exports (`atomTagName`, `atomDiagnosticLabel`); both dead-on-arrival, both
+// removed. `stale-recovery.ts` is the only sibling consumer.
+export function stripElapsedPrefix(message: string): string {
+  if (!message.startsWith('[')) return message;
+  const closeBracket = message.indexOf('] ');
+  if (closeBracket < 0) return message;
+  return message.slice(closeBracket + 2);
+}
+
+export function formatAtomProgress(atom: LaunchedAtom, message: string): string {
+  return `${atom.stepIndex}-${atom.agent.slice(0, 3)} ${message}`;
+}
 
 export type WaitForAtomsOptions = {
   time: Pick<RuntimeTimePort, 'now'>;

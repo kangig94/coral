@@ -6,7 +6,7 @@ import {
   equipmentAddonPath as resolveEquipmentAddonPath,
   equipmentDataDir as resolveEquipmentDataDir,
   equipmentInstallLockPath as resolveEquipmentInstallLockPath,
-} from '../paths.js';
+} from '../../infra/equipment-paths.js';
 
 export type ExpansionLoggerEvent = {
   kind: string;

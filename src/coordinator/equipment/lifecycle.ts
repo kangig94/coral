@@ -18,7 +18,7 @@ import {
   equipmentAddonPath,
   equipmentInstallLockPath,
   type EquipmentPathOptions,
-} from '../../expansion/paths.js';
+} from '../../infra/equipment-paths.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';

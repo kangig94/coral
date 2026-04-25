@@ -22,7 +22,7 @@ import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { currentBuildFlavor, pluginRootNamespace } from '#src/infra/paths.js';
 import { storePaths } from '#src/infra/store-paths.js';
-import { createProjectionSessionLookup } from '#src/sessions/read-queries.js';
+import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';

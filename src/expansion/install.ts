@@ -7,7 +7,7 @@ import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-l
 import type { InstallError, InstallResponse, InstallResult } from './contracts.js';
 import { installErrorSchema } from './contracts.js';
 import { CATALOG } from './catalog.js';
-import { equipmentDataDir } from './paths.js';
+import { equipmentDataDir } from '../infra/equipment-paths.js';
 import { createExpansionInstallContext, type ExpansionInstallContext } from './strategies/strategy.js';
 
 const EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS = 250;

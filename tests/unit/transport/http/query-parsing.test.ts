@@ -10,13 +10,10 @@ import {
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
 } from '#src/kb/tool-contracts.js';
-import {
-  buildInvocationContextFromQuery,
-  parseBooleanQuery,
-  queryParamsToObject,
-} from '#src/transport/http/query-coerce.js';
+import { parseBooleanQuery } from '#src/infra/json.js';
+import { buildInvocationContextFromQuery } from '#src/transport/invocation-context.js';
 
-describe('query-coerce transport helpers', () => {
+describe('transport HTTP query parsing', () => {
   it('parses boolean query values safely', () => {
     expect(parseBooleanQuery('true')).toBe(true);
     expect(parseBooleanQuery('1')).toBe(true);
@@ -25,15 +22,6 @@ describe('query-coerce transport helpers', () => {
     expect(parseBooleanQuery(undefined)).toBeUndefined();
     expect(parseBooleanQuery('')).toBeUndefined();
     expect(parseBooleanQuery('wat')).toBeUndefined();
-  });
-
-  it('converts URLSearchParams into a plain object', () => {
-    const params = new URLSearchParams('q=first&q=second&owner=kang');
-
-    expect(queryParamsToObject(params)).toEqual({
-      q: 'second',
-      owner: 'kang',
-    });
   });
 
   it('coerces typed GET query params with route-specific schemas', () => {

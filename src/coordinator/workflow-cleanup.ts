@@ -1,7 +1,7 @@
 import type { ArtifactCleanupRuntime, ProviderSpec } from '../providers/contract.js';
 import type { Runtime } from '../runtime/ports.js';
 import { errorMessage } from '../infra/error-format.js';
-import type { WorkflowSessionHandle } from '../workflow/internal/execution-contract.js';
+import type { WorkflowSessionHandle } from '../workflow/execution-contract.js';
 
 export interface WorkflowSessionCleanupDeps {
   resolveConversationRef(providerName: string, sessionId: string): string | undefined;

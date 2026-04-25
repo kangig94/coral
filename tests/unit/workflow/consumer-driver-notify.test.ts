@@ -12,10 +12,10 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { registerWorkflowConsumer } from '#src/workflow/consumer.js';
+import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
-import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -32,7 +32,7 @@ describe('workflow consumer-driver notify', () => {
   it('projects the workflow after a coordinator-bound append', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    registerWorkflowConsumer(driver, db);
+    registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
 
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);

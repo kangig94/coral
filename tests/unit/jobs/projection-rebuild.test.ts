@@ -9,7 +9,8 @@ import { appendEvents } from '#src/store/append.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
-import { registerJobsConsumer } from '#src/jobs/consumer.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -28,7 +29,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
   it('replays historical job events into projection_jobs byte-identically through notify + waitFreshUntil', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, now: () => NOW });
-    registerJobsConsumer(driver, db);
+    registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
 
     try {
       const appended = appendEvents(

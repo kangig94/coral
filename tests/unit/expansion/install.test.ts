@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentDataDir, equipmentInstallLockPath } from '#src/expansion/paths.js';
+import { equipmentDataDir, equipmentInstallLockPath } from '#src/infra/equipment-paths.js';
 import { equipmentAddonStrategy } from '#src/expansion/strategies/equipment-addon.js';
 import { installExpansion, removeInstallArtifacts } from '#src/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';

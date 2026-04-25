@@ -432,7 +432,7 @@ function createLifecycleHarness(
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
-        sessionLookup: modules.sessionQueriesModule.createProjectionSessionLookup(options.progressStore.getDb()),
+        sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),
       });
       return [];
     },

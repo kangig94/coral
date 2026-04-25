@@ -22,7 +22,7 @@ import type { TerminalWriteOptions } from '../jobs/progress-store-contract.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
-import type { WorkflowSessionHandle } from '../workflow/internal/execution-contract.js';
+import type { WorkflowSessionHandle } from '../workflow/execution-contract.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';

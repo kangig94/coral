@@ -7,8 +7,7 @@ import {
   type WorkflowExecutionPort,
 } from './command.js';
 import { BOOTSTRAP_TIMEOUT_MS, readLaunchFailureMessage } from './launch.js';
-import { formatAtomProgress } from './internal/format.js';
-import type { AwaitStepState, WaitStaleRecoveryHandler } from './wait.js';
+import { formatAtomProgress, type AwaitStepState, type WaitStaleRecoveryHandler } from './wait.js';
 
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_ABORT_TIMEOUT_MS = 30_000;

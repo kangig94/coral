@@ -22,18 +22,15 @@ import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { readJobProgress, loadJobProjectionDetail } from '../jobs/read/queries.js';
-import { createProjectionSessionLookup } from '../sessions/read-queries.js';
+import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
-import { registerJobsConsumer } from '../jobs/consumer.js';
-import { registerDiscussConsumer } from '../discuss/consumer.js';
 import { sessionsRegistry } from '../sessions/events.js';
-import { registerSessionsConsumer } from '../sessions/consumer.js';
 import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
-import { registerWorkflowConsumer } from '../workflow/consumer.js';
+import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
@@ -273,10 +270,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const db = getStoreDb();
       const driver = getConsumerDriver();
 
-      registerJobsConsumer(driver, db);
-      registerSessionsConsumer(driver, db);
-      registerDiscussConsumer(driver, db);
-      registerWorkflowConsumer(driver, db);
+      registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
+      registerJournalProjectionConsumer(driver, db, 'sessions', sessionsRegistry);
+      registerJournalProjectionConsumer(driver, db, 'discuss', discussRegistry);
+      registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
       assertStartupStillActive();
 
       const currentMaxSeq = getCurrentJournalSeq();

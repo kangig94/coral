@@ -1,11 +1,14 @@
-// Invariant #31 bans generic filenames at domain roots. The internal execution
-// contract stays under workflow/internal/ so workflow ownership remains explicit.
-import type { AbortResult } from '../../jobs/abort-result.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { LaunchReadiness } from '../../jobs/launch-readiness.js';
-import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
-import type { TerminalOutcome } from '../../jobs/outcome.js';
+// Workflow execution contract: the port + value types that coordinator
+// services consume to drive workflow runs. Lives at the workflow root next
+// to other contract surfaces (events.ts, plan.ts) — the previous
+// `workflow/internal/` directory implied private scope while the file was
+// imported from four coordinator locations.
+import type { AbortResult } from '../jobs/abort-result.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { LaunchReadiness } from '../jobs/launch-readiness.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { CauseRef } from '../causality/cause-ref.js';
+import type { TerminalOutcome } from '../jobs/outcome.js';
 
 export type StepDetail = {
   stepIndex: number;
