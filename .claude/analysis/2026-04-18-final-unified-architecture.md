@@ -1676,7 +1676,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
-**Principle**: file size is an input to review, not the architecture. Decompose only along real responsibility boundaries and name each extracted file after the responsibility it owns. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility and the file remains declaration-only; runtime functions move to responsibility-named modules.
+**Principle**: file size is an input to review, not the architecture. Decompose only along real responsibility boundaries and name each extracted file after the responsibility it owns. See §10.4 for the full naming and subdivision policy.
 
 ### 10.2 Layering invariants
 
@@ -1686,7 +1686,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 4. `src/transport/*` imports domain contracts only, never domain shells or coordinator.
 5. `src/coordinator/*` is the only layer allowed to import broadly across domains.
 6. `tests/helpers/*` is never imported by production files.
-7. No generic filenames (`utils.ts`, `shared.ts`, `types.ts`, `schemas.ts`) at the top of any domain — force ownership.
+7. Content-blank filenames are forbidden anywhere in `src/` — `helper.ts`, `helpers.ts`, `utils.ts`, `shared.ts`, `shared-utils.ts`. These names describe nothing about content and act as magnets. See §10.4 for the broader naming policy (including which conventional names ARE allowed and why).
 
 ### 10.3 Type ownership principles
 
@@ -1699,7 +1699,51 @@ These principles prevent `shared/` re-emergence without introducing a central re
 5. `runtime/*` owns only port interfaces. Concrete implementations do not add to this layer.
 6. The only cross-cutting reference vocabulary is `CauseRef` (`{stream, seq}`), declared in `src/causality/cause-ref.ts` and re-exported where domain APIs need it. All other fault information lives on domain events — there is no central fault union.
 
-The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`shared.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold, (d) leaf `types.ts` files contain declarations only. That is the whole enforcement surface — no normative registry, no CI gate on a map.
+The architecture-boundary test verifies: (a) no type declared in two places, (b) no content-blank filenames anywhere in `src/` (`helper.ts`, `helpers.ts`, `utils.ts`, `shared.ts`, `shared-utils.ts` — see §10.4), (c) layer import rules (§10.2) hold, (d) per-file size invariants on specific magnet-prone files (e.g., `providers/contract.ts` capped at 450 lines). That is the whole enforcement surface — no normative registry, no CI gate on a map.
+
+### 10.4 Naming and subdivision policy
+
+The Source Tree (§10) is shaped by two complementary forces: every file declares its scope, and cohesive subsystems get their own directory. The rules below are how we keep both true as the codebase grows.
+
+**Forbidden filenames (content-blank)** — describe nothing about what the file holds, accumulate unrelated logic, become magnets:
+- `helper.ts`, `helpers.ts`, `utils.ts`, `shared.ts`, `shared-utils.ts`
+- Enforced by `tests/invariants/architecture-boundary.test.ts`.
+
+**Allowed filenames (scope-bound)** — discipline is on *content/size*, not *name*:
+- `index.ts` — conventional entry/orchestrator for a cohesive subsystem dir (mainstream JS/TS pattern). Allowed at any depth. Don't use it to hide internal coupling — it's the public surface, not a barrel that re-exports everything.
+- `types.ts` — type vocabulary for the parent dir. Allowed at any depth; the directory provides scope. If the file grows beyond cohesion (unrelated types accumulate), MUST split.
+- Domain canonicals like `events.ts`, `reducer.ts`, `projections.ts`, `read-queries.ts`, `paths.ts`, `errors.ts`, `contracts.ts`, `protocol.ts`, `client.ts`, `server.ts` — the directory provides scope (e.g., `kb/contracts.ts` ≠ `coordinator/contracts.ts`).
+- Domain-prefixed siblings like `exec-types.ts`, `manifest-types.ts`, `driver-types.ts` — the prefix declares scope independent of dir.
+
+**Magnet vs registry**: when a file holds a *typed-identifier registry* (HTTP status codes, POSIX errno, `CoralSetupError` documented codes), accumulation is the *correct* shape — that is what a canonical registry looks like. Don't split it per-domain just because the codes name domain things; the codes are wire-level identifiers, not domain logic. The magnet anti-pattern only applies when a file absorbs *unrelated logic* through a content-blank name. (Counter-example we got wrong once: an early attempt split `runtime/errors.ts` into per-domain catalogs to "avoid magnet" — it created a cycle and proliferated files. The catalog stays as one registry; it is not a magnet, it is a registry.)
+
+**Filename honesty** — a file's name must describe what it actually does, not what its history suggests:
+- A "`client.ts`" that doesn't talk to a transport but routes a classified verb is named wrong (real example: `cli/command-client.ts` → `cli/dispatch.ts`).
+- A "`main.ts`" that exports `buildProgram` and isn't the actual process entry is named wrong (`cli/main.ts` → `cli/program.ts`; `bootstrap.ts` IS the entry).
+- Redundant scope qualifiers within an already-scoped directory are noise (`cli/read-coral-store.ts` → `cli/read-store.ts`).
+- When in doubt, ask: would a reader who never opened this file guess its role from the name alone?
+
+**Subdivision triggers** — promote an implicit prefix cluster to an explicit subdirectory when:
+- ≥4 sibling files share a prefix and form a cohesive subsystem (one bounded responsibility split into facets), AND
+- The cohesion is real (each file owns a distinct facet of the same subsystem; the prefix isn't just "files involved in the same general topic"), AND
+- The shared prefix becomes redundant under the subdir (`community-detection.ts` → `community/detection.ts` reads identically).
+
+When subdividing:
+- Strip the now-redundant prefix from each file.
+- If one file is the orchestrator/public-API, name it `<subdir>/index.ts`.
+- If the cluster has no single orchestrator, all files are siblings under the subdir.
+- Update intra-cluster imports to `./X.js` (sibling), parent-dir imports to `../X.js`, grandparent and beyond to `../../X.js` (or absolute via `#src/...`).
+
+3 files = borderline (subdivide only if cohesion is unmistakable and the cluster is clearly bounded — e.g., needle equipment in `kb/search/needle/`). 2 files = no.
+
+**Subdivision rejection** — a few cases where subdividing makes the tree *worse*:
+- `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
+- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) follow the same shape — events.ts, reducer.ts, projections.ts, read-queries.ts at the domain root. Don't subdivide one of them differently than the others; the cross-domain mirror is load-bearing.
+- "Pure label" subdirs (e.g., grouping unrelated files into `gateway/` or `io/` because they "feel related") add navigation cost without scope clarity.
+
+**Lifecycle/process-flow naming** — when a directory owns a pipeline, name files for the stage they sit at so the directory reads top-down as the request flow. Example: `cli/` reads `bootstrap → program → commands/ → flags → parse → classify → dispatch → format → emit → follow`. Each filename answers "what stage am I at?" without ambiguity.
+
+**Discipline is content/size, not name** — when a file *does* drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it; the response is not to invent a new mechanical naming rule. Add a per-file size invariant to `tests/invariants/architecture-boundary.test.ts` if a specific file is at risk (precedent: `providers/contract.ts` capped at 450 lines).
 
 ---
 
