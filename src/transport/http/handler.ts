@@ -7,8 +7,8 @@ import {
 } from '../../jobs/wait.js';
 import { isRecord } from '../../infra/json.js';
 import { executeCatalogRequest } from '../dispatch.js';
-import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
-import type { RpcMethodSpec } from '../rpc-catalog.js';
+import { rpcCatalog, transportOperationalCarveouts } from '../rpc/catalog.js';
+import type { RpcMethodSpec } from '../rpc/catalog.js';
 import type { WaitStreamRequest } from '../../jobs/wait.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';

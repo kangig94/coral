@@ -1,4 +1,4 @@
-import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/read-contract.js';
+import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type {
   ListEquipmentRequest,
   ListEquipmentResult,
@@ -6,20 +6,20 @@ import type {
   RegisterEquipmentResult,
   UnregisterEquipmentRequest,
   UnregisterResult,
-} from '../expansion/equipment-contract.js';
+} from '../../expansion/equipment-contract.js';
 import type {
   JobForkRequest,
   JobLaunchRequest,
   JobResumeRequest,
   LaunchDecision,
-} from '../jobs/launch.js';
-import type { JobPhase } from '../jobs/phase.js';
-import type { JobProgress, JobStatus } from '../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { AbortResult } from '../jobs/abort-result.js';
-import type { KbToolResult } from '../kb/result.js';
-import type { ToolDomainResult } from './tool-result.js';
+} from '../../jobs/launch.js';
+import type { JobPhase } from '../../jobs/phase.js';
+import type { JobProgress, JobStatus } from '../../jobs/records.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
+import type { KbToolResult } from '../../kb/result.js';
+import type { ToolDomainResult } from '../tool-result.js';
 
 export type SessionStartInput = Pick<
   JobLaunchRequest,

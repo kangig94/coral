@@ -7,7 +7,7 @@ import type {
   UnregisterResult,
 } from '../../expansion/equipment-contract.js';
 import type { EquipmentLifecycleService } from './lifecycle.js';
-import type { EquipmentRequestPort } from '../../transport/rpc-ports.js';
+import type { EquipmentRequestPort } from '../../transport/rpc/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 
 /** Wraps lifecycle mutations with the per-slot guard so equipment RPC stays serialized by slot. */

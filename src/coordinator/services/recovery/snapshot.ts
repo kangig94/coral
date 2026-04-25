@@ -1,7 +1,7 @@
-import { formatError } from '../../infra/error-format.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
-import type { SessionLookup } from '../../sessions/lookup.js';
-import type { RecoveryJobFacts, RecoveryProjectionSnapshot, RecoverySessionFacts } from '../../jobs/reconcile/plan.js';
+import { formatError } from '../../../infra/error-format.js';
+import type { ProgressStore } from '../../../jobs/job-store.js';
+import type { SessionLookup } from '../../../sessions/lookup.js';
+import type { RecoveryJobFacts, RecoveryProjectionSnapshot, RecoverySessionFacts } from '../../../jobs/reconcile/plan.js';
 
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,

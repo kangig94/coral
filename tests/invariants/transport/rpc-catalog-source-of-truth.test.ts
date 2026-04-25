@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rpcCatalog, transportOperationalCarveouts } from '#src/transport/rpc-catalog.js';
+import { rpcCatalog, transportOperationalCarveouts } from '#src/transport/rpc/catalog.js';
 import {
   buildCoordinatorHttpDispatchTable,
   coordinatorHttpRoutes,

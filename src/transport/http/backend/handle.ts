@@ -1,8 +1,8 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { readBackendInfo } from '../../infra/backend-discovery.js';
-import { isProcessAlive } from '../../infra/node-process.js';
-import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { isProcessAlive } from '../../../infra/node-process.js';
+import { BackendUnreachableError } from '../../../infra/http-errors.js';
 
 export type BackendHandle = {
   port: number;

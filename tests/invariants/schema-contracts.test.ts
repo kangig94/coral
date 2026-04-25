@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc-jobs.js';
+import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc/jobs.js';
 import {
   agentIdentSchema,
   sessionCreateSchema,
@@ -7,7 +7,7 @@ import {
   sessionMessageSchema,
 } from '#src/sessions/command-schemas.js';
 import { workflowCommandSchema } from '#src/workflow/input.js';
-import { workflowRequestSchema } from '#src/transport/rpc-workflow.js';
+import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
 
 const AGENT_IDENT_CASES: ReadonlyArray<
   readonly [input: string, accepted: boolean, canonicalForm: string | null]

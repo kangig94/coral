@@ -2,34 +2,34 @@ import type {
   ProviderContinuityBlob,
   ProviderServerLease,
   ProviderServerSpec,
-} from '../../providers/contract.js';
-import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
-import { backendLog } from '../../infra/backend-log.js';
-import type { SessionInterruptedFault } from '../../sessions/fault.js';
+} from '../../../providers/contract.js';
+import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import type { SessionInterruptedFault } from '../../../sessions/fault.js';
 import {
   isAppServerRuntime,
   type AppServerRuntime,
   type JobLaunch,
   type JobRuntime,
   type JobTerminalInput,
-} from '../../jobs/records.js';
-import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
-import { writeResultArtifact } from '../../jobs/result-export.js';
-import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
-import type { SessionEntry } from '../../sessions/entry.js';
-import { nowIsoString } from '../../infra/time.js';
-import type { ProviderCatalog } from '../../providers/catalog.js';
+} from '../../../jobs/records.js';
+import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
+import { writeResultArtifact } from '../../../jobs/result-export.js';
+import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
+import type { SessionEntry } from '../../../sessions/entry.js';
+import { nowIsoString } from '../../../infra/time.js';
+import type { ProviderCatalog } from '../../../providers/catalog.js';
 import type {
   ExecutionProviderServerAttachment,
   ExecutionProviderHostManager,
-} from '../contracts.js';
-import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../jobs/admission-contract.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../../jobs/progress-store-contract.js';
-import type { SessionRecoveryPort } from '../../sessions/execution-contract.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { JobAbortRegistryPort } from '../../jobs/abort-registry-contract.js';
-import type { RecoveredJobLifecyclePort } from '../../jobs/job-runner-contract.js';
-import { toProviderRequest } from '../../jobs/provider-request.js';
+} from '../../contracts.js';
+import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/admission-contract.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/progress-store-contract.js';
+import type { SessionRecoveryPort } from '../../../sessions/execution-contract.js';
+import type { Runtime } from '../../../runtime/ports.js';
+import type { JobAbortRegistryPort } from '../../../jobs/abort-registry-contract.js';
+import type { RecoveredJobLifecyclePort } from '../../../jobs/job-runner-contract.js';
+import { toProviderRequest } from '../../../jobs/provider-request.js';
 import {
   APP_SERVER_RECOVERY_POLICY,
   FINALIZE_CONTINUITY_MAX_RETRIES,
@@ -38,7 +38,7 @@ import {
   materializeInterruptedSessionOutcome,
   type InterruptedAppServerReason,
   type InterruptedProbeOutcome,
-} from './execution-policies.js';
+} from '../execution-policies.js';
 
 type ProviderLaunchRecord = JobLaunch & {
   sessionId: string;

@@ -6,7 +6,7 @@ import type { HttpHandlerPorts } from '../server-ports.js';
 import { formatZodError } from '../validation.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
-import { rpcCatalog, type RpcMethodSpec } from '../rpc-catalog.js';
+import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
 import { formatError } from '../../infra/error-format.js';

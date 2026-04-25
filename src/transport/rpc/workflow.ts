@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { workflowCommandSchema } from '../workflow/input.js';
+import { workflowCommandSchema } from '../../workflow/input.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const modelNameSchema = z

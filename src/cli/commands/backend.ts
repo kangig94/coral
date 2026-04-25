@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
-import { getBackendStatusFull } from '../../transport/http/backend-status.js';
-import { shutdownBackend } from '../../transport/http/backend-shutdown.js';
+import { getBackendStatusFull } from '../../transport/http/backend/status.js';
+import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
 import { getPluginRoot } from '../command-client.js';
 import { emitError } from '../command-output.js';
 import { formatBackendStatus, formatShutdown } from '../format.js';

@@ -13,7 +13,7 @@ import type {
 } from '../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { RpcPorts } from './rpc-ports.js';
+import type { RpcPorts } from './rpc/ports.js';
 
 export interface AdminControlPort {
   isLifecycleRunning(): boolean;

@@ -1,5 +1,5 @@
-import { errorMessage } from '../../infra/error-format.js';
-import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { BackendUnreachableError } from '../../../infra/http-errors.js';
 
 function isBackendUnreachableCause(error: unknown): boolean {
   let current: unknown = error;

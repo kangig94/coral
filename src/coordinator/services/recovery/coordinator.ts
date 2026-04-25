@@ -1,27 +1,27 @@
-import { formatError } from '../../infra/error-format.js';
-import { isAppServerRuntime } from '../../jobs/records.js';
-import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { ProviderCatalog } from '../../providers/catalog.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
-import { planRecovery } from '../../jobs/reconcile/plan.js';
-import { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
-import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
-import { adoptOrphanedCrossNamespaceJobs } from '../../jobs/reconcile/cross-namespace-adoption.js';
-import { StartupInterruptedError } from '../startup-error.js';
-import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
-import { writeResultArtifact } from '../../jobs/result-export.js';
-import type { JobEventBus } from '../../jobs/event-bus.js';
+import { formatError } from '../../../infra/error-format.js';
+import { isAppServerRuntime } from '../../../jobs/records.js';
+import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import type { ProviderCatalog } from '../../../providers/catalog.js';
+import type { ProgressStore } from '../../../jobs/job-store.js';
+import { planRecovery } from '../../../jobs/reconcile/plan.js';
+import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
+import type { Runtime, RuntimeTimerHandle } from '../../../runtime/ports.js';
+import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
+import { adoptOrphanedCrossNamespaceJobs } from '../../../jobs/reconcile/cross-namespace-adoption.js';
+import { StartupInterruptedError } from '../../startup-error.js';
+import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
+import { writeResultArtifact } from '../../../jobs/result-export.js';
+import type { JobEventBus } from '../../../jobs/event-bus.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,
   logRecoveryActionFailure,
   type QueuedRecoverableJob,
   type RunningRecoverableJob,
-} from './recovery-actions.js';
-import { buildRecoverySnapshot } from './recovery-snapshot.js';
-import type { SessionLookup } from '../../sessions/lookup.js';
+} from './actions.js';
+import { buildRecoverySnapshot } from './snapshot.js';
+import type { SessionLookup } from '../../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
 

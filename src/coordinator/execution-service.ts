@@ -36,7 +36,7 @@ import { JobLaunchService } from './services/job-launch-service.js';
 import { WorkflowExecutionService } from './services/workflow-execution-service.js';
 import { JobAbortService } from './services/job-abort-service.js';
 import { JobWaitService } from './services/job-wait-service.js';
-import { RecoveryService } from './services/recovery-service.js';
+import { RecoveryService } from './services/recovery/service.js';
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort {
   private readonly runtime: ExecutionServiceDeps['runtime'];

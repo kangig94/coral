@@ -3,7 +3,7 @@ import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
   discussEventsQuerySchema,
-} from '#src/transport/rpc-discuss.js';
+} from '#src/transport/rpc/discuss.js';
 import {
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,

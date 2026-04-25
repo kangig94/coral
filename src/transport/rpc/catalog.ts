@@ -3,7 +3,7 @@ import {
   listEquipmentRequestSchema,
   registerEquipmentRequestSchema,
   unregisterEquipmentRequestSchema,
-} from '../expansion/equipment-contract.js';
+} from '../../expansion/equipment-contract.js';
 import {
   discussSeedSchema,
   discussSessionBidRequestSchema,
@@ -13,13 +13,13 @@ import {
   discussSessionEventsRequestSchema,
   discussSessionListRequestSchema,
   discussSessionSpeechRequestSchema,
-} from './rpc-discuss.js';
+} from './discuss.js';
 import {
   jobAbortSchema,
   jobDetailRequestSchema,
   jobsListRequestSchema,
   jobWaitSchema,
-} from './rpc-jobs.js';
+} from './jobs.js';
 import {
   kbCommunityReadRequestSchema,
   kbDiagnoseRequestSchema,
@@ -39,14 +39,14 @@ import {
   kbSourceDeleteRequestSchema,
   kbSourceListRequestSchema,
   kbSourceReadRequestSchema,
-} from '../kb/tool-contracts.js';
+} from '../../kb/tool-contracts.js';
 import {
   sessionCreateSchema,
   sessionForkRequestSchema,
   sessionMessageRequestSchema,
-} from '../sessions/command-schemas.js';
-import type { RpcPorts } from './rpc-ports.js';
-import { workflowRequestSchema } from './rpc-workflow.js';
+} from '../../sessions/command-schemas.js';
+import type { RpcPorts } from './ports.js';
+import { workflowRequestSchema } from './workflow.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;

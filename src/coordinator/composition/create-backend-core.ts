@@ -48,7 +48,7 @@ import {
 } from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
-import type { RpcPorts } from '../../transport/rpc-ports.js';
+import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import { noteEntryId, sourceEntryId } from '../../kb/entry-types.js';
 import type { KbRef } from '../../store/envelope.js';

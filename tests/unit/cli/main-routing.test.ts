@@ -84,11 +84,11 @@ vi.mock('#src/transport/http/client.js', () => ({
   BackendToolHttpError: mockHttpErrors.BackendToolHttpError,
 }));
 
-vi.mock('#src/transport/http/backend-status.js', () => ({
+vi.mock('#src/transport/http/backend/status.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
 }));
 
-vi.mock('#src/transport/http/backend-shutdown.js', () => ({
+vi.mock('#src/transport/http/backend/shutdown.js', () => ({
   shutdownBackend: mockState.shutdownBackend,
 }));
 

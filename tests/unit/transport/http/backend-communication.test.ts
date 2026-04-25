@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { throwBackendCommunicationError } from '#src/transport/http/backend-communication.js';
+import { throwBackendCommunicationError } from '#src/transport/http/backend/communication.js';
 import { BackendUnreachableError } from '#src/infra/http-errors.js';
 
 describe('transport/http backend communication', () => {

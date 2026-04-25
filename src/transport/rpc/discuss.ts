@@ -4,7 +4,7 @@ import {
   discussSeedSchema,
   discussSpeechSchema,
   discussStartSchema,
-} from '../discuss/command-schemas.js';
+} from '../../discuss/command-schemas.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const sessionIdSchema = z.string().min(1, 'Session ID is required');

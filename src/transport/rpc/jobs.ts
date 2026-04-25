@@ -1,9 +1,9 @@
 import { z } from 'zod';
 
-import { parseBooleanQuery } from '../infra/json.js';
-import { providerIdentPattern } from '../infra/identifiers.js';
-import { jobPhaseSchema } from '../jobs/phase.js';
-import { isWaitCursor, type WaitCursor } from '../jobs/wait.js';
+import { parseBooleanQuery } from '../../infra/json.js';
+import { providerIdentPattern } from '../../infra/identifiers.js';
+import { jobPhaseSchema } from '../../jobs/phase.js';
+import { isWaitCursor, type WaitCursor } from '../../jobs/wait.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');

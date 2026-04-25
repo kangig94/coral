@@ -1,10 +1,10 @@
-import { readBackendInfo } from '../../infra/backend-discovery.js';
-import { isProcessAlive } from '../../infra/node-process.js';
+import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { isProcessAlive } from '../../../infra/node-process.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
-} from './sse.js';
-import { isRecord } from '../../infra/json.js';
+} from '../sse.js';
+import { isRecord } from '../../../infra/json.js';
 
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
