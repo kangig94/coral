@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
@@ -68,6 +69,9 @@ import {
   emptyRuntimeActivationSnapshot,
 } from './runtime-snapshot.js';
 import { commitMutationState, previewPendingMutationState } from './runtime-mutation-state.js';
+import { SYSTEM_TIME_PORT } from '../infra/time.js';
+import { readProcessEnv } from '../infra/process-env.js';
+import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
 
 type MutationLockContext = KbMutationLockContext<
   KbIndex,
@@ -83,12 +87,18 @@ export interface CreateKbRuntimeOptions {
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   readOnlyOrama?: boolean;
+  time?: Pick<RuntimeTimePort, 'now'>;
+  ids?: Pick<RuntimeIdsPort, 'uuid'>;
+  env?: Pick<RuntimeEnvPort, 'get'>;
 }
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
+  readonly time: Pick<RuntimeTimePort, 'now'>;
+  readonly ids: Pick<RuntimeIdsPort, 'uuid'>;
+  readonly env: Pick<RuntimeEnvPort, 'get'>;
   private readonly readOnlyOrama: boolean;
   private readonly paths: KbRuntimePaths;
   private readonly manifestAuthority = createManifestAuthority();
@@ -134,10 +144,23 @@ class KbRuntimeImpl implements KbRuntime {
     processPublishQueue: () => this.publicationQueue.process(),
   });
 
-  constructor({ markdownRoot, runtimeDir, db, corpusPublishCallbacks, getEquipmentView, readOnlyOrama }: CreateKbRuntimeOptions) {
+  constructor({
+    markdownRoot,
+    runtimeDir,
+    db,
+    corpusPublishCallbacks,
+    getEquipmentView,
+    readOnlyOrama,
+    time,
+    ids,
+    env,
+  }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
     this.db = db;
+    this.time = time ?? SYSTEM_TIME_PORT;
+    this.ids = ids ?? { uuid: () => randomUUID() };
+    this.env = env ?? { get: readProcessEnv };
     this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
     this.corpusStateMirror = createCorpusStateMirror(this.db);

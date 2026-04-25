@@ -1,4 +1,10 @@
-import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../runtime/ports.js';
+import type {
+  RuntimeEnvPort,
+  RuntimeIdsPort,
+  RuntimeProcessPort,
+  RuntimeStoragePort,
+  RuntimeTimePort,
+} from '../../runtime/ports.js';
 import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
 import type { CurateCursor } from './state.js';
 
@@ -23,6 +29,8 @@ export type GitSyncRuntimePicks = {
   processPort: Pick<RuntimeProcessPort, 'exec' | 'execSync'>;
   storagePort: Pick<RuntimeStoragePort, 'readFileSync' | 'existsSync' | 'writeAtomicSync'>;
   envPort: Pick<RuntimeEnvPort, 'get'>;
+  timePort?: Pick<RuntimeTimePort, 'now'>;
+  idsPort?: Pick<RuntimeIdsPort, 'uuid'>;
 };
 
 export type NoteClaimCandidate = {

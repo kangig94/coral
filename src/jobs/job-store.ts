@@ -13,7 +13,7 @@ import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
 import { ensureResultMarkdownArtifact } from './exports/result-markdown.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
-import { nowIsoString } from '../infra/time.js';
+import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
@@ -82,7 +82,7 @@ export class JobStore implements JobProgressStore {
       appendEvents ??
       ((inputs) => {
         return appendJournalEvents(this.db, inputs, {
-          now: () => new Date(this.runtime.time.now()),
+          now: () => nowDate(this.runtime.time),
           reducers,
           upcasters: this.upcasters,
         });

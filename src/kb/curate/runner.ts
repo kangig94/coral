@@ -112,7 +112,7 @@ function pendingExtendsBeyondCursor(pendingEntries: ClaimCandidate[], cursor: Cu
 export async function claimCurateRun(kb: KbRuntime, today: string): Promise<CurateClaim | null> {
   const lockResult = await kb.withMutationLock(() => {
     const state = readCurateState(kb);
-    const now = nowIsoString();
+    const now = nowIsoString(kb.time);
 
     if (state.activeClaim !== null && !isClaimStale(state, now)) {
       return null;

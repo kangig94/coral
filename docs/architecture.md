@@ -47,7 +47,7 @@ bridge/coral-cli.cjs
 bridge/coral-backend.cjs
   ├── Coordinator bootstrap + lifecycle
   ├── IPC + HTTP/SSE transport adapters
-  ├── Jobs / sessions / workflow / discuss / KB facades
+  ├── Jobs / sessions / workflow / discuss / KB owner modules and contracts
   ├── Live ConsumerDriver freshness + drain path
   ├── Corpus notify seam for KB publication
   ├── Journal substrate (`better-sqlite3`)
@@ -133,7 +133,7 @@ Not every command becomes a job. Jobs are for work that is long-running, observa
 1. `coral-cli codex -i ...` or `coral-cli codex <agent> -i ...`
 2. The CLI client calls `POST /sessions`
 3. The transport layer validates the direct body, builds `CallerContext`, and forwards a domain-shaped request into the coordinator
-4. The coordinator API resolves agent intent, persists session continuity, and launches or resumes work through the jobs and sessions shells
+4. The coordinator API resolves agent intent, persists session continuity, and launches or resumes work through jobs-owned launch/admission contracts plus sessions-owned continuity storage
 5. Provider adapters spawn the real CLI/runtime and emit progress
 6. Journal appends publish projection freshness through the live `ConsumerDriver`; session continuity remains authoritative in the sessions shell
 
@@ -176,7 +176,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
-| Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
+| Jobs | Truth-owning owner for job lifecycle: launch, admission, wait, abort, terminal outcomes, and startup reconciliation. |
 | Sessions | Session persistence and continuity, including resume/fork identity and atomic storage. |
 | Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
 | Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
@@ -217,9 +217,9 @@ Transport IPC/HTTP surface
   -> Domain owner modules/contracts (workflow / discuss / KB / jobs / sessions)
 
 Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
-  -> Jobs shells / queries / recovery
-  -> Sessions shell / continuity lookup
-  -> Workflow / discuss / KB facades
+  -> Jobs launch/admission/wait/recovery contracts
+  -> Sessions continuity storage and lookup contracts
+  -> Workflow / discuss / KB owner modules
   -> Provider adapters + live host management
 
 Coordinator startup

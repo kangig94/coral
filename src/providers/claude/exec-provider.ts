@@ -8,6 +8,7 @@ import {
   type Provider,
   type ProviderContinuityBlob,
   type ProviderContinuityUpdate,
+  type ProviderRuntime,
   type ProviderTerminalEventBody,
 } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
@@ -77,7 +78,7 @@ export const claude: Provider = (request, runtime) => {
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
   if (request.action === 'fork') {
-    assertValidForkContinuity(persistedContinuity);
+    assertValidForkContinuity(persistedContinuity, runtime);
 
     if (persistedContinuity.brokerSessionKey || persistedContinuity.bootstrapSignature) {
       return streamProviderTerminal(
@@ -209,14 +210,14 @@ function buildDispatchRejectedTerminal(model: string | undefined, reason: string
   };
 }
 
-function assertValidForkContinuity(continuity: ClaudePersistedContinuity): void {
+function assertValidForkContinuity(continuity: ClaudePersistedContinuity, runtime: ProviderRuntime): void {
   if (continuity.brokerSessionKey || continuity.bootstrapSignature) {
     return;
   }
   if (!continuity.envHash && !continuity.conversationRef && !continuity.brokerTurnId) {
     return;
   }
-  if (process.env.CORAL_DEV_ASSERTIONS !== '1') {
+  if (runtime.env?.get('CORAL_DEV_ASSERTIONS') !== '1') {
     return;
   }
 

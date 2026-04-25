@@ -34,7 +34,7 @@ Cross-stream event references live below the domains in `causality/`. `CauseRef`
 
 ## Domains
 
-Each domain is self-contained: its own contract (events, projection, read-models), its own functional core (pure state transitions), its own imperative shell (persistence, loop control, external effects), and explicit coordinator-facing owner modules for commands, queries, recovery, and ports. Domains do not import each other; cross-domain composition happens at the backend layer only. A facade is an ownership surface, not a requirement to keep `api.ts` barrels or compatibility shims.
+Each domain is self-contained: its own contract (events, projection, read-models), its own functional core (pure state transitions), its own imperative shell (persistence, loop control, external effects), and explicit coordinator-facing owner modules for commands, queries, recovery, and ports. Domains do not import each other; cross-domain composition happens at the backend layer only. Ownership surfaces are real contracts/modules, not `api.ts` barrels or compatibility shims.
 
 | Domain | Responsibility |
 | --- | --- |

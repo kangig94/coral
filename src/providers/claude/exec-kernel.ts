@@ -1,6 +1,7 @@
 import type { EffortLevel } from '../request-policy.js';
 import type { Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../cli-runner.js';
+import type { RuntimeTimePort } from '../../runtime/ports.js';
 import { providerRequestFailed } from '../fault.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
@@ -22,6 +23,7 @@ type ClaudeForkOptions = {
   onEvent?: (line: string) => void;
   runCli: ProviderCliRunner;
   environment: Record<string, string>;
+  time: Pick<RuntimeTimePort, 'now'>;
 };
 
 class ClaudeExecParseError extends Error {
@@ -68,6 +70,7 @@ export const claudeExecKernel: Provider = (request, runtime) =>
       onEvent: (line) => emitProgress(line, request.cwd, emit),
       runCli: runtime.runCli,
       environment: request.coralEnv,
+      time: runtime.time,
     });
 
     if (result.sessionId) {
@@ -144,7 +147,7 @@ function appendSharedArgs(
 }
 
 async function executeClaude(args: string[], prompt: string, options: ClaudeForkOptions): Promise<ClaudeExecResult> {
-  const start = Date.now();
+  const start = options.time.now();
   const { stdout, stderr, code, aborted } = await options.runCli({
     command: 'claude',
     args,
@@ -168,7 +171,7 @@ async function executeClaude(args: string[], prompt: string, options: ClaudeFork
     response: parsed.response,
     sessionId: parsed.sessionId,
     model: extractModel(parsed, options.model),
-    durationMs: parsed.durationMs ?? Date.now() - start,
+    durationMs: parsed.durationMs ?? options.time.now() - start,
     costUsd: parsed.costUsd,
     aborted,
     isError: parsed.isError,

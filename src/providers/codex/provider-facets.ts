@@ -46,7 +46,7 @@ export async function codexPreflight(runtime: PreflightRuntime): Promise<void> {
 }
 
 async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise<void> {
-  const now = Date.now();
+  const now = runtime.time.now();
   if (codexAppServerAvailabilityCache && now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
     if (!codexAppServerAvailabilityCache.available) {
       throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
@@ -67,7 +67,7 @@ async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise
 }
 
 async function assertCodexAuthTokens(runtime: PreflightRuntime): Promise<void> {
-  const now = Date.now();
+  const now = runtime.time.now();
   if (codexAuthTokensCache && now - codexAuthTokensCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
     if (!codexAuthTokensCache.available) {
       throw new Error(CODEX_AUTH_ERROR_MESSAGE);

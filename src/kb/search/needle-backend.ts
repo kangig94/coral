@@ -4,6 +4,7 @@ import { readCorpusState } from '../state/corpus-state.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../contracts.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
@@ -126,8 +127,8 @@ function writeSnapshotManifest(snapshotDir: string, manifest: NeedleSnapshotMani
   writeFileAtomic(needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function createHandleToken(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+function createHandleToken(runtime: KbRuntime, prefix: string): string {
+  return `${prefix}-${runtime.time.now()}-${runtime.ids.uuid()}`;
 }
 
 function compareScoreAndEntryId(
@@ -341,7 +342,7 @@ export class NeedleBackend implements NeedleBackendContract {
       return;
     }
 
-    const desiredSpec = resolveEmbeddingProviderConfig();
+    const desiredSpec = resolveEmbeddingProviderConfig(this.runtime.env.get);
     if (desiredSpec === null) {
       throw new Error('KB needle backend requires an embedding provider configuration.');
     }
@@ -448,7 +449,7 @@ export class NeedleBackend implements NeedleBackendContract {
 
     const stagedStore = await this.openStore(
       join(stagingDir, NEEDLE_STORE_FILE),
-      createHandleToken(`needle-stage-${snapshot.snapshotId}`),
+      createHandleToken(this.runtime, `needle-stage-${snapshot.snapshotId}`),
     );
     if (stagedStore === null) {
       rmSync(stagingDir, { recursive: true, force: true });
@@ -464,14 +465,14 @@ export class NeedleBackend implements NeedleBackendContract {
           model: desiredSpec.model,
           dims: desiredSpec.dims,
           normalization: desiredSpec.normalization,
-          createdAt: currentSpec?.createdAt ?? new Date().toISOString(),
+          createdAt: currentSpec?.createdAt ?? nowIsoString(this.runtime.time),
         });
       }
 
       const vectorEntries = this.collectVectorEntries();
       const chunks = vectorEntries.flatMap((entry) => entry.chunks);
       if (chunks.length > 0) {
-        const provider = await createEmbeddingProvider(this.runtime.runtimeDir, desiredSpec);
+        const provider = await createEmbeddingProvider(this.runtime.runtimeDir, desiredSpec, this.runtime.env.get);
         if (provider === null) {
           throw new Error('KB needle backend could not initialize the embedding provider.');
         }
@@ -585,7 +586,7 @@ export class NeedleBackend implements NeedleBackendContract {
 
     const opened = await this.openStore(
       needleSnapshotDbPath(this.runtime.runtimeDir, snapshotId),
-      createHandleToken(`needle-active-${snapshotId}`),
+      createHandleToken(this.runtime, `needle-active-${snapshotId}`),
     );
     if (opened === null) {
       return null;

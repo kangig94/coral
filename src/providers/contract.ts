@@ -262,8 +262,9 @@ export interface ProviderContinuityBridge {
 export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
+  time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
   storage?: Pick<Runtime['storage'], 'readFileSync' | 'statSync'>;
-  env?: Pick<Runtime['env'], 'homedir'>;
+  env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
@@ -312,7 +313,7 @@ export interface ProviderRecoveryContract {
   };
 }
 
-export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
+export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
 
 export interface ProviderArtifactCleanup {

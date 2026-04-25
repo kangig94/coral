@@ -188,6 +188,7 @@ export class WorkflowExecutionService {
       },
       workflowJobId: jobId,
       journal: createWorkflowJournal({ appendEvents: this.deps.appendEvents }),
+      time: this.deps.runtime.time,
     })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);

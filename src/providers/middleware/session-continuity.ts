@@ -13,8 +13,6 @@ import type {
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 
-const captureDebugStacks = process.env.CORAL_DEV_ASSERTIONS === '1';
-
 type ContinuitySnapshot = Pick<
   ProviderContinuityEventBody,
   'conversationRef' | 'resumable' | 'providerContinuity'
@@ -78,8 +76,9 @@ export function sessionContinuity<TState>(
       const state: ContinuityState<TState> = {
         current: providerState,
       };
-      const bridgeLifecycle = createBridgeLifecycle();
-      const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue);
+      const devAssertions = runtime.env?.get('CORAL_DEV_ASSERTIONS') === '1';
+      const bridgeLifecycle = createBridgeLifecycle(devAssertions);
+      const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue, devAssertions);
 
       const wrappedRuntime: ProviderRuntime = {
         ...runtime,
@@ -130,7 +129,7 @@ export function sessionContinuity<TState>(
         };
         return;
       } finally {
-        deactivateBridge(bridgeLifecycle);
+        deactivateBridge(bridgeLifecycle, devAssertions);
       }
     };
 }
@@ -150,14 +149,14 @@ function normalizeSnapshot(snapshot: ContinuitySnapshot): ContinuitySnapshot {
   };
 }
 
-function createBridgeLifecycle(): BridgeLifecycle {
+function createBridgeLifecycle(captureDebugStacks: boolean): BridgeLifecycle {
   return {
     active: true,
     creationStack: captureDebugStacks ? captureStack('Continuity bridge created here.') : undefined,
   };
 }
 
-function deactivateBridge(lifecycle: BridgeLifecycle): void {
+function deactivateBridge(lifecycle: BridgeLifecycle, captureDebugStacks: boolean): void {
   if (captureDebugStacks) {
     lifecycle.deactivationStack = captureStack('Continuity bridge deactivated here.');
   }
@@ -169,10 +168,11 @@ function createContinuityBridge<TState>(
   contract: SessionContinuityContract<TState>,
   state: ContinuityState<TState>,
   queue: ContinuityQueue,
+  devAssertions: boolean,
 ): ProviderRuntime['continuityBridge'] {
   return {
     checkpoint(update) {
-      if (!assertBridgeActive(lifecycle, 'checkpoint')) {
+      if (!assertBridgeActive(lifecycle, 'checkpoint', devAssertions)) {
         return;
       }
 
@@ -180,7 +180,7 @@ function createContinuityBridge<TState>(
       queueContinuityIfDelta(queue, contract.snapshot(state.current));
     },
     transportClosed(closed) {
-      if (!assertBridgeActive(lifecycle, 'transportClosed')) {
+      if (!assertBridgeActive(lifecycle, 'transportClosed', devAssertions)) {
         return;
       }
 
@@ -285,12 +285,13 @@ function* drainContinuity(pending: ContinuitySnapshot[]): Generator<ProviderCont
 function assertBridgeActive(
   lifecycle: BridgeLifecycle,
   method: keyof ProviderRuntime['continuityBridge'],
+  devAssertions: boolean,
 ): boolean {
   if (lifecycle.active) {
     return true;
   }
 
-  if (process.env.CORAL_DEV_ASSERTIONS !== '1') {
+  if (!devAssertions) {
     return false;
   }
 

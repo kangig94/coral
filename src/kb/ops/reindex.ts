@@ -3,7 +3,7 @@ import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } f
 import type { ReindexResult } from '../entry-types.js';
 
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
-  const startedAt = Date.now();
+  const startedAt = kb.time.now();
 
   const textResult = await kb.withMutationLock(async (mutation) => {
     const startState = kb.readIndexState();
@@ -22,7 +22,7 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
       if (error instanceof TextSnapshotRebuildError) {
         return {
           ...error.counts,
-          duration_ms: Date.now() - startedAt,
+          duration_ms: kb.time.now() - startedAt,
           mode: 'text',
           warning: error.message,
         };
@@ -38,7 +38,7 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   });
   return {
     ...textResult,
-    duration_ms: Date.now() - startedAt,
+    duration_ms: kb.time.now() - startedAt,
     mode: 'text',
   };
 }

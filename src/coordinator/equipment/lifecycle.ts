@@ -11,6 +11,7 @@ import {
   type NeedleBackendOptions,
 } from '../../kb/search/needle-contract.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
+import { nowDate } from '../../infra/time.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
 import {
@@ -124,7 +125,7 @@ export class EquipmentLifecycleService {
   private readonly deleteCursorStmt: BetterSqlite3.Statement<[string]>;
 
   constructor(private readonly options: EquipmentLifecycleServiceOptions) {
-    this.now = options.now ?? (() => new Date());
+    this.now = options.now ?? (() => nowDate());
     this.closeNeedleBackendFn = options.closeNeedleBackend ?? closeNeedleBackend;
     this.activateNeedleFn = options.activateNeedle ?? activateNeedle;
     this.selectStateStmt = options.db.prepare<[string], EquipmentStateRow>(

@@ -7,6 +7,7 @@ import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import type { CorpusConsumerRegistration } from './corpus/consumer-contract.js';
+import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,
@@ -78,6 +79,9 @@ export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
+  readonly time: Pick<RuntimeTimePort, 'now'>;
+  readonly ids: Pick<RuntimeIdsPort, 'uuid'>;
+  readonly env: Pick<RuntimeEnvPort, 'get'>;
   getEquipmentView(): KbRuntimeActivationSnapshot;
   getActiveVectorSurface(): VectorRetrieval;
   getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval & CorpusConsumerRegistration;

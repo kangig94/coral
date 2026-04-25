@@ -4,15 +4,15 @@ import type {
   JobResumeRequest,
   LaunchDecision,
 } from '../jobs/launch.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../jobs/progress-store-contract.js';
-import type { JobPhase } from '../jobs/phase.js';
+import type {
+  LaunchCoordinatorPort,
+  LaunchPool,
+} from '../jobs/admission-contract.js';
+import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
+import type { JobProgressStore } from '../jobs/progress-store-contract.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type {
-  AppServerRuntime,
-  JobLaunch,
   JobProgress,
-  JobRuntime,
-  JobTerminalInput,
 } from '../jobs/records.js';
 import type { LaunchReadiness } from '../jobs/launch-readiness.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
@@ -32,8 +32,6 @@ import type { ProviderCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
-
-export type ExecutionLaunchPool = 'default' | 'discuss' | 'curate';
 
 type ExecIntent = JobLaunchRequest;
 type ResumeIntent = JobResumeRequest;
@@ -69,55 +67,7 @@ export interface ListResult {
   sessions: SessionEntry[];
 }
 
-export type ExecutionQueuedHandle = {
-  outcome: 'queued';
-  position: number;
-  type: 'queued';
-  queuePosition: number;
-  waitForPermit: () => Promise<void>;
-  cancel: () => void;
-};
-
-export type ExecutionAdmissionResult =
-  | {
-      outcome: 'admitted';
-      permit: { type: 'immediate' };
-      type: 'immediate';
-    }
-  | ExecutionQueuedHandle
-  | 'queue_full';
-
-type ExecutionSpawnDurableJobOptions = {
-  provider: string;
-  command: string;
-  args: string[];
-  prompt?: string;
-  cwd?: string;
-  onEvent?: (line: string) => void;
-  signal?: AbortSignal;
-  permitGranted?: boolean;
-  pool?: ExecutionLaunchPool;
-  extraEnv?: Record<string, string>;
-  jobDir: string;
-  onRuntimeRecord?: (record: JobRuntime) => void;
-};
-
-export interface ExecutionLaunchCoordinator {
-  requestLaunch(jobId: string, provider: string, pool?: ExecutionLaunchPool): ExecutionAdmissionResult;
-  releaseLaunch(jobId: string, pool?: ExecutionLaunchPool): void;
-  cancelQueued(jobId: string, pool?: ExecutionLaunchPool): boolean;
-  queuePosition(jobId: string, pool?: ExecutionLaunchPool): number | null;
-  getActiveJobIds(pool?: ExecutionLaunchPool): string[];
-  bindLaunchPermit(jobId: string, signal: AbortSignal, pool?: ExecutionLaunchPool): void;
-  spawnDurableJob(options: ExecutionSpawnDurableJobOptions): Promise<{
-    stdout: string;
-    stderr: string;
-    code: number | null;
-    aborted: boolean;
-  }>;
-  restoreActiveLaunch(jobId: string, provider: string, pool?: ExecutionLaunchPool): void;
-  restoreQueuedLaunch(jobId: string, provider: string, pool?: ExecutionLaunchPool): ExecutionQueuedHandle;
-}
+export type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderDurableSpawner;
 
 export interface ExecutionProviderServerAttachment {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
@@ -139,7 +89,7 @@ export type ExecutionServiceDeps = {
   bundleHash?: string;
   backendNamespace: string;
   providerHostManager: ExecutionProviderHostManager;
-  launchCoordinator: ExecutionLaunchCoordinator;
+  launchCoordinator: CoordinatorLaunchCoordinator;
   eventBus: TypedEventBus;
   providerRegistry: ProviderCatalog;
   pluginRegistry: {
@@ -157,23 +107,6 @@ export type ExecutionServiceDeps = {
   sessionLookup?: SessionLookup;
 };
 
-export interface RecoveryCapableService {
-  finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' },
-  ): Promise<void>;
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void };
-  recoverQueuedJob(launchRecord: JobLaunch): string;
-  interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void>;
-  completeRecoveredJob(
-    jobId: string,
-    sessionId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options?: TerminalWriteOptions,
-  ): void;
-}
-
 export type { EffortLevel };
+export type { LaunchPool };
 export type { ProviderSpec };

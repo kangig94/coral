@@ -2,6 +2,7 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
+import { nowDate } from '../infra/time.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -125,7 +126,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
     consumerDriver = new ConsumerDriver({
       db: getStoreDb(),
-      now: () => new Date(runtime.time.now()),
+      now: () => nowDate(runtime.time),
     });
     return consumerDriver;
   };
@@ -136,7 +137,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     slotRegistry: equipmentSlots,
     resolveKbRuntime: () => currentKbRuntime,
     removeInstallArtifacts: (name) => removeInstallArtifacts(name),
-    now: () => new Date(runtime.time.now()),
+    now: () => nowDate(runtime.time),
   });
 
   const getCurrentJournalSeq = () =>
@@ -146,7 +147,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const coordinatorAppendEvents: AppendEventsFn = (inputs) => {
     const db = getStoreDb();
     const appended = appendJournalEvents(db, inputs, {
-      now: () => new Date(runtime.time.now()),
+      now: () => nowDate(runtime.time),
       reducers,
       upcasters,
     });
@@ -173,7 +174,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           ?? null,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
-            now: () => new Date(runtime.time.now()),
+            now: () => nowDate(runtime.time),
           }),
         notifyCorpusMutation: createNotifyCorpusMutation(getConsumerDriver()),
         onCorpusPublishFailure: (failure) => {
@@ -317,6 +318,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         progressStore,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
+        time: runtime.time,
       });
       assertStartupStillActive();
 

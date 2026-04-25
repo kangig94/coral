@@ -369,6 +369,35 @@ function collectRawTerminalRecordedWriters(): string[] {
   }).sort();
 }
 
+function collectLaunchPoolDefinitions(): string[] {
+  return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
+    const source = readFileSync(filePath, 'utf-8');
+    if (!/export\s+type\s+LaunchPool\s*=/u.test(source)) {
+      return [];
+    }
+
+    return [toCanonicalSrcPath(REPO_ROOT, filePath)];
+  }).sort();
+}
+
+function collectDomainAmbientRuntimeAccess(): string[] {
+  const scopedRoots = ['src/providers', 'src/workflow', 'src/kb', 'src/discuss'];
+  const allowed = new Set([
+    'src/kb/env.ts',
+    'src/discuss/transcript.ts',
+  ]);
+  const ambientPattern =
+    /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
+
+  return PRODUCTION_SOURCE_FILES.filter((filePath) => {
+    if (!scopedRoots.some((root) => isWithinPath(filePath, root)) || allowed.has(filePath)) {
+      return false;
+    }
+
+    return ambientPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8'));
+  }).sort();
+}
+
 describe('architecture boundary guard', () => {
   it('workflow/ may only import from providers/catalog (allowlist of exactly one path)', () => {
     // Established by e34d8d8.
@@ -454,6 +483,25 @@ describe('architecture boundary guard', () => {
   });
   it('raw job.terminal.recorded writes stay owned by the job store', () => {
     expect(collectRawTerminalRecordedWriters()).toEqual(['src/jobs/job-store.ts']);
+  });
+  it('launch/admission vocabulary has a single jobs-owned type authority', () => {
+    expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/launch.ts']);
+
+    const coordinatorContracts = readFileSync(resolve(REPO_ROOT, 'src/coordinator/contracts.ts'), 'utf8');
+    expect(coordinatorContracts).not.toMatch(/ExecutionLaunch|ExecutionAdmission|ExecutionQueuedHandle/u);
+    expect(coordinatorContracts).not.toContain('interface RecoveryCapableService');
+  });
+  it('discuss root recovery contract stays shell-free', () => {
+    const recoveryContractPath = 'src/discuss/recovery-contract.ts';
+    const edges = PARSED_IMPORT_EDGES_BY_SOURCE.get(recoveryContractPath) ?? [];
+    expect(edges.map((edge) => edge.target).filter((target) => isWithinPath(target, 'src/discuss/shell'))).toEqual([]);
+
+    const source = readFileSync(resolve(REPO_ROOT, recoveryContractPath), 'utf8');
+    expect(source).not.toContain('DiscussContext');
+    expect(source).not.toContain('RecoveredDiscussResume');
+  });
+  it('domain/provider modules receive time env and randomness through ports', () => {
+    expect(collectDomainAmbientRuntimeAccess()).toEqual([]);
   });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(

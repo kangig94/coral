@@ -1,4 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { RuntimeTimePort } from '../runtime/ports.js';
 import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
@@ -14,6 +15,7 @@ import { describeTerminalFailure } from './command.js';
 import { formatAtomProgress, stripElapsedPrefix } from './internal/format.js';
 
 export type WaitForAtomsOptions = {
+  time: Pick<RuntimeTimePort, 'now'>;
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
@@ -33,6 +35,7 @@ export type WaitStaleRecoveryHandler = (
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
+    time: Pick<RuntimeTimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     workDir?: string;
@@ -75,12 +78,13 @@ function cloneSet<T>(value?: Set<T>): Set<T> {
 export function createAwaitStepState(
   atoms: LaunchedAtom[],
   initialState: Partial<WaitInternalState> = {},
+  time: Pick<RuntimeTimePort, 'now'>,
 ): AwaitStepState {
   const pending = new Map<string, LaunchedAtom>();
   const results = cloneMap(initialState.completedOutputs);
   const lastActivityAt = cloneMap(initialState.lastActivityAt);
   const staleRetries = cloneMap(initialState.staleRetries);
-  const startedAt = Date.now();
+  const startedAt = time.now();
 
   for (const atom of atoms) {
     if (results.has(atom.atomKey)) continue;
@@ -133,12 +137,12 @@ function enterFailureDrain(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
   failure: WaitFailure,
-  options: Pick<WaitForAtomsOptions, 'onFailureDrain'>,
+  options: Pick<WaitForAtomsOptions, 'onFailureDrain' | 'time'>,
 ): void {
   if (state.failureDrain !== null) return;
   state.failureDrain = {
     firstFailure: failure,
-    drainDeadline: Date.now() + 15_000,
+    drainDeadline: options.time.now() + 15_000,
   };
   options.onFailureDrain?.(snapshotWaitState(state), failure);
   executionSvc.abort([...state.pending.keys()]);
@@ -148,13 +152,13 @@ export function handleWaitEvent(
   event: WaitStreamEvent,
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain'>,
+  options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
     case 'queued': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
-      state.lastActivityAt.set(atom.atomKey, Date.now());
+      state.lastActivityAt.set(atom.atomKey, options.time.now());
       options.onProgress(formatAtomProgress(atom, `queued (position ${event.queuePosition})`));
       return 'handled';
     }
@@ -163,7 +167,7 @@ export function handleWaitEvent(
       state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
-      state.lastActivityAt.set(atom.atomKey, Date.now());
+      state.lastActivityAt.set(atom.atomKey, options.time.now());
       options.onProgress(formatAtomProgress(atom, stripElapsedPrefix(event.message)));
       return 'handled';
     }
@@ -236,6 +240,7 @@ export async function awaitWaitCycle(
       workDir: options.workDir,
       workflowJobId: options.workflowJobId,
       onProgress: options.onProgress,
+      time: options.time,
       buildPartialStepDetails: buildPartialStepDetailsForCycle,
     });
     if (!recovered) continue;
@@ -275,7 +280,7 @@ export async function awaitStepCompletion(
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
 
-    if (state.failureDrain !== null && (state.pending.size === 0 || Date.now() >= state.failureDrain.drainDeadline)) {
+    if (state.failureDrain !== null && (state.pending.size === 0 || options.time.now() >= state.failureDrain.drainDeadline)) {
       throw createWorkflowExecutionError(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,
@@ -294,7 +299,7 @@ export async function waitForAtoms(
   ctx: InvocationContext,
   options: WaitForAtomsOptions,
 ): Promise<Map<string, string>> {
-  const state = createAwaitStepState(atoms, options.initialState);
+  const state = createAwaitStepState(atoms, options.initialState, options.time);
   await awaitStepCompletion(atoms, state, executionSvc, ctx, options);
   return state.results;
 }

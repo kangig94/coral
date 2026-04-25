@@ -8,6 +8,7 @@ import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../index-state.js'
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbIndexState, KbRuntime } from '../contracts.js';
+import { nowIsoString } from '../../infra/time.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -31,6 +32,7 @@ import { readCurateState, writeCurateState } from './state-store.js';
 type CurateStateRuntime = Pick<
   KbRuntime,
   | 'db'
+  | 'time'
   | 'notesDir'
   | 'notePath'
   | 'sourcesDir'
@@ -216,8 +218,8 @@ function syncIndexSource(
 }
 
 export function scanCorpus(
-  kb: Pick<KbRuntime, 'notesDir' | 'notePath' | 'sourcesDir' | 'sourcePath'>,
-  detectedAt = new Date().toISOString(),
+  kb: Pick<KbRuntime, 'time' | 'notesDir' | 'notePath' | 'sourcesDir' | 'sourcePath'>,
+  detectedAt = nowIsoString(kb.time),
 ): CurateBootstrapScan {
   const scannedNotes: ScannedNote[] = [];
   const scannedSources: ScannedSource[] = [];

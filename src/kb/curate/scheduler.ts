@@ -176,7 +176,7 @@ export function createCurateScheduler({
       return;
     }
 
-    const delayMs = Date.parse(state.retryNotBefore) - Date.now();
+    const delayMs = Date.parse(state.retryNotBefore) - kb.time.now();
     if (Number.isNaN(delayMs) || delayMs <= 0) {
       schedule();
       return;
@@ -193,7 +193,7 @@ export function createCurateScheduler({
     let lastCompletedThrough: CurateCursor | null = null;
 
     while (!stopped && !signal.aborted) {
-      const claim = await claimCurateRun(kb, nowIsoString().slice(0, 10));
+      const claim = await claimCurateRun(kb, nowIsoString(kb.time).slice(0, 10));
       if (claim === null) {
         break;
       }
@@ -216,7 +216,7 @@ export function createCurateScheduler({
     if (lastCompletedThrough === null) {
       await kb.withMutationLock(() => {
         const state = readCurateState(kb);
-        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString())) {
+        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString(kb.time))) {
           return;
         }
         clearCurateRetryStateLocked(kb, state);
@@ -254,7 +254,7 @@ export function createCurateScheduler({
     queuedRun = false;
     if (isUsageBudgetExhausted({
       homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
-      now: Date.now,
+      now: kb.time.now,
       storage: storagePort,
     })) {
       return;

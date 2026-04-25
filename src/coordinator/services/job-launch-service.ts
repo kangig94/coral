@@ -11,9 +11,9 @@ import { rejectLaunch } from '../../jobs/launch-rejection.js';
 import type { AcceptedAdmission } from '../../jobs/admission-contract.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
-import type { LaunchDecision } from '../../jobs/launch.js';
+import type { LaunchDecision, LaunchPool } from '../../jobs/launch.js';
 import type { ProviderRequest } from '../../providers/contract.js';
-import type { ExecutionLaunchPool as LaunchPool, ListResult } from '../contracts.js';
+import type { ListResult } from '../contracts.js';
 import {
   buildEffectiveCoralEnv,
   buildSessionControllerProfile,

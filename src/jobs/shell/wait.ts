@@ -1,7 +1,7 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEvent, type WaitStreamOnceResult, type WaitStreamRequest } from '../wait.js';
-import type { LaunchCoordinatorPort, LaunchPool } from '../admission-contract.js';
+import type { JobQueueReadPort, LaunchPool } from '../admission-contract.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
@@ -146,7 +146,7 @@ function createJournalPollWaiter(
 
 export interface WaitCoordinatorDeps {
   sessionManager: SessionJobReadPort;
-  launchCoordinator: LaunchCoordinatorPort;
+  launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;
@@ -301,7 +301,7 @@ export class WaitCoordinator {
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { launchCoordinator, jobPools, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    const { launchQueue, jobPools, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
@@ -346,8 +346,8 @@ export class WaitCoordinator {
             type: 'queued',
             jobId,
             sessionId: status.sessionId ?? '',
-            queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
-            runningJobIds: launchCoordinator.getActiveJobIds(pool),
+            queuePosition: launchQueue.queuePosition(jobId, pool) ?? 0,
+            runningJobIds: launchQueue.getActiveJobIds(pool),
           };
         }
       }

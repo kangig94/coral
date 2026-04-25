@@ -73,6 +73,11 @@ function makeRuntime(
 } {
   return {
     signal: new AbortController().signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli: vi.fn(async () => ({
       stdout: '',
       stderr: '',
@@ -374,6 +379,9 @@ describe('claude exec-provider dispatcher', () => {
     const lease = makeLease();
     const runtime = makeRuntime(lease, {
       persistedContinuity,
+      env: {
+        get: (key) => (key === 'CORAL_DEV_ASSERTIONS' ? '1' : undefined),
+      },
     });
 
     let assertion: unknown;

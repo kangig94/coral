@@ -93,6 +93,11 @@ function makeRuntime(options: {
   return {
     controller,
     signal: controller.signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli,
     acquireServer,
     persistedContinuity: options.persistedContinuity,

@@ -22,7 +22,7 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusStateSnapshot = {
 };
 
 export interface PersistCorpusStateOptions {
-  now?: () => Date;
+  now: () => Date;
 }
 
 function ensureCorpusStateRow(db: Database): void {
@@ -132,9 +132,9 @@ export function readCorpusState(db: Database): CorpusStateSnapshot {
 export function persistCorpusState(
   db: Database,
   snapshot: KbCorpusSnapshot,
-  options: PersistCorpusStateOptions = {},
+  options: PersistCorpusStateOptions,
 ): KbPersistCorpusStateResult {
-  const now = options.now ?? (() => new Date());
+  const now = options.now;
   const persistTxn = db.transaction((nextSnapshot: KbCorpusSnapshot): KbPersistCorpusStateResult => {
     const current = readCorpusStateRow(db);
     if (!isSnapshotFresh(current, nextSnapshot)) {

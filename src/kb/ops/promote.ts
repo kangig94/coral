@@ -44,7 +44,7 @@ export async function promote(
     const memoContent = readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
     const entrySeq = currentEntrySeq(rt.readIndexState()) + 1;
-    const createdAt = nowIsoString();
+    const createdAt = nowIsoString(rt.time);
     const noteMeta = {
       tags: [domain],
       principles: [],

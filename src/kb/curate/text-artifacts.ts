@@ -12,6 +12,7 @@ import {
   loadSources,
 } from './text-artifacts-loaders.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../contracts.js';
+import { nowIsoString } from '../../infra/time.js';
 import type {
   KbReindexCommunityRecord,
   KbReindexNoteRecord,
@@ -63,7 +64,7 @@ export async function rebuildTextArtifacts(
   counts: ReindexCounts;
   pendingRepair: PendingRepair[] | null;
 }> {
-  const detectedAt = new Date().toISOString();
+  const detectedAt = nowIsoString(kb.time);
   const { entries: notes, pendingRepair: malformedNotes } = loadNotes(kb, detectedAt);
   const { entries: sources, pendingRepair: malformedSources } = loadSources(kb, detectedAt);
   const principles = loadPrinciples(kb);

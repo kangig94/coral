@@ -104,8 +104,6 @@ export type RuntimeSpawnOptions = {
   mode: RuntimeSpawnMode;
 };
 
-export type LaunchPool = 'default' | 'discuss' | 'curate';
-
 export type DurableLaunchOptions = {
   provider: string;
   command: string;
@@ -113,7 +111,6 @@ export type DurableLaunchOptions = {
   prompt?: string;
   cwd?: string;
   jobDir: string;
-  pool?: LaunchPool;
   envAdditions?: Record<string, string>;
 };
 

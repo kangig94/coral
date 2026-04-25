@@ -15,6 +15,9 @@ const ctx: InvocationContext = {
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
 };
+const workflowTime = {
+  now: () => Date.now(),
+};
 
 function running(job: string, session: string) {
   return {
@@ -334,6 +337,7 @@ describe('workflow pipe executor', () => {
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
           recoverStaleAtom,
+          time: workflowTime,
         },
       );
 
@@ -385,6 +389,7 @@ describe('workflow pipe executor', () => {
           staleCheckIntervalMs: 1,
           onProgress: vi.fn(),
           recoverStaleAtom,
+          time: workflowTime,
         }),
       ).rejects.toMatchObject({
         message:
@@ -906,6 +911,7 @@ describe('waitForAtoms', () => {
       staleTimeoutMs: 0,
       staleCheckIntervalMs: 500,
       onProgress: progress,
+      time: workflowTime,
     });
 
     expect(results.get('0:0')).toBe('ARCH');
@@ -955,6 +961,7 @@ describe('waitForAtoms', () => {
           staleTimeoutMs: 0,
           staleCheckIntervalMs: 500,
           onProgress: vi.fn(),
+          time: workflowTime,
         },
       ),
     ).rejects.toMatchObject({
@@ -986,6 +993,7 @@ describe('waitForAtoms', () => {
         staleTimeoutMs: 0,
         staleCheckIntervalMs: 500,
         onProgress: vi.fn(),
+        time: workflowTime,
       }),
     ).rejects.toBeInstanceOf(WorkflowExecutionError);
   });

@@ -4,7 +4,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { nowIsoString } from '../../infra/time.js';
+import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { currentBuildFlavor, pluginRootNamespace } from '../../infra/paths.js';
 import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
@@ -165,7 +165,7 @@ function createLocalSessionAppendEvents(db: Database, time: RuntimeTimePort): Ap
 
   return (inputs) =>
     appendJournalEvents(db, inputs, {
-      now: () => new Date(time.now()),
+      now: () => nowDate(time),
       reducers,
       upcasters,
     });

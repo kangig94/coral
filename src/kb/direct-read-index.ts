@@ -1,4 +1,5 @@
 import type { KbRuntime } from './contracts.js';
+import { nowIsoString } from '../infra/time.js';
 import type { KbIndex } from './entry-types.js';
 import {
   buildKbIndex,
@@ -9,7 +10,7 @@ import {
 } from './curate/text-artifacts-loaders.js';
 
 function buildTransientReadIndex(kb: KbRuntime): KbIndex {
-  const detectedAt = new Date().toISOString();
+  const detectedAt = nowIsoString(kb.time);
   const { entries: notes } = loadNotes(kb, detectedAt);
   const { entries: sources } = loadSources(kb, detectedAt);
   const principles = loadPrinciples(kb);

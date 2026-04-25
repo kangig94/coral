@@ -33,7 +33,7 @@ export function recordCurateFailureLocked(
   through: CurateCursor | null,
   error: unknown,
 ): CurateState {
-  return persistCurateState(kb, state, applyRecordCurateFailure(state, through, error));
+  return persistCurateState(kb, state, applyRecordCurateFailure(state, through, error, kb.time.now()));
 }
 
 export async function recordCurateFailure(

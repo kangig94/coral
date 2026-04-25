@@ -19,6 +19,7 @@ vi.mock('#src/kb/search/embedding.js', () => ({
 
 import type { KbRuntime } from '#src/kb/contracts.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import { nowDate } from '#src/infra/time.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -68,7 +69,7 @@ function createRegisteredRuntime(root: string): KbRuntime {
   });
   openDatabases.push(kb.db);
   kb.register({
-    persistCorpusState: (snapshot) => persistCorpusState(kb.db, snapshot),
+    persistCorpusState: (snapshot) => persistCorpusState(kb.db, snapshot, { now: () => nowDate(kb.time) }),
     notifyCorpusMutation: () => {},
   });
   return kb;
@@ -89,7 +90,7 @@ async function applyBaseProjection(kb: KbRuntime): Promise<void> {
 }
 
 function persistCurrentSnapshot(kb: KbRuntime): void {
-  persistCorpusState(kb.db, kb.captureCorpusSnapshot());
+  persistCorpusState(kb.db, kb.captureCorpusSnapshot(), { now: () => nowDate(kb.time) });
   kb.invalidateCorpusStateSnapshot();
 }
 

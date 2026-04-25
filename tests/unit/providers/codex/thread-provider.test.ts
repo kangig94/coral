@@ -66,6 +66,11 @@ function makeRuntime(
 ): ProviderRuntime & { acquireServer: ReturnType<typeof vi.fn> } {
   return {
     signal: new AbortController().signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => lease),
     persistedContinuity,

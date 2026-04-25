@@ -292,7 +292,7 @@ export async function runPrincipleDiscovery(
         principle: proposal.slug,
         statement: proposal.statement,
         notes: [...proposal.notes],
-        createdAt: nowIsoString(),
+        createdAt: nowIsoString(kb.time),
       };
 
       state = addPendingDiscoveryLocked(kb, state, entry);
@@ -321,7 +321,7 @@ export async function runPrincipleDiscovery(
           continue;
         }
 
-        const updatedAt = nowIsoString();
+        const updatedAt = nowIsoString(kb.time);
         const nextRaw = [
           '---',
           `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,

@@ -8,7 +8,7 @@ import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWait
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussLoop from './loop.js';
 import * as discussRecovery from './recovery.js';
-import type { RecoveredDiscussResume } from '../recovery-contract.js';
+import type { RecoveredDiscussResume } from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
 import { toJournalInput } from '../store-registry.js';

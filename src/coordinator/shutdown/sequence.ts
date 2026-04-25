@@ -9,7 +9,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../contracts.js';
+import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
 import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';

@@ -1,6 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { RuntimeTimePort } from '../runtime/ports.js';
+import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
@@ -209,6 +211,7 @@ async function resumeWorkflow(
   ctx: InvocationContext,
   plan: WorkflowPlan,
   options: {
+    time: Pick<RuntimeTimePort, 'now'>;
     onProgress: (workflowId: string, message: string) => void;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -230,7 +233,7 @@ async function resumeWorkflow(
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
   const finalStepIndex = maxStepIndex(plan);
   if (summary.activeStepIndex > finalStepIndex) {
-    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
+    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
     return {
       finalOutput: summary.stepPrompt,
       stepDetails: summary.stepDetails,
@@ -254,8 +257,9 @@ async function resumeWorkflow(
       staleTimeoutMs: options.staleTimeoutMs,
       staleCheckIntervalMs: options.staleCheckIntervalMs,
       workflowJobId: plan.workflowId,
+      time: options.time,
     });
-    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
+    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
     return {
       finalOutput: resumed.finalOutput,
       stepDetails: resumed.stepDetails,
@@ -305,12 +309,16 @@ async function resumeWorkflow(
 
   if (pendingPhases.some((phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed')) {
     if (failure) {
-      appendWorkflowEvents(db, [
-        workflowCompletedEvent(plan.workflowId, {
-          outcome: failure.aborted ? 'aborted' : 'failed',
-          ...(failure.aborted || !failure.causeRef ? {} : { causeRef: failure.causeRef }),
-        }),
-      ]);
+      appendWorkflowEvents(
+        db,
+        [
+          workflowCompletedEvent(plan.workflowId, {
+            outcome: failure.aborted ? 'aborted' : 'failed',
+            ...(failure.aborted || !failure.causeRef ? {} : { causeRef: failure.causeRef }),
+          }),
+        ],
+        options.time,
+      );
       throw createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
     }
   }
@@ -323,6 +331,7 @@ async function resumeWorkflow(
     completedStepDetails: summary.stepDetails,
     workflowJobId: plan.workflowId,
     onProgress: (message) => options.onProgress(plan.workflowId, message),
+    time: options.time,
     recoverStaleAtom,
   });
 
@@ -346,9 +355,10 @@ async function resumeWorkflow(
     staleTimeoutMs: options.staleTimeoutMs,
     staleCheckIntervalMs: options.staleCheckIntervalMs,
     workflowJobId: plan.workflowId,
+    time: options.time,
   });
 
-  appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
+  appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
   return {
     finalOutput: resumed.finalOutput,
     stepDetails: resumed.stepDetails,
@@ -363,10 +373,12 @@ export async function resumeAll(options: {
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
+  time?: Pick<RuntimeTimePort, 'now'>;
 }): Promise<string[]> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
+  const time = options.time ?? SYSTEM_TIME_PORT;
   const resumedWorkflowIds: string[] = [];
 
   for (const jobId of options.progressStore.listJobIds()) {
@@ -382,6 +394,7 @@ export async function resumeAll(options: {
       onProgress,
       staleTimeoutMs,
       staleCheckIntervalMs,
+      time,
     });
     resumedWorkflowIds.push(jobId);
   }

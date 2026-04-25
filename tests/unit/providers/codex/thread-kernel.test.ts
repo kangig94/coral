@@ -29,6 +29,11 @@ function makeRuntime(
 ): ProviderRuntime {
   return {
     signal: new AbortController().signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');

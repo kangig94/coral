@@ -7,7 +7,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import { planRecovery } from '../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../contracts.js';
+import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../jobs/reconcile/cross-namespace-adoption.js';
 import { StartupInterruptedError } from '../../jobs/reconcile/errors.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';

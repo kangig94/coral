@@ -44,6 +44,11 @@ function makeRuntime(
 
   return {
     signal: new AbortController().signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli,
     acquireServer,
     continuityBridge: {

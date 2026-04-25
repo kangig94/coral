@@ -430,7 +430,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
   }
 
   private async getEmbeddingProvider(): Promise<EmbeddingProvider | null> {
-    this.embeddingProviderPromise ??= createEmbeddingProvider(this.runtime.runtimeDir);
+    this.embeddingProviderPromise ??= createEmbeddingProvider(this.runtime.runtimeDir, undefined, this.runtime.env.get);
     return this.embeddingProviderPromise;
   }
 

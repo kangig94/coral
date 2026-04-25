@@ -15,6 +15,7 @@ import {
   type Strategy,
   type StrategyInstallOptions,
 } from './strategy.js';
+import { nowIsoString } from '../../infra/time.js';
 
 export type GithubBinaryConfig = {
   name: string;
@@ -267,7 +268,7 @@ function writeExternalInstallMeta(ctx: ExpansionInstallContext, config: GithubBi
       JSON.stringify({
         method: 'system',
         command,
-        detectedAt: new Date(ctx.runtime.time.now()).toISOString(),
+        detectedAt: nowIsoString(ctx.runtime.time),
       } satisfies GithubBinaryExternalInstallMeta),
       { encoding: 'utf-8' },
     )

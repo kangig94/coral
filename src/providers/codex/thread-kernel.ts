@@ -1,4 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
+import type { RuntimeTimePort } from '../../runtime/ports.js';
 import { resolveModelTier } from '../request-policy.js';
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
@@ -64,10 +65,11 @@ export type CodexTurnState = {
   finalAnswerSeen: boolean;
   pendingCollaborations: Set<string>;
   activeSubagentTurns: Set<string>;
-  completionTimer: ReturnType<typeof setTimeout> | null;
+  completionTimer: ReturnType<RuntimeTimePort['setTimeout']> | null;
   lastAgentMessage: string;
   error: { message?: string } | null;
   interruptRequest: Promise<void> | null;
+  time: Pick<RuntimeTimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
 };
 
 type CodexKernelResult =
@@ -101,7 +103,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
   }
 
   const state = {
-    startedAt: Date.now(),
+    startedAt: runtime.time.now(),
     cwd: persistedContinuity.cwd ?? request.cwd,
     model: resolveModelTier(request.model),
     serviceTier: resolveCodexServiceTier(request, runtime),
@@ -133,6 +135,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     lastAgentMessage: '',
     error: null,
     interruptRequest: null,
+    time: runtime.time,
   } satisfies CodexTurnState;
 
   state.preTurnMailbox = {
@@ -216,7 +219,7 @@ function clearCompletionTimer(state: CodexTurnState): void {
   if (!state.completionTimer) {
     return;
   }
-  clearTimeout(state.completionTimer);
+  state.time.clearTimeout(state.completionTimer);
   state.completionTimer = null;
 }
 
@@ -247,7 +250,7 @@ function scheduleInferredCompletion(state: CodexTurnState): void {
   }
 
   clearCompletionTimer(state);
-  state.completionTimer = setTimeout(() => {
+  state.completionTimer = state.time.setTimeout(() => {
     state.completionTimer = null;
     if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
       return;
@@ -670,7 +673,7 @@ function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody,
     terminal: buildJobTerminal({
       content: '',
       model: state.model,
-      durationMs: Date.now() - state.startedAt,
+      durationMs: state.time.now() - state.startedAt,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
     }),
     diagnostics: buildJobDiagnostics({}),
@@ -686,7 +689,7 @@ function buildFailedTerminal(
     terminal: buildJobTerminal({
       content: '',
       model: state.model,
-      durationMs: Date.now() - state.startedAt,
+      durationMs: state.time.now() - state.startedAt,
       outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),
@@ -710,7 +713,7 @@ function buildCompletedTerminal(
     terminal: buildJobTerminal({
       content: state.lastAgentMessage,
       model: state.model,
-      durationMs: Date.now() - state.startedAt,
+      durationMs: state.time.now() - state.startedAt,
       outcome: turnAborted
         ? { kind: 'aborted', reason: 'signal_abort' }
         : turnFailed

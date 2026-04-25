@@ -8,7 +8,7 @@ import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
-import type { RecoveredDiscussResume } from '../discuss/recovery-contract.js';
+import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
@@ -23,7 +23,8 @@ import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './shutdown/sequence.js';
 import type { ShutdownMode } from './shutdown/mode.js';
-import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
+import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
+import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
@@ -394,6 +395,8 @@ async function runLifecycleStartup({
         processPort: runtime.process,
         storagePort: runtime.storage,
         envPort: runtime.env,
+        timePort: runtime.time,
+        idsPort: runtime.ids,
       });
       runtimeState.setKbSubsystem(kbSub);
     } catch (error: unknown) {

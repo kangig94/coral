@@ -7,6 +7,7 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord } from '../../infra/json.js';
+import { readProcessEnv } from '../../infra/process-env.js';
 import { TransientHttpError } from '../../infra/http-errors.js';
 import { kbRuntimeDir } from '../paths.js';
 import { loadCoralEnv } from '../env.js';
@@ -556,14 +557,16 @@ function resolveOnnxRuntime(runtimeDir: string): OnnxRuntimeModule | null {
   return isOnnxRuntimeModule(loaded) ? loaded : null;
 }
 
+type EnvReader = (key: string) => string | undefined;
+
 /** Resolves embedding configuration from Coral env so indexers share one vector spec. */
-export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null {
+export function resolveEmbeddingProviderConfig(env: EnvReader = readProcessEnv): EmbeddingProviderConfig | null {
   loadCoralEnv();
 
-  const configuredProvider = trimEnv(process.env.CORAL_EMBEDDING_PROVIDER)?.toLowerCase() ?? null;
-  const configuredModel = trimEnv(process.env.CORAL_EMBEDDING_MODEL);
-  const configuredBaseUrl = trimEnv(process.env.CORAL_EMBEDDING_BASE_URL);
-  const configuredApiKey = trimEnv(process.env.CORAL_EMBEDDING_API_KEY);
+  const configuredProvider = trimEnv(env('CORAL_EMBEDDING_PROVIDER'))?.toLowerCase() ?? null;
+  const configuredModel = trimEnv(env('CORAL_EMBEDDING_MODEL'));
+  const configuredBaseUrl = trimEnv(env('CORAL_EMBEDDING_BASE_URL'));
+  const configuredApiKey = trimEnv(env('CORAL_EMBEDDING_API_KEY'));
   const providerKind = resolveEmbeddingKind(configuredProvider, configuredModel, configuredBaseUrl, configuredApiKey);
 
   if (providerKind === null) {
@@ -574,7 +577,7 @@ export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null
     if (configuredApiKey === null) {
       throw new Error('CORAL_EMBEDDING_API_KEY is required for Gemini embeddings.');
     }
-    const dims = readDims(process.env.CORAL_EMBEDDING_DIMS, GEMINI_DEFAULT_DIMS);
+    const dims = readDims(env('CORAL_EMBEDDING_DIMS'), GEMINI_DEFAULT_DIMS);
     if (dims === null) {
       throw new Error('Could not determine Gemini embedding dimensions.');
     }
@@ -598,7 +601,7 @@ export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null
     if (configuredModel === null) {
       throw new Error('CORAL_EMBEDDING_MODEL is required for OpenAI-compatible embeddings.');
     }
-    const dims = readDims(process.env.CORAL_EMBEDDING_DIMS, null);
+    const dims = readDims(env('CORAL_EMBEDDING_DIMS'), null);
     if (dims === null) {
       throw new Error('CORAL_EMBEDDING_DIMS is required for OpenAI-compatible embeddings.');
     }
@@ -639,9 +642,10 @@ export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null
 export async function createEmbeddingProvider(
   runtimeDir: string = kbRuntimeDir(),
   config?: EmbeddingProviderConfig | null,
+  env: EnvReader = readProcessEnv,
 ): Promise<EmbeddingProvider | null> {
   try {
-    const resolvedConfig = config === undefined ? resolveEmbeddingProviderConfig() : config;
+    const resolvedConfig = config === undefined ? resolveEmbeddingProviderConfig(env) : config;
     if (resolvedConfig === null) {
       return null;
     }

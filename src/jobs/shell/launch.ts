@@ -1,4 +1,4 @@
-import { bindProviderRunner } from '../../providers/cli-runner.js';
+import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
 import type {
   ProviderEventBody,
   ProviderRequest,
@@ -22,9 +22,9 @@ import { writeResultArtifact } from '../exports/result-artifact.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
   AcceptedAdmission,
+  JobAdmissionPort,
   LaunchPool,
   QueuedHandle,
-  LaunchCoordinatorPort,
 } from '../admission-contract.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -66,7 +66,8 @@ export interface LaunchOrchestratorDeps {
   abortRegistry: AbortRegistry;
   progressStore: JobProgressStore;
   sessionManager: SessionJobClaimPort;
-  launchCoordinator: LaunchCoordinatorPort;
+  launchAdmission: JobAdmissionPort;
+  durableSpawner: ProviderDurableSpawner;
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
   backendNamespace: string;
   bundleHash: string;
@@ -195,11 +196,11 @@ export class LaunchOrchestrator {
     pool: LaunchPool = 'default',
     requestedJobId?: string,
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
-    const { jobPools, launchCoordinator } = this.deps;
+    const { jobPools, launchAdmission } = this.deps;
     const jobId = requestedJobId ?? this.deps.runtime.ids.uuid();
     jobPools.set(jobId, pool);
 
-    const admission = launchCoordinator.requestLaunch(jobId, providerName, pool);
+    const admission = launchAdmission.requestLaunch(jobId, providerName, pool);
     if (admission === 'queue_full') {
       jobPools.delete(jobId);
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
@@ -218,7 +219,7 @@ export class LaunchOrchestrator {
           backendLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(cleanupError)}`);
         });
       } else {
-        launchCoordinator.releaseLaunch(jobId, pool);
+        launchAdmission.releaseLaunch(jobId, pool);
       }
       jobPools.delete(jobId);
 
@@ -301,13 +302,13 @@ export class LaunchOrchestrator {
     admission: AcceptedAdmission,
     pool: LaunchPool,
   ): void {
-    const { abortRegistry, launchCoordinator } = this.deps;
+    const { abortRegistry, launchAdmission } = this.deps;
     const signal = abortRegistry.getSignal(jobId);
     if (!signal) {
       if (admission.type === 'queued') {
         admission.cancel();
       } else {
-        launchCoordinator.releaseLaunch(jobId, pool);
+        launchAdmission.releaseLaunch(jobId, pool);
       }
       return;
     }
@@ -328,7 +329,7 @@ export class LaunchOrchestrator {
           this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
 
-        launchCoordinator.bindLaunchPermit(jobId, signal, pool);
+        launchAdmission.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, request, jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
@@ -346,7 +347,7 @@ export class LaunchOrchestrator {
         }
       } finally {
         if (permitAcquired) {
-          launchCoordinator.releaseLaunch(jobId, pool);
+          launchAdmission.releaseLaunch(jobId, pool);
         }
       }
     })();
@@ -358,7 +359,7 @@ export class LaunchOrchestrator {
     admission: QueuedHandle,
     pool: LaunchPool,
   ): void {
-    const { abortRegistry, launchCoordinator } = this.deps;
+    const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
     const sessionId = launchRecord.sessionId;
     if (sessionId === null) {
@@ -381,7 +382,7 @@ export class LaunchOrchestrator {
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
-        launchCoordinator.bindLaunchPermit(jobId, signal, pool);
+        launchAdmission.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
@@ -398,7 +399,7 @@ export class LaunchOrchestrator {
           throw finalizeError;
         }
       } finally {
-        launchCoordinator.releaseLaunch(jobId, pool);
+        launchAdmission.releaseLaunch(jobId, pool);
       }
     })();
   }
@@ -553,7 +554,7 @@ export class LaunchOrchestrator {
     return {
       signal,
       runCli: bindProviderRunner(
-        this.deps.launchCoordinator,
+        this.deps.durableSpawner,
         providerName,
         signal,
         pool,
@@ -562,6 +563,7 @@ export class LaunchOrchestrator {
           this.deps.progressStore.appendRuntimeStarted(jobId, record);
         },
       ),
+      time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),

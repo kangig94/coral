@@ -75,7 +75,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
   streamProviderEvents(async (emit) => {
     const lease = requireAppServerLease(runtime, 'claude');
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
-    const state = createInitialState(request, persistedContinuity);
+    const state = createInitialState(request, persistedContinuity, runtime);
     const clearBinding = bindInterruptState(lease, state);
     const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
       applyNotification(state, message, runtime, emit);
@@ -96,7 +96,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       checkpointBrokerContinuity(runtime, state);
 
       if (runtime.signal.aborted) {
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt));
+        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
         return;
       }
 
@@ -125,14 +125,14 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
         })),
       ]);
 
-      emit(finalizeOutcome(state, outcome));
+      emit(finalizeOutcome(state, outcome, runtime.time.now()));
     } catch (error) {
       if (runtime.signal.aborted) {
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt));
+        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
         return;
       }
 
-      emit(buildFailedTerminal('', state.prepared.model, Date.now() - state.startedAt, errorMessage(error)));
+      emit(buildFailedTerminal('', state.prepared.model, runtime.time.now() - state.startedAt, errorMessage(error)));
     } finally {
       clearNotificationBinding();
       clearBinding();
@@ -142,6 +142,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 function createInitialState(
   request: Parameters<Provider>[0],
   persistedContinuity: ReturnType<typeof readClaudePersistedContinuity>,
+  runtime: ProviderRuntime,
 ): ClaudeTurnState {
   let resolveTerminal!: (outcome: ClaudeTurnOutcome) => void;
   const terminal = new Promise<ClaudeTurnOutcome>((resolve) => {
@@ -149,9 +150,9 @@ function createInitialState(
   });
 
   return {
-    startedAt: Date.now(),
+    startedAt: runtime.time.now(),
     prepared: buildPreparedClaudeRequest(request),
-    envHash: buildClaudeEnvHash(request.coralEnv),
+    envHash: buildClaudeEnvHash(request.coralEnv, runtime.env?.fullSnapshot() ?? request.coralEnv),
     brokerSessionKey: persistedContinuity.brokerSessionKey,
     bootstrapSignature: persistedContinuity.bootstrapSignature,
     conversationRef: persistedContinuity.conversationRef,
@@ -259,7 +260,7 @@ function applyNotification(
       turn: {
         content,
         model,
-        durationMs: typeof params.durationMs === 'number' ? params.durationMs : Date.now() - state.startedAt,
+        durationMs: typeof params.durationMs === 'number' ? params.durationMs : runtime.time.now() - state.startedAt,
         errors: readErrors(params.errors),
         isError,
         ...(costUsd === undefined ? {} : { costUsd }),
@@ -278,7 +279,7 @@ function applyNotification(
   }
 }
 
-function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): ProviderTerminalEventBody {
+function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, nowMs: number): ProviderTerminalEventBody {
   if (outcome.kind === 'completed') {
     const failureMessage = outcome.turn.isError
       ? buildProviderFailureMessage('Claude', outcome.turn.errors.join(' '))
@@ -307,19 +308,19 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): Pr
   }
 
   if (outcome.kind === 'aborted') {
-    return buildAbortedTerminal(state.prepared.model, state.startedAt);
+    return buildAbortedTerminal(state.prepared.model, state.startedAt, nowMs);
   }
 
-  return buildFailedTerminal('', state.prepared.model, Date.now() - state.startedAt, outcome.message);
+  return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message);
 }
 
-function buildAbortedTerminal(model: string | undefined, startedAt: number) {
+function buildAbortedTerminal(model: string | undefined, startedAt: number, nowMs: number) {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
       content: '',
       model,
-      durationMs: Date.now() - startedAt,
+      durationMs: nowMs - startedAt,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
     }),
     diagnostics: buildJobDiagnostics({}),

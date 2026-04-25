@@ -1,12 +1,12 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type {
-  ExecutionLaunchPool as LaunchPool,
   ExecutionServiceDeps,
   ListResult,
   ProjectRequestPort,
-  RecoveryCapableService,
 } from './contracts.js';
+import type { LaunchPool } from '../jobs/launch.js';
+import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
@@ -79,7 +79,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
       sessionManager: this.sessionManager,
-      launchCoordinator: deps.launchCoordinator,
+      launchAdmission: deps.launchCoordinator,
+      durableSpawner: deps.launchCoordinator,
       runtime: this.runtime,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
@@ -96,7 +97,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     const waitCoordinator = new WaitCoordinator({
       sessionManager: this.sessionManager,
-      launchCoordinator: deps.launchCoordinator,
+      launchQueue: deps.launchCoordinator,
       eventBus: this.eventBus,
       jobPools: this.jobPools,
       time: this.runtime.time,
@@ -115,7 +116,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
       providerHostManager: deps.providerHostManager,
-      launchCoordinator: deps.launchCoordinator,
+      launchAdmission: deps.launchCoordinator,
+      launchRecovery: deps.launchCoordinator,
       providerRegistry: deps.providerRegistry,
       jobPools: this.jobPools,
       launchOrchestrator: this.launchOrchestrator,
@@ -168,7 +170,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.abortService = new JobAbortService({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
-      launchCoordinator: deps.launchCoordinator,
+      launchAdmission: deps.launchCoordinator,
       jobPools: this.jobPools,
       launchOrchestrator: this.launchOrchestrator,
       interruptAppServerJob: (launchRecord, runtimeRecord) =>

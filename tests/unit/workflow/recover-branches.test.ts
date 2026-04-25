@@ -74,7 +74,7 @@ function createHarness(options: {
   const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
   const atomJobId = plan.slots[0].slotId;
-  appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)]);
+  appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)], runtime.time);
 
   progressStore.initJob({
     jobId: plan.workflowId,

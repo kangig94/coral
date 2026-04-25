@@ -23,7 +23,7 @@ export async function applyNoteUpdateLocked(
     return { path: notePath };
   }
 
-  const updatedAt = nowIsoString();
+  const updatedAt = nowIsoString(rt.time);
   const nextFrontmatter = { ...frontmatter, updatedAt };
   const nextRaw = serializeNote(nextFrontmatter, nextTitle, nextContent);
 

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 import { errorMessage } from '../../infra/error-format.js';
+import { SYSTEM_TIME_PORT, nowIsoString } from '../../infra/time.js';
 import {
   noteEntryId,
   parseKbEntryId,
@@ -276,6 +277,7 @@ export function applyRecordCurateFailure(
   state: CurateState,
   through: CurateCursor | null,
   error: unknown,
+  nowMs: number = SYSTEM_TIME_PORT.now(),
 ): CurateState | null {
   const attemptedThrough = through ?? state.lastAttemptedThrough;
   if (attemptedThrough === null) {
@@ -296,9 +298,7 @@ export function applyRecordCurateFailure(
   return {
     ...state,
     lastAttemptedThrough: attemptedThrough,
-    retryNotBefore: new Date(
-      Date.now() + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures),
-    ).toISOString(),
+    retryNotBefore: nowIsoString(nowMs + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures)),
     activeClaim: null,
     consecutiveClaimFailures: priorFailures + 1,
   };

@@ -34,6 +34,8 @@ export async function createKbSubsystem({
   processPort,
   storagePort,
   envPort,
+  timePort,
+  idsPort,
   getEquipmentView,
   persistCorpusState,
   notifyCorpusMutation,
@@ -44,6 +46,9 @@ export async function createKbSubsystem({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
     db,
+    time: timePort,
+    ids: idsPort,
+    env: envPort,
     ...(getEquipmentView === undefined ? {} : { getEquipmentView }),
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {

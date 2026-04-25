@@ -20,11 +20,10 @@ import type { SessionEntry } from '../../sessions/entry.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type {
-  ExecutionLaunchCoordinator,
-  ExecutionLaunchPool as LaunchPool,
   ExecutionProviderServerAttachment,
   ExecutionProviderHostManager,
 } from '../contracts.js';
+import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../jobs/admission-contract.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../jobs/progress-store-contract.js';
 import type { SessionRecoveryPort } from '../../sessions/execution-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -61,7 +60,8 @@ export interface RecoveryServiceDeps {
   bundleHash: string;
   progressStore: JobProgressStore;
   providerHostManager: ExecutionProviderHostManager;
-  launchCoordinator: ExecutionLaunchCoordinator;
+  launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
+  launchRecovery: JobLaunchRecoveryPort;
   providerRegistry: ProviderCatalog;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: RecoveredJobLifecyclePort;
@@ -271,7 +271,7 @@ export class RecoveryService {
       backendLog.warn(`Writing terminal artifact failed for ${launchRecord.jobId}: ${String(error)}`);
     }
     this.deps.abortRegistry.remove(launchRecord.jobId);
-    this.deps.launchCoordinator.releaseLaunch(
+    this.deps.launchAdmission.releaseLaunch(
       launchRecord.jobId,
       (this.deps.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool,
     );
@@ -291,7 +291,7 @@ export class RecoveryService {
 
     this.deps.jobPools.set(jobId, pool);
 
-    const queuedHandle = this.deps.launchCoordinator.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
+    const queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
     this.deps.abortRegistry.register(jobId, () => {
       queuedHandle.cancel();
     });
@@ -318,7 +318,7 @@ export class RecoveryService {
     this.deps.jobPools.set(jobId, pool);
     this.deps.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
-    this.deps.launchCoordinator.restoreActiveLaunch(jobId, launchRecord.provider, pool);
+    this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, pool);
     this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
     const pid = runtimeRecord.pid;
@@ -332,7 +332,7 @@ export class RecoveryService {
         if (cleaned) return;
         cleaned = true;
         this.deps.abortRegistry.remove(jobId);
-        this.deps.launchCoordinator.releaseLaunch(jobId, pool);
+        this.deps.launchAdmission.releaseLaunch(jobId, pool);
         this.deps.jobPools.delete(jobId);
       },
     };
@@ -356,7 +356,7 @@ export class RecoveryService {
     }
     this.deps.abortRegistry.remove(jobId);
     const pool = this.deps.jobPools.get(jobId) ?? 'default';
-    this.deps.launchCoordinator.releaseLaunch(jobId, pool);
+    this.deps.launchAdmission.releaseLaunch(jobId, pool);
     this.deps.jobPools.delete(jobId);
 
     const continuity = options?.continuity ?? null;

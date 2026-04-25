@@ -459,6 +459,7 @@ function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
     process: runtime.process,
     storage: runtime.storage,
     env: runtime.env,
+    time: runtime.time,
   } satisfies PreflightRuntime);
 }
 

@@ -1331,9 +1331,9 @@ src/
 
   discuss/                           ← unchanged domain core; template
     state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
-    recovery-contract.ts             — recovered resume contract and live-boundary predicate
+    recovery-contract.ts             — shell-free live-boundary predicate
     shell/                           — imperative shell (moved from execution/discuss/)
-      recovery.ts                    — startup recovery + shutdown abort persistence
+      recovery.ts                    — recovered resume contract + startup recovery + shutdown abort persistence
 
   kb/                                ← Corpus-authority domain (markdown is truth)
     contracts.ts                     — public KB types
@@ -1358,7 +1358,7 @@ src/
     state/
       corpus-state.ts                — persisted Corpus snapshot cursors
       schema.ts                      — Corpus state row contracts
-    queries.ts                       — Corpus read/search/list/diagnose facade for read paths
+    queries.ts                       — Corpus read/search/list/diagnose owner module for read paths
     direct-read-index.ts             — transient/persisted list index selection for no-mutation reads
     orama-factory.ts, orama-schema.ts — Orama construction/schema shared by base retrieval surfaces
     search/                          — search backend abstraction (equipment-aware)
@@ -2030,6 +2030,8 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
 47. Raw `job.terminal.recorded` object construction is owned by `jobs/job-store.ts`. All other producers finalize through jobs-owned append/materialization APIs.
 48. `coordinator/services/**` consumes domain ports/contracts, not domain shell implementation classes. Shell implementations are wired at composition roots.
+49. Launch/admission vocabulary is jobs-owned. `LaunchPool`, admission handles, queue read ports, and recovery launch ports are defined under `src/jobs/*`; coordinator contracts may compose those ports but must not redefine `ExecutionLaunch*` mirrors.
+50. Domain/provider modules do not read host time, environment, or randomness directly. Current time, env, and ids enter through runtime/domain ports; direct ambient access is restricted to infra/runtime/CLI/bootstrap adapters and explicit parsers.
 
 ---
 

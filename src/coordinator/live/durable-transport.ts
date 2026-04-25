@@ -409,7 +409,6 @@ export async function spawnDurableJobTransport(params: {
       prompt: options.prompt,
       cwd: options.cwd,
       jobDir: options.jobDir,
-      pool,
       envAdditions: options.extraEnv,
     });
     cleanupKey = Symbol();

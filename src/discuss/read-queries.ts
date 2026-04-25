@@ -22,6 +22,8 @@ export type DiscussReadRef =
       sessionId: string;
     };
 
+const UNIX_EPOCH_ISO = '1970-01-01T00:00:00.000Z';
+
 function discussIdFromRef(ref: DiscussReadRef): string {
   return typeof ref === 'string' ? ref : ref.sessionId;
 }
@@ -72,7 +74,7 @@ function latestUpdatedAt(snapshots: PersistedDiscussSnapshot[]): string {
   return snapshots
     .map((snapshot) => snapshot.updatedAt)
     .sort()
-    .at(-1) ?? new Date(0).toISOString();
+    .at(-1) ?? UNIX_EPOCH_ISO;
 }
 
 export function readDiscussSnapshot(

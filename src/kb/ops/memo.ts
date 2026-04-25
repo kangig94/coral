@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../../infra/paths.js';
+import { SYSTEM_TIME_PORT, nowDate } from '../../infra/time.js';
+import type { RuntimeTimePort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {
@@ -14,8 +16,8 @@ import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';
 
-function generateTimestamp(): string {
-  const now = new Date();
+function generateTimestamp(time: Pick<RuntimeTimePort, 'now'> = SYSTEM_TIME_PORT): string {
+  const now = nowDate(time);
   const pad = (n: number, len = 2): string => String(n).padStart(len, '0');
   return [
     now.getFullYear(),
@@ -28,10 +30,14 @@ function generateTimestamp(): string {
   ].join('');
 }
 
-export function writeMemo(projectRoot: string, input: KbMemoInput): { filename: string; path: string } {
+export function writeMemo(
+  projectRoot: string,
+  input: KbMemoInput,
+  time: Pick<RuntimeTimePort, 'now'> = SYSTEM_TIME_PORT,
+): { filename: string; path: string } {
   const source = resolveProjectSource(projectRoot);
   const dir = memoDir(projectRoot);
-  const timestamp = generateTimestamp();
+  const timestamp = generateTimestamp(time);
   const filename = `${timestamp}-${input.topic}.md`;
   const path = join(dir, filename);
 
@@ -92,7 +98,7 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   const hour = Number.parseInt(timePart.slice(0, 2), 10);
   const minute = Number.parseInt(timePart.slice(2, 4), 10);
   const second = Number.parseInt(timePart.slice(4, 6), 10);
-  const sortKey = new Date(year, month - 1, day, hour, minute, second).getTime();
+  const sortKey = Date.UTC(year, month - 1, day, hour, minute, second);
 
   if (Number.isNaN(sortKey)) {
     return null;

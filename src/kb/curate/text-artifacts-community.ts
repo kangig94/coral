@@ -10,6 +10,7 @@ import {
 import { readCurateState, type CurateState } from './state.js';
 import type { KbMutationEffects, KbRuntime } from '../contracts.js';
 import { isCommunityEntry, type KbIndex } from '../entry-types.js';
+import { nowIsoString } from '../../infra/time.js';
 
 export function isCommunitySummaryFresh(
   currentFingerprints: Readonly<Record<string, string>>,
@@ -122,7 +123,7 @@ export function prepareCommunityTopologyRefresh(
   });
   const communityDocuments = buildCommunityDocuments(communities, {
     priorGeneratedCommunities,
-    today: new Date().toISOString().slice(0, 10),
+    today: nowIsoString(kb.time).slice(0, 10),
   });
   generateCommunityFiles(kb, mutation, communityDocuments, priorGeneratedCommunities);
 

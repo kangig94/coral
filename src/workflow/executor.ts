@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
+import { SYSTEM_TIME_PORT } from '../infra/time.js';
+import type { RuntimeTimePort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
   formatStepOutput,
@@ -22,6 +24,7 @@ import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 
 type ExecutePlannedStepsOptions = {
+  time: Pick<RuntimeTimePort, 'now'>;
   context?: string;
   workDir?: string;
   signal?: AbortSignal;
@@ -58,6 +61,7 @@ async function drainLaunchedAtoms(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
+    time: Pick<RuntimeTimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -77,6 +81,7 @@ async function drainLaunchedAtoms(
       staleCheckIntervalMs: options.staleCheckIntervalMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
+      time: options.time,
       completedStepDetails: [],
       workflowJobId: options.workflowJobId,
       recoverStaleAtom,
@@ -96,6 +101,7 @@ async function awaitLaunchedStepResults(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
+    time: Pick<RuntimeTimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -113,6 +119,7 @@ async function awaitLaunchedStepResults(
       staleCheckIntervalMs: options.staleCheckIntervalMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
+      time: options.time,
       completedStepDetails: options.completedStepDetails,
       workflowJobId: options.workflowJobId,
       recoverStaleAtom,
@@ -121,7 +128,7 @@ async function awaitLaunchedStepResults(
         options.journal.append([
           workflowDrainEnteredEvent(options.workflowJobId, {
             firstFailureSlotId: failure.failedSlotId,
-            drainDeadline: Date.now() + 15_000,
+            drainDeadline: options.time.now() + 15_000,
           }),
         ]);
       },
@@ -196,6 +203,7 @@ export async function executePlannedSteps(
               workDir: options.workDir,
               workflowJobId: options.workflowJobId,
               onProgress: options.onProgress,
+              time: options.time,
             }),
         });
       }
@@ -206,6 +214,7 @@ export async function executePlannedSteps(
         staleCheckIntervalMs: options.staleCheckIntervalMs,
         workDir: options.workDir,
         onProgress: options.onProgress,
+        time: options.time,
         completedStepDetails: stepDetails,
         workflowJobId: options.workflowJobId,
         journal: options.journal,
@@ -243,9 +252,11 @@ export async function executePipeline(
     staleCheckIntervalMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
+    time?: Pick<RuntimeTimePort, 'now'>;
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
+  const time = options.time ?? SYSTEM_TIME_PORT;
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const workflowId = options.workflowJobId ?? randomUUID();
@@ -263,6 +274,7 @@ export async function executePipeline(
       workDir: options.workDir,
       signal: options.signal,
       onProgress,
+      time,
       staleTimeoutMs,
       staleCheckIntervalMs,
       workflowJobId: options.workflowJobId,

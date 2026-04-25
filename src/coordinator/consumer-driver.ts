@@ -9,6 +9,7 @@ import type {
 import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../infra/backend-log.js';
+import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
 
 export type {
@@ -248,7 +249,7 @@ export class ConsumerDriver {
 
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
-    this.now = opts.now ?? (() => new Date());
+    this.now = opts.now ?? (() => nowDate());
     this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
       'SELECT authority, lane, corpus_interest, registration_kind FROM equipment_cursors WHERE consumer_id = ?',
     );

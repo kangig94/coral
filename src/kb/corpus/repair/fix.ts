@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
+import { nowIsoString } from '../../../infra/time.js';
 import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
 import {
   captureCommunityManifestDelta,
@@ -160,18 +161,18 @@ export async function applyDetectedIncidentFixes(
         const outcome = await kb.withMutationLock((mutation) => applyAutoFixLocked(kb, mutation, incident));
         if (outcome.kind === 'fixed') {
           gitSync.scheduleDeferredCommit();
-          result = createRepairResult(incident, 'fixed');
+          result = createRepairResult(incident, 'fixed', nowIsoString(kb.time));
         } else if (outcome.kind === 'manual') {
           const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
-          result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped');
+          result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
         } else {
-          result = createRepairResult(incident, 'skipped');
+          result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
         }
       } else if (classification === 'needs-manual') {
         const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
-        result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped');
+        result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
       } else {
-        result = createRepairResult(incident, 'skipped');
+        result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
       }
     } catch (error: unknown) {
       backendLog.warn(
@@ -180,10 +181,10 @@ export async function applyDetectedIncidentFixes(
           canonical: incident.canonical,
           entryId: incident.entryId,
           message: errorMessage(error),
-          timestamp: new Date().toISOString(),
+          timestamp: nowIsoString(kb.time),
         })}`,
       );
-      result = createRepairResult(incident, 'skipped');
+      result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
     }
 
     logRepairResult(result);
@@ -193,13 +194,13 @@ export async function applyDetectedIncidentFixes(
   return results;
 }
 
-function createRepairResult(incident: DetectedIncident, action: RepairAction): RepairResult {
+function createRepairResult(incident: DetectedIncident, action: RepairAction, timestamp: string): RepairResult {
   return {
     locus: incident.locus,
     canonical: incident.canonical,
     entryId: incident.entryId,
     action,
-    timestamp: new Date().toISOString(),
+    timestamp,
   };
 }
 
@@ -440,16 +441,17 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
   const target = resolveMarkdownRepairTarget(kb, incident.entryId);
   const content = target?.content ?? null;
 
+  const now = nowIsoString(kb.time);
   upsertCurateRetryEntry(kb, {
     entryId,
     entrySeq: readLenientEntrySeq(content),
-    detectedAt: new Date().toISOString(),
+    detectedAt: now,
     reason: incident.canonical,
     locus: incident.locus,
     canonicalIncident: incident.canonical,
     signalsJson: JSON.stringify(incident.signals),
     repairHint: REPAIR_HINTS[incident.canonical],
-    retryNotBefore: new Date().toISOString(),
+    retryNotBefore: now,
     retryCount: 0,
   });
   return true;

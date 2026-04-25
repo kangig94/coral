@@ -23,7 +23,8 @@ import type {
 } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
+import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
+import type { ExecutionServiceDeps } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb-source-import-service.js';

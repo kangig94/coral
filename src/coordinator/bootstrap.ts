@@ -6,6 +6,7 @@ import { BackendAlreadyRunningError } from './lock.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import { createCoordinatorServer } from './coordinator.js';
 import { backendLog } from '../infra/backend-log.js';
+import { nowDate } from '../infra/time.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { StoragePort } from '../runtime/ports.js';
 
@@ -66,7 +67,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
             body: { ok: true },
           },
         ],
-        { now: () => new Date(), reducers, upcasters },
+        { now: () => nowDate(), reducers, upcasters },
       );
 
       if (!event) {

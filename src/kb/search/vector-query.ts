@@ -9,7 +9,7 @@ import type { SearchResponseWarnings } from './text-retrieval.js';
 export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
 async function embedQueryForVectorSearch(rt: KbRuntime, rawQuery: string): Promise<number[] | null> {
-  const provider = await createEmbeddingProvider(rt.runtimeDir);
+  const provider = await createEmbeddingProvider(rt.runtimeDir, undefined, rt.env.get);
   if (provider === null) {
     return null;
   }

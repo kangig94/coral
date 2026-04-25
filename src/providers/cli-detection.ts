@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 
+import { readProcessEnv } from '../infra/process-env.js';
+
 export type AuthState = 'authenticated' | 'unauthenticated' | 'unknown';
 
 export type CliInfo =
@@ -22,6 +24,7 @@ export type CliDetectorConfig = {
   authErrorPattern: RegExp;
   authErrorMessage: string;
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
+  readEnv?: (key: string) => string | undefined;
 };
 
 export function createCliDetector(config: CliDetectorConfig): {
@@ -92,7 +95,7 @@ export function createCliDetector(config: CliDetectorConfig): {
   }
 
   function queryAuthState(): Promise<AuthProbeResult> {
-    if (process.env[config.authEnvVar]?.trim()) {
+    if ((config.readEnv ?? readProcessEnv)(config.authEnvVar)?.trim()) {
       return Promise.resolve({ authState: 'authenticated' });
     }
 

@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
+
 export const pad2 = (n: number): string => String(n).padStart(2, '0');
 
 export function randomSuffix(): string {
-  const suffix = Math.random().toString(36).slice(2, 6);
+  const suffix = randomUUID().replace(/-/g, '').slice(0, 4);
   return suffix.padEnd(4, '0');
 }
 

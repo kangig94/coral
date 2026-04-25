@@ -45,14 +45,21 @@ function createRuntime(
     checkpoint: () => {},
     transportClosed: () => {},
   },
+  overrides: Partial<ProviderRuntime> = {},
 ): ProviderRuntime {
   return {
     signal: new AbortController().signal,
+    time: {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+    },
     runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
     acquireServer: async () => {
       throw new Error('not used in session-continuity tests');
     },
     continuityBridge,
+    ...overrides,
   };
 }
 
@@ -393,7 +400,14 @@ describe('sessionContinuity', () => {
             providerContinuity: null,
           },
         }),
-      )(provider)(BASE_REQUEST, createRuntime()),
+      )(provider)(
+        BASE_REQUEST,
+        createRuntime(undefined, {
+          env: {
+            get: (key) => (key === DEV_ASSERTIONS ? '1' : undefined),
+          },
+        }),
+      ),
     );
 
     expect(capturedBridge).not.toBeNull();

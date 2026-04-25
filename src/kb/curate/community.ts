@@ -162,7 +162,7 @@ async function prepareCommunityPayload(
     return null;
   }
 
-  const today = nowIsoString().slice(0, 10);
+  const today = nowIsoString(kb.time).slice(0, 10);
   const capturedBaselineSnapshot = kb.captureCorpusSnapshot();
   const capturedBaselineState = readCurateState(kb);
   const capturedFinalIndex = kb.readIndexOrEmpty();

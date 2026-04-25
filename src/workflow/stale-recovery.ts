@@ -36,7 +36,7 @@ export async function recoverStaleAtom(
   ctx: InvocationContext,
   options: RecoverStaleOptions,
 ): Promise<boolean> {
-  const now = Date.now();
+  const now = options.time.now();
 
   for (const atom of state.pending.values()) {
     const lastActive = state.lastActivityAt.get(atom.atomKey) ?? now;
@@ -115,7 +115,7 @@ export async function recoverStaleAtom(
     });
     state.staleRetries.set(atom.atomKey, retries + 1);
 
-    const resumedAt = Date.now();
+    const resumedAt = options.time.now();
     for (const sibling of state.pending.values()) {
       state.lastActivityAt.set(sibling.atomKey, resumedAt);
     }

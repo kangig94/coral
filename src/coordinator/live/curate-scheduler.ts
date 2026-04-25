@@ -1,5 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { KbCorpusPublishFailure } from '../../kb/contracts.js';
 import type { CurateHandle } from '../../kb/curate/types.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -52,7 +53,7 @@ function resolveCurateIntervalMs(raw: string | undefined): number {
 }
 
 function isoUtcDay(now: number): string {
-  return new Date(now).toISOString().slice(0, 10);
+  return nowIsoString(now).slice(0, 10);
 }
 
 export function createCoordinatorCurateScheduler(options: {

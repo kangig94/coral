@@ -34,7 +34,11 @@ const pluginRoot =
     ? __PLUGIN_ROOT__
     : resolve(process.cwd());
 let cachedBrokerEntrypoint: string | null = null;
-let envHashCache: { controllerEnv: Record<string, string> | undefined; hash: string } | null = null;
+let envHashCache: {
+  controllerEnv: Record<string, string> | undefined;
+  baseEnv: Readonly<Record<string, string>>;
+  hash: string;
+} | null = null;
 
 export function readClaudePersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
@@ -188,20 +192,23 @@ function buildSystemPromptSignature(derivedSystemPrompt?: string): string {
   return `sha256:${createHash('sha256').update(derivedSystemPrompt ?? '').digest('hex')}`;
 }
 
-export function buildClaudeEnvHash(controllerEnv?: Record<string, string>): string {
-  if (envHashCache && envHashCache.controllerEnv === controllerEnv) {
+export function buildClaudeEnvHash(
+  controllerEnv: Record<string, string> | undefined,
+  baseEnv: Readonly<Record<string, string>>,
+): string {
+  if (envHashCache && envHashCache.controllerEnv === controllerEnv && envHashCache.baseEnv === baseEnv) {
     return envHashCache.hash;
   }
 
   const childEnv = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
+      Object.entries(baseEnv).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
     ),
     ...normalizeControllerEnv(controllerEnv),
     CORAL_CHILD: '1',
   };
   const hash = hashSortedEnv(childEnv);
-  envHashCache = { controllerEnv, hash };
+  envHashCache = { controllerEnv, baseEnv, hash };
   return hash;
 }
 
