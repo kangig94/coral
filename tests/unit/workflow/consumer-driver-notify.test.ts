@@ -51,7 +51,6 @@ describe('workflow consumer-driver notify', () => {
       const journal = createWorkflowJournal({ appendEvents: coordinatorAppendEvents });
       journal.append([
         workflowPlanDeclaredEvent('workflow-1', {
-          workflowId: 'workflow-1',
           slots: [
             {
               slotId: 'workflow-1:0:0',

@@ -733,7 +733,7 @@ describe('kb search', () => {
     expect(communityScope.results).toEqual([]);
   });
 
-  it('rebuilds graph-aware search state after ensureIndex observes a manual entity graph edit', async () => {
+  it('rebuilds graph-aware search state after ensureCorpusFreshness observes a manual entity graph edit', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -771,7 +771,7 @@ describe('kb search', () => {
       editedGraphMtimeMs = Date.now();
     }
     setMtime(kb.entityGraphPath(), new Date(editedGraphMtimeMs));
-    await kb.ensureIndex();
+    await kb.ensureCorpusFreshness();
     await kb.getBaseRetrievalSurface().apply({
       snapshot: kb.captureCorpusSnapshot(),
       db: kb.db,

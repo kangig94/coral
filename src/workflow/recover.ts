@@ -40,7 +40,7 @@ type WorkflowSlotJobRow = {
   last_seq: number;
 };
 
-function readSlotJobIds(db: BetterSqlite3.Database, plan: WorkflowPlan): Map<string, string> {
+function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
   const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
   const rows = db
     .prepare(
@@ -50,7 +50,7 @@ function readSlotJobIds(db: BetterSqlite3.Database, plan: WorkflowPlan): Map<str
           AND workflow_slot IS NOT NULL
         ORDER BY workflow_slot ASC, last_seq DESC`,
     )
-    .all(plan.workflowId) as WorkflowSlotJobRow[];
+    .all(workflowId) as WorkflowSlotJobRow[];
   const selected = new Map<string, string>();
 
   for (const row of rows) {
@@ -63,8 +63,8 @@ function readSlotJobIds(db: BetterSqlite3.Database, plan: WorkflowPlan): Map<str
   return selected;
 }
 
-function compileSlotsForRecovery(db: BetterSqlite3.Database, plan: WorkflowPlan): CompiledPlanSlot[] {
-  return compileWorkflowPlan(plan, { jobIds: readSlotJobIds(db, plan) });
+function compileSlotsForRecovery(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): CompiledPlanSlot[] {
+  return compileWorkflowPlan(plan, { jobIds: readSlotJobIds(db, workflowId, plan) });
 }
 
 function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: string): JobProjectionDetail {
@@ -209,6 +209,7 @@ async function resumeWorkflow(
   progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext,
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
+  workflowId: string,
   plan: WorkflowPlan,
   options: {
     time: Pick<RuntimeTimePort, 'now'>;
@@ -218,13 +219,13 @@ async function resumeWorkflow(
   },
 ): Promise<PipelineResult | null> {
   const readCtx: StoreReadContext = progressStore;
-  const completionRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.completed');
+  const completionRow = readLatestEvent(db, 'workflow', workflowId, 'workflow.completed');
   const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, readCtx) : null;
   if (completion) {
     return null;
   }
 
-  const compiledSlots = compileSlotsForRecovery(db, plan);
+  const compiledSlots = compileSlotsForRecovery(db, workflowId, plan);
   const slotDetailsByJob = loadJobProjectionDetails(
     db,
     compiledSlots.map((slot) => slot.jobId),
@@ -233,7 +234,7 @@ async function resumeWorkflow(
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
   const finalStepIndex = maxStepIndex(plan);
   if (summary.activeStepIndex > finalStepIndex) {
-    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
+    appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
     return {
       finalOutput: summary.stepPrompt,
       stepDetails: summary.stepDetails,
@@ -249,17 +250,17 @@ async function resumeWorkflow(
   });
 
   if (missingProjection) {
-    options.onProgress(plan.workflowId, `relaunching step ${summary.activeStepIndex}`);
+    options.onProgress(workflowId, `relaunching step ${summary.activeStepIndex}`);
     const resumed = await executePlannedSteps(plan, summary.stepPrompt, executionSvc, ctx, {
       startStepIndex: summary.activeStepIndex,
       completedStepDetails: summary.stepDetails,
-      onProgress: (message) => options.onProgress(plan.workflowId, message),
+      onProgress: (message) => options.onProgress(workflowId, message),
       staleTimeoutMs: options.staleTimeoutMs,
       staleCheckIntervalMs: options.staleCheckIntervalMs,
-      workflowJobId: plan.workflowId,
+      workflowJobId: workflowId,
       time: options.time,
     });
-    appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
+    appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
     return {
       finalOutput: resumed.finalOutput,
       stepDetails: resumed.stepDetails,
@@ -268,7 +269,7 @@ async function resumeWorkflow(
 
   const completedOutputs = new Map<string, string>();
   const pendingCursorSeqs: number[] = [];
-  const drainRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.drain.entered');
+  const drainRow = readLatestEvent(db, 'workflow', workflowId, 'workflow.drain.entered');
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, readCtx) : null;
 
   for (const slot of stepSlots) {
@@ -312,7 +313,7 @@ async function resumeWorkflow(
       appendWorkflowEvents(
         db,
         [
-          workflowCompletedEvent(plan.workflowId, {
+          workflowCompletedEvent(workflowId, {
             outcome: failure.aborted ? 'aborted' : 'failed',
             ...(failure.aborted || !failure.causeRef ? {} : { causeRef: failure.causeRef }),
           }),
@@ -323,14 +324,14 @@ async function resumeWorkflow(
     }
   }
 
-  options.onProgress(plan.workflowId, `resuming step ${summary.activeStepIndex}`);
+  options.onProgress(workflowId, `resuming step ${summary.activeStepIndex}`);
   const stepResults = await waitForAtoms(activeAtoms, executionSvc, ctx, {
     staleTimeoutMs: options.staleTimeoutMs,
     staleCheckIntervalMs: options.staleCheckIntervalMs,
     initialState: waitState,
     completedStepDetails: summary.stepDetails,
-    workflowJobId: plan.workflowId,
-    onProgress: (message) => options.onProgress(plan.workflowId, message),
+    workflowJobId: workflowId,
+    onProgress: (message) => options.onProgress(workflowId, message),
     time: options.time,
     recoverStaleAtom,
   });
@@ -351,14 +352,14 @@ async function resumeWorkflow(
   const resumed = await executePlannedSteps(plan, stepPrompt, executionSvc, ctx, {
     startStepIndex: summary.activeStepIndex + 1,
     completedStepDetails: stepDetails,
-    onProgress: (message) => options.onProgress(plan.workflowId, message),
+    onProgress: (message) => options.onProgress(workflowId, message),
     staleTimeoutMs: options.staleTimeoutMs,
     staleCheckIntervalMs: options.staleCheckIntervalMs,
-    workflowJobId: plan.workflowId,
+    workflowJobId: workflowId,
     time: options.time,
   });
 
-  appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })], options.time);
+  appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
   return {
     finalOutput: resumed.finalOutput,
     stepDetails: resumed.stepDetails,
@@ -390,7 +391,7 @@ export async function resumeAll(options: {
     if (!projection) continue;
 
     const ctx = options.createInvocationContext(status.projectRoot);
-    await resumeWorkflow(options.db, options.progressStore, options.getExecutionService(ctx), ctx, projection.plan, {
+    await resumeWorkflow(options.db, options.progressStore, options.getExecutionService(ctx), ctx, jobId, projection.plan, {
       onProgress,
       staleTimeoutMs,
       staleCheckIntervalMs,

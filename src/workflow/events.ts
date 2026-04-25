@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
-import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
+import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
@@ -51,7 +51,7 @@ function readProjectionWorkflow(db: Database, workflowId: string): { plan: Workf
 
 function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: WorkflowPlan): void {
   const previous = readProjectionWorkflow(db, event.stream.id);
-  const nextPlan = plan ?? previous?.plan ?? { workflowId: event.stream.id, slots: [] };
+  const nextPlan = plan ?? previous?.plan ?? { slots: [] };
 
   upsertProjection(db, {
     table: 'projection_workflows',
@@ -65,32 +65,28 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
 }
 
 export const workflowRegistry: DomainEventRegistry = {
-  types: [
-    'workflow.plan.declared',
-    'workflow.plan.revised',
-    'workflow.drain.entered',
-    'workflow.completed',
+  entries: [
+    defineDomainEvent({
+      type: 'workflow.plan.declared',
+      schema: workflowPlanSchema,
+      reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
+    }),
+    defineDomainEvent({
+      type: 'workflow.plan.revised',
+      schema: workflowPlanSchema,
+      reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
+    }),
+    defineDomainEvent({
+      type: 'workflow.drain.entered',
+      schema: workflowDrainEnteredBodySchema,
+      reducer: (db, event) => upsertProjectionWorkflow(db, event),
+    }),
+    defineDomainEvent({
+      type: 'workflow.completed',
+      schema: workflowCompletedBodySchema,
+      reducer: (db, event) => upsertProjectionWorkflow(db, event),
+    }),
   ],
-  reducers: {
-    'workflow.plan.declared': ((db, event) => {
-      upsertProjectionWorkflow(db, event, workflowPlanSchema.parse(event.body));
-    }) as Reducer<unknown>,
-    'workflow.plan.revised': ((db, event) => {
-      upsertProjectionWorkflow(db, event, workflowPlanSchema.parse(event.body));
-    }) as Reducer<unknown>,
-    'workflow.drain.entered': ((db, event) => {
-      upsertProjectionWorkflow(db, event);
-    }) as Reducer<unknown>,
-    'workflow.completed': ((db, event) => {
-      upsertProjectionWorkflow(db, event);
-    }) as Reducer<unknown>,
-  },
-  schemas: {
-    'workflow.plan.declared': workflowPlanSchema,
-    'workflow.plan.revised': workflowPlanSchema,
-    'workflow.drain.entered': workflowDrainEnteredBodySchema,
-    'workflow.completed': workflowCompletedBodySchema,
-  },
 };
 
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {

@@ -103,7 +103,7 @@ export interface KbRuntime {
   getCorpusStateSnapshot(): KbCorpusSnapshot;
   captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;
-  ensureIndex(): Promise<KbIndex>;
+  ensureCorpusFreshness(): Promise<KbIndex>;
   ensureOramaIndex(): Promise<{
     db: KbOramaDb;
     tokenizer: KbOramaTokenizer;

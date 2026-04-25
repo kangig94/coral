@@ -8,7 +8,8 @@ import { CoralSetupError } from '#src/runtime/errors.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { composeReducers, type DomainEventRegistry, type Reducer } from '#src/store/reducers.js';
+import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
+import { z } from 'zod';
 import { rebuildProjections } from '#src/store/rebuild.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 
@@ -104,24 +105,24 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
     }
   });
 
-  it('throws CoralSetupError(schema_missing_for_event_type) when registry.types lacks a matching schema', () => {
-    const missingSchemaRegistry: DomainEventRegistry = {
-      types: ['test.counter.ticked'],
-      reducers: {
-        'test.counter.ticked': (() => {}) as Reducer<unknown>,
-      },
-      schemas: {} as Record<string, never>,
+  it('throws CoralSetupError(reducer_duplicate) when the same event type is registered twice', () => {
+    const schema = z.object({ id: z.string() });
+    const first = {
+      entries: [defineDomainEvent({ type: 'dup.event', schema })],
+    };
+    const second = {
+      entries: [defineDomainEvent({ type: 'dup.event', schema })],
     };
 
     let thrown: unknown;
     try {
-      composeReducers(missingSchemaRegistry);
+      composeReducers(first, second);
     } catch (error) {
       thrown = error;
     }
 
     expect(thrown).toBeInstanceOf(CoralSetupError);
-    expect((thrown as CoralSetupError).code).toBe('schema_missing_for_event_type');
+    expect((thrown as CoralSetupError).code).toBe('reducer_duplicate');
   });
 
   it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {

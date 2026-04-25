@@ -1,6 +1,5 @@
 import type { JobTerminal } from '../jobs/records.js';
 import { describeTerminalOutcome } from '../jobs/outcome.js';
-import { describeCauseRef, type CauseRefEventStore } from '../jobs/read/cause-ref-render.js';
 import { assertNever } from '../infra/error-format.js';
 
 export {
@@ -22,13 +21,10 @@ export {
 
 export function describeTerminalFailure(
   result: JobTerminal,
-  options: { store?: CauseRefEventStore; exitCode?: number | null } = {},
+  options: { exitCode?: number | null } = {},
 ): string {
   switch (result.outcome.kind) {
     case 'failed':
-      return options.store
-        ? describeCauseRef(result.outcome.causeRef, options.store, result.outcome)
-        : describeTerminalOutcome(result.outcome);
     case 'job_fault':
     case 'aborted':
       return describeTerminalOutcome(result.outcome);

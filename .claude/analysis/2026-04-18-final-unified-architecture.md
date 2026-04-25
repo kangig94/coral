@@ -209,7 +209,7 @@ Equipment consumers subscribe to an **authority** (Journal or Corpus, §2). Each
 
 Both use the same `ConsumerDriver` mechanics: receive `notify(authority, version)` signals after an authoritative write, drain in a single-in-flight microtask (backpressure-safe), persist the cursor only after successful `apply()` completes, and expose `waitFreshUntil(authority, version, consumerId)` as a condition-variable wake (not polling). Journal waiters target `events.seq`; Corpus waiters target `contentSeq` / `metadataSeq`. `listEquipment` is status observation, not the freshness primitive. Consumer `apply()` must be **idempotent** — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 
-For coordinator-mediated KB writes: the Corpus mutation lock wraps only authoritative markdown writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval projections are CorpusConsumers: Orama FTS, Orama vector, and needle vector all receive the post-commit notify and drain asynchronously.
+For coordinator-mediated KB writes: the Corpus mutation lock wraps only authoritative markdown writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval projections are CorpusConsumers: the base Orama consumer (FTS + vector over one shared snapshot) and the equipment-tier needle vector consumer both receive the post-commit notify and drain asynchronously.
 
 This decouples projection latency from authoritative write latency: a slow or failing retrieval projection never blocks the Corpus commit. A caller that needs strict retrieval readiness waits after commit via `waitFreshUntil`; if the wait fails, the Corpus commit remains durable and the running job reports the readiness failure. Failed drains retain the last-successful cursor for retry on next `notify` or startup. Fault isolation is structural.
 
@@ -292,7 +292,7 @@ CREATE TABLE projection_discuss (
 
 CREATE TABLE projection_workflows (
   workflow_id TEXT PRIMARY KEY,
-  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, label, provider, instruction, ...}] }
+  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
   last_seq    INTEGER NOT NULL
 );
 
@@ -303,50 +303,142 @@ CREATE TABLE meta (
 );
 -- Rows: schema_version, journal_version, coordinator_id, created_ts
 
--- Corpus version state (KB authority — see §6.4)
--- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
+-- Corpus version state (KB authority — see §6.4).
+-- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus;
+-- snapshot_id and the manifest hashes pin the most recent atomic snapshot
+-- swap so consumers can detect snapshot identity changes that happen at the
+-- same seq (e.g., compaction without content change).
 CREATE TABLE kb_corpus_state (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
-  content_seq   INTEGER NOT NULL,
-  metadata_seq  INTEGER NOT NULL,
-  last_mutation TEXT    NOT NULL    -- ISO 8601
+  id                     INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+  snapshot_id            TEXT,
+  content_seq            INTEGER NOT NULL,
+  metadata_seq           INTEGER NOT NULL,
+  content_manifest_hash  TEXT,
+  metadata_manifest_hash TEXT,
+  last_mutation          TEXT    NOT NULL    -- ISO 8601
 );
 
--- Equipment projection cursors (async push model; see §2.8)
+-- Equipment projection cursors (async push model; see §2.8).
 -- Cursor interpretation depends on the consumer's authority:
--- - Journal consumers: cursor is events.seq
--- - Corpus consumers: cursor is corpus contentSeq (or metadataSeq)
+-- - Journal consumers: `cursor` is the last applied events.seq.
+-- - Corpus consumers: snapshot_id + the seq/hash columns describe the last
+--   applied snapshot. `corpus_interest` declares which lane the consumer
+--   subscribes to ('content' for vector/FTS that depend on body text,
+--   'metadata' for tag-only changes, 'both' otherwise) so a metadata-only
+--   bump never wakes a content consumer. `lane` is a hint used to short-
+--   circuit fan-out when a publication carries a single lane.
 CREATE TABLE equipment_cursors (
-  consumer_id TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
-  authority   TEXT NOT NULL,         -- 'journal' | 'corpus'
-  cursor      INTEGER NOT NULL,      -- last successfully-applied seq/contentSeq
-  equipped_at TEXT    NOT NULL       -- ISO 8601 of most recent equip
+  consumer_id            TEXT PRIMARY KEY,      -- 'orama-base', 'needle-vector'
+  authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
+  lane                   TEXT,                  -- NULL for journal and 'both' corpus consumers
+  corpus_interest        TEXT,                  -- 'content' | 'metadata' | 'both' for corpus; NULL for journal
+  cursor                 INTEGER,               -- journal only (events.seq)
+  snapshot_id            TEXT,                  -- corpus only
+  content_seq            INTEGER,               -- corpus only
+  metadata_seq           INTEGER,               -- corpus only
+  content_manifest_hash  TEXT,                  -- corpus only
+  metadata_manifest_hash TEXT,                  -- corpus only
+  equipped_at            TEXT    NOT NULL,      -- ISO 8601 of most recent equip
+  registration_kind      TEXT    NOT NULL DEFAULT 'base'  -- 'base' | 'equipment'
+);
+
+-- Equipment activation registry (durable slot ownership; see §2.8).
+-- Tracks which expansion currently owns each equipment slot and its
+-- install/error state for diagnostics. The KB router reads this through
+-- KbRuntime.getEquipmentView().
+CREATE TABLE equipment_state (
+  name               TEXT PRIMARY KEY,
+  state              TEXT NOT NULL,
+  installed_at       TEXT,
+  last_error_code    TEXT,
+  last_error_message TEXT
 );
 
 -- Curate scheduler bookkeeping (replaces today's curate-state.json).
--- Single row. Worker claim is omitted (coordinator single-writer covers it);
--- local schema marker is omitted (meta.schema_version handles schema evolution).
+-- Scalar scheduler state lives here; the active in-flight claim moves to
+-- kb_curate_active_claim so the scheduler row stays single-row idempotent.
+-- Two `processed_through_*` columns store the cursor as discrete fields
+-- rather than opaque JSON so SQL can compare/order them.
+-- `last_attempted_through_*` lets the scheduler back off without losing
+-- the last successfully-processed checkpoint. The two
+-- consecutive_*_failures counters drive exponential backoff.
+-- The two community_*_topology_hash columns let curate skip community
+-- detection / summary regeneration when the underlying graph hasn't
+-- structurally changed (cheaper than always re-running).
 CREATE TABLE kb_curate_scheduler (
-  id                         INTEGER PRIMARY KEY CHECK (id = 1),
-  processed_through          TEXT,                        -- JSON: CurateCursor
-  discovery_high_seq         INTEGER,
-  discovery_offset           INTEGER,
-  last_run_day               TEXT,
-  consecutive_failures       INTEGER NOT NULL DEFAULT 0,
-  community_topology_hash    TEXT
+  id                                   INTEGER PRIMARY KEY CHECK (id = 1),
+  processed_through_seq                INTEGER,
+  processed_through_entry_id           TEXT,
+  processed_through_entry_kind         TEXT,
+  discovery_high_seq                   INTEGER,
+  discovery_offset                     INTEGER,
+  last_run_day                         TEXT,
+  last_attempted_through_seq           INTEGER,
+  last_attempted_through_entry_id      TEXT,
+  last_attempted_through_entry_kind    TEXT,
+  retry_not_before                     TEXT,
+  consecutive_claim_failures           INTEGER NOT NULL DEFAULT 0,
+  consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
+  community_topology_hash              TEXT,
+  community_summary_topology_hash      TEXT,
+  initialized                          INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
+);
+
+-- Active curate claim: the in-flight checkpoint a curate worker is
+-- currently processing. Singleton; coordinator single-writer ensures only
+-- one claim exists at a time.
+CREATE TABLE kb_curate_active_claim (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  through_seq        INTEGER NOT NULL CHECK (through_seq > 0),
+  through_entry_id   TEXT    NOT NULL,
+  through_entry_kind TEXT    NOT NULL,
+  started_at         TEXT    NOT NULL
+);
+
+-- Per-community input fingerprints. Lets summary regeneration skip
+-- communities whose member-set fingerprint is unchanged.
+CREATE TABLE kb_curate_community_summary_input_fingerprints (
+  community_slug TEXT PRIMARY KEY,
+  fingerprint    TEXT NOT NULL
 );
 
 -- Curate retry queue (pendingRepair[] in today's JSON state).
 -- Each entry has its own retry schedule; indexed by retry_not_before for
--- O(log n) "who is due now" scans.
+-- O(log n) "who is due now" scans. The classification fields
+-- (canonical_incident, signals_json, repair_hint) feed the corpus repair
+-- pipeline (§6.4.1) so retry attempts know what to try.
 CREATE TABLE kb_curate_retry_queue (
-  entry_id                   TEXT PRIMARY KEY,
-  reason                     TEXT NOT NULL,
-  observed_at                TEXT NOT NULL,
-  retry_not_before           TEXT NOT NULL,
-  retry_count                INTEGER NOT NULL DEFAULT 0
+  entry_id              TEXT PRIMARY KEY,
+  entry_seq             INTEGER,
+  reason                TEXT NOT NULL,
+  observed_at           TEXT NOT NULL,
+  observed_content_hash TEXT,
+  locus                 TEXT,
+  canonical_incident    TEXT,
+  signals_json          TEXT,
+  repair_hint           TEXT,
+  retry_not_before      TEXT NOT NULL,
+  retry_count           INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
+
+-- Curate discovery backlog: principle-statement candidates queued for the
+-- next curate pass to attach to source notes. Two tables because each
+-- backlog entry can reference many source notes.
+CREATE TABLE kb_curate_discovery_backlog (
+  entry_id        TEXT PRIMARY KEY,
+  principle_slug  TEXT NOT NULL,
+  statement       TEXT NOT NULL,
+  queued_at       TEXT NOT NULL,
+  reason          TEXT,
+  UNIQUE(principle_slug, statement)
+);
+
+CREATE TABLE kb_curate_discovery_backlog_notes (
+  backlog_entry_id TEXT NOT NULL REFERENCES kb_curate_discovery_backlog(entry_id) ON DELETE CASCADE,
+  note_id          TEXT NOT NULL,
+  PRIMARY KEY(backlog_entry_id, note_id)
+);
 ```
 
 ### 3.2 Storage tiers collapse into one
@@ -496,7 +588,9 @@ Projection tables carry materialized read-model columns for stable-at-launch ide
 Event body is authoritative; each projection row is derived via reducer dispatch keyed by replay identity (`stream.kind`, `stream.id`, `seq`).
 Richer launch/runtime/terminal payloads remain event-backed; projection is derived via reducer + replay identity, never by mutating historical event bodies.
 
-Domain registries own the full write-time contract for their events: schemas, reducers, and append validators. `store.appendEvents()` remains a domain-neutral transaction substrate; it runs any composed append validators inside the same `BEGIN IMMEDIATE` transaction before the first insert. This lets domains enforce lifecycle invariants at the Journal boundary without hardcoding domain vocabulary in `store/`.
+Domain registries own the full write-time contract for their events: schemas, reducers, and append validators. Each event type is declared as a `DomainEventEntry` that pairs the schema with its (optional) reducer in one place, so the schema-reducer pairing is structural rather than two parallel maps that happen to share keys. The `defineDomainEvent({type, schema, reducer})` helper uses `z.output<S>` to infer the reducer's body type from the schema, so reducers receive a fully-typed body without per-call `schema.parse()` and without `as Reducer<unknown>` casts at the registration site.
+
+`store.appendEvents()` remains a domain-neutral transaction substrate; it runs any composed append validators inside the same `BEGIN IMMEDIATE` transaction before the first insert, parses each input body through the registry schema before assigning a `seq`, and only then calls reducers. Reducers therefore can rely on `event.body` matching the registered schema, which is why a reducer never re-parses; the rebuild and consumer-apply paths route bodies through the same upcaster + schema before dispatch.
 
 ---
 
@@ -644,7 +738,7 @@ Fast coordinator KB operations follow the same pattern inside a single **Corpus 
 2. Bump `contentSeq` (or `metadataSeq`) in the corpus version state.
 3. Update lightweight Corpus metadata/index state (`index.json`, manifest authority records) needed to describe the Corpus itself.
 4. Release lock.
-5. Notify Corpus consumers (`orama-fts`, `orama-vector`, `needle-vector`, etc.) — they run their apply loop asynchronously (§9).
+5. Notify Corpus consumers (`orama-base` for FTS+vector, `needle-vector` for equipment-tier vector, etc.) — they run their apply loop asynchronously (§9).
 
 Retrieval artifacts are not built inside the authoritative critical section. A command that promises retrieval freshness captures the committed `contentSeq` / `metadataSeq` and waits for the relevant consumer cursor after the lock releases. This keeps the Corpus write small while still giving long-running commands a precise readiness contract.
 
@@ -665,11 +759,13 @@ Retrieval readiness is observed through `waitFreshUntil('corpus', version, consu
 
 **Projections / search backends** (all rebuildable from the Corpus alone):
 
-| Backend | Role | Tier | Substrate |
-|---|---|---|---|
-| KB runtime/query layer | direct markdown read + list/diagnose helpers | base, always | `~/.coral/kb/` + `~/.coral/data/kb/` |
-| **Orama** (JS-native) | FTS (BM25) + vector (cosine) | base, always | `~/.coral/data/kb/orama/orama-index.json` |
-| **coral-needle** (C++ DuckDB ScanANN) | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/needle/` |
+| Backend | Consumer ID | Role | Tier | Substrate |
+|---|---|---|---|---|
+| KB runtime/query layer | — (direct read, no consumer) | direct markdown read + list/diagnose helpers | base, always | `~/.coral/kb/` + `~/.coral/data/kb/` |
+| **Orama** (JS-native) | `orama-base` | FTS (BM25) + vector (cosine), one consumer over one in-memory index | base, always | `~/.coral/data/kb/orama/orama-index.json` |
+| **coral-needle** (C++ DuckDB ScanANN) | `needle-vector` | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/needle/` |
+
+**Why one Orama consumer, not two**: FTS and vector share the same Orama instance, the same on-disk snapshot, and the same atomic snapshot-swap lifecycle. Splitting them into `orama-fts` and `orama-vector` consumers would force two parallel apply paths over one underlying index — one in-flight `apply()` could swap the snapshot out from under the other. Treating Orama as a single consumer is structurally honest about what is one piece of state. `needle-vector` is a separate consumer because needle is a separate process-side index with its own snapshot store.
 
 KB has no SQLite content projection in the steady state. Markdown remains authoritative; Orama/needle are rebuildable retrieval artifacts; SQLite stores only control state (`kb_corpus_state`, curate scheduler/retry tables, and equipment cursors).
 
@@ -720,11 +816,12 @@ workflow.completed      { outcome: 'completed' | 'failed' | 'aborted'; causeRef?
 ```ts
 type WorkflowPlan = {
   slots: WorkflowSlot[];
-  labels: Record<string, string>;   // slotId → human label
 };
 
 type WorkflowSlot = {
-  slotId: string;                    // stable id, e.g. "sl-0-0", "sl-1-2"
+  slotId: string;                    // stable id; production format is `${workflowId}:${stepIndex}:${atomIndex}`
+                                     // e.g. "wf-1:0:0", "wf-1:1:2". The slotId itself encodes step+atom
+                                     // position so renderers can reconstruct presentation without storing it.
   dependencies: string[];            // slotIds this slot waits for
   provider: string;                  // e.g. 'codex', 'claude'
   instruction: string;
@@ -732,11 +829,15 @@ type WorkflowSlot = {
 };
 ```
 
+**Plan body owns no `workflowId` field** — the workflow stream identity (`event.stream.id`) is the truth. Storing it inside the body would be a duplicate that can drift from the stream id; helpers receive `workflowId` separately when they need it. This is the same "stream identity is truth" principle that keeps `stepIndex`/`atomIndex`/`label` off the launch event.
+
+**Plan body owns no `labels` field** — labels are presentation, derived at render time from `slot.agent ?? prompt#${atomIndex}(${truncated instruction})`. Storing them separately would create a second source of truth that the `agent`/`instruction` fields could drift from. The `slotId` format above lets the renderer recover step/atom position without lookup.
+
 **Why plan as a separate stream-kind**:
-- Plan is a durable aggregate with semantics (dependencies, labels, slot IDs) independent of any single job execution.
+- Plan is a durable aggregate with semantics (dependencies, slot IDs) independent of any single job execution.
 - Child jobs reference `refs.workflowSlotId` and `refs.workflowId`; the plan lives ONCE on the workflow stream, not duplicated on every child launch.
 - `workflow.plan.revised` (future) can add/modify slots without touching child events — plans evolve without rewriting history.
-- Syntax-shaped metadata (`stepIndex`, `atomIndex`, `label`) live on the plan slot, not on individual launches. Labels are presentation; `slotId` is truth.
+- Syntax-shaped metadata (`stepIndex`, `atomIndex`, label) is encoded in `slotId` and `agent`, not stored as separate fields. `slotId` is truth; everything visible to a user is derived.
 - Workflow completion is a stream-level fact. The `causeRef` on `workflow.completed` points to the failing child's terminal event when relevant — no wrapped fault variant needed.
 
 **Why a workflow job still exists as a `job/<id>` stream**:
@@ -834,24 +935,35 @@ workflow/<id>             workflow.completed               { outcome: 'failed' |
 
 KB failures have no dedicated Journal stream. Slow process-like KB attempts (source import, explicit reindex/curation jobs) and KB work performed inside an existing provider/workflow job record failures on the hosting job's own stream as rich progress events (`kind: 'domain'`, `stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event. Fast direct KB commands that do not create a job return structured command errors. Background curate failures are operational logs, not events — retry is scheduled via `kb_curate_retry_queue` (§3.1). External edits themselves are the **normal** path (Obsidian + git + rescan auto-handle them, see §12.3); only **malformed** content (git conflict markers left in a file, invalid frontmatter) is treated as a skip + log case during rescan, not as an event.
 
-These are NOT declared in a central `CoralFault` union. They are regular domain events with well-known type strings. A renderer that wants to describe a `causeRef` reads the referenced event's type and dispatches to the domain's describer function:
+These are NOT declared in a central `CoralFault` union. They are regular domain events with well-known type strings. A renderer that wants to describe a `causeRef` walks the cross-stream chain and dispatches each hop to the owning domain's describer through an injected map:
 
 ```ts
-// src/rendering/fault.ts
-export function describeCauseRef(ref: CauseRef, store: CoralStore): string {
-  const event = store.getEvent(ref.stream, ref.seq);
-  switch (`${event.stream.kind}:${event.type}`) {
-    case 'job:job.launch.rejected':         return describeLaunchRejected(event.body);
-    case 'job:job.progress.emitted':        return describeJobProgressFault(event.body);  // KB and other in-job failures
-    case 'session:session.interrupted':     return describeSessionInterrupted(event.body);
-    case 'session:session.provider_failed': return describeProviderFailed(event.body);
-    case 'workflow:workflow.completed':     return describeWorkflowFailed(event.body);
-    // ... each domain contributes describers for its own fault-bearing event types
-  }
-}
+// src/causality/render.ts — owns the walk + dispatch vocabulary, imports no domain.
+export type EventDescriber = (event: CoralEvent) => string;
+export type EventDescriberMap = ReadonlyMap<string, EventDescriber>;  // key: `${stream.kind}:${type}`
+
+export function createCauseRefRenderer(describers: EventDescriberMap): CauseRefRenderer { /* ... */ }
+
+// src/jobs/event-describers.ts — jobs domain owns its describers.
+export const jobsEventDescribers: EventDescriberMap = new Map([
+  ['job:job.launch.rejected', (e) => describeLaunchRejected(e.body)],
+  ['job:job.progress.emitted', (e) => describeJobProgressFault(e.body)],  // KB + other in-job failures
+  ['job:job.terminal.recorded', (e) => describeTerminalOutcome(e.body.terminal.outcome, ...)],
+  // ... one describer per job event type
+]);
+// (sessions/event-describers.ts and workflow/event-describers.ts follow the same shape.)
+
+// src/read-model/event-describers.ts — composition site joins the domain maps.
+export const defaultEventDescribers: EventDescriberMap = new Map([
+  ...jobsEventDescribers,
+  ...sessionsEventDescribers,
+  ...workflowEventDescribers,
+]);
 ```
 
-Adding a new domain with failure modes: implement the domain's events with describer functions, register them in `describeCauseRef`. The domain defines its own body schemas; no central fault union to edit.
+Causality holds the cross-stream walk (cycle detection, missing-link diagnostics, hop accumulation) and the dispatch primitive. Each domain owns one map of `${stream.kind}:${type}` → describer. The read-model layer joins those maps into the default `EventDescriberMap`, mirroring how `CoralStore` joins per-domain queries. Causality stays acyclic — it imports no domain — and adding a new fault-bearing event is one line in the domain's own describer map.
+
+Adding a new domain with failure modes: define the domain's `event-describers.ts` exporting an `EventDescriberMap`, then add it to the spread in `read-model/event-describers.ts`. No central fault union, no central switch to edit.
 
 ### 7.4 Fault ownership (single-producer per event type)
 
@@ -914,12 +1026,12 @@ Four events, three of them cause pointers; the originating failure fact lives on
 $ coral-cli wait --jobs wf-1
 
 Job wf-1 failed
-  → Workflow wf-1 failed (slot sl-1-0 "kb-promote")
+  → Workflow wf-1 failed (slot wf-1:1:0 "kb-promote")
     → Job kb-1 failed
       → KB entry-x: promote failed at orama_index_write — index corrupted
 
-  ✓ analyze      sl-0-0 completed
-  ✗ kb-promote   sl-1-0 failed   [kb_operation_failed]
+  ✓ analyze      wf-1:0:0 completed
+  ✗ kb-promote   wf-1:1:0 failed   [kb_operation_failed]
 ```
 
 The renderer:
@@ -927,9 +1039,9 @@ The renderer:
 2. Reads event at `workflow/wf-1@103` → `workflow.completed { outcome: 'failed', causeRef: job/kb-1@102 }`.
 3. Reads event at `job/kb-1@102` → terminal with `causeRef: job/kb-1@101` (self-stream progress event).
 4. Reads event at `job/kb-1@101` → `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail: { entryId: 'entry-x', cause: {...} } }` — the origin fact.
-5. Dispatches each event type to its describer function; concatenates the rendered chain.
+5. Dispatches each event type to its registered describer through the injected `EventDescriberMap` (§7.3); concatenates the rendered chain.
 
-Slot labels (`"kb-promote"`) come from the workflow plan projection (§6.5), not from any fault payload.
+Slot labels (`"kb-promote"`, `"analyze"`) are derived from each slot's `agent` field on the workflow plan (§6.5) at render time — the plan stores no `labels` map.
 
 ### 7.6 Coordinator crash safety
 
@@ -1233,10 +1345,16 @@ src/
 
   causality/                         ← cross-domain event-reference vocabulary
     cause-ref.ts                     — cross-stream causeRef schema below jobs/sessions/workflow
+    render.ts                        — cause-ref renderer (chain walk + dispatcher); imports no domain.
+                                       Domains inject their describers via EventDescriberMap; composition
+                                       happens at read-model layer.
 
   read-model/                        ← product read facade; no write authority
     coral-store.ts                   — composed local read API across Journal projections + Corpus reads
     read-context.ts                  — domain registry composition for upcast-aware reads
+    event-describers.ts              — composes default EventDescriberMap from per-domain describer maps
+                                       for the cause-ref renderer (mirrors how CoralStore composes
+                                       per-domain read queries).
 
   transport/                         ← carriage only; imports only contracts
     json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
@@ -1283,6 +1401,8 @@ src/
     job-store.ts                     — journal append/read seam over jobsRegistry
     events.ts                        — jobs event body schemas + terminal-order append validator + projection_jobs reducers
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef-aware describers
+    event-describers.ts              — per-event-type describer map for `job:*` events (consumed by the
+                                       cause-ref renderer through read-model composition)
     read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
@@ -1322,6 +1442,7 @@ src/
     allocation-contract.ts           — session allocation input contract
     command-schemas.ts               — sessions transport/CLI request schemas
     events.ts                        — session event body schemas
+    event-describers.ts              — per-event-type describer map for `session:*` events
     continuity.ts                    — continuity snapshot type
     execution-contract.ts            — coordinator-facing session execution/recovery ports
     job-release.ts                   — session-owned job claim release helper
@@ -1435,6 +1556,7 @@ src/
     plan.ts                          — WorkflowPlan + WorkflowSlot types + validation
     command.ts                       — workflow command schema
     events.ts                        — workflow event body schemas + projection_workflows reducers
+    event-describers.ts              — per-event-type describer map for `workflow:*` events
     projections.ts                   — workflow journal append helper for tests/recovery over workflowRegistry
     executor.ts                      — top-level orchestration: declares plan, schedules launches, emits workflow.completed
     launch.ts                        — atom launch + retry (intertwined per current code; §10.1a)
@@ -1687,13 +1809,15 @@ Middleware composition wraps it unchanged, exercising the full stack without rea
 
 All events for this workflow land in the SQLite `events` table. Transactions group causally-related appends.
 
+Slot ids in this section follow the production format `${workflowId}:${stepIndex}:${atomIndex}` — `wf-1:0:0` for "A", `wf-1:1:0` for "B", `wf-1:1:1` for "C". The slotId encodes step+atom position so renderers can reconstruct presentation without storing it. Slot labels (e.g. "A", "B", "C") are derived from `slot.agent ?? prompt#${atomIndex}(${truncated instruction})` at render time, never stored on the plan or its events.
+
 **Transaction 1** — workflow plan declared + workflow job launched:
 ```
 seq=41  workflow/wf-1   workflow.plan.declared   plan: { slots: [
-                                                   {slotId:'sl-0-0', deps:[],     provider:'codex', instruction:'A'},
-                                                   {slotId:'sl-1-0', deps:['sl-0-0'], provider:'codex', instruction:'B'},
-                                                   {slotId:'sl-1-1', deps:['sl-0-0'], provider:'codex', instruction:'C'},
-                                                 ], labels: { 'sl-0-0':'A', 'sl-1-0':'B', 'sl-1-1':'C' } }
+                                                   {slotId:'wf-1:0:0', deps:[],            provider:'codex', instruction:'A', agent:'A'},
+                                                   {slotId:'wf-1:1:0', deps:['wf-1:0:0'],  provider:'codex', instruction:'B', agent:'B'},
+                                                   {slotId:'wf-1:1:1', deps:['wf-1:0:0'],  provider:'codex', instruction:'C', agent:'C'},
+                                                 ] }
 seq=42  job/wf-1        job.launch.requested     refs.workflowId=wf-1
 seq=43  job/wf-1        job.queue.admitted
 seq=44  job/wf-1        job.runtime.started
@@ -1701,7 +1825,7 @@ seq=44  job/wf-1        job.runtime.started
 
 **Transaction 2** — slot A launched and completed:
 ```
-seq=45  job/a-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=sl-0-0
+seq=45  job/a-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=wf-1:0:0
 seq=46  job/a-1  job.queue.admitted
 seq=47  job/a-1  job.runtime.started
 seq=48  job/a-1  job.terminal.recorded  outcome={kind:'completed'}
@@ -1709,8 +1833,8 @@ seq=48  job/a-1  job.terminal.recorded  outcome={kind:'completed'}
 
 **Transaction 3** — slots B and C launched:
 ```
-seq=49  job/b-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=sl-1-0
-seq=50  job/c-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=sl-1-1
+seq=49  job/b-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=wf-1:1:0
+seq=50  job/c-1  job.launch.requested   refs.parentJobId=wf-1, refs.workflowId=wf-1, refs.workflowSlotId=wf-1:1:1
 seq=51  job/b-1  job.queue.admitted
 seq=52  job/c-1  job.queue.admitted
 seq=53  job/b-1  job.runtime.started
@@ -1763,12 +1887,12 @@ lastSeq: 58
 
 `WorkflowView(wf-1)` at `seq=58`:
 ```
-plan: { slots: [sl-0-0, sl-1-0, sl-1-1], labels: {...} }
+plan: { slots: [wf-1:0:0, wf-1:1:0, wf-1:1:1] }   // labels are derived at render time, not stored
 slotOutcomes: {
-  'sl-0-0': { jobId: 'a-1', phase: 'completed', causeRef: null },
-  'sl-1-0': { jobId: 'b-1', phase: 'completed', causeRef: null },
-  'sl-1-1': { jobId: 'c-1', phase: 'error',
-              causeRef: null /* c-1 ended via provider_exit, not a failed-with-causeRef */ },
+  'wf-1:0:0': { jobId: 'a-1', phase: 'completed', causeRef: null },
+  'wf-1:1:0': { jobId: 'b-1', phase: 'completed', causeRef: null },
+  'wf-1:1:1': { jobId: 'c-1', phase: 'error',
+                causeRef: null /* c-1 ended via provider_exit, not a failed-with-causeRef */ },
 }
 outcome: 'failed'
 causeRef: { stream: {kind:'job', id:'c-1'}, seq: 56 }
@@ -1781,12 +1905,12 @@ lastSeq: 58
 $ coral-cli wait --jobs wf-1
 
 Job wf-1 failed
-  → Workflow wf-1 failed (slot "C" sl-1-1)
+  → Workflow wf-1 failed (slot "C" wf-1:1:1)
     → Job c-1 exited with code 1
 
-  ✓ A  sl-0-0 completed
-  ✓ B  sl-1-0 completed
-  ✗ C  sl-1-1 provider_exit 1
+  ✓ A  wf-1:0:0 completed
+  ✓ B  wf-1:1:0 completed
+  ✗ C  wf-1:1:1 provider_exit 1
 ```
 
 Traversal:
@@ -1794,8 +1918,8 @@ Traversal:
 2. Event at `workflow/wf-1@57` is `workflow.completed { outcome:'failed', causeRef → job/c-1@56 }`.
 3. Event at `job/c-1@56` is `job.terminal.recorded { outcome: provider_exit(1) }`.
 4. Chain terminates at a non-`failed` outcome; render the chain.
-5. Slot labels (`"A"`, `"B"`, `"C"`) come from the `WorkflowView(wf-1).plan.labels` projection, keyed by `slotId`.
-6. Nothing on the causal chain carried labels or step/atom indices — those live on the plan.
+5. Slot labels (`"A"`, `"B"`, `"C"`) are derived from each slot's `agent` field (or a truncated `instruction`) at render time — the plan stores no `labels` map, the slot is the single source of truth.
+6. Nothing on the causal chain carries labels or step/atom indices — those are recoverable from `slotId` (production format `${workflowId}:${stepIndex}:${atomIndex}`) and `agent`.
 
 ### 13.4 What each pioneer contributed
 
@@ -1830,7 +1954,7 @@ This section documents the **design delta** between today's codebase and the end
 | `TerminalResult.nonResumable` | `SessionView.resumable` |
 | `TerminalResult.warnings`, `usage` | `JobDiagnostics` |
 | `TerminalResult.workflow` | `WorkflowView.slotOutcomes` (plan + children join) |
-| `workflow_atom_failed` with `step`/`atom` labels | `failed { causeRef }` + plan-owned labels via `slotId` |
+| `workflow_atom_failed` with `step`/`atom` labels | `failed { causeRef }` + labels derived at render time from `slotId` (`${workflowId}:${stepIndex}:${atomIndex}`) and `slot.agent` |
 | Multi-variant `CoralFault` union across domains | Three-variant `JobLifecycleFault` + `causeRef` pointers to domain events |
 | `composition.childJobIds` on parent | SQL query on `projection_jobs WHERE parent_workflow_job_id = ?` |
 | `SessionContinuityPatch` | Full `session.continuity.checkpointed` snapshot event |
@@ -1843,7 +1967,7 @@ This section documents the **design delta** between today's codebase and the end
 | `ensureBackend()` HTTP-first | Command-class routing (library-direct for reads, IPC for live) |
 | `WorkflowCheckpoint` file | `workflow.plan.declared` event on `workflow/<id>` stream |
 | `--local` flag | Semantic command-class routing |
-| `WorkflowRef { stepIndex, atomIndex, label }` on launches | `refs.workflowSlotId` → plan lookup for labels |
+| `WorkflowRef { stepIndex, atomIndex, label }` on launches | `refs.workflowSlotId` → plan lookup for slot; labels/step/atom derived from `slotId` + `slot.agent` at render time |
 | (new surface) | `refs.kbRefs[] = { entryId, contentHash? }` added — cross-authority Corpus references. No current-code equivalent (no Journal-side code references KB entries today); this is a new API, not a migration target. |
 
 ### 14.2 Bugs eliminated as a side effect
@@ -2060,7 +2184,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Export**: a materialized file outside its authority, such as a Journal job's `result.md`. Rebuildable from the relevant authority. KB markdown is not an export; it is the Corpus authority.
 - **JobView**: the projected read shape for a job — stable launch identity (`sessionId`, `provider`, `projectRoot`, `backendNamespace`, `bundleHash`, `jobKind`), lifecycle summary (`phase`, `terminal`, `diagnostics`), workflow linkage (`parentWorkflowJobId`, `workflowSlot`), `createdAt`, `lastSeq`. Children derived by SQL query, not embedded.
 - **WorkflowView**: the projected read shape for a workflow — plan, slot outcomes, overall outcome, causeRef, lastSeq.
-- **WorkflowPlan**: `{ slots: WorkflowSlot[], labels: Record<slotId, label> }`. Declared once per workflow via `workflow.plan.declared`.
+- **WorkflowPlan**: `{ slots: WorkflowSlot[] }`. Declared once per workflow via `workflow.plan.declared`. The workflow stream identity (`event.stream.id`) is the plan's id; labels are derived at render time from `slot.agent ?? prompt#${atomIndex}(${truncated instruction})`. Neither workflowId nor labels live on the plan body.
 - **WorkflowSlot**: `{ slotId, dependencies, provider, instruction, agent? }`. The durable unit of work composition.
 - **WaitCursor**: `{ afterSeq }`. A single global position for subscribers.
 - **TerminalOutcome**: 5-variant union — `completed | aborted | provider_exit | failed{causeRef} | job_fault{JobLifecycleFault}`.
@@ -2098,7 +2222,7 @@ Six pioneers + All-6 unifier + B-v2 reëxamination + Pioneer-final + KB-pioneer 
 - **CoralCoordinator** is the single writer across both authorities — not for gatekeeping but because live-state ownership (admission, host pool, subscriptions) naturally pools there.
 - **Cross-authority references** use `KbRef = { entryId, contentHash? }` — the only admitted asymmetry, honest about Corpus mutability.
 - **Canonical event bodies** are the provider contract for Journal writes.
-- **WorkflowPlan on `workflow/<id>`** is the durable composition aggregate. Child launches reference slots by `slotId`; labels live on the plan.
+- **WorkflowPlan on `workflow/<id>`** is the durable composition aggregate. Child launches reference slots by `slotId`; labels and step/atom indices are derived from the slot at render time, never stored.
 - **Causal graph** (CauseRef pointers) is the fault model within Journal. Failures live once on the originating stream; terminals dereference, never wrap.
 - **Three-variant `JobLifecycleFault`** is the only fault ADT — reserved for wrapper-local failures with no domain origin.
 - **Two consumer interfaces** match the two authorities: `JournalConsumer` (range replay) + `CorpusConsumer` (snapshot content-hash diff). Both share `ConsumerDriver` mechanics (cursor, idempotent apply, condition-var wake).

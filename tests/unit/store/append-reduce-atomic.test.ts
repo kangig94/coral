@@ -8,7 +8,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { composeReducers, type DomainEventRegistry, type Reducer } from '#src/store/reducers.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
   applyTestCounterSchema,
   TEST_COUNTER_SCHEMA,
@@ -70,13 +70,15 @@ describe('appendEvents + in-transaction projection reduction', () => {
 
     try {
       const throwingReducers = composeReducers({
-        types: ['test.counter.ticked'],
-        reducers: {
-          'test.counter.ticked': () => {
-            throw new Error('reducer failure');
-          },
-        },
-        schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
+        entries: [
+          defineDomainEvent({
+            type: 'test.counter.ticked',
+            schema: TEST_COUNTER_SCHEMA,
+            reducer: () => {
+              throw new Error('reducer failure');
+            },
+          }),
+        ],
       });
 
       expect(() =>
@@ -110,21 +112,22 @@ describe('appendEvents + in-transaction projection reduction', () => {
 
     try {
       let reducerCalls = 0;
-      const reducer: Reducer<{ id: string; delta: number }> = (reducerDb, event) => {
-        reducerCalls += 1;
-        reducerDb
-          .prepare(
-            `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
-          )
-          .run(event.body.id, event.body.delta, event.seq);
-      };
       const registry: DomainEventRegistry = {
-        types: ['test.counter.ticked'],
-        reducers: {
-          'test.counter.ticked': reducer as Reducer<unknown>,
-        },
-        schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
+        entries: [
+          defineDomainEvent({
+            type: 'test.counter.ticked',
+            schema: TEST_COUNTER_SCHEMA,
+            reducer: (reducerDb, event) => {
+              reducerCalls += 1;
+              reducerDb
+                .prepare(
+                  `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
+                )
+                .run(event.body.id, event.body.delta, event.seq);
+            },
+          }),
+        ],
         appendValidators: [
           () => {
             throw new Error('append validator failure');

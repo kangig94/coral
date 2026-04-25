@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
-import type { DomainAppendValidator, DomainEventRegistry, Reducer } from '../store/reducers.js';
+import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry, type Reducer } from '../store/reducers.js';
 import { jobLaunchRequestBodySchema, type JobLaunchRequestBody } from './launch.js';
 import { type JobPhase } from './phase.js';
 import {
@@ -410,35 +410,15 @@ function reducerForAborted(): Reducer<JobAbortedBody> {
 }
 
 export const jobsRegistry: DomainEventRegistry = {
-  types: [
-    'job.launch.requested',
-    'job.launch.rejected',
-    'job.queue.queued',
-    'job.queue.admitted',
-    'job.runtime.started',
-    'job.progress.emitted',
-    'job.terminal.recorded',
-    'job.aborted',
+  entries: [
+    defineDomainEvent({ type: 'job.launch.requested', schema: jobLaunchRequestBodySchema, reducer: reducerForRequested() }),
+    defineDomainEvent({ type: 'job.launch.rejected', schema: jobLaunchRejectedSchema, reducer: reducerForRejected() }),
+    defineDomainEvent({ type: 'job.queue.queued', schema: jobQueueQueuedBodySchema, reducer: reducerForQueued() }),
+    defineDomainEvent({ type: 'job.queue.admitted', schema: jobQueueAdmittedBodySchema, reducer: reducerForAdmitted() }),
+    defineDomainEvent({ type: 'job.runtime.started', schema: jobRuntimeStartedBodySchema, reducer: reducerForStarted() }),
+    defineDomainEvent({ type: 'job.progress.emitted', schema: jobProgressBodySchema, reducer: reducerForProgress() }),
+    defineDomainEvent({ type: 'job.terminal.recorded', schema: jobTerminalRecordedBodySchema, reducer: reducerForTerminal() }),
+    defineDomainEvent({ type: 'job.aborted', schema: jobAbortedBodySchema, reducer: reducerForAborted() }),
   ],
-  reducers: {
-    'job.launch.requested': reducerForRequested() as Reducer<unknown>,
-    'job.launch.rejected': reducerForRejected() as Reducer<unknown>,
-    'job.queue.queued': reducerForQueued() as Reducer<unknown>,
-    'job.queue.admitted': reducerForAdmitted() as Reducer<unknown>,
-    'job.runtime.started': reducerForStarted() as Reducer<unknown>,
-    'job.progress.emitted': reducerForProgress() as Reducer<unknown>,
-    'job.terminal.recorded': reducerForTerminal() as Reducer<unknown>,
-    'job.aborted': reducerForAborted() as Reducer<unknown>,
-  },
-  schemas: {
-    'job.launch.requested': jobLaunchRequestBodySchema,
-    'job.launch.rejected': jobLaunchRejectedSchema,
-    'job.queue.queued': jobQueueQueuedBodySchema,
-    'job.queue.admitted': jobQueueAdmittedBodySchema,
-    'job.runtime.started': jobRuntimeStartedBodySchema,
-    'job.progress.emitted': jobProgressBodySchema,
-    'job.terminal.recorded': jobTerminalRecordedBodySchema,
-    'job.aborted': jobAbortedBodySchema,
-  },
   appendValidators: [validateJobTerminalOrder],
 };

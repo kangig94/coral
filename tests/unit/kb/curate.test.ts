@@ -2512,7 +2512,7 @@ describe('curate', () => {
     it('rebuilds index and initializes curate state when index.json is missing but notes exist', async () => {
       writeNote('test-note', { title: 'Test Note', entrySeq: 1 });
 
-      // No index written — ensureIndex inside start() should rebuild it
+      // No index written — ensureCorpusFreshness inside start() should rebuild it
       expect(runtime.readIndex()).toBeNull();
 
       await scheduler.start();

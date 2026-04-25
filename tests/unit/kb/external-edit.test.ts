@@ -77,7 +77,7 @@ function createRegisteredRuntime(root: string): KbRuntime {
 
 async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
   await kb.retryPendingCorpusPublication();
-  await kb.ensureIndex();
+  await kb.ensureCorpusFreshness();
   await applyBaseProjection(kb);
   await kb.retryPendingCorpusPublication();
 }

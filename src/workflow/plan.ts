@@ -12,7 +12,6 @@ export type PlanSlot = {
 };
 
 export type WorkflowPlan = {
-  workflowId: string;
   slots: PlanSlot[];
 };
 
@@ -37,7 +36,6 @@ export const planSlotSchema = z
 
 export const workflowPlanSchema = z
   .object({
-    workflowId: z.string(),
     slots: z.array(planSlotSchema),
   })
   .strict();
@@ -73,7 +71,7 @@ export function buildWorkflowPlan(
     dependencies = stepSlotIds;
   }
 
-  return { workflowId, slots };
+  return { slots };
 }
 
 export function defaultJobIdForSlot(slot: PlanSlot): string {
@@ -131,7 +129,6 @@ export function maxStepIndex(plan: WorkflowPlan): number {
 
 export function replacePlanSlot(plan: WorkflowPlan, slotId: string, patch: Partial<PlanSlot>): WorkflowPlan {
   return {
-    workflowId: plan.workflowId,
     slots: plan.slots.map((slot) => (slot.slotId === slotId ? { ...slot, ...patch } : slot)),
   };
 }

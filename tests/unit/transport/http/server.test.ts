@@ -520,7 +520,7 @@ describe('execution backend server', () => {
             relationships: [],
           },
         })),
-        ensureIndex: vi.fn(async () => ({
+        ensureCorpusFreshness: vi.fn(async () => ({
           entries: {},
           principles: {},
           entityMeta: {},

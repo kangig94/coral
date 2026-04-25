@@ -329,7 +329,7 @@ describe('Corpus notify E2E', () => {
     }
   });
 
-  it('absorbs external drift through ensureIndex without any direct notify call', async () => {
+  it('absorbs external drift through ensureCorpusFreshness without any direct notify call', async () => {
     const harness = await createHarness();
 
     try {
@@ -346,7 +346,7 @@ describe('Corpus notify E2E', () => {
       const driftMtime = new Date('2026-04-20T00:00:05.000Z');
       utimesSync(notePath(harness), driftMtime, driftMtime);
 
-      await harness.kb.ensureIndex();
+      await harness.kb.ensureCorpusFreshness();
 
       await waitFor(async () => {
         await harness.driver.drainAll();

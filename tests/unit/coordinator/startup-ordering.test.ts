@@ -63,8 +63,8 @@ function createMockKb(order?: string[]) {
         },
       };
     }),
-    ensureIndex: vi.fn(async () => {
-      order?.push('ensureIndex');
+    ensureCorpusFreshness: vi.fn(async () => {
+      order?.push('ensureCorpusFreshness');
       return {
         entries: {},
         principles: {},
@@ -328,13 +328,13 @@ describe('coordinator startup ordering', () => {
       expect(notifyCorpus).toHaveBeenCalledTimes(1);
       expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(true);
       expect(order).toContain('retryPendingCorpusPublication');
-      expect(order).toContain('ensureIndex');
+      expect(order).toContain('ensureCorpusFreshness');
       expect(order).toContain('getCorpusStateSnapshot');
       expect(order).toContain('notifyCorpus');
       expect(order).toContain('curateScheduler.start');
       expect(order).toContain('listenFn');
-      expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('ensureIndex'));
-      expect(order.indexOf('ensureIndex')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
+      expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('ensureCorpusFreshness'));
+      expect(order.indexOf('ensureCorpusFreshness')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
       expect(order.indexOf('getCorpusStateSnapshot')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('listenFn'));

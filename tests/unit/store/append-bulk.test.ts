@@ -8,8 +8,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import type { DomainEventRegistry, Reducer } from '#src/store/reducers.js';
-import { composeReducers } from '#src/store/reducers.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
   applyTestCounterSchema,
   TEST_COUNTER_SCHEMA,
@@ -69,26 +68,26 @@ describe('appendEvents bulk', () => {
 
     try {
       let callCount = 0;
-      const throwingReducer: Reducer<{ id: string; delta: number }> = (reducerDb, event) => {
-        reducerDb
-          .prepare(
-            `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
-          )
-          .run(event.body.id, event.body.delta, event.seq);
-
-        callCount += 1;
-        if (callCount === 5000) {
-          throw new Error('induced failure at event 5000');
-        }
-      };
-
       const throwingRegistry: DomainEventRegistry = {
-        types: ['test.counter.ticked'],
-        reducers: {
-          'test.counter.ticked': throwingReducer as Reducer<unknown>,
-        },
-        schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
+        entries: [
+          defineDomainEvent({
+            type: 'test.counter.ticked',
+            schema: TEST_COUNTER_SCHEMA,
+            reducer: (reducerDb, event) => {
+              reducerDb
+                .prepare(
+                  `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
+                )
+                .run(event.body.id, event.body.delta, event.seq);
+
+              callCount += 1;
+              if (callCount === 5000) {
+                throw new Error('induced failure at event 5000');
+              }
+            },
+          }),
+        ],
       };
 
       expect(() =>

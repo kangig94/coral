@@ -2,9 +2,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/client-errors.js';
 import type { AcceptedLaunchResponse } from '../transport/http/client.js';
-import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
+import { createCauseRefRenderer } from '../causality/render.js';
+import { defaultEventDescribers } from '../read-model/event-describers.js';
 import type { CauseRef } from '../causality/cause-ref.js';
-import type { TerminalOutcome } from '../jobs/outcome.js';
+import { describeTerminalOutcome, type TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
@@ -112,6 +113,8 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
   return exitCode;
 }
 
+const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
+
 function openCauseRenderer(projectRoot: string): {
   readonly render?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string;
   close(): void;
@@ -119,7 +122,12 @@ function openCauseRenderer(projectRoot: string): {
   try {
     const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
     return {
-      render: (ref, terminalOutcomeDiagnostic) => describeCauseRef(ref, store, terminalOutcomeDiagnostic),
+      render: (ref, terminalOutcomeDiagnostic) => {
+        const hint = terminalOutcomeDiagnostic
+          ? `Original terminal outcome: ${describeTerminalOutcome(terminalOutcomeDiagnostic)}`
+          : undefined;
+        return causeRefRenderer.describe(ref, store, hint);
+      },
       close: () => {},
     };
   } catch {

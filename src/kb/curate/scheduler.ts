@@ -319,7 +319,7 @@ export function createCurateScheduler({
     }
 
     gitSync.ensureKbGitignore();
-    await kb.ensureIndex();
+    await kb.ensureCorpusFreshness();
     await initializeCurateStateIfNeeded(kb);
     const state = readCurateState(kb);
     pendingCommunitySkipTicks =

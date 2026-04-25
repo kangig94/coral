@@ -199,8 +199,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       }
       // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
       await kbSubsystem.kb.retryPendingCorpusPublication();
-      // Boot step 2: absorb external markdown edits into the Corpus state before replaying consumers.
-      await kbSubsystem.kb.ensureIndex();
+      // Boot step 2: absorb external Corpus edits before replaying consumers.
+      await kbSubsystem.kb.ensureCorpusFreshness();
       const driver = getConsumerDriver();
       driver.register(kbSubsystem.kb.getBaseRetrievalSurface());
       // Boot step 3: replay the persisted corpus snapshot into downstream consumers.

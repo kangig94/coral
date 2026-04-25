@@ -69,7 +69,7 @@ export function registerJournalProjectionConsumer(
   registry: DomainEventRegistry,
 ): ProjectionConsumerHandle {
   const reducers = composeReducers(registry);
-  const eventTypes = new Set(registry.types);
+  const eventTypes = new Set(reducers.types);
   const readCtx: StoreReadContext = {
     schemas: reducers.schemas,
     upcasters: createDefaultUpcasterRegistry(),

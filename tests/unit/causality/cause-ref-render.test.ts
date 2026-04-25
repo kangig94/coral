@@ -9,7 +9,10 @@ import { createEmptyRegistry } from '#src/store/envelope.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import type { SessionContinuityState, SessionProviderFailureReason } from '#src/sessions/fault.js';
-import { describeCauseRef } from '#src/jobs/read/cause-ref-render.js';
+import { createCauseRefRenderer } from '#src/causality/render.js';
+import { defaultEventDescribers } from '#src/read-model/event-describers.js';
+
+const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-22T00:00:00.000Z');
@@ -77,7 +80,7 @@ function renderRootEventDescription(input: {
   const { db, store } = createStore();
   try {
     insertEvent(db, { seq: 1, ...input });
-    return describeCauseRef(
+    return renderer.describe(
       {
         stream: input.stream,
         seq: 1,

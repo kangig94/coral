@@ -9,7 +9,7 @@ import { appendEvents } from '#src/store/append.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { composeReducers, type Reducer } from '#src/store/reducers.js';
+import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { rebuildProjections } from '#src/store/rebuild.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
@@ -28,19 +28,22 @@ describe('append/rebuild upcaster round-trip (AC9 lock)', () => {
 
       const V2_SCHEMA = z.object({ count: z.number().int() });
       const receivedBodies: { count: number }[] = [];
-      const reducer: Reducer<z.infer<typeof V2_SCHEMA>> = (database, event) => {
-        receivedBodies.push(event.body);
-        database
-          .prepare(
-            `INSERT INTO projection_test_upcasted (id, count) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET count=excluded.count`,
-          )
-          .run(event.stream.id, event.body.count);
-      };
 
       const reducers = composeReducers({
-        types: ['test.upcasted'],
-        reducers: { 'test.upcasted': reducer as Reducer<unknown> },
-        schemas: { 'test.upcasted': V2_SCHEMA },
+        entries: [
+          defineDomainEvent({
+            type: 'test.upcasted',
+            schema: V2_SCHEMA,
+            reducer: (database, event) => {
+              receivedBodies.push(event.body);
+              database
+                .prepare(
+                  `INSERT INTO projection_test_upcasted (id, count) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET count=excluded.count`,
+                )
+                .run(event.stream.id, event.body.count);
+            },
+          }),
+        ],
       });
 
       const upcasters = createEmptyRegistry();

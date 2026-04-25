@@ -8,7 +8,10 @@ import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { describeCauseRef, describeCauseRefDetailed } from '#src/jobs/read/cause-ref-render.js';
+import { createCauseRefRenderer } from '#src/causality/render.js';
+import { defaultEventDescribers } from '#src/read-model/event-describers.js';
+
+const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -107,7 +110,7 @@ describe('describeCauseRef (AC8)', () => {
         },
       });
 
-      const description = describeCauseRef(
+      const description = renderer.describe(
         {
           stream: { kind: 'job', id: 'job-1' },
           seq: 4,
@@ -155,7 +158,7 @@ describe('describeCauseRef (AC8)', () => {
         },
       });
 
-      const result = describeCauseRefDetailed(
+      const result = renderer.describeDetailed(
         {
           stream: { kind: 'job', id: 'job-cycle' },
           seq: 1,
@@ -203,7 +206,7 @@ describe('describeCauseRef (AC8)', () => {
         },
       });
 
-      const description = describeCauseRef(
+      const description = renderer.describe(
         {
           stream: { kind: 'job', id: 'job-missing-link' },
           seq: 3,

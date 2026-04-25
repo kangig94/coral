@@ -120,7 +120,7 @@ describe('workflow reducer equivalence (AC4)', () => {
           ...plannedSlots.map((slot) => ({
             type: 'job.launch.requested' as const,
             stream: { kind: 'job' as const, id: slot.jobId },
-            refs: { sessionId: `session-${slot.jobId}`, parentJobId: plan.workflowId, workflowSlotId: slot.slotId },
+            refs: { sessionId: `session-${slot.jobId}`, parentJobId: 'workflow-1', workflowSlotId: slot.slotId },
             bodyVersion: 1,
             body: {
               sessionId: `session-${slot.jobId}`,
@@ -143,7 +143,7 @@ describe('workflow reducer equivalence (AC4)', () => {
           {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-1' },
-            refs: { sessionId: 'session-job-1', parentJobId: plan.workflowId, workflowSlotId: plan.slots[0].slotId },
+            refs: { sessionId: 'session-job-1', parentJobId: 'workflow-1', workflowSlotId: plan.slots[0].slotId },
             bodyVersion: 1,
             body: {
               terminal: {
@@ -156,7 +156,7 @@ describe('workflow reducer equivalence (AC4)', () => {
           {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-2' },
-            refs: { sessionId: 'session-job-2', parentJobId: plan.workflowId, workflowSlotId: plan.slots[1].slotId },
+            refs: { sessionId: 'session-job-2', parentJobId: 'workflow-1', workflowSlotId: plan.slots[1].slotId },
             bodyVersion: 1,
             body: {
               terminal: {

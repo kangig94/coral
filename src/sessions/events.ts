@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
+import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
 import { continuitySnapshotSchema } from './continuity.js';
 import { sessionEntrySchema } from './entry.js';
 import {
@@ -75,34 +75,30 @@ export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
 export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;
 
 export const sessionsRegistry: DomainEventRegistry = {
-  types: [
-    'session.opened',
-    'session.continuity.checkpointed',
-    'session.claimed',
-    'session.claim.released',
-    'session.interrupted',
-    'session.provider_failed',
-    'session.adapter_unparseable',
-    'session.closed',
+  entries: [
+    defineDomainEvent({ type: 'session.opened', schema: sessionOpenedBodySchema, reducer: reduceSessionOpened }),
+    defineDomainEvent({
+      type: 'session.continuity.checkpointed',
+      schema: sessionContinuityCheckpointedBodySchema,
+      reducer: reduceSessionContinuityCheckpointed,
+    }),
+    defineDomainEvent({ type: 'session.claimed', schema: sessionClaimedBodySchema, reducer: reduceSessionClaimed }),
+    defineDomainEvent({
+      type: 'session.claim.released',
+      schema: sessionClaimReleasedBodySchema,
+      reducer: reduceSessionClaimReleased,
+    }),
+    defineDomainEvent({ type: 'session.interrupted', schema: sessionInterruptedBodySchema, reducer: reduceSessionInterrupted }),
+    defineDomainEvent({
+      type: 'session.provider_failed',
+      schema: sessionProviderFailedBodySchema,
+      reducer: reduceSessionProviderFailed,
+    }),
+    defineDomainEvent({
+      type: 'session.adapter_unparseable',
+      schema: sessionAdapterUnparseableBodySchema,
+      reducer: reduceSessionAdapterUnparseable,
+    }),
+    defineDomainEvent({ type: 'session.closed', schema: sessionClosedBodySchema, reducer: reduceSessionClosed }),
   ],
-  reducers: {
-    'session.opened': reduceSessionOpened as Reducer<unknown>,
-    'session.continuity.checkpointed': reduceSessionContinuityCheckpointed as Reducer<unknown>,
-    'session.claimed': reduceSessionClaimed as Reducer<unknown>,
-    'session.claim.released': reduceSessionClaimReleased as Reducer<unknown>,
-    'session.interrupted': reduceSessionInterrupted as Reducer<unknown>,
-    'session.provider_failed': reduceSessionProviderFailed as Reducer<unknown>,
-    'session.adapter_unparseable': reduceSessionAdapterUnparseable as Reducer<unknown>,
-    'session.closed': reduceSessionClosed as Reducer<unknown>,
-  },
-  schemas: {
-    'session.opened': sessionOpenedBodySchema,
-    'session.continuity.checkpointed': sessionContinuityCheckpointedBodySchema,
-    'session.claimed': sessionClaimedBodySchema,
-    'session.claim.released': sessionClaimReleasedBodySchema,
-    'session.interrupted': sessionInterruptedBodySchema,
-    'session.provider_failed': sessionProviderFailedBodySchema,
-    'session.adapter_unparseable': sessionAdapterUnparseableBodySchema,
-    'session.closed': sessionClosedBodySchema,
-  },
 };

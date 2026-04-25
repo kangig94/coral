@@ -315,7 +315,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
   constructor(private readonly runtime: KbRuntime) {}
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    await this.runtime.ensureIndex();
+    await this.runtime.ensureCorpusFreshness();
     const preparedProjection = await this.prepareFullSnapshotForCurrentCorpus();
     await this.installFullSnapshot(ctx.snapshot, preparedProjection);
     this.runtime.recordIndexSyncSuccess();

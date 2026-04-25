@@ -74,10 +74,10 @@ function createHarness(options: {
   const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
   const atomJobId = plan.slots[0].slotId;
-  appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)], runtime.time);
+  appendWorkflowEvents(db, [workflowPlanDeclaredEvent('workflow-1', plan)], runtime.time);
 
   progressStore.initJob({
-    jobId: plan.workflowId,
+    jobId: 'workflow-1',
     sessionId: 'workflow-session-1',
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
@@ -122,7 +122,7 @@ function createHarness(options: {
       'codex',
       PROJECT_ROOT,
       BACKEND_NAMESPACE,
-      plan.workflowId,
+      'workflow-1',
       plan.slots[0].slotId,
       options.projectionLastSeq ?? 7,
     );

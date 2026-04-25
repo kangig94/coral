@@ -14,10 +14,10 @@ const KB_DIRECT_LIST_READ_FILES = [
 ] as const;
 
 describe('KB direct list reads do not rebuild durable text artifacts', () => {
-  it('keeps principles/source list paths away from KbRuntime.ensureIndex()', () => {
+  it('keeps principles/source list paths away from KbRuntime.ensureCorpusFreshness()', () => {
     const violations = KB_DIRECT_LIST_READ_FILES.filter((relativePath) => {
       const source = readFileSync(join(REPO_ROOT, relativePath), 'utf8');
-      return /\bensureIndex\s*\(/.test(source);
+      return /\bensureCorpusFreshness\s*\(/.test(source);
     });
 
     expect(violations).toEqual([]);

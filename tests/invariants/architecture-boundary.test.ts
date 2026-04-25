@@ -365,7 +365,10 @@ function collectProductionStringResidue(tokens: readonly string[]): string[] {
 function collectRawTerminalRecordedWriters(): string[] {
   return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
     const source = readFileSync(filePath, 'utf-8');
-    if (!/type:\s*['"]job\.terminal\.recorded['"]/u.test(source)) {
+    // Match an event-construction object literal: `{ type: 'job.terminal.recorded' ... body: ... }`.
+    // Registry entries (`defineDomainEvent({ type, schema, reducer })`) have no `body:` field and
+    // are correctly excluded — they declare the type, they do not construct events of it.
+    if (!/\{\s*type:\s*['"]job\.terminal\.recorded['"][\s\S]{0,500}?body\s*:/u.test(source)) {
       return [];
     }
 

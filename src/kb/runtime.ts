@@ -360,7 +360,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.corpusStateMirror.invalidate();
   }
 
-  async ensureIndex(): Promise<KbIndex> {
+  async ensureCorpusFreshness(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
       let rebuilt = false;
       await this.withMutationLock(async (mutation) => {

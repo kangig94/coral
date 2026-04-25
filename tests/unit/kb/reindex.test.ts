@@ -338,7 +338,7 @@ Body.
     });
   });
 
-  it('repairs entity-graph-driven topology on ensureIndex after a manual entity graph edit', async () => {
+  it('repairs entity-graph-driven topology on ensureCorpusFreshness after a manual entity graph edit', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -414,7 +414,7 @@ Body.
     writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
     setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
 
-    const index = await kb.ensureIndex();
+    const index = await kb.ensureCorpusFreshness();
     const communities = Object.values(index.entries).filter((entry) => entry.kind === 'community');
 
     expect(index.entityMeta).toEqual(editedGraph.entityMeta);
@@ -747,8 +747,8 @@ This note has malformed frontmatter.
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
-    await kb.ensureIndex();
-    await kb.ensureIndex();
+    await kb.ensureCorpusFreshness();
+    await kb.ensureCorpusFreshness();
 
     expect(reindexSuccessSpy).not.toHaveBeenCalled();
     expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
@@ -854,7 +854,7 @@ This note is valid now.
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
-    await kb.ensureIndex();
+    await kb.ensureCorpusFreshness();
 
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(kb)).toMatchObject({
@@ -929,7 +929,7 @@ Source body.
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
-    await kb.ensureIndex();
+    await kb.ensureCorpusFreshness();
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(kb).pendingRepair).toBeNull();
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
