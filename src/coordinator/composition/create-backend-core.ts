@@ -1,3 +1,13 @@
+// Backend assembly root — wires HTTP/IPC transports, domain shells, services,
+// coordinator lifecycle, and event subscriptions. Per Principle #7 (No
+// Ambiguity), this file is allowed to be large because its job is composition.
+// What it MUST NOT absorb:
+//   - Domain-specific logic (belongs in jobs/, sessions/, discuss/, kb/, ...)
+//   - Backend global state (belongs in BackendWorld via backend-world.ts)
+//   - Default resolution policy (belongs in backend-defaults.ts)
+//   - Job-control or drain logic (belongs in backend-control.ts)
+// Adding any of those here turns this file from "orchestrator" into "magnet".
+
 import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { ZodError } from 'zod';

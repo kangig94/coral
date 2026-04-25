@@ -924,4 +924,15 @@ describe('architecture boundary guard', () => {
       expect(existsSync(resolve(REPO_ROOT, shimPath))).toBe(false);
     }
   });
+  it('providers/contract.ts stays under the magnet threshold', () => {
+    // The provider protocol surface is inherently broad (request/action/spec/lease/
+    // event/middleware/runtime types), so a single contract file is correct. But
+    // unbounded growth turns it into a magnet that absorbs provider-local
+    // helpers, factories, and normalizers. Cap is a review gate: if you need to
+    // bump it, first ask whether the new content belongs in a domain
+    // subdirectory (`providers/<name>/`) instead of the global contract.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/providers/contract.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(450);
+  });
 });

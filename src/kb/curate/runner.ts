@@ -11,11 +11,10 @@ import {
 import {
   buildClassificationPrompt,
   buildPrincipleNames,
-  mergeAssignmentsIntoIndexGraph,
-  parseClassificationResponseResult,
   takeClassificationBatchWithIndex,
-  validateAssignments,
-} from './classification.js';
+} from './classification-prompt.js';
+import { mergeAssignmentsIntoIndexGraph, validateAssignments } from './classification-assignments.js';
+import { parseClassificationResponseResult } from './classification-parse.js';
 import { readClaimedEntry } from './claim-io.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { CurateJsonParseError, runCurateClaude } from './operations.js';

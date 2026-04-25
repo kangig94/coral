@@ -1,3 +1,11 @@
+// Canonical setup-error registry. Holds the cross-cutting CoralSetupError
+// class together with its documented code catalog. Per Principle #7, an error
+// code catalog is a *registry of typed identifiers* — a single canonical home
+// is the right shape (analogous to HTTP status codes, POSIX errno, SQLSTATE).
+// "magnet" anti-pattern only applies to files that absorb unrelated *logic*
+// (helpers.ts, utils.ts); a registry growing as new codes land is the
+// expected shape of a canonical home, not drift.
+
 import { isRecord } from '../infra/json.js';
 
 export interface CoralSetupErrorInit {

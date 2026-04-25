@@ -5,7 +5,7 @@ import type { KbRuntime } from '../contracts.js';
 import {
   buildEntityConsolidationDelta,
   buildMetadataTargets,
-} from './classification.js';
+} from './classification-assignments.js';
 import { runCommunitySubphase } from './community.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
@@ -43,13 +43,12 @@ export type {
 } from './pipeline-types.js';
 export {
   buildClassificationPrompt,
-  buildMetadataTargets,
   chunkEntriesByPromptBudget,
   estimateClassificationBatchTokens,
-  parseClassificationResponse,
-  validateAssignments,
   type ClassificationBatchShape,
-} from './classification.js';
+} from './classification-prompt.js';
+export { buildMetadataTargets, validateAssignments } from './classification-assignments.js';
+export { parseClassificationResponse } from './classification-parse.js';
 export {
   buildDiscoveryPrompt,
   parseDiscoveryResponse,
