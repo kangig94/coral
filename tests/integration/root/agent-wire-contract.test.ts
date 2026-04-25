@@ -8,7 +8,7 @@ import * as AgentResolution from '#src/jobs/shell/agent-resolution.js';
 import type { MutableRuntimeState } from '#src/coordinator/control.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import type { HttpHandlerPorts } from '#src/transport/http/contracts.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '#src/jobs/job-store.js';

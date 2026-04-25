@@ -7,8 +7,8 @@ import type { ProgressStore } from '../jobs/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
-import { loadJobProjectionDetails } from '../store/queries/jobs.js';
-import { readProjectionJob, readWorkflowProjection } from '../store/queries/workflows.js';
+import { loadJobProjectionDetails } from '../jobs/read/queries.js';
+import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,

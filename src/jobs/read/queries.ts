@@ -1,10 +1,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
-import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
-import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
-import { type JobPhase } from '../../jobs/phase.js';
-import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
+import type { JobContinuitySnapshot } from '../continuity.js';
+import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../events.js';
+import { jobLaunchRequestBodySchema } from '../launch.js';
+import { type JobPhase } from '../phase.js';
+import type { JobProjectionDetail } from '../read-contracts.js';
 import {
   jobDiagnosticsSchema,
   normalizeJobTerminal,
@@ -13,11 +13,11 @@ import {
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
-} from '../../jobs/records.js';
-import { belongsToNamespace } from '../../jobs/records.js';
-import { decodeBody, type StoreReadContext } from '../body-codec.js';
-import { readLatestEvent } from './events.js';
-import type { EventsRow } from '../schema.js';
+} from '../records.js';
+import { belongsToNamespace } from '../records.js';
+import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
+import { readLatestEvent } from '../../store/queries/events.js';
+import type { EventsRow } from '../../store/schema.js';
 
 type JobLaunchProjection = {
   jobId: string;

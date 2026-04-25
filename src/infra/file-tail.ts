@@ -1,12 +1,12 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
-import type { RuntimeStoragePort } from '../runtime/ports.js';
+import type { InfraStoragePort } from './port-types.js';
 
 export type FileTailChunk = {
   lines: string[];
   newOffset: number;
 };
 
-type FileTailStorage = Pick<RuntimeStoragePort, 'statSync' | 'openSync' | 'readSync' | 'closeSync'>;
+type FileTailStorage = Pick<InfraStoragePort, 'statSync' | 'openSync' | 'readSync' | 'closeSync'>;
 
 function defaultStorage(): FileTailStorage {
   return { closeSync, openSync, readSync, statSync };

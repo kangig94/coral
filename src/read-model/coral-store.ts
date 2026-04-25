@@ -1,9 +1,9 @@
 import type { Database } from 'better-sqlite3';
 
-import type { StoreReadContext } from './body-codec.js';
-import type { CoralEvent } from './envelope.js';
-import type { EventsFilter, EventsPage } from './queries/events.js';
-import { getEvent, getEventsSince } from './queries/events.js';
+import type { StoreReadContext } from '../store/body-codec.js';
+import type { CoralEvent } from '../store/envelope.js';
+import type { EventsFilter, EventsPage } from '../store/queries/events.js';
+import { getEvent, getEventsSince } from '../store/queries/events.js';
 import {
   loadJobDetail,
   loadJobProjectionDetail,
@@ -11,7 +11,7 @@ import {
   readJobProgress,
   type JobDetail,
   type JobsListFilters,
-} from './queries/jobs.js';
+} from '../jobs/read/queries.js';
 import {
   diagnoseKnowledgeBase,
   listKnowledgeBaseMemos,
@@ -30,15 +30,15 @@ import {
   type DiscussEventLogEntry,
   type DiscussReadRef,
   type DiscussSnapshotRow,
-} from './queries/discuss.js';
-import { readSessionEntryById } from './queries/sessions.js';
+} from '../discuss/read-queries.js';
+import { readSessionEntryById } from '../sessions/read-queries.js';
 import {
   listWorkflowProjections,
   readWorkflowProjection,
   readWorkflowView,
   type WorkflowProjectionRow,
   type WorkflowView,
-} from './queries/workflows.js';
+} from '../workflow/read-queries.js';
 import type {
   KbDiagnoseResult,
   KbMemoListInput,

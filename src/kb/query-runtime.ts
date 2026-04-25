@@ -4,7 +4,7 @@ import { kbRoot } from '../infra/paths.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { openBackendStoreDb } from '../store/db.js';
-import type { BuildFlavor } from '../runtime/flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { KbRuntime } from './contracts.js';
 import {
   communityPathFromName,

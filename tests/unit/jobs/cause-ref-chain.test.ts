@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
-import { CoralStore } from '#src/store/index.js';
+import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { describeCauseRef, describeCauseRefDetailed } from '#src/jobs/read/cause-ref-render.js';
 

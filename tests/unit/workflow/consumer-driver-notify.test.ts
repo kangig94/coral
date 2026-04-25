@@ -13,7 +13,7 @@ import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { registerWorkflowConsumer } from '#src/workflow/consumer.js';
-import { readWorkflowProjection } from '#src/store/queries/workflows.js';
+import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 

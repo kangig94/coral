@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { ZodError } from 'zod';
 import { errorMessage, formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
+import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/server-ports.js';
 import {
   knownDiscussSources,
   loadDiscussDetail,

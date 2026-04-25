@@ -1,8 +1,8 @@
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ToolDomainResult } from './tool-result.js';
-import { domainError, domainResultToHttp, launchToHttp } from './http/tool-response.js';
-import type { HttpHandlerPorts } from './http/contracts.js';
+import { domainError, domainResultToHttp, launchToHttp } from './response.js';
+import type { HttpHandlerPorts } from './server-ports.js';
 import type { RpcMethodSpec } from './rpc-catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc-ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery, decodePathSegment } from './invocation-context.js';

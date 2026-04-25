@@ -24,7 +24,7 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **Corpus authority** = markdown filesystem at `~/.coral/kb/`, git-tracked. Truth for `kb` (notes, sources, principles, communities, entity graph). Obsidian-editable; freshness tracked by `contentSeq` / `metadataSeq`.
 - **CoralCoordinator** = single writer across both authorities. Sole owner of live state (admission, host pool, subscriptions).
 - **Read authorities**:
-  - Journal: `CoralStore` thin SQL query layer.
+  - Journal: domain-owned read queries over the SQL substrate, composed by `read-model/CoralStore`.
   - Corpus: direct filesystem reads + KB runtime/query helpers for search, list, and diagnose.
 - **Providers** emit canonical event bodies; the coordinator wraps them in envelopes and appends to the Journal in transactions.
 - **Workflow** = durable plan declared once on `workflow/<id>` stream; child jobs reference slots by `slotId`.
@@ -157,7 +157,7 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 - Hybrid RRF uses whichever vector backend is active.
 - Onboarding: embedding provider setup (local ONNX model or manual config) — see `skills/equip/SKILL.md`.
 
-The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
+The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus pure expansion workflow/install modules, CLI-owned activation (`src/cli/expansion-activation.ts`), `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
 Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
 
@@ -364,7 +364,7 @@ Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by 
 | Cross-stream atomicity gap | `BEGIN..COMMIT` transaction | Correct by construction |
 | Custom JSONL segment readers/parsers | Parameterized SQL queries | Delete code |
 
-The `CoralStore` becomes a thin SQL query layer. The `CoralCoordinator` is the sole owner of a writable DB connection.
+`store/` becomes the SQL/Journal substrate. Domain-owned read query modules (`jobs/read/queries.ts`, `sessions/read-queries.ts`, `discuss/read-queries.ts`, `workflow/read-queries.ts`) sit above it, and `read-model/CoralStore` composes them with Corpus reads. The `CoralCoordinator` is the sole owner of a writable DB connection.
 
 **Terminology note**: SQL schema scripts live under `schemas/` (§10). They are ordered schema generations applied to an empty or existing Coral store and are never user-data migration scripts; this rewrite has no prior deployed SQL state to preserve (§0). `src/store/schemas/001_initial.sql` is the single SQL schema authority for the clean-slate baseline and first applied schema. `src/store/schema.sql` must not exist because duplicate DDL authority is worse than a larger first script. Until the first main-branch deploy that actually creates SQL state, schema changes edit `001_initial.sql` in place; `002+` begins only after deployed SQL exists.
 
@@ -1095,7 +1095,7 @@ No stored "is complete" boolean anywhere. Projections compute it from event pres
 SELECT job_id, phase, workflow_slot FROM projection_jobs WHERE parent_workflow_job_id = ?
 ```
 
-`WorkflowView.slotOutcomes` is built by `store/queries/workflows.ts`: join `projection_workflows.plan` to child rows in `projection_jobs` via `parent_workflow_job_id` / `workflow_slot`, then render each slot outcome from the child `JobView` state. No denormalization onto the parent.
+`WorkflowView.slotOutcomes` is built by `workflow/read-queries.ts`: join `projection_workflows.plan` to child rows in `projection_jobs` via `parent_workflow_job_id` / `workflow_slot`, then render each slot outcome from the child `JobView` state. No denormalization onto the parent.
 
 ### 9.6 Why a single `WaitCursor.afterSeq`
 
@@ -1105,7 +1105,7 @@ Journal events have a single global `seq`. One number describes "what I have see
 
 With events in a database, joining child jobs onto a parent is a single indexed SQL query — cheaper than carrying a denormalized array that drifts under concurrent child terminations. `JobView` stays lean; `WorkflowView` owns the aggregate read model.
 
-The read model lives in `store/queries/workflows.ts`. Workflow-domain reducers own only workflow stream state (`projection_workflows.plan`, workflow completion), while child job lifecycle state remains in `projection_jobs`.
+The read model lives in `workflow/read-queries.ts`. Workflow-domain reducers own only workflow stream state (`projection_workflows.plan`, workflow completion), while child job lifecycle state remains in `projection_jobs`.
 
 ---
 
@@ -1160,7 +1160,7 @@ src/
     recording/
       observer.ts                    — journal append subscriber for telemetry
 
-  store/                             ← SQL query layer over SQLite event DB
+  store/                             ← SQL/Journal substrate over SQLite event DB
     db.ts                            — SQLite connection factory (WAL mode)
     schema.ts                        — TypeScript row types mirroring the applied SQL schema
     schema-loader.ts                 — locates and applies numbered SQL schema files
@@ -1171,13 +1171,16 @@ src/
     reducers.ts                      — per-domain event-to-projection reducers
     consumer-contract.ts             — neutral consumer error/kind vocabulary
     projection-consumer.ts           — journal projection registration factory
-    index.ts                         — public barrel
+    index.ts                         — public Journal substrate barrel
     queries/
-      jobs.ts                        — JobView queries + progress/event lookup
       events.ts                      — raw event lookup by (stream, seq) for causeRef deref
-      sessions.ts                    — session projection reads
-      discuss.ts                     — discuss projection/event-log reads
-      workflows.ts                   — workflow projection/view reads
+
+  causality/                         ← cross-domain event-reference vocabulary
+    cause-ref.ts                     — cross-stream causeRef schema below jobs/sessions/workflow
+
+  read-model/                        ← product read facade; no write authority
+    coral-store.ts                   — composed local read API across Journal projections + Corpus reads
+    read-context.ts                  — domain registry composition for upcast-aware reads
 
   transport/                         ← carriage only; imports only contracts
     json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
@@ -1186,17 +1189,18 @@ src/
     context-profile.ts               — transport-context field ↔ CORAL env mapping
     invocation-context.ts            — request/query → runtime InvocationContext builder
     dispatch.ts                      — catalog method dispatch over injected request ports
+    response.ts                      — transport response mapping shared by IPC + HTTP
+    server-ports.ts                  — coordinator-composed server ports shared by IPC + HTTP
+    validation.ts                    — Zod validation formatting shared by IPC + HTTP
     ipc/
       server.ts                      — Unix socket server
       client.ts                      — Unix socket client
       ensure.ts                      — "start coordinator if needed" bootstrap helper (CLI-side)
     http/
       client.ts                      — HTTP client for CLI/tooling call-sites that speak HTTP directly
-      contracts.ts                   — HTTP wire schemas
       handler.ts                     — HTTP gateway handler; table-driven route array, auth gate, SSE endpoints
       query-coerce.ts                — query-param coercion
       sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
-      tool-response.ts               — MCP-style response wrapper
 
   runtime/                           ← 6-subport Runtime abstraction
     invocation-context.ts            — transport-independent project/plugin/env invocation input
@@ -1204,6 +1208,7 @@ src/
     real.ts                          — production implementations
 
   infra/                             ← fs/process/time/ids; no domain knowledge
+    build-flavor.ts                  — BuildFlavor + CORAL_FLAVOR resolution authority
     backend-discovery.ts             — coordinator discovery record read/write
     backend-log.ts                   — backend-local structured logging
     project-source.ts                — project root + scoping
@@ -1220,6 +1225,7 @@ src/
     job-store.ts                     — journal query/read-through seam with draft fallback for recovery
     events.ts                        — jobs event body schemas + projection_jobs reducers
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef + describers
+    read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
     result.ts                        — JobTerminal + JobDiagnostics
@@ -1391,7 +1397,7 @@ tools/
 
 - `src/execution/` — dissolves into `coordinator/`, `jobs/`, `sessions/`, `transport/`, and debug-only `tools/simulation/`
 - `src/shared/` — every file relocates to a domain or `infra/` or `testing/`
-- `src/client/` — replaced by `store/queries/` + `transport/ipc/client.ts` + `transport/http/client.ts`
+- `src/client/` — replaced by domain-owned read queries + `read-model/` + `transport/ipc/client.ts` + `transport/http/client.ts`
 - `src/bridge/` transport — replaced by `transport/`
 - `recovery-core.ts` — replaced by `jobs/reconcile/` + `store/replay.ts`
 
@@ -1406,7 +1412,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | Current | Size | Decomposed destinations |
 |---|---|---|
 | `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
-| `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/http/contracts.ts`, `transport/http/tool-response.ts`, `transport/http/sse-subscribe.ts`. |
+| `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/response.ts`, `transport/server-ports.ts`, `transport/validation.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
 | `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts` (see §10 coordinator entry). |
 | `src/execution/progress-store.ts` | 24K | REMOVED — job lifecycle events replace six-file progress. `jobs/shell/wait.ts` owns live-tail + SSE. `jobs/reconcile/` owns startup classification. |
@@ -1741,7 +1747,7 @@ This section documents the **design delta** between today's codebase and the end
 |---|---|
 | `src/execution/` | `coordinator/` + `jobs/` + `sessions/` + `transport/` + `tools/simulation/` |
 | `src/shared/` | Every file relocates to a domain or `infra/` or `testing/` |
-| `src/client/` | `store/queries/` + `transport/ipc/client.ts` + `transport/http/client.ts` |
+| `src/client/` | Domain-owned read queries + `read-model/` + `transport/ipc/client.ts` + `transport/http/client.ts` |
 | `src/bridge/` transport | `transport/` |
 | `status.json`, `launch.json`, `runtime.json`, `exit.json`, `progress.jsonl` | SQLite `events` + `projection_*` tables |
 | Custom segment rotation, checkpoint files, Journal writer lockfile | SQLite WAL + `BEGIN IMMEDIATE` transactions |
@@ -1964,7 +1970,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Store**: the single SQLite database at `~/.coral/data/store/store.db` in prod and `~/.coral/data-dev/store/store.db` in dev. Holds events + projections for Journal domains. KB indexes are projections too but live under `~/.coral/data/kb/` (prod) or `~/.coral/data-dev/kb/` (dev) since they derive from Corpus, not Journal.
 - **Events table**: append-only SQL table keyed by `seq` (auto-increment). The only durable truth.
 - **Projection tables**: SQL read models (`projection_jobs`, `projection_sessions`, `projection_workflows`, etc.) maintained incrementally by event reducers in the same transaction that appends events.
-- **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflows}.ts` plus `kb/queries.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
+- **CoralStore**: unified read API covering **both authorities**, implemented in `read-model/coral-store.ts`. Journal reads go through domain-owned query modules over SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.detail(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Multiple read handles can coexist; single writer (coordinator) owns mutations.
 - **CoralCoordinator**: the single-writer daemon. Owns live state (admission, host pool, subscriptions) and is the only layer that opens a writable DB handle.
 - **Stream**: a logical sub-sequence of the events table identified by `(stream_kind, stream_id)` — e.g., `job/wf-1`, `session/s-42`, `workflow/wf-1`. Ordering is global via `seq`.
 - **Envelope**: the event header — `seq`, `ts`, `type`, `stream`, `namespace`, `refs`, `correlationId`, `causationSeq`, `bodyVersion`. Wraps a `body`.

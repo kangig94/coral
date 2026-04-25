@@ -6,7 +6,7 @@ import {
   httpAdapter,
   transportLocalRoutes,
 } from '#src/transport/http/handler.js';
-import type { HttpHandlerPorts } from '#src/transport/http/contracts.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { buildCoordinatorIpcDispatchTable, ipcAdapter } from '#src/transport/ipc/server.js';
 
 describe('rpc catalog source of truth', () => {

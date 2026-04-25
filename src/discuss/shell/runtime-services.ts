@@ -13,8 +13,9 @@ import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
 import { toJournalInput } from '../store-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
-import { readDiscussEventLog } from '../../store/queries/discuss.js';
-import { createDefaultStoreReadContext } from '../../store/read-context.js';
+import { readDiscussEventLog } from '../read-queries.js';
+import type { StoreReadContext } from '../../store/body-codec.js';
+import { createEmptyRegistry } from '../../store/envelope.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -59,7 +60,10 @@ export function createDiscussRuntime({
   discussStores: Map<string, DiscussSessionStore>;
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
-  const readCtx = createDefaultStoreReadContext();
+  const readCtx: StoreReadContext = {
+    schemas: new Map(),
+    upcasters: createEmptyRegistry(),
+  };
 
   function snapshotBelongsToSource(snapshot: { projectRoot: string }, source: string): boolean {
     return snapshot.projectRoot === source || world.resolveProjectSource(snapshot.projectRoot) === source;

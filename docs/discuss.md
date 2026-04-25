@@ -10,7 +10,7 @@ Discuss is exposed through CLI commands and matching coordinator HTTP endpoints:
 | --- | --- | --- |
 | `coral-cli discuss seed` | `POST /discuss/persona-sets` | Persona seeding |
 | `coral-cli discuss start` | `POST /discuss/sessions` | Create session, append initial events, start control loop |
-| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events; local CLI reads use `CoralStore` directly |
+| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events; local CLI reads use `read-model/CoralStore` directly |
 | `coral-cli discuss participate` | `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches` | Inject a manual bid or speech |
 | `coral-cli discuss abort` | `DELETE /discuss/sessions/:id` | End the session and detach it from the live registry |
 
@@ -49,7 +49,7 @@ Runtime flow:
 1. `coral-cli discuss start` / `POST /discuss/sessions` appends `session.created` and `bidding.opened`.
 2. Automatic providers bid; manual participants wait for `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches`.
 3. The loop resolves speakers, records speech, evaluates epochs, schedules follow-up turns, and eventually synthesizes.
-4. `coral-cli discuss watch` reads the projected watch stream from `CoralStore`; remote HTTP callers use `GET /discuss/sessions/:id/events`.
+4. `coral-cli discuss watch` reads the projected watch stream from `read-model/CoralStore`; remote HTTP callers use `GET /discuss/sessions/:id/events`.
 5. `coral-cli discuss abort` / `DELETE /discuss/sessions/:id` appends a durable terminal event and detaches the live session.
 
 Persisted control phases are `idle`, `observer_wait`, `evaluate_epoch`, `collect_follow_up`, and `synthesize`.

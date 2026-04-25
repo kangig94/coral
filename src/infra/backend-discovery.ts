@@ -2,8 +2,9 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSy
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { BuildFlavor } from '../runtime/flavor.js';
-import type { RuntimeEnvPort, RuntimePaths, RuntimeStoragePort } from '../runtime/ports.js';
+import type { BuildFlavor } from './build-flavor.js';
+import type { CoralPaths } from './coral-paths.js';
+import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds as sharedProbeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { readBuildFlavor } from './bundle-manifest.js';
@@ -31,19 +32,19 @@ export interface BackendInfo extends CoordinatorDiscoveryRecord {
 }
 
 type DiscoveryStorage = Pick<
-  RuntimeStoragePort,
+  InfraStoragePort,
   'chmodSync' | 'mkdirSync' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
 >;
-type DiscoveryEnv = Pick<RuntimeEnvPort, 'platform'> & Partial<Pick<RuntimeEnvPort, 'fullSnapshot' | 'homedir'>>;
+type DiscoveryEnv = Pick<InfraEnvPort, 'platform'> & Partial<Pick<InfraEnvPort, 'fullSnapshot' | 'homedir'>>;
 type DiscoveryRuntime = {
   storage: DiscoveryStorage;
   env?: DiscoveryEnv;
-  paths?: Pick<RuntimePaths, 'coral'>;
+  paths?: { readonly coral: CoralPaths };
 };
 type ResolvedDiscoveryRuntime = {
   storage: DiscoveryStorage;
   env: DiscoveryEnv;
-  paths?: Pick<RuntimePaths, 'coral'>;
+  paths?: { readonly coral: CoralPaths };
 };
 
 const DEFAULT_DISCOVERY_HOST = '127.0.0.1';

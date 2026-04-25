@@ -1,5 +1,5 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import type { BuildFlavor } from '../runtime/flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import { coralRoot, currentBuildFlavor, kbRoot, projectDataDir } from '../infra/paths.js';
 
 /** Strip trailing `.md` extension if present. Idempotent. */

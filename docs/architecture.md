@@ -1,6 +1,6 @@
 # Architecture
 
-Coral is a local CLI + coordinator system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use `CoralStore` directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
+Coral is a local CLI + coordinator system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 
 Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
 
@@ -21,7 +21,7 @@ bridge/coral-cli.cjs
   └── KB commands (`kb *`)
       │
       ├── IPC (`coordinator.sock`, authenticated) for mutating/live commands
-      ├── CoralStore library reads for no-coordinator `jobs` / `kb` paths
+      ├── read-model/CoralStore library reads for no-coordinator `jobs` / `kb` paths
       └── HTTP gateway + carveouts (`127.0.0.1`, authenticated)
             `/health`, `/admin/shutdown`, `/events/stream`
       │
@@ -116,7 +116,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 
 ### Job inspection and control
 
-1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
+1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
 2. `coral-cli abort --jobs "<ids>"` dispatches `jobs.abort` over IPC for local calls
 3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
@@ -140,7 +140,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Area | Role |
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
-| Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `CoralStore` read helpers for no-coordinator CLI paths. |
+| Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `read-model/CoralStore` read helpers for no-coordinator CLI paths. |
 | Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
@@ -160,7 +160,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 CLI layer
   -> Client layer
       -> Transport IPC/HTTP surface
-  -> CoralStore library reads (read-only no-coordinator commands)
+  -> read-model/CoralStore library reads (read-only no-coordinator commands)
 
 Transport IPC/HTTP surface
   -> Coordinator API + control ports

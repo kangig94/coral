@@ -20,8 +20,8 @@ const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
 const FORBIDDEN_CONTRACT_IMPORTS = [
   './control.js',
   './execution-service.js',
-  '../transport/http/contracts.js',
-  './transport/http/contracts.js',
+  '../transport/server-ports.js',
+  './transport/server-ports.js',
   '../jobs/job-store.js',
   '../providers/registry.js',
 ];
@@ -99,7 +99,7 @@ describe('coordinator api export scope invariant (AC12)', () => {
 
     expect(
       forbidden,
-      'src/coordinator/contracts.ts must remain a leaf and avoid control, execution-service, live, shell, and transport/http/contracts imports',
+      'src/coordinator/contracts.ts must remain a leaf and avoid control, execution-service, live, shell, and transport/server-ports imports',
     ).toEqual([]);
   });
 

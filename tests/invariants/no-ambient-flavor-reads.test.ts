@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
-const ALLOW = new Set(['src/runtime/flavor.ts']);
+const ALLOW = new Set(['src/infra/build-flavor.ts']);
 
 async function walk(dir: string, out: string[] = []): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -20,7 +20,7 @@ async function walk(dir: string, out: string[] = []): Promise<string[]> {
 }
 
 describe('no-ambient-flavor-reads invariant', () => {
-  it('only src/runtime/flavor.ts reads CORAL_FLAVOR', async () => {
+  it('only src/infra/build-flavor.ts reads CORAL_FLAVOR', async () => {
     const srcDir = join(ROOT, 'src');
     const files = await walk(srcDir);
     const offenders: string[] = [];

@@ -1,6 +1,6 @@
-import type { LaunchPool } from '../jobs/launch.js';
-import type { JobRuntime } from '../jobs/records.js';
+import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
+import type { LaunchPool } from '../runtime/ports.js';
 import type { ProviderCliRunner } from './protocol.js';
 export type { ProviderCliRequest, ProviderCliResult, ProviderCliRunner } from './protocol.js';
 
@@ -17,7 +17,7 @@ export interface ProviderDurableSpawner {
     pool?: LaunchPool;
     extraEnv?: Record<string, string>;
     jobDir: string;
-    onRuntimeRecord?: (record: JobRuntime) => void;
+    onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
   }): Promise<{
     stdout: string;
     stderr: string;
@@ -32,7 +32,7 @@ export function bindProviderRunner(
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
-  onRuntimeRecord?: (record: JobRuntime) => void,
+  onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({

@@ -1,17 +1,17 @@
 import type { Database } from 'better-sqlite3';
 
-import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import {
   listProjectionDiscussSnapshots,
   readProjectionDiscuss,
-} from '../../discuss/projections.js';
+} from './projections.js';
 import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
-} from '../../discuss/persistence-types.js';
-import { resolveProjectSource } from '../../infra/paths.js';
-import { decodeStoredBody, type StoreReadContext } from '../body-codec.js';
-import type { EventsRow } from '../schema.js';
+} from './persistence-types.js';
+import { resolveProjectSource } from '../infra/paths.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 
 export type DiscussSnapshotRow = PersistedDiscussSnapshot;
 export type DiscussEventLogEntry = DiscussDomainEvent;

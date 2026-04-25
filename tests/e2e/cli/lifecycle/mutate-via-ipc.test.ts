@@ -20,10 +20,11 @@ import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
-import { CoralStore, openStoreDatabase } from '#src/store/index.js';
-import { createDefaultStoreReadContext } from '#src/store/read-context.js';
+import { CoralStore } from '#src/read-model/coral-store.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
+import { openStoreDatabase } from '#src/store/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');

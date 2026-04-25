@@ -2,10 +2,10 @@ import BetterSqlite3 from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { BuildFlavor } from '../runtime/flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Runtime, StoragePort } from '../runtime/ports.js';
 import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
-import { storePaths } from './paths.js';
+import { storePaths } from '../infra/store-paths.js';
 
 type ReadonlyStoreOptions = {
   readonly path: string;

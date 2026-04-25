@@ -13,8 +13,6 @@ import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ExecResult, StoragePort } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import type { IpcClient } from '#src/transport/ipc/client.js';
-import type { EnsuredIpcClient } from '#src/transport/ipc/ensure.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const NEEDLE_VERSION = '0.2.0';
@@ -287,54 +285,48 @@ function createActivationHarness(
   } = {},
 ): { deps: ActivationDeps; calls: FakeCoordinatorCall[] } {
   const calls: FakeCoordinatorCall[] = [];
-  const createPassiveClient = (socketPath: string): IpcClient => ({
-    socketPath,
-    request: async <TResult>(method: string, params?: unknown) => {
-      calls.push({ channel: 'passive', method, params, socketPath });
-      return (await Promise.resolve(opts.passiveRequest?.(method, params) ?? { equipment: [] })) as TResult;
-    },
-    subscribe: async () => {
-      throw new Error('Subscriptions are not used in workflow.install.integration.test.ts');
-    },
-    health: async () => {
-      throw new Error('Health checks are not used in workflow.install.integration.test.ts');
-    },
-    shutdown: async () => {
-      throw new Error('Shutdown is not used in workflow.install.integration.test.ts');
-    },
-  });
-  const createEnsuredClient = (): EnsuredIpcClient => ({
-    ...createPassiveClient('/tmp/coral-passive.sock'),
-    request: async <TResult>(method: string, params?: unknown) => {
-      calls.push({ channel: 'ensure', method, params });
-      return (await Promise.resolve(
-        opts.ensureRequest?.(method, params) ?? {
-          status: 'equipped',
-          equipment: {
-            slot: 'kb.vector',
-            name: 'needle',
-            status: 'equipped',
-          },
-        },
-      )) as TResult;
-    },
-    instanceId: 'instance-a',
-    bundleHash: 'bundle-a',
-    flavor: 'prod',
-    namespace: 'ns-a',
-    host: '127.0.0.1',
-    port: 4312,
-    token: 'token-a',
-    version: '0.5.2',
-  });
 
   return {
     calls,
     deps: {
-      readPassiveDiscovery: vi.fn(() => (opts.discovery === undefined ? defaultDiscoveryRecord() : opts.discovery)),
-      ipcClientFactory: vi.fn((socketPath: string) => createPassiveClient(socketPath)),
-      ensureClient: vi.fn(async () => createEnsuredClient()),
-      resolveFlavor: vi.fn(() => 'prod' as const),
+      readEquipmentStatus: vi.fn(async (name?: string) => {
+        const discovery = opts.discovery === undefined ? defaultDiscoveryRecord() : opts.discovery;
+        if (discovery === null) {
+          return { status: 'unavailable' };
+        }
+        calls.push({
+          channel: 'passive',
+          method: 'coordinator.listEquipment',
+          params: {},
+          socketPath: discovery.socketPath,
+        });
+        const result = (await Promise.resolve(opts.passiveRequest?.('coordinator.listEquipment', {}) ?? { equipment: [] })) as {
+          equipment: Array<{ slot: 'kb.vector'; name: string; status: 'equipped' | 'catching_up' | 'inactive' }>;
+        };
+        return {
+          status: 'available',
+          equipment: name === undefined ? result.equipment : result.equipment.filter((entry) => entry.name === name),
+        };
+      }),
+      activateExpansion: vi.fn(async (name: string) => {
+        calls.push({ channel: 'ensure', method: 'coordinator.registerEquipment', params: { name } });
+        return (await Promise.resolve(
+          opts.ensureRequest?.('coordinator.registerEquipment', { name }) ?? {
+            status: 'equipped',
+            equipment: {
+              slot: 'kb.vector',
+              name: 'needle',
+              status: 'equipped',
+            },
+          },
+        )) as Awaited<ReturnType<ActivationDeps['activateExpansion']>>;
+      }),
+      deactivateExpansion: vi.fn(async (name: string) => {
+        calls.push({ channel: 'ensure', method: 'coordinator.unregisterEquipment', params: { name } });
+        return (await Promise.resolve(opts.ensureRequest?.('coordinator.unregisterEquipment', { name }) ?? {
+          status: 'uninstalled',
+        })) as Awaited<ReturnType<ActivationDeps['deactivateExpansion']>>;
+      }),
     },
   };
 }

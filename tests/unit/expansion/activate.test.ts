@@ -33,7 +33,7 @@ vi.mock('#src/transport/ipc/client.js', async () => {
   };
 });
 
-import { activateExpansion, deactivateExpansion, readEquipmentStatus } from '#src/expansion/activate.js';
+import { createCliExpansionActivation } from '#src/cli/expansion-activation.js';
 
 function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}): CoordinatorDiscoveryRecord {
   return {
@@ -68,6 +68,7 @@ describe('expansion activation (AC6)', () => {
   });
 
   it('activates equipment through ensure-backed coordinator IPC', async () => {
+    const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({
       status: 'equipped',
       equipment: {
@@ -78,7 +79,7 @@ describe('expansion activation (AC6)', () => {
     });
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(activateExpansion('needle')).resolves.toEqual({
+    await expect(activation.activateExpansion('needle')).resolves.toEqual({
       status: 'equipped',
       equipment: {
         slot: 'kb.vector',
@@ -90,27 +91,30 @@ describe('expansion activation (AC6)', () => {
   });
 
   it('surfaces activation failures instead of collapsing them to unavailable', async () => {
+    const activation = createCliExpansionActivation();
     const error = Object.assign(new Error('coordinator.registerEquipment failed'), { code: 'boom' });
     const request = vi.fn().mockRejectedValue(error);
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(activateExpansion('needle')).rejects.toBe(error);
+    await expect(activation.activateExpansion('needle')).rejects.toBe(error);
     expect(request).toHaveBeenCalledWith('coordinator.registerEquipment', { name: 'needle' });
   });
 
   it('deactivates equipment through ensure-backed coordinator IPC', async () => {
+    const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({ status: 'uninstalled' });
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(deactivateExpansion('needle')).resolves.toEqual({ status: 'uninstalled' });
+    await expect(activation.deactivateExpansion('needle')).resolves.toEqual({ status: 'uninstalled' });
     expect(request).toHaveBeenCalledWith('coordinator.unregisterEquipment', { name: 'needle' });
   });
 
   it('returns unavailable when passive discovery cannot be read', async () => {
+    const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';
     mockState.readPassiveDiscovery.mockReturnValue(null);
 
-    await expect(readEquipmentStatus('needle')).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readEquipmentStatus('needle')).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.readPassiveDiscovery).toHaveBeenCalledWith('dev');
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
@@ -127,11 +131,11 @@ describe('expansion activation (AC6)', () => {
     vi.doUnmock('#src/coordinator/discovery-api.js');
 
     try {
-      const [{ setBuildFlavor }, { writeDiscoveryRecord }, { readEquipmentStatus: readEquipmentStatusFresh }] =
+      const [{ setBuildFlavor }, { writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
         await Promise.all([
           import('#src/infra/paths.js'),
           import('#src/infra/backend-discovery.js'),
-          import('#src/expansion/activate.js'),
+          import('#src/cli/expansion-activation.js'),
         ]);
       const request = vi.fn().mockResolvedValue({ equipment: [] });
 
@@ -145,7 +149,7 @@ describe('expansion activation (AC6)', () => {
       );
       mockState.createIpcClient.mockReturnValue({ request });
 
-      await expect(readEquipmentStatusFresh()).resolves.toEqual({
+      await expect(createFreshActivation().readEquipmentStatus()).resolves.toEqual({
         status: 'available',
         equipment: [],
       });
@@ -158,13 +162,14 @@ describe('expansion activation (AC6)', () => {
   });
 
   it('returns unavailable when passive IPC dial fails after discovery succeeds', async () => {
+    const activation = createCliExpansionActivation();
     const request = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('connect failed'), { code: 'ipc_connect_failed' }));
     mockState.readPassiveDiscovery.mockReturnValue(makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }));
     mockState.createIpcClient.mockReturnValue({ request });
 
-    await expect(readEquipmentStatus()).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readEquipmentStatus()).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock');
     expect(request).toHaveBeenCalledWith('coordinator.listEquipment', {});
   });

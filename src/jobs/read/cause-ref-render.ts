@@ -1,4 +1,4 @@
-import type { CoralStore, CoralEvent } from '../../store/index.js';
+import type { CoralEvent } from '../../store/envelope.js';
 import { continuitySentenceFragment, type SessionContinuityState, type SessionProviderFailureReason } from '../../sessions/fault.js';
 import { assertNever } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
@@ -31,6 +31,10 @@ export interface CauseRefRenderResult {
   readonly chain: readonly string[];
   readonly cycle?: CircularCauseRefDiagnostic;
   readonly missing?: MissingCauseRefDiagnostic;
+}
+
+export interface CauseRefEventStore {
+  getEvent(stream: { kind: string; id: string }, seq: number): CoralEvent | undefined;
 }
 
 function refKey(ref: CauseRef): string {
@@ -184,7 +188,7 @@ function describeEvent(event: CoralEvent): string {
 
 function renderCauseRef(
   ref: CauseRef,
-  store: CoralStore,
+  store: CauseRefEventStore,
   visited: Set<string>,
   path: string[],
   terminalOutcomeDiagnostic?: TerminalOutcome,
@@ -251,12 +255,12 @@ function renderCauseRef(
 
 export function describeCauseRefDetailed(
   ref: CauseRef,
-  store: CoralStore,
+  store: CauseRefEventStore,
   terminalOutcomeDiagnostic?: TerminalOutcome,
 ): CauseRefRenderResult {
   return renderCauseRef(ref, store, new Set<string>(), [], terminalOutcomeDiagnostic);
 }
 
-export function describeCauseRef(ref: CauseRef, store: CoralStore, terminalOutcomeDiagnostic?: TerminalOutcome): string {
+export function describeCauseRef(ref: CauseRef, store: CauseRefEventStore, terminalOutcomeDiagnostic?: TerminalOutcome): string {
   return describeCauseRefDetailed(ref, store, terminalOutcomeDiagnostic).description;
 }

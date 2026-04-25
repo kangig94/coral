@@ -42,7 +42,7 @@ import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
 import { composeReducers } from '../../../src/store/reducers.js';
-import { createProjectionSessionLookup } from '../../../src/store/queries/sessions.js';
+import { createProjectionSessionLookup } from '../../../src/sessions/read-queries.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';

@@ -7,7 +7,7 @@ import type { PipelineAST } from './ast.js';
 import type { WorkflowCommand } from './input.js';
 import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';
 import { parseExpression } from './parser.js';
-import { readWorkflowProjection } from '../store/queries/workflows.js';
+import { readWorkflowProjection } from './read-queries.js';
 
 function unknownProviderDecision(providers: string[]): LaunchDecision {
   const providerLabel = providers.join(', ');

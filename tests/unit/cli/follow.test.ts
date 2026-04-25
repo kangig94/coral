@@ -11,7 +11,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/index.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format.js';
 

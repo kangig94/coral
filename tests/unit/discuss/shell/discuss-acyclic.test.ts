@@ -25,6 +25,8 @@ const SUBSYSTEM_PREFIXES = [
   'workflow',
   'kb',
   'runtime',
+  'causality',
+  'read-model',
   'coral',
   'hooks',
   'skills',
@@ -237,21 +239,22 @@ describe('discuss architecture guard', () => {
       );
     });
 
-    const nonDiscussRuntimeSccs = runtimeSubsystemSccs.filter((scc) => !scc.includes('discuss'));
-
     console.info(
       runtimeSubsystemSccs.length === 0
         ? 'Runtime subsystem SCCs: none'
         : `Runtime subsystem SCCs:\n${runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
     );
 
-    console.info(
-      nonDiscussRuntimeSccs.length === 0
-        ? 'Informational non-discuss runtime SCCs: none'
-        : `Informational non-discuss runtime SCCs:\n${nonDiscussRuntimeSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
-    );
-
     const failures: string[] = [];
+
+    if (runtimeSubsystemSccs.length > 0) {
+      failures.push(
+        [
+          'production runtime subsystem graph must be acyclic:',
+          ...runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`),
+        ].join('\n'),
+      );
+    }
 
     if (discussRuntimeImports.length > 0) {
       failures.push(

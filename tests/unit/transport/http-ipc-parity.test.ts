@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
-import type { HttpHandlerPorts } from '#src/transport/http/contracts.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];

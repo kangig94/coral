@@ -20,8 +20,8 @@ import { createDeferred } from '#tools/testing/deferred.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/store-registry.js';
-import { readDiscussEventLog } from '#src/store/queries/discuss.js';
-import { createDefaultStoreReadContext } from '#src/store/read-context.js';
+import { readDiscussEventLog } from '#src/discuss/read-queries.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
@@ -42,7 +42,7 @@ import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/http/tool-response.js';
+import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/response.js';
 import {
   handleKbCommunityRead,
   handleKbDelete,

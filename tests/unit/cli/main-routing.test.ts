@@ -216,6 +216,16 @@ function findCommand(root: Command, ...path: string[]): Command {
   return current;
 }
 
+function expansionActivationOptions() {
+  return expect.objectContaining({
+    activation: expect.objectContaining({
+      readEquipmentStatus: expect.any(Function),
+      activateExpansion: expect.any(Function),
+      deactivateExpansion: expect.any(Function),
+    }),
+  });
+}
+
 function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; provider?: string } = {}) {
   const phase = (overrides.phase ?? 'running') as JobStatus['phase'];
   const provider = overrides.provider ?? 'codex';
@@ -355,7 +365,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionList).toHaveBeenCalledWith();
+        expect(mockState.expansionList).toHaveBeenCalledWith(expansionActivationOptions());
       },
     },
     {
@@ -370,7 +380,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle', expansionActivationOptions());
       },
     },
     {
@@ -382,7 +392,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle', expansionActivationOptions());
       },
     },
     {
@@ -397,7 +407,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle', expansionActivationOptions());
       },
     },
     {
@@ -418,7 +428,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle', expansionActivationOptions());
       },
     },
   ])('routes expansion $label success as one stdout JSON line with exit 0', async ({ argv, setup, assertCall }) => {

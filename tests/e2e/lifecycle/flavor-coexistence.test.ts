@@ -11,7 +11,7 @@ import type { JobStatus } from '#src/jobs/records.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { jobsRegistry } from '#src/jobs/events.js';

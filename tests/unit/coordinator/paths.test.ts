@@ -5,7 +5,7 @@ import { coordinatorPaths } from '#src/infra/coordinator-paths.js';
 import { corpusPaths } from '#src/infra/corpus-paths.js';
 import { equipmentPaths } from '#src/expansion/paths.js';
 import { exportsPaths } from '#src/infra/exports-paths.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 
 describe('composeCoralPaths', () => {
   it('returns a frozen record covering all five path families', () => {

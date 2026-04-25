@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CoralEventInput } from '#src/store/index.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 import {
   adapterOutputUnparseable,
   providerRequestFailed,

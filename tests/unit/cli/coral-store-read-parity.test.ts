@@ -10,7 +10,7 @@ import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 
 const REPO_ROOT = process.cwd();
 // Keep this fixed clock aligned with the snapshot's relative-time offsets vs. seeded `created_at` values.

@@ -9,7 +9,7 @@ import {
   domainSuccess,
   formatZodError,
   launchToHttp,
-} from '#src/transport/http/tool-response.js';
+} from '#src/transport/response.js';
 
 describe('tool response domain helpers', () => {
   it('creates success domain results', () => {

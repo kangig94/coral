@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import type { BuildFlavor } from '../runtime/flavor.js';
+import type { BuildFlavor } from './build-flavor.js';
 import { coralRoot } from './paths.js';
 
 export interface ExportsPaths {

@@ -1,11 +1,11 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CauseRef } from '../../jobs/outcome.js';
-import type { JobPhase } from '../../jobs/phase.js';
-import { jobTerminalSchema } from '../../jobs/result.js';
-import { workflowCompletedBodySchema } from '../../workflow/events.js';
-import { workflowPlanSchema, type WorkflowPlan } from '../../workflow/plan.js';
-import { decodeBody, type StoreReadContext } from '../body-codec.js';
+import type { CauseRef } from '../jobs/outcome.js';
+import type { JobPhase } from '../jobs/phase.js';
+import { jobTerminalSchema } from '../jobs/result.js';
+import { workflowCompletedBodySchema } from './events.js';
+import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 
 export type WorkflowProjectionRow = {
   workflowId: string;

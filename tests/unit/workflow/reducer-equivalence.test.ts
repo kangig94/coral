@@ -19,7 +19,7 @@ import {
   workflowRegistry,
 } from '#src/workflow/events.js';
 import { buildWorkflowPlan, compileWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
-import { readWorkflowView } from '#src/store/queries/workflows.js';
+import { readWorkflowView } from '#src/workflow/read-queries.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {

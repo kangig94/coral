@@ -9,7 +9,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { appendEvents } from '#src/store/append.js';
-import { readJobProgress, loadJobProjectionDetail } from '#src/store/queries/jobs.js';
+import { readJobProgress, loadJobProjectionDetail } from '#src/jobs/read/queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { jobsRegistry } from '#src/jobs/events.js';

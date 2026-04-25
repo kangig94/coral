@@ -1,21 +1,16 @@
 import { z } from 'zod';
 
 import { assertNever } from '../infra/error-format.js';
+import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
+
+export { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
 
 export interface ExternalError {
   message: string;
   stack?: string;
-}
-
-export interface CauseRef {
-  stream: {
-    kind: 'job' | 'session' | 'discuss' | 'workflow';
-    id: string;
-  };
-  seq: number;
 }
 
 export type JobLifecycleFault =
@@ -56,18 +51,6 @@ export const externalErrorSchema = z
   .object({
     message: z.string(),
     stack: z.string().optional(),
-  })
-  .strict();
-
-export const causeRefSchema = z
-  .object({
-    stream: z
-      .object({
-        kind: z.enum(['job', 'session', 'discuss', 'workflow']),
-        id: z.string().min(1),
-      })
-      .strict(),
-    seq: z.number().int().positive(),
   })
   .strict();
 

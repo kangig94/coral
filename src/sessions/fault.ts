@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { causeRefSchema, type CauseRef } from '../jobs/outcome.js';
+import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import { assertNever } from '../infra/error-format.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);

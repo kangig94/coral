@@ -1,8 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { SessionLookup, SessionLookupRef } from '../../sessions/lookup-contract.js';
-import type { SessionEntry } from '../../sessions/entry.js';
-import { readProjectionSessionEntry } from '../../sessions/projections.js';
+import type { SessionLookup, SessionLookupRef } from './lookup-contract.js';
+import type { SessionEntry } from './entry.js';
+import { readProjectionSessionEntry } from './projections.js';
 
 type SessionLookupRow = {
   session_id: string;

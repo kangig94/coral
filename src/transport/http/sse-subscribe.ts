@@ -1,4 +1,4 @@
-import type { EventStreamBus, EventStreamEventMap } from './contracts.js';
+import type { EventStreamBus, EventStreamEventMap } from '../server-ports.js';
 
 export function subscribeAll<K extends keyof EventStreamEventMap>(
   bus: EventStreamBus,

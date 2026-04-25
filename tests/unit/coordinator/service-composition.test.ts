@@ -40,13 +40,13 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { discussRegistry } from '#src/discuss/store-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { createDefaultStoreReadContext } from '#src/store/read-context.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { readWorkflowView } from '#src/store/queries/workflows.js';
+import { readWorkflowView } from '#src/workflow/read-queries.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;

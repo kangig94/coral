@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveBuildFlavor } from '#src/runtime/flavor.js';
+import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { composeCoralPaths } from '#src/infra/coral-paths.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 

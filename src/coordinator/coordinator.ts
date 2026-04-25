@@ -20,8 +20,8 @@ import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../sto
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
-import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
-import { createProjectionSessionLookup } from '../store/queries/sessions.js';
+import { readJobProgress, loadJobProjectionDetail } from '../jobs/read/queries.js';
+import { createProjectionSessionLookup } from '../sessions/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';

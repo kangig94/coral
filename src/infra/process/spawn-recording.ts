@@ -1,5 +1,5 @@
 import { basename, dirname } from 'node:path';
-import type { ChildProcessLike, ChildStdinLike, StoragePort } from '../../runtime/ports.js';
+import type { InfraChildProcessLike, InfraChildStdinLike, InfraStoragePort } from '../port-types.js';
 
 type SpawnRecordingEvent = {
   timestamp: number;
@@ -22,7 +22,7 @@ type SpawnRecordingMetadata = {
   env?: Record<string, string>;
 };
 
-type RecordableChildProcess = ChildProcessLike & {
+type RecordableChildProcess = InfraChildProcessLike & {
   __coralSpawnRecordingMetadata?: SpawnRecordingMetadata;
 };
 
@@ -147,7 +147,7 @@ export function normalizeSpawnRecording(value: unknown): SpawnRecording {
   return normalized;
 }
 
-export function attachSpawnRecordingMetadata(child: ChildProcessLike, metadata: SpawnRecordingMetadata): void {
+export function attachSpawnRecordingMetadata(child: InfraChildProcessLike, metadata: SpawnRecordingMetadata): void {
   (child as RecordableChildProcess).__coralSpawnRecordingMetadata = {
     command: metadata.command,
     args: [...metadata.args],
@@ -155,7 +155,7 @@ export function attachSpawnRecordingMetadata(child: ChildProcessLike, metadata: 
   };
 }
 
-export function recordSpawn(child: ChildProcessLike, now: () => number = Date.now): SpawnRecording {
+export function recordSpawn(child: InfraChildProcessLike, now: () => number = Date.now): SpawnRecording {
   const metadata = (child as RecordableChildProcess).__coralSpawnRecordingMetadata;
   const startedAt = now();
   const recording: SpawnRecording = {
@@ -182,7 +182,10 @@ export function recordSpawn(child: ChildProcessLike, now: () => number = Date.no
     pushEvent({ type: 'stderr', data: chunk.toString() });
   });
 
-  const stdin = child.stdin as (ChildStdinLike & { write: ChildStdinLike['write']; end: ChildStdinLike['end'] }) | null;
+  const stdin = child.stdin as (InfraChildStdinLike & {
+    write: InfraChildStdinLike['write'];
+    end: InfraChildStdinLike['end'];
+  }) | null;
   if (stdin) {
     const originalWrite = stdin.write.bind(stdin);
     const originalEnd = stdin.end.bind(stdin);
@@ -211,13 +214,13 @@ export function recordSpawn(child: ChildProcessLike, now: () => number = Date.no
   return recording;
 }
 
-export function saveRecording(storage: StoragePort, recording: SpawnRecording, filePath: string): void {
+export function saveRecording(storage: InfraStoragePort, recording: SpawnRecording, filePath: string): void {
   const normalized = normalizeSpawnRecording(recording);
   storage.mkdirSync(dirname(filePath), { recursive: true });
   storage.writeFileSync(filePath, JSON.stringify(normalized, null, 2), { encoding: 'utf-8' });
 }
 
-export function loadRecording(storage: StoragePort, filePath: string): SpawnRecording {
+export function loadRecording(storage: InfraStoragePort, filePath: string): SpawnRecording {
   const parsed = JSON.parse(storage.readFileSync(filePath, 'utf-8')) as unknown;
   const recording = normalizeSpawnRecording(parsed);
   recording.events.sort((a, b) => a.timestamp - b.timestamp);

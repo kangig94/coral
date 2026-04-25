@@ -38,11 +38,15 @@ const ROOT_SCENARIOS_ROOT = 'scenarios';
 const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
 const RETIRED_RUNTIME_MODULE = ['src', 'execution', 'runtime.ts'].join('/');
 const RETIRED_RUNTIME_PORTS = ['src', 'shared', 'runtime-ports.ts'].join('/');
+const RETIRED_RUNTIME_FLAVOR = ['src', 'runtime', 'flavor.ts'].join('/');
 const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
 const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
 const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_HTTP_CLIENT = ['src', 'transport', 'http', 'http-client.ts'].join('/');
+const RETIRED_HTTP_CONTRACTS = ['src', 'transport', 'http', 'contracts.ts'].join('/');
+const RETIRED_HTTP_WAIT_STREAM = ['src', 'transport', 'http', 'wait-stream.ts'].join('/');
+const RETIRED_HTTP_TOOL_RESPONSE = ['src', 'transport', 'http', 'tool-response.ts'].join('/');
 const RETIRED_JOBS_INDEX = ['src', 'jobs', 'index.ts'].join('/');
 const RETIRED_SESSIONS_INDEX = ['src', 'sessions', 'index.ts'].join('/');
 const RETIRED_TRANSPORT_HTTP_INDEX = ['src', 'transport', 'http', 'index.ts'].join('/');
@@ -81,6 +85,14 @@ const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
 const RETIRED_COORDINATOR_EXECUTION_SHARED = ['src', 'coordinator', 'services', 'execution-shared.ts'].join('/');
 const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
+const RETIRED_STORE_JOB_QUERIES = ['src', 'store', 'queries', 'jobs.ts'].join('/');
+const RETIRED_STORE_DISCUSS_QUERIES = ['src', 'store', 'queries', 'discuss.ts'].join('/');
+const RETIRED_STORE_SESSION_QUERIES = ['src', 'store', 'queries', 'sessions.ts'].join('/');
+const RETIRED_STORE_WORKFLOW_QUERIES = ['src', 'store', 'queries', 'workflows.ts'].join('/');
+const RETIRED_STORE_CORAL_STORE = ['src', 'store', 'coral-store.ts'].join('/');
+const RETIRED_STORE_READ_CONTEXT = ['src', 'store', 'read-context.ts'].join('/');
+const RETIRED_STORE_PATHS = ['src', 'store', 'paths.ts'].join('/');
+const RETIRED_STORE_CAUSE_REF = ['src', 'store', 'cause-ref.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
 const RETIRED_STORE_SCHEMA_SQL = ['src', 'store', 'schema.sql'].join('/');
 const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('/');
@@ -598,7 +610,19 @@ describe('architecture boundary guard', () => {
       RETIRED_KB_MUTATION_HELPERS,
       RETIRED_COMMAND_HELPERS,
       RETIRED_COORDINATOR_EXECUTION_SHARED,
+      RETIRED_RUNTIME_FLAVOR,
+      RETIRED_HTTP_CONTRACTS,
+      RETIRED_HTTP_WAIT_STREAM,
+      RETIRED_HTTP_TOOL_RESPONSE,
       RETIRED_STORE_KB_QUERIES,
+      RETIRED_STORE_JOB_QUERIES,
+      RETIRED_STORE_DISCUSS_QUERIES,
+      RETIRED_STORE_SESSION_QUERIES,
+      RETIRED_STORE_WORKFLOW_QUERIES,
+      RETIRED_STORE_CORAL_STORE,
+      RETIRED_STORE_READ_CONTEXT,
+      RETIRED_STORE_PATHS,
+      RETIRED_STORE_CAUSE_REF,
       RETIRED_STORE_CORPUS_STATE,
       RETIRED_STORE_SCHEMA_SQL,
       RETIRED_STORE_MIGRATIONS_MODULE,
@@ -632,7 +656,7 @@ describe('architecture boundary guard', () => {
     const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
     const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
     const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/progress-store-contract.ts'), 'utf8');
-    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/store/queries/jobs.ts'), 'utf8');
+    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read/queries.ts'), 'utf8');
     const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
 
     expect(waitContract).toContain('afterSeq: number');

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import type { BuildFlavor } from '../runtime/flavor.js';
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeCoordinator, probeProcessStartedAtSeconds } from '../infra/backend-discovery.js';
 import { backendLog } from '../infra/backend-log.js';

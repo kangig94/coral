@@ -1,5 +1,5 @@
 import type { AppendedEvent } from '../../store/append.js';
-import type { CoralEventInput } from '../../store/index.js';
+import type { CoralEventInput } from '../../store/envelope.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
 import type {
   CauseRef,

@@ -1,6 +1,6 @@
-import type { BuildFlavor } from '../runtime/flavor.js';
-import type { StorePaths } from '../store/paths.js';
-import { storePaths } from '../store/paths.js';
+import type { BuildFlavor } from './build-flavor.js';
+import type { StorePaths } from './store-paths.js';
+import { storePaths } from './store-paths.js';
 import type { CorpusPaths } from './corpus-paths.js';
 import { corpusPaths } from './corpus-paths.js';
 import type { CoordinatorPaths } from './coordinator-paths.js';

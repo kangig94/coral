@@ -10,7 +10,7 @@ import {
   type SerializedCoralSetupError,
 } from '#src/runtime/errors.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
-import type { HttpHandlerPorts } from '#src/transport/http/contracts.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { createHttpHandler, sendJson } from '#src/transport/http/handler.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';

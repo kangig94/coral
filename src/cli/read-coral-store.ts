@@ -5,10 +5,11 @@ import { existsSync } from 'node:fs';
 import { pluginRootNamespace } from '../infra/paths.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
-import { CoralStore, openStoreDatabase } from '../store/index.js';
+import { CoralStore } from '../read-model/coral-store.js';
+import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
-import { storePaths } from '../store/paths.js';
-import { createDefaultStoreReadContext } from '../store/read-context.js';
+import { storePaths } from '../infra/store-paths.js';
+import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 
 export type ReadCoralStoreHandle = {
   store: CoralStore;

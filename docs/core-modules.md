@@ -7,12 +7,12 @@ A high-level map of what each area of the codebase is for. This document describ
 | Entry | Bundle | Role |
 | --- | --- | --- |
 | Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain facades, lifecycle, and IPC/HTTP transport routes. |
-| CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
+| CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
 | Claude appserver helper | `bridge/coral-claude-appserver.cjs` | Runtime for the Claude appserver-hosted provider lane. |
 
 ## CLI and Client
 
-The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel.
+The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `read-model/CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel.
 
 ## Backend
 
@@ -24,7 +24,7 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 
 ## Journal
 
-The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, and projection-reducer dispatch primitives backed by SQLite in WAL mode. The read surface is publicly exported; write primitives stay internal to the substrate. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
 
 ## Domains
 
@@ -67,7 +67,7 @@ Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross
 CLI
   -> client helpers
      -> transport IPC/HTTP routes
-  -> CoralStore library reads (read-only no-coordinator commands)
+  -> read-model/CoralStore library reads (read-only no-coordinator commands)
 
 transport IPC/HTTP routes
   -> coordinator API + control ports
@@ -107,7 +107,7 @@ These are the load-bearing boundaries that must not leak:
 
 - The Runtime interface is the only channel for I/O inside the backend.
 - Each domain facade is the only coordinator-facing surface for its domain.
-- The Journal read surface (`CoralStore`) is publicly exported; write primitives are internal.
+- `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.

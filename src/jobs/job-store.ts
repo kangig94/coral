@@ -5,9 +5,9 @@ import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEve
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
-import { storePaths } from '../store/paths.js';
+import { storePaths } from '../infra/store-paths.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
-import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
+import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read/queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
 import { ensureResultMarkdownArtifact } from './exports/result-markdown.js';

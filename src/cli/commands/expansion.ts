@@ -12,6 +12,7 @@ import {
 } from '../../expansion/contracts.js';
 import { encodeInstallError } from '../../expansion/errors.js';
 import * as workflow from '../../expansion/workflow.js';
+import { createCliExpansionActivation } from '../expansion-activation.js';
 
 const EXPANSION_COMMAND_NAME = 'expansion';
 
@@ -122,6 +123,7 @@ export function handleExpansionCommanderFailure(
 
 export function registerExpansionCommands(program: Command): void {
   const expansion = program.command(EXPANSION_COMMAND_NAME).description('Manage expansion packages');
+  const workflowOptions = () => ({ activation: createCliExpansionActivation() });
   expansion.configureOutput({
     writeErr: () => {},
   });
@@ -130,7 +132,7 @@ export function registerExpansionCommands(program: Command): void {
     .command('list')
     .description('List installed and available expansions')
     .action(async () => {
-      await runExpansionCommand({}, expansionArgsSchema, async () => workflow.list());
+      await runExpansionCommand({}, expansionArgsSchema, async () => workflow.list(workflowOptions()));
     });
 
   expansion
@@ -138,7 +140,7 @@ export function registerExpansionCommands(program: Command): void {
     .description('Install or activate an expansion')
     .action(async (name: string) => {
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        workflow.equip(parsedName),
+        workflow.equip(parsedName, workflowOptions()),
       );
     });
 
@@ -147,7 +149,7 @@ export function registerExpansionCommands(program: Command): void {
     .description('Deactivate and uninstall an expansion')
     .action(async (name: string) => {
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        workflow.unequip(parsedName),
+        workflow.unequip(parsedName, workflowOptions()),
       );
     });
 
@@ -156,7 +158,7 @@ export function registerExpansionCommands(program: Command): void {
     .description('Update an installed expansion')
     .action(async (name: string) => {
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        workflow.update(parsedName),
+        workflow.update(parsedName, workflowOptions()),
       );
     });
 
@@ -165,7 +167,7 @@ export function registerExpansionCommands(program: Command): void {
     .description('Show expansion metadata and install state')
     .action(async (name: string) => {
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        workflow.info(parsedName),
+        workflow.info(parsedName, workflowOptions()),
       );
     });
 }

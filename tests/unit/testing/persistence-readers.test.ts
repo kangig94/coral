@@ -7,7 +7,7 @@ import { currentBuildFlavor } from '#src/infra/paths.js';
 import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { storePaths } from '#src/store/paths.js';
+import { storePaths } from '#src/infra/store-paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const originalHome = process.env.HOME;

@@ -53,7 +53,7 @@ async function loadModules() {
     import('#src/coordinator/event-bus.js'),
     import('#src/infra/paths.js'),
     import('#src/sessions/lookup.js'),
-    import('#src/store/queries/sessions.js'),
+    import('#src/sessions/read-queries.js'),
     import('#src/providers/registry.js'),
   ]);
 

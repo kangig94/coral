@@ -36,8 +36,8 @@ function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
   return typeof paths.pluginRootNamespace === 'function' ? paths.pluginRootNamespace(pluginRoot) : pluginRootNamespace(pluginRoot);
 }
-import { readDiscussEventLog } from '#src/store/queries/discuss.js';
-import { createDefaultStoreReadContext } from '#src/store/read-context.js';
+import { readDiscussEventLog } from '#src/discuss/read-queries.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';

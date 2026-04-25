@@ -3,7 +3,6 @@ import { describe, it, expect } from 'vitest';
 import * as storeBarrel from '#src/store/index.js';
 
 const ALLOWED_VALUE_EXPORTS = new Set([
-  'CoralStore',
   'openStoreDatabase',
   'applyStoreSchemas',
   'journalEventEnvelopeSchema',
