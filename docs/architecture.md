@@ -183,7 +183,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
 | Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
 | Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |
-| Causality | Cross-stream event-reference vocabulary (`CauseRef`) shared below jobs/sessions/workflow without store access. |
+| Causality | Cross-stream event-reference vocabulary (`CauseRef`) shared below jobs/sessions/discuss/workflow without store access. |
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
 | Knowledge base | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers. |

@@ -34,7 +34,7 @@ The persisted snapshot has two facets:
 
 ## Event Flow
 
-Domain events are defined in `src/discuss/events.ts`.
+Domain events and their strict Journal body schemas are defined in `src/discuss/events.ts`; `src/discuss/store-registry.ts` registers one schema per `discuss.*` event type.
 
 | Group | Events |
 | --- | --- |
@@ -43,6 +43,8 @@ Domain events are defined in `src/discuss/events.ts`.
 | Speech / epoch | `speech.recorded`, `speech.timed_out`, `epoch.summary.recorded` |
 | Follow-up | `must_answer.carry_forward.set`, `follow_up.queue.set`, `follow_up.answered` |
 | Recovery | `agent.run.bound`, `agent.job.started`, `agent.job.finished` |
+
+`agent.job.finished` is the discuss-owned operational outcome event for provider/facilitator attempts. Outcomes include `completed`, `non_resumable`, `execution_error`, `recovery_failed`, `recovery_missing`, and `retryable_parse_error`; cause-ref rendering uses `src/discuss/event-describers.ts` through the read-model describer composition.
 
 Runtime flow:
 

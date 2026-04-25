@@ -1,30 +1,13 @@
-import { z } from 'zod';
-
 import type { CoralEventInput } from '../store/envelope.js';
 import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
 import { reduceDiscussProjection } from './projections.js';
 import {
   discussEventKinds,
+  discussEventBodySchemas,
+  discussEventType,
   type DiscussDomainEvent,
-  type DiscussEventEnvelope,
-  type DiscussEventKind,
+  type DiscussJournalBody,
 } from './events.js';
-
-export type DiscussJournalBody<K extends DiscussEventKind = DiscussEventKind> =
-  DiscussEventEnvelope<K, unknown>['payload'] & {
-    sourceSeq: number;
-  };
-
-const discussJournalBodySchema = z
-  .object({
-    sourceSeq: z.number().int().positive(),
-  })
-  // Preserve the live discuss payload contract while Journal ownership stays additive.
-  .passthrough();
-
-function eventType(kind: DiscussEventKind): string {
-  return `discuss.${kind}`;
-}
 
 export function toJournalInput(
   domainEvent: DiscussDomainEvent,
@@ -35,7 +18,7 @@ export function toJournalInput(
   } = {},
 ): CoralEventInput<DiscussJournalBody> {
   return {
-    type: eventType(domainEvent.kind),
+    type: discussEventType(domainEvent.kind),
     stream: {
       kind: 'discuss',
       id: domainEvent.sessionId,
@@ -59,8 +42,8 @@ export function toJournalInput(
 export const discussRegistry: DomainEventRegistry = {
   entries: discussEventKinds.map((kind) =>
     defineDomainEvent({
-      type: eventType(kind),
-      schema: discussJournalBodySchema,
+      type: discussEventType(kind),
+      schema: discussEventBodySchemas[kind],
       reducer: reduceDiscussProjection,
     }),
   ),

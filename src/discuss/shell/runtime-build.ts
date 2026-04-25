@@ -1,4 +1,10 @@
-import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../events.js';
+import {
+  makeEvent,
+  type DiscussAgentJobOutcome,
+  type DiscussAgentJobPurpose,
+  type PersistedDiscussAgentRun,
+  type SessionCreatedAgentExecutionConfig,
+} from '../events.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
@@ -9,7 +15,7 @@ import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type { AgentConfig, DiscussContext } from './context.js';
 
 export const DEFAULT_DISCUSS_PROVIDER = 'claude';
-const RETRYABLE_ATTEMPT_OUTCOMES = new Set([
+const RETRYABLE_ATTEMPT_OUTCOMES = new Set<DiscussAgentJobOutcome>([
   'execution_error',
   'recovery_failed',
   'recovery_missing',
@@ -20,18 +26,13 @@ export const CONTINUE_TURN_INSTRUCTION =
   'You are participating in a backend-managed multi-agent discussion. Follow the prompt exactly and return only the requested format.';
 export const FOLLOW_UP_TURN_INSTRUCTION =
   'You are answering a moderator follow-up in an ongoing discussion. Respond with the answer text only. Do not use markdown or code fences.';
-export const PURPOSE_BID = 'bid';
-export const PURPOSE_SPEECH = 'speech';
-export const PURPOSE_EPOCH_EVALUATION = 'epoch_evaluation';
-export const PURPOSE_FOLLOW_UP = 'follow_up';
-export const PURPOSE_SYNTHESIS = 'synthesis';
+export const PURPOSE_BID: DiscussAgentJobPurpose = 'bid';
+export const PURPOSE_SPEECH: DiscussAgentJobPurpose = 'speech';
+export const PURPOSE_EPOCH_EVALUATION: DiscussAgentJobPurpose = 'epoch_evaluation';
+export const PURPOSE_FOLLOW_UP: DiscussAgentJobPurpose = 'follow_up';
+export const PURPOSE_SYNTHESIS: DiscussAgentJobPurpose = 'synthesis';
 
-export type DiscussPurpose =
-  | typeof PURPOSE_BID
-  | typeof PURPOSE_SPEECH
-  | typeof PURPOSE_EPOCH_EVALUATION
-  | typeof PURPOSE_FOLLOW_UP
-  | typeof PURPOSE_SYNTHESIS;
+export type DiscussPurpose = DiscussAgentJobPurpose;
 
 export type AttemptSuccess = {
   ok: true;
@@ -80,7 +81,7 @@ export type RecordJobFinishedParams = {
   purpose: DiscussPurpose;
   jobId: string;
   attempt: number;
-  outcome: string;
+  outcome: DiscussAgentJobOutcome;
 };
 
 type FacilitatorRun = {
@@ -89,7 +90,7 @@ type FacilitatorRun = {
   model?: string;
 };
 
-function isRetryableAttemptOutcome(outcome: string | undefined): boolean {
+function isRetryableAttemptOutcome(outcome: DiscussAgentJobOutcome | undefined): boolean {
   return outcome !== undefined && RETRYABLE_ATTEMPT_OUTCOMES.has(outcome);
 }
 

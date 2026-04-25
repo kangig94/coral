@@ -127,6 +127,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     consumerDriver = new ConsumerDriver({
       db: getStoreDb(),
       now: () => nowDate(runtime.time),
+      time: runtime.time,
     });
     return consumerDriver;
   };

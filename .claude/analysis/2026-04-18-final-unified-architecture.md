@@ -911,7 +911,7 @@ Three variants. All three represent failures of the **coordinator's own wrapper 
 - `launch_rejected` — `job.launch.rejected` event on the job's own stream; `job.terminal.recorded` on the same stream uses `failed { causeRef }` pointing backward to the rejected event (self-stream causeRef is fine and common).
 - `app_server_interrupted` — `session.interrupted` event on the `session/<id>` stream; job terminal uses `failed { causeRef }`.
 - `adapter_output_unparseable`, `provider_session_unavailable`, `provider_request_failed` — each emitted on the `session/<id>` stream as `session.adapter_unparseable`, `session.provider_failed`, etc. Job terminal uses `failed { causeRef }`.
-- `kb_operation_failed` — replaced by `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail }` on the **hosting job's own stream** (slow KB attempts such as source import, or KB work performed inside an already-running job); job terminal uses `failed { causeRef }` pointing self-stream to that progress event. KB is not a Journal stream (§5.5, §6.4). `discuss_moderator_failed`, etc. — replaced by `discuss.moderator.failed` on `discuss/<id>`; job terminal uses `failed { causeRef }`.
+- `kb_operation_failed` — replaced by `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail }` on the **hosting job's own stream** (slow KB attempts such as source import, or KB work performed inside an already-running job); job terminal uses `failed { causeRef }` pointing self-stream to that progress event. KB is not a Journal stream (§5.5, §6.4). Discuss provider/facilitator attempts record their operational outcome as `discuss.agent.job.finished` on `discuss/<id>`; any external terminal that needs to explain a discuss-origin failure points at that event with `causeRef`.
 
 The **composable union with domain-owned variants** was itself residue — ADT-shaped thinking on top of journal-native causal references. A journal already gives us stream+seq as durable identities; wrapping each fault kind into a union was reinventing pointers as enums.
 
@@ -928,8 +928,7 @@ job/<id>                  job.progress.emitted             { message, stage?, de
 session/<id>              session.interrupted              { trigger, continuity }
 session/<id>              session.provider_failed          { provider, reason, message }
 session/<id>              session.adapter_unparseable      { provider, stdout, stderr, parseError }
-discuss/<id>              discuss.moderator.failed         { cause }
-discuss/<id>              discuss.synthesis.failed         { cause }
+discuss/<id>              discuss.agent.job.finished       { agent, jobId, outcome, attempt }
 workflow/<id>             workflow.completed               { outcome: 'failed' | 'aborted', causeRef? }
 ```
 
@@ -951,12 +950,13 @@ export const jobsEventDescribers: EventDescriberMap = new Map([
   ['job:job.terminal.recorded', (e) => describeTerminalOutcome(e.body.terminal.outcome, ...)],
   // ... one describer per job event type
 ]);
-// (sessions/event-describers.ts and workflow/event-describers.ts follow the same shape.)
+// (sessions/event-describers.ts, discuss/event-describers.ts, and workflow/event-describers.ts follow the same shape.)
 
 // src/read-model/event-describers.ts — composition site joins the domain maps.
 export const defaultEventDescribers: EventDescriberMap = new Map([
   ...jobsEventDescribers,
   ...sessionsEventDescribers,
+  ...discussEventDescribers,
   ...workflowEventDescribers,
 ]);
 ```
@@ -976,7 +976,7 @@ Each fault-bearing event type has one producer:
 | `session.interrupted` | `session/<id>` | `coordinator/live/provider-hosts.ts` |
 | `session.provider_failed` | `session/<id>` | provider leaf kernel |
 | `session.adapter_unparseable` | `session/<id>` | `providers/middleware/adapter-parse-guard.ts` |
-| `discuss.moderator.failed`, `discuss.synthesis.failed` | `discuss/<id>` | `discuss/shell/` |
+| `discuss.agent.job.finished` (failed/recovery outcomes) | `discuss/<id>` | `discuss/shell/` |
 | `workflow.completed { outcome: 'failed' | 'aborted' }` | `workflow/<id>` | `workflow/executor.ts` |
 | `job.terminal.recorded { outcome: { kind: 'job_fault', ... } }` | `job/<id>` | `jobs/reconcile/` (for ghost/lost) or job wrapper (for crashed) |
 
@@ -1347,7 +1347,7 @@ src/
       events.ts                      — raw event lookup by (stream, seq) for causeRef deref
 
   causality/                         ← cross-domain event-reference vocabulary
-    cause-ref.ts                     — cross-stream causeRef schema below jobs/sessions/workflow
+    cause-ref.ts                     — cross-stream causeRef schema below jobs/sessions/discuss/workflow
     render.ts                        — cause-ref renderer (chain walk + dispatcher); imports no domain.
                                        Domains inject their describers via EventDescriberMap; composition
                                        happens at read-model layer.
@@ -1465,10 +1465,11 @@ src/
     shell/
       store.ts                       — session store helpers
 
-  discuss/                           ← unchanged domain core; template
+  discuss/                           ← event-sourced discussion domain
     state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
     consumer.ts                      — Journal projection consumer registration for discuss
-    store-registry.ts                — discuss DomainEventRegistry (per-kind entries)
+    store-registry.ts                — discuss DomainEventRegistry (per-kind strict body schemas)
+    event-describers.ts              — per-event-type describer map for `discuss:*` events
     recovery-contract.ts             — shell-free live-boundary predicate
     shell/                           — imperative shell (moved from execution/discuss/)
       recovery.ts                    — recovered resume contract + startup recovery + shutdown abort persistence

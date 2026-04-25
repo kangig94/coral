@@ -2,43 +2,49 @@
 
 ## Core Principles
 
-1. **Graceful Degradation**: If Codex CLI is unavailable, return a clear error message with installation instructions. If a session file is corrupt, skip it with a warning and continue loading valid sessions.
+1. **Clean-Slate Ownership**: The rewrite branch does not preserve legacy paths, aliases, compatibility shims, or transitional facades for convenience. If ownership moves, the old path is deleted and guarded by invariants.
 
-2. **Atomic Persistence**: Session files are written to `.tmp` then renamed. This prevents partial writes from corrupting session state on crash or timeout.
+2. **One Coordinator, Two Authorities**: The coordinator owns live orchestration and recovery. The Journal owns process-like event truth. The Corpus owns KB markdown content. Derived projections and equipment state are rebuildable consumers, not authority.
 
-3. **Node.js ESM Hooks**: Hook scripts are Node.js ESM modules (`.mjs`). They read event JSON from stdin, write `hookSpecificOutput` JSON to stdout when active, and exit 0 on no-op. All hooks fail-open: any unhandled error exits silently to avoid blocking Claude Code.
+3. **Functional Core / Imperative Shell**: Domains own pure event vocabulary, reducers, read contracts, and shell-local orchestration. Cross-domain assembly happens only through coordinator composition and explicit owner contracts.
+
+4. **Single Runtime World**: Backend I/O flows through the Runtime ports selected at composition. Domains and coordinator services receive time, storage, paths, process, ids, and env through ports instead of reading ambient state.
+
+5. **Causal Faults**: Failure truth lives once on the originating stream. Job terminals point with `causeRef`; they do not wrap domain fault payloads. `JobLifecycleFault` is reserved for wrapper-local failures with no originating domain event.
+
+6. **Hooks Stay Self-Contained**: Hook scripts are Node.js ESM modules. They read stdin, write `hookSpecificOutput` when active, fail open, and never import from `src/`.
 
 ## Source Tree Policy
 
-| Area | Layer | Modification Rule |
-|------|-------|-------------------|
-| CLI | L2 | Commander-based CLI client. Changes affect CLI subcommands, not backend logic. |
-| Backend composition | L1 | Persistent daemon bootstrap. Phase 3 splits this into coordinator-owned lifecycle/composition and transport-owned HTTP/SSE wiring. New domain logic does not land here — it lives in its owning domain. |
-| Domain layers (jobs / sessions / discuss / workflow) | L0 | Each domain owns its contract (events, projection, read-models), its functional core (pure state transitions), its imperative shell (I/O and orchestration), and its coordinator-facing facade. Domains do not import each other; cross-domain composition happens at the backend layer. Narrow Phase 6 exception: jobs-shell may import coordinator glue at `src/coordinator/services/continuity-consumer.ts` for stream-consumption coordination. This is a one-way jobs-shell -> coordinator-glue seam, not general permission for domains to depend on coordinator services. |
-| Provider adapters | L0 | Pluggable adapters for external CLIs. Adapter-level changes must preserve wire-compatibility with the adapted provider. |
-| Journal substrate | L0 | SQLite-backed event log with append / rebuild / envelope / upcaster / projection-dispatch primitives. The read surface is publicly exported; write primitives stay internal. |
-| Runtime | L0 | A single Runtime world with six I/O subports (time / storage / paths / process / ids / env). The backend swaps the entire world once at composition; everything routes I/O through it. |
-| Simulation | L0 | Deterministic doubles used by tests — virtual time, sequential ids, in-memory storage. |
-| Coordinator | L0 | Process lifecycle, startup reconcile sequencing, Journal consumer driving, corpus notify publication, provider-host coordination, and cross-domain assembly. Coordinator glue modules (`src/coordinator/api.ts`, `src/coordinator/bootstrap.ts`, `src/coordinator/composition/**`, and the single `src/coordinator/coordinator.ts` construction block that wires `EquipmentLifecycleService.removeInstallArtifacts`) may assemble domain shells/contracts; non-glue coordinator files stay on coordinator/store/runtime/infra/api seams. `src/execution/` no longer exists. |
-| Transport | L0 | HTTP + SSE parsing, validation, and wire formatting. Transport depends on domain/coordinator contracts, not on domain shells. |
-| KB | L0 | Knowledge base search, indexing, and mutation. |
-| Shared / infra / client | L0 | Cross-cutting helpers, path resolution, and the public client barrel. Renamed compat bridges live in the shared layer with explicit retirement phases. |
-| Agents / skills | — | Claude-native agent definitions and slash-command skills. |
-| Hooks | — | Node.js ESM hooks. Timeout-safe, fail-open. Must not import from `src/` — hooks run without a build step and stay self-contained. |
-| Bridge | — | Bundled build artifacts. Generated by the build — do not edit directly. |
-| Docs | — | Architecture and module documentation. Update when the architecture or API surface changes; do not duplicate source artifacts. |
+| Area | Responsibility | Modification Rule |
+|------|----------------|-------------------|
+| CLI | User command parsing, local startup glue, output formatting | No backend/domain truth. Mutating and live commands go through IPC; no-coordinator reads use explicit read surfaces. |
+| Backend composition | Daemon bootstrap | Wires runtime ports, coordinator services, domain owner modules, and transport. New domain behavior does not land here. |
+| Domains (`jobs` / `sessions` / `discuss` / `workflow`) | Domain event vocabulary, schemas, reducers, read contracts, and imperative shells | Domains expose explicit owner modules/contracts. Avoid `api.ts` barrels and compatibility facades. |
+| Provider adapters | External CLI/appserver protocol adaptation | Preserve provider wire semantics while staying on canonical domain types. |
+| Journal / store | SQLite schema, append, rebuild, envelope decode, upcasters, projection dispatch | Store runs composed domain validators; it does not own product read APIs or domain policy. |
+| Read model | Product read facade and cause-ref describer composition | No writes, no recovery, no ambient root selection. |
+| Causality | `CauseRef` vocabulary and renderer walk | No store access and no domain imports; domains inject describers through read-model composition. |
+| Runtime / infra | Low-level paths, flavor, I/O ports, JSON/error/text helpers | No domain concepts and no dumping ground for owner-specific helpers. |
+| Coordinator | Lifecycle, startup ordering, ConsumerDriver freshness, equipment slots, provider-host coordination, coordinator-owned KB jobs | The only layer allowed to compose multiple domains and transport at once. It must not own domain vocabulary. |
+| Transport | IPC + HTTP/SSE parsing, validation, response mapping | Carriage only. Depends on coordinator/domain contracts, not domain shells. |
+| KB | Corpus authority, query semantics, source/memo/note operations, retrieval backend contracts | Does not own coordinator equipment slot assignment. |
+| Agents / skills | Claude-native agent definitions and slash-command skills | Invoke CLI surfaces rather than backend internals. |
+| Bridge | Generated build artifacts | Do not edit directly. |
+| Docs | Architecture and module documentation | Update together with ownership, API, or behavior changes. |
 
 Key rules:
-1. Layer dependency: code in Lx may only depend on L0..L(x-1).
-2. L0 modules never import from L1 or L2 entrypoints.
-3. Public consumer barrels may bridge layer boundaries with type-only imports; layering must hold at runtime.
+
+1. Deleted legacy paths stay deleted; do not recreate retired barrels, `src/shared`, `src/client`, or compatibility shims.
+2. Lower-level modules do not import entrypoints or composition roots.
+3. Cross-domain dependencies must be explicit contracts or coordinator composition, not convenience imports.
+4. Domain event schemas, reducers, append validators, and describers are owned by the domain that emits the event.
+5. Tests and simulation helpers live under `tests/` or `tools/testing/`, never under production `src/`.
 
 ## Module Structure
 
-Dependency direction is strict: the backend daemon has a single composition root; the CLI has its own entry point; plugin skills and hooks invoke CLI surfaces rather than backend internals directly. Lower modules never import from upper modules.
+The backend has one composition root; the CLI has its own entry point; plugin skills and hooks invoke CLI surfaces. The coordinator may assemble domain shells and contracts, but domains do not import coordinator implementation modules.
 
-The backend follows a **single Runtime world** pattern (FoundationDB-style): one Runtime interface with a fixed set of I/O subports, swapped exactly once at composition. Every I/O-touching module routes through it. A deterministic Runtime implementation covers the simulation lane.
+Each domain follows the same shape: event contracts, reducer/projection logic, read contracts, and shell modules for I/O. Shared vocabulary that truly crosses domains lives in a lower owner such as `causality/`, `runtime/`, `store/`, or `infra/`; otherwise it stays with the domain that owns the behavior.
 
-Each **domain** follows a **Functional Core / Imperative Shell** pattern: the core is pure state transitions with zero I/O; the shell carries persistence, loop control, and external effects. Recovery pipelines follow the same pattern — a pure plan-producer feeds an imperative applier at the backend composition layer.
-
-Facade boundaries are explicit. Each domain exposes a single coordinator-facing surface — typically a commands / queries / reconcile trio — and coordinator glue (`src/coordinator/api.ts`, `src/coordinator/bootstrap.ts`, `src/coordinator/composition/**`, plus the single `src/coordinator/coordinator.ts` construction block that wires `EquipmentLifecycleService.removeInstallArtifacts`) is the only caller allowed to cross the domain boundary. Renamed `Legacy*` compat types bridge the provider seam until the matching phase retires them.
+Cause-ref rendering is deliberately split: `causality/` owns the walk and cycle/missing diagnostics, each domain owns its event describer map, and `read-model/event-describers.ts` composes the default map. Adding a domain fault event means adding a domain event schema and domain describer, not editing a central fault union.

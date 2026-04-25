@@ -3,6 +3,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contracts.js';
 import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
+import type { RuntimeTimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
@@ -35,6 +36,17 @@ export class FreshnessTimeout extends Error {
 }
 
 export type Authority = 'journal' | 'corpus';
+
+type ConsumerDriverTimers = Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+
+const SYSTEM_CONSUMER_DRIVER_TIMERS: ConsumerDriverTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => {
+    if (handle !== null) {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    }
+  },
+};
 
 export type ConsumerHandleStatus =
   | {
@@ -91,7 +103,7 @@ interface Waiter {
   target: number | KbCorpusSnapshot;
   resolve: () => void;
   reject: (err: Error) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
+  timeoutHandle: RuntimeTimerHandle;
   settled: boolean;
 }
 
@@ -131,6 +143,7 @@ interface CorpusCursorRow {
 export interface ConsumerDriverOptions {
   readonly db: BetterSqlite3.Database;
   readonly now?: () => Date;
+  readonly time?: ConsumerDriverTimers;
 }
 
 export interface UnregisterStoppedConsumerOptions {
@@ -140,6 +153,7 @@ export interface UnregisterStoppedConsumerOptions {
 export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
+  private readonly timers: ConsumerDriverTimers;
   private readonly consumers = new Map<string, ConsumerState>();
   private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], CursorMetadataRow>;
   private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<
@@ -166,6 +180,7 @@ export class ConsumerDriver {
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
     this.now = opts.now ?? (() => nowDate());
+    this.timers = opts.time ?? SYSTEM_CONSUMER_DRIVER_TIMERS;
     this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
       'SELECT authority, lane, corpus_interest, registration_kind FROM equipment_cursors WHERE consumer_id = ?',
     );
@@ -387,7 +402,7 @@ export class ConsumerDriver {
         target,
         resolve,
         reject,
-        timeoutHandle: setTimeout(() => {
+        timeoutHandle: this.timers.setTimeout(() => {
           if (waiter.settled) {
             return;
           }
@@ -821,7 +836,7 @@ export class ConsumerDriver {
       }
 
       waiter.settled = true;
-      clearTimeout(waiter.timeoutHandle);
+      this.timers.clearTimeout(waiter.timeoutHandle);
       state.waiters.delete(waiter);
       waiter.reject(err);
     }
@@ -852,7 +867,7 @@ export class ConsumerDriver {
 
       waiter.settled = true;
       state.waiters.delete(waiter);
-      clearTimeout(waiter.timeoutHandle);
+      this.timers.clearTimeout(waiter.timeoutHandle);
       waiter.resolve();
     }
   }

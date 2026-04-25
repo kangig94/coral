@@ -133,3 +133,21 @@ describe('cause-ref session rendering (AC2)', () => {
     ).toBe('App-server restarted during the turn; continuity unavailable.');
   });
 });
+
+describe('cause-ref discuss rendering', () => {
+  it('renders discuss-owned agent job outcomes from the default describer composition', () => {
+    expect(
+      renderRootEventDescription({
+        type: 'discuss.agent.job.finished',
+        stream: { kind: 'discuss', id: 'discuss-1' },
+        body: {
+          agent: 'alpha',
+          jobId: 'job-1',
+          outcome: 'retryable_parse_error',
+          attempt: 2,
+          sourceSeq: 7,
+        },
+      }),
+    ).toBe('Discuss agent alpha job job-1 failed with retryable parse error (attempt 2).');
+  });
+});

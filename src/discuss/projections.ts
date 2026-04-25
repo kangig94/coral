@@ -10,7 +10,7 @@ import type {
   DiscussControlView,
 } from './view-types.js';
 import type { WatchEvent } from './watch.js';
-import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
+import { discussKindFromEventType, type DiscussDomainEvent, type DiscussJournalBody, type PersistedDiscussSnapshot } from './events.js';
 import type { TranscriptEntry } from './session-types.js';
 
 type ProjectionDiscussRow = {
@@ -18,9 +18,7 @@ type ProjectionDiscussRow = {
   lastSeq: number;
 };
 
-type DiscussProjectionBody = Record<string, unknown> & {
-  sourceSeq: number;
-};
+type DiscussProjectionBody = DiscussJournalBody;
 
 export function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscussRow | null {
   const row = db
@@ -84,6 +82,10 @@ function toDiscussDomainEvent(
   previous: PersistedDiscussSnapshot | null,
 ): DiscussDomainEvent {
   const { sourceSeq, ...payload } = event.body;
+  const kind = discussKindFromEventType(event.type);
+  if (kind === null) {
+    throw new Error(`Unknown discuss event type '${event.type}'.`);
+  }
 
   return {
     v: 1,
@@ -91,7 +93,7 @@ function toDiscussDomainEvent(
     projectRoot: event.project ?? previous?.projectRoot ?? '',
     topic: topicForEvent(event, previous),
     seq: sourceSeq,
-    kind: event.type.slice('discuss.'.length) as DiscussDomainEvent['kind'],
+    kind,
     ts: event.ts,
     payload,
   } as DiscussDomainEvent;

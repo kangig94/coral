@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { RuntimeTimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver, FreshnessTimeout, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -91,6 +91,36 @@ describe('ConsumerDriver waitFreshUntil', () => {
 
       await waitPromise;
       await driver.drainAll();
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('uses the injected timer port for waitFreshUntil timeouts', async () => {
+    const db = createDb();
+    const timerHandle: RuntimeTimerHandle = {};
+    const timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = {
+      setTimeout: vi.fn(() => timerHandle),
+      clearTimeout: vi.fn(),
+    };
+    const driver = new ConsumerDriver({ db, time: timers });
+    const consumerId = 'journal-consumer';
+    driver.register({
+      id: consumerId,
+      authority: 'journal',
+      apply: async () => {},
+    });
+
+    try {
+      const waitPromise = driver.waitFreshUntil('journal', 5, consumerId, 1234);
+
+      expect(timers.setTimeout).toHaveBeenCalledWith(expect.any(Function), 1234);
+
+      driver.notify('journal', 5);
+      await waitPromise;
+
+      expect(timers.clearTimeout).toHaveBeenCalledWith(timerHandle);
     } finally {
       await driver.shutdown();
       db.close();
