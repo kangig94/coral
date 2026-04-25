@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { truncate } from '../infra/format-progress.js';
+import { truncate } from '../infra/text.js';
 import type { PipelineAST } from './ast.js';
 
 export type PlanSlot = {

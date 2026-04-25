@@ -2,55 +2,55 @@
 // composed by `read-model/event-describers.ts` into the default
 // `EventDescriberMap` consumed by `causality/render.ts`.
 
-import type { EventDescriber, EventDescriberMap } from '../causality/render.js';
-import { isRecord } from '../infra/json.js';
+import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
+import {
+  jobAbortedBodySchema,
+  jobProgressBodySchema,
+  jobQueueAdmittedBodySchema,
+  jobQueueQueuedBodySchema,
+  jobRuntimeStartedBodySchema,
+  jobTerminalRecordedBodySchema,
+} from './events.js';
+import { jobLaunchRequestBodySchema } from './launch.js';
 import {
   describeJobDomainProgress,
   describeJobProgressFault,
   describeLaunchRejected,
   describeTerminalOutcome,
+  jobLaunchRejectedSchema,
 } from './outcome.js';
 
-const launchRequested: EventDescriber = () => 'Job launch requested.';
+const launchRequested = typedDescriber(jobLaunchRequestBodySchema, () => 'Job launch requested.');
 
-const launchRejected: EventDescriber = (event) =>
-  isRecord(event.body)
-    ? describeLaunchRejected(event.body as Parameters<typeof describeLaunchRejected>[0])
-    : 'Job launch rejected.';
+const launchRejected = typedDescriber(jobLaunchRejectedSchema, (body) => describeLaunchRejected(body));
 
-const queueQueued: EventDescriber = (event) =>
-  isRecord(event.body) && typeof event.body.queuePosition === 'number'
-    ? `Job queued at position ${event.body.queuePosition}.`
-    : 'Job queued.';
+const queueQueued = typedDescriber(jobQueueQueuedBodySchema, (body) => `Job queued at position ${body.queuePosition}.`);
 
-const queueAdmitted: EventDescriber = () => 'Job admitted for launch.';
+const queueAdmitted = typedDescriber(jobQueueAdmittedBodySchema, () => 'Job admitted for launch.');
 
-const runtimeStarted: EventDescriber = () => 'Job runtime started.';
+const runtimeStarted = typedDescriber(jobRuntimeStartedBodySchema, () => 'Job runtime started.');
 
-const progressEmitted: EventDescriber = (event) => {
-  if (!isRecord(event.body)) return 'Job progress emitted.';
-  if (event.body.kind === 'message' && typeof event.body.message === 'string') return event.body.message;
-  if (event.body.kind === 'domain' && typeof event.body.message === 'string') {
-    return describeJobDomainProgress(event.body as Parameters<typeof describeJobDomainProgress>[0]);
+const progressEmitted = typedDescriber(jobProgressBodySchema, (body) => {
+  switch (body.kind) {
+    case 'message':
+      return body.message;
+    case 'domain':
+      return describeJobDomainProgress(body);
+    case 'missing_launch_record':
+    case 'recovery_parse_failed':
+      return describeJobProgressFault(body);
   }
-  return describeJobProgressFault(event.body as Parameters<typeof describeJobProgressFault>[0]);
-};
+});
 
-const terminalRecorded: EventDescriber = (event) => {
-  if (!isRecord(event.body) || !isRecord(event.body.terminal) || !isRecord(event.body.terminal.outcome)) {
-    return 'Job terminal recorded.';
-  }
+const terminalRecorded = typedDescriber(jobTerminalRecordedBodySchema, (body) =>
   // Causality recurses on the next causeRef via extractCauseRef; here we
   // render only the local terminal sentence with a stable causeRef sketch.
-  return describeTerminalOutcome(event.body.terminal.outcome as Parameters<typeof describeTerminalOutcome>[0], {
+  describeTerminalOutcome(body.terminal.outcome, {
     describeCauseRef: (ref) => `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`,
-  });
-};
+  }),
+);
 
-const aborted: EventDescriber = (event) =>
-  isRecord(event.body) && typeof event.body.reason === 'string'
-    ? `Job aborted: ${event.body.reason}.`
-    : 'Job aborted.';
+const aborted = typedDescriber(jobAbortedBodySchema, (body) => `Job aborted: ${body.reason}.`);
 
 export const jobsEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['job:job.launch.requested', launchRequested],

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { assertNever } from '../infra/error-format.js';
-import { ensureSentence } from '../infra/format-progress.js';
+import { ensureSentence } from '../infra/text.js';
 import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 

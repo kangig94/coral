@@ -2,19 +2,17 @@
 // domain and composed into the default `EventDescriberMap` by
 // `read-model/event-describers.ts`.
 
-import type { EventDescriber, EventDescriberMap } from '../causality/render.js';
-import { isRecord } from '../infra/json.js';
+import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
+import {
+  workflowCompletedBodySchema,
+  workflowDrainEnteredBodySchema,
+} from './events.js';
+import { workflowPlanSchema } from './plan.js';
 
-const planDeclared: EventDescriber = () => 'Workflow plan declared.';
-const planRevised: EventDescriber = () => 'Workflow plan revised.';
-const drainEntered: EventDescriber = () => 'Workflow entered failure drain.';
-
-const completed: EventDescriber = (event) => {
-  if (isRecord(event.body) && typeof event.body.outcome === 'string') {
-    return `Workflow ${event.body.outcome}.`;
-  }
-  return 'Workflow completed.';
-};
+const planDeclared = typedDescriber(workflowPlanSchema, () => 'Workflow plan declared.');
+const planRevised = typedDescriber(workflowPlanSchema, () => 'Workflow plan revised.');
+const drainEntered = typedDescriber(workflowDrainEnteredBodySchema, () => 'Workflow entered failure drain.');
+const completed = typedDescriber(workflowCompletedBodySchema, (body) => `Workflow ${body.outcome}.`);
 
 export const workflowEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['workflow:workflow.plan.declared', planDeclared],

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import { assertNever } from '../infra/error-format.js';
-import { ensureSentence } from '../infra/format-progress.js';
+import { ensureSentence } from '../infra/text.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 export type SessionInterruptTrigger = z.infer<typeof sessionInterruptTriggerSchema>;

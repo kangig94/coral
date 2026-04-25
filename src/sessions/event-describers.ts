@@ -2,15 +2,18 @@
 // domain and composed into the default `EventDescriberMap` by
 // `read-model/event-describers.ts`.
 
-import type { EventDescriber, EventDescriberMap } from '../causality/render.js';
+import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
 import { assertNever } from '../infra/error-format.js';
-import { ensureSentence } from '../infra/format-progress.js';
-import { isRecord } from '../infra/json.js';
+import { ensureSentence } from '../infra/text.js';
 import {
-  continuitySentenceFragment,
-  type SessionContinuityState,
-  type SessionProviderFailureReason,
-} from './fault.js';
+  sessionAdapterUnparseableBodySchema,
+  sessionClosedBodySchema,
+  sessionContinuityCheckpointedBodySchema,
+  sessionInterruptedBodySchema,
+  sessionOpenedBodySchema,
+  sessionProviderFailedBodySchema,
+} from './events.js';
+import { continuitySentenceFragment, type SessionContinuityState } from './fault.js';
 
 // AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of
@@ -35,46 +38,40 @@ function describeSessionUnavailable(provider: string, reason: string): string {
   }
 }
 
-const opened: EventDescriber = () => 'Session opened.';
-const continuityCheckpointed: EventDescriber = () => 'Session continuity checkpointed.';
-const closed: EventDescriber = () => 'Session closed.';
+const opened = typedDescriber(sessionOpenedBodySchema, () => 'Session opened.');
+const continuityCheckpointed = typedDescriber(
+  sessionContinuityCheckpointedBodySchema,
+  () => 'Session continuity checkpointed.',
+);
+const closed = typedDescriber(sessionClosedBodySchema, () => 'Session closed.');
 
-const interrupted: EventDescriber = (event) => {
-  if (!isRecord(event.body)) return 'Session interrupted.';
-  const continuity =
-    typeof event.body.continuity === 'string'
-      ? (event.body.continuity as SessionContinuityState)
-      : 'unavailable';
+const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
+  // sessionInterruptedBodySchema is a union of two shapes; both expose a
+  // `trigger` and `continuity` reachable through the fault, so normalize first.
+  const fault = 'fault' in body ? body.fault : body;
+  const continuity = (fault.continuity ?? 'unavailable') as SessionContinuityState;
   const triggerText =
-    event.body.trigger === 'restart'
+    fault.trigger === 'restart'
       ? 'App-server restarted during the turn'
       : 'App-server handoff occurred during the turn';
   return `${triggerText}; ${safeContinuitySentenceFragment(continuity)}.`;
-};
+});
 
-const providerFailed: EventDescriber = (event) => {
-  if (!isRecord(event.body)) return 'Session provider failed.';
-  if (typeof event.body.provider !== 'string' || typeof event.body.reason !== 'string') {
-    return 'Session provider failed.';
-  }
-  const provider = event.body.provider;
-  const reason = event.body.reason as SessionProviderFailureReason;
-  const message = typeof event.body.message === 'string' ? event.body.message : 'unknown';
-
-  switch (reason) {
+const providerFailed = typedDescriber(sessionProviderFailedBodySchema, (body) => {
+  switch (body.reason) {
     case 'session_unavailable':
-      return describeSessionUnavailable(provider, message);
+      return describeSessionUnavailable(body.provider, body.message);
     case 'request_failed':
-      return `${provider} turn failed: ${ensureSentence(message)}`;
+      return `${body.provider} turn failed: ${ensureSentence(body.message)}`;
     default:
-      return assertNever(reason);
+      return assertNever(body.reason);
   }
-};
+});
 
-const adapterUnparseable: EventDescriber = (event) =>
-  isRecord(event.body) && typeof event.body.provider === 'string' && typeof event.body.parseError === 'string'
-    ? `${event.body.provider} produced unparseable output: ${ensureSentence(event.body.parseError)}`
-    : 'Session adapter output could not be parsed.';
+const adapterUnparseable = typedDescriber(
+  sessionAdapterUnparseableBodySchema,
+  (body) => `${body.provider} produced unparseable output: ${ensureSentence(body.parseError)}`,
+);
 
 export const sessionsEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['session:session.opened', opened],

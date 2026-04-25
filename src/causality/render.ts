@@ -4,6 +4,8 @@
 // (`jobs/`, `sessions/`, `workflow/`, `discuss/`) — doing so would create
 // a cycle, since those domains import `CauseRef` from this module.
 
+import type { z } from 'zod';
+
 import type { CoralEvent } from '../store/envelope.js';
 import { isRecord } from '../infra/json.js';
 import { causeRefSchema, type CauseRef } from './cause-ref.js';
@@ -12,6 +14,25 @@ export type EventDescriber = (event: CoralEvent) => string;
 
 // Key format: `${stream.kind}:${event.type}` — stable identifier for dispatch.
 export type EventDescriberMap = ReadonlyMap<string, EventDescriber>;
+
+/**
+ * Schema-typed describer constructor. Mirrors `defineDomainEvent` in the
+ * registry: at definition the body type is inferred from `z.output<S>`, so
+ * the describer body sees a typed body without `as` casts. The single cast
+ * lives here, justified by the same dispatch contract that lets reducers
+ * trust their bodies — the journal append/rebuild paths parse each body
+ * through the registered schema before the renderer ever sees it.
+ *
+ * Pass the same schema that the matching `defineDomainEvent` entry uses;
+ * mismatch is caught at compile time because the describer signature is
+ * derived from `z.output<S>`.
+ */
+export function typedDescriber<S extends z.ZodTypeAny>(
+  _schema: S,
+  describe: (body: z.output<S>, event: CoralEvent<z.output<S>>) => string,
+): EventDescriber {
+  return (event) => describe(event.body as z.output<S>, event as CoralEvent<z.output<S>>);
+}
 
 export interface CauseRefEventStore {
   getEvent(stream: { kind: string; id: string }, seq: number): CoralEvent | undefined;

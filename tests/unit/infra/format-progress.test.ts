@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatToolProgress, shortPath, truncate } from '#src/infra/format-progress.js';
+import { formatToolProgress, shortPath } from '#src/infra/format-progress.js';
+import { truncate } from '#src/infra/text.js';
 
 const projectRoot = '/repo';
 const projectMainFile = '/repo/src/main.ts';

@@ -1,4 +1,4 @@
-import { truncate } from '../../infra/format-progress.js';
+import { truncate } from '../../infra/text.js';
 import type { PipeAtom } from '../ast.js';
 import type { LaunchedAtom } from './execution-contract.js';
 

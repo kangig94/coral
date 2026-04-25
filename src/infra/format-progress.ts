@@ -1,5 +1,7 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 
+import { truncate } from './text.js';
+
 export function shortPath(filePath: string, projectRoot?: string): string {
   const base = projectRoot ?? process.cwd();
   const abs = isAbsolute(filePath) ? filePath : resolve(base, filePath);
@@ -56,14 +58,6 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
     default:
       return `Using: ${name}`;
   }
-}
-
-export function truncate(text: string, maxLen = 80): string {
-  return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
-}
-
-export function ensureSentence(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 export function formatElapsed(ms: number): string {
