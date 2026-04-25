@@ -6,7 +6,7 @@ import {
   type CurateCursor,
   type CurateState,
 } from './state.js';
-import type { SpawnCliFn } from './types.js';
+import type { SpawnCliFn } from './pipeline-types.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 

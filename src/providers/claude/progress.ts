@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 import { isRecord } from '../../infra/json.js';
 import { truncate } from '../../infra/text.js';
-import type { ClaudeStreamEvent } from './types.js';
+import type { ClaudeStreamEvent } from './exec-types.js';
 
 function shortPath(filePath: string, projectRoot?: string): string {
   const base = projectRoot ?? process.cwd();

@@ -2,7 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbCorpusPublishFailure } from '../../kb/contracts.js';
-import type { CurateHandle } from '../../kb/curate/types.js';
+import type { CurateHandle } from '../../kb/curate/pipeline-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
 import type { MutableRuntimeState } from '../control.js';

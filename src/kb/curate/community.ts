@@ -18,7 +18,7 @@ import {
 } from './community-detection.js';
 import { CURATE_STALE_REASON, runCurateClaude } from './operations.js';
 import { readCurateState, writeCurateState } from './state.js';
-import type { SpawnCliFn } from './types.js';
+import type { SpawnCliFn } from './pipeline-types.js';
 
 export type RunCommunitySubphaseOptions = {
   signal?: AbortSignal;

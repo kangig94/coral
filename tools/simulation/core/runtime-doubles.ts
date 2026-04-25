@@ -27,10 +27,6 @@ export type InMemoryPathsSnapshot = {
   projectSourceCache: Array<[string, string]>;
 };
 
-function buildInMemoryCoralPaths(roots: InMemoryRoots, flavor: BuildFlavor = 'prod'): CoralPaths {
-  return composeCoralPaths(flavor, { baseDir: roots.coralRoot ?? DEFAULT_CORAL_ROOT });
-}
-
 export class InMemoryObserver implements RuntimeObserver {
   readonly events: SpawnEvent[] = [];
   private readonly listeners = new Set<SpawnListener>();
@@ -59,7 +55,7 @@ export class InMemoryPaths implements RuntimePaths {
   readonly coral: CoralPaths;
 
   constructor(private readonly roots: InMemoryRoots = {}, flavor: BuildFlavor = 'prod') {
-    this.coral = buildInMemoryCoralPaths(roots, flavor);
+    this.coral = composeCoralPaths(flavor, { baseDir: roots.coralRoot ?? DEFAULT_CORAL_ROOT });
   }
 
   snapshot(): InMemoryPathsSnapshot {

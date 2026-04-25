@@ -165,24 +165,9 @@ function resolveDiscoveryRuntime(runtime?: DiscoveryRuntime): ResolvedDiscoveryR
   };
 }
 
-function isFlavorNotSettledError(error: unknown): boolean {
-  return (
-    typeof error === 'object'
-    && error !== null
-    && 'code' in error
-    && (error as { code?: unknown }).code === 'E_FLAVOR_NOT_SETTLED'
-  );
-}
-
 function discoveryFilePath(flavor: BuildFlavor, runtime?: Pick<ResolvedDiscoveryRuntime, 'env' | 'paths'>): string {
   if (runtime?.paths !== undefined) {
-    try {
-      return runtime.paths.coral.coordinator.infoFile;
-    } catch (error: unknown) {
-      if (!isFlavorNotSettledError(error)) {
-        throw error;
-      }
-    }
+    return runtime.paths.coral.coordinator.infoFile;
   }
 
   const env = runtime?.env ?? defaultEnv();

@@ -28,7 +28,7 @@ import {
   type CurateCursor,
   type CurateState,
 } from './state.js';
-import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './types.js';
+import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
 
 export type {
   ClassificationAssignment,
@@ -40,7 +40,7 @@ export type {
   DiscoveryProposal,
   MetadataTarget,
   SpawnCliFn,
-} from './types.js';
+} from './pipeline-types.js';
 export {
   buildClassificationPrompt,
   buildMetadataTargets,

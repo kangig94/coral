@@ -2,7 +2,7 @@ import { deriveNoteIdentity } from '../corpus/frontmatter.js';
 import { compareLocale } from '../validation.js';
 import { getEntry, type EntityType, type KbIndex, type RelationshipType } from '../entry-types.js';
 import { approximateTokenCount, uniqueTrimmedList } from './content-normalize.js';
-import type { CurateClaimedEntry } from './types.js';
+import type { CurateClaimedEntry } from './pipeline-types.js';
 
 const CLASSIFICATION_BATCH_SIZE = 100;
 const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 16_000;

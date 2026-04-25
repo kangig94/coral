@@ -51,7 +51,7 @@ import {
   type EntityReplacementMap,
 } from './entity-consolidation.js';
 import { CURATE_STALE_REASON } from './operations.js';
-import type { MetadataTarget, NoteMetadataTarget } from './types.js';
+import type { MetadataTarget, NoteMetadataTarget } from './pipeline-types.js';
 
 export type MetadataCommitPlan = {
   graphDelta?: EntityConsolidationDelta;

@@ -1,5 +1,5 @@
 import { isRecord } from '../../infra/json.js';
-import type { ClaudeJsonOutput } from './types.js';
+import type { ClaudeJsonOutput } from './exec-types.js';
 
 export interface ParsedClaudeStreamOutput {
   response: string;

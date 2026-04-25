@@ -17,7 +17,7 @@ import type {
   ClassificationRelationship,
   CurateClaimedEntry,
   MetadataTarget,
-} from './types.js';
+} from './pipeline-types.js';
 import { isKnownEntityType, isKnownRelationshipType } from './classification-schema.js';
 
 function classificationEntityNameSegments(value: string): string[] {

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { KbRuntime } from '../contracts.js';
 import { runCurateClaude } from './operations.js';
-import type { GitSyncRuntimePicks, SpawnCliFn } from './types.js';
+import type { GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
 
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';

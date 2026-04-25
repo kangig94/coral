@@ -1,7 +1,7 @@
 import type { KbRuntime } from '../contracts.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { approximateTokenCount, fingerprintEntryContent } from './content-normalize.js';
-import type { ClaimCandidate, CurateClaimedEntry } from './types.js';
+import type { ClaimCandidate, CurateClaimedEntry } from './pipeline-types.js';
 
 const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
 

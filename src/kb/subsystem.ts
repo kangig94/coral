@@ -4,10 +4,10 @@ import { kbRoot } from "./paths.js";
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntimeActivationSnapshot, KbRuntime } from './contracts.js';
-import type { GitSyncRuntimePicks } from './curate/types.js';
+import type { GitSyncRuntimePicks } from './curate/pipeline-types.js';
 import { kbRuntimeDir } from './paths.js';
 import { createKbRuntime } from './runtime.js';
-import type { SpawnCliFn } from './curate/types.js';
+import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type { Runtime } from '../runtime/ports.js';
 
 export type KnowledgeBaseRuntime = {

@@ -22,7 +22,7 @@ import { computeFullCollectorManifestHash } from '#src/kb/corpus/manifest-author
 import { applyDetectedIncidentFixes } from '#src/kb/corpus/repair/fix.js';
 import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '#src/kb/corpus/repair/incident-ids.js';
 import type { DetectedIncident } from '#src/kb/corpus/repair/corpus-scan.js';
-import type { SpawnCliFn } from '#src/kb/curate/types.js';
+import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];

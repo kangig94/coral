@@ -5,13 +5,13 @@ import type {
   ProviderServerSpec,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './types.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './driver-types.js';
 
 export type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
   ProviderTransportClose,
-} from './types.js';
+} from './driver-types.js';
 
 export interface AppServerContract {
   readonly name: string;

@@ -22,7 +22,7 @@ import {
 import { stripMdExt } from '../../paths.js';
 import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
-import type { GitSyncRuntimePicks, SpawnCliFn } from '../../curate/types.js';
+import type { GitSyncRuntimePicks, SpawnCliFn } from '../../curate/pipeline-types.js';
 import { writeFileAtomic } from '../file-atomic.js';
 import {
   commitIndexUpdate,

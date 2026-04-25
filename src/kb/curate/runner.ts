@@ -34,7 +34,7 @@ import type {
   ClassificationAssignment,
   CurateClaim,
   SpawnCliFn,
-} from './types.js';
+} from './pipeline-types.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;

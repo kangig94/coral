@@ -19,7 +19,7 @@ import type {
   DiscoveryCurateClaimedEntry,
   DiscoveryProposal,
   NoteClaimCandidate,
-} from './types.js';
+} from './pipeline-types.js';
 
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;

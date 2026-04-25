@@ -10,7 +10,7 @@ import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-p
 import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
 import { buildPreparedClaudeRequest } from './request-prep.js';
-import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './types.js';
+import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './exec-types.js';
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 

@@ -21,16 +21,14 @@ export type KbQueryContext = {
   pluginRoot?: string;
 };
 
-const queryRuntimeByFlavor = new Map<BuildFlavor, ReturnType<typeof createRealRuntime>>();
-const queryDbsByFlavor = new Map<BuildFlavor, Database>();
+let cachedQueryRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
+let cachedQueryDb: { flavor: BuildFlavor; db: Database } | undefined;
 
 function getQueryRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
-  let cached = queryRuntimeByFlavor.get(flavor);
-  if (cached === undefined) {
-    cached = createRealRuntime(flavor);
-    queryRuntimeByFlavor.set(flavor, cached);
+  if (cachedQueryRuntime?.flavor !== flavor) {
+    cachedQueryRuntime = { flavor, runtime: createRealRuntime(flavor) };
   }
-  return cached;
+  return cachedQueryRuntime.runtime;
 }
 
 export function resolveQueryFlavor(context: KbQueryContext = {}): BuildFlavor {
@@ -57,15 +55,10 @@ export function createDefaultKbReadPaths(context: KbQueryContext = {}): KbReadPa
 
 export function getDefaultKbQueryDb(context: KbQueryContext = {}): Database {
   const flavor = resolveQueryFlavor(context);
-  const existing = queryDbsByFlavor.get(flavor);
-  if (existing !== undefined) {
-    return existing;
+  if (cachedQueryDb?.flavor !== flavor) {
+    cachedQueryDb = { flavor, db: openBackendStoreDb(getQueryRuntime(flavor)) };
   }
-
-  const runtime = getQueryRuntime(flavor);
-  const db = openBackendStoreDb(runtime);
-  queryDbsByFlavor.set(flavor, db);
-  return db;
+  return cachedQueryDb.db;
 }
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext = {}): KbRuntime {

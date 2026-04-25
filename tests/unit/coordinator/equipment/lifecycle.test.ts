@@ -17,6 +17,7 @@ import { closeNeedleBackend } from '#src/kb/search/needle-backend.js';
 import { NeedleAddonLoadError } from '#src/kb/search/needle-store.js';
 import { resolveVectorRoute } from '#src/kb/search/router.js';
 import { createNeedleStoreFake } from '#tests/helpers/fixtures/needle-store-fake.js';
+import { createFixtureRuntime } from '#tests/helpers/fixtures/runtime-paths.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 
@@ -183,7 +184,7 @@ async function createHarness(options: CreateHarnessOptions = {}): Promise<Harnes
     slotRegistry: runtimeHarness.slotRegistry,
     resolveKbRuntime: () => kb,
     now: () => FIXED_NOW,
-    runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: coralBaseDir }) } as never } } as never,
+    runtime: createFixtureRuntime(coralBaseDir),
     ...(options.removeInstallArtifacts === undefined ? {} : { removeInstallArtifacts: options.removeInstallArtifacts }),
     ...(options.activateNeedle === undefined ? {} : { activateNeedle: options.activateNeedle }),
     ...(options.storeFactory === undefined ? {} : { needleBackendOptions: { storeFactory: () => options.storeFactory?.() ?? null } }),
@@ -535,7 +536,7 @@ describe('EquipmentLifecycleService', () => {
         slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
-        runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: harness.coralBaseDir }) } as never } } as never,
+        runtime: createFixtureRuntime(harness.coralBaseDir),
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
       restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());
@@ -583,7 +584,7 @@ describe('EquipmentLifecycleService', () => {
         slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
-        runtime: { paths: { projectSource: () => '', coral: { equipment: equipmentPaths('prod', { baseDir: harness.coralBaseDir }) } as never } } as never,
+        runtime: createFixtureRuntime(harness.coralBaseDir),
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
       restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());

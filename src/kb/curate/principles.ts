@@ -41,7 +41,7 @@ import {
   type CurateState,
   type PendingDiscovery,
 } from './state.js';
-import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate, SpawnCliFn } from './types.js';
+import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate, SpawnCliFn } from './pipeline-types.js';
 
 type EnsurePrincipleDocumentResult = {
   status: 'ready' | 'conflict';

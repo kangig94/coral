@@ -5,7 +5,7 @@ import type {
   ClassificationAssignment,
   ClassificationNewEntity,
   ClassificationRelationship,
-} from './types.js';
+} from './pipeline-types.js';
 import { isKnownEntityType, isKnownRelationshipType } from './classification-schema.js';
 
 function parseClassificationNewEntities(value: unknown): Record<string, ClassificationNewEntity> {

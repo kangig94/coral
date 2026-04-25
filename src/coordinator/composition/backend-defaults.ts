@@ -168,7 +168,7 @@ export function resolveBackendDefaults(
     ((currentPluginRoot, instanceId) => removeBackendInfoIfOwner(currentPluginRoot, instanceId, runtime));
   const removeLockIfOwnerFn =
     options.removeLockIfOwnerFn ??
-    ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage }));
+    ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage, paths: runtime.paths }));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});

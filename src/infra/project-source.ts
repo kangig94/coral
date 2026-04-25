@@ -59,11 +59,11 @@ export function resolveProjectSource(projectRoot: string): string {
   return source;
 }
 
-export function sourceToSlug(source: string): string {
+function sourceToSlug(source: string): string {
   return source.replace(/\//g, '-');
 }
 
-export function projectDataDirForSource(source: string): string {
+function projectDataDirForSource(source: string): string {
   return join(coralRoot(), 'projects', sourceToSlug(source));
 }
 

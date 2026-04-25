@@ -101,6 +101,7 @@ describe('backend-lock', () => {
         process: { isAlive: () => false } as never,
         storage: storage as never,
         time: time as never,
+        paths: { coral: { coordinator: { lockFile: storage.lockPath('prod') } } } as never,
       },
     });
 
@@ -126,6 +127,7 @@ describe('backend-lock', () => {
     const storage = new FakeLockStorage();
     const time = new FakeTime();
 
+    const devPaths = { coral: { coordinator: { lockFile: storage.lockPath('dev') } } } as never;
     await acquireLock('dev', 'bundle-b', {
       instanceId: 'owner-b',
       version: '2.0.0',
@@ -134,10 +136,11 @@ describe('backend-lock', () => {
         process: { isAlive: () => false } as never,
         storage: storage as never,
         time: time as never,
+        paths: devPaths,
       },
     });
 
-    releaseLock('owner-b', { storage: storage as never } as never);
+    releaseLock('owner-b', { storage: storage as never, paths: devPaths });
     expect(storage.readLock('dev')).toBeNull();
   });
 });

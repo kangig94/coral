@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
@@ -39,7 +37,7 @@ type LockSnapshot = {
   record: LockRecord | null;
 };
 
-type CoordinatorLockRuntime = Pick<Runtime, 'env' | 'process' | 'storage' | 'time'>;
+type CoordinatorLockRuntime = Pick<Runtime, 'env' | 'process' | 'storage' | 'time' | 'paths'>;
 
 type LockState = {
   flavor: BuildFlavor;
@@ -61,8 +59,8 @@ function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: 
   });
 }
 
-function lockFilePath(flavor: BuildFlavor): string {
-  return coordinatorPaths(flavor).lockFile;
+function lockFilePath(runtime: Pick<Runtime, 'paths'>): string {
+  return runtime.paths.coral.coordinator.lockFile;
 }
 
 function isLockRecord(value: unknown): value is LockRecord {
@@ -129,10 +127,9 @@ function readLockSnapshotAt(
 }
 
 function readLockSnapshot(
-  flavor: BuildFlavor,
-  storage: Pick<RuntimeStoragePort, 'readFileSync'>,
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
 ): LockSnapshot | null {
-  return readLockSnapshotAt(lockFilePath(flavor), storage);
+  return readLockSnapshotAt(lockFilePath(runtime), runtime.storage);
 }
 
 function writeLockFileAt(
@@ -147,11 +144,10 @@ function writeLockFileAt(
 }
 
 function writeLockFile(
-  flavor: BuildFlavor,
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
   record: LockRecord,
-  storage: Pick<RuntimeStoragePort, 'tryExclusiveWriteSync'>,
 ): boolean {
-  return writeLockFileAt(lockFilePath(flavor), record, storage);
+  return writeLockFileAt(lockFilePath(runtime), record, runtime.storage);
 }
 
 function removeLockIfSnapshotMatchesAt(
@@ -197,11 +193,10 @@ function removeLockIfSnapshotMatchesAt(
 }
 
 function removeLockIfSnapshotMatches(
-  flavor: BuildFlavor,
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
   snapshot: LockSnapshot,
-  storage: Pick<RuntimeStoragePort, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
 ): boolean {
-  return removeLockIfSnapshotMatchesAt(lockFilePath(flavor), snapshot, storage);
+  return removeLockIfSnapshotMatchesAt(lockFilePath(runtime), snapshot, runtime.storage);
 }
 
 async function readHealth(
@@ -339,12 +334,12 @@ export async function acquireLock(
       throw new Error('Coordinator lock acquisition timed out');
     }
 
-    if (writeLockFile(flavor, record, runtime.storage)) {
+    if (writeLockFile(runtime, record)) {
       activeLocks.set(instanceId, { flavor, record });
       return record;
     }
 
-    const snapshot = readLockSnapshot(flavor, runtime.storage);
+    const snapshot = readLockSnapshot(runtime);
     if (!snapshot) {
       probeCache.clear();
       observedKey = null;
@@ -376,7 +371,7 @@ export async function acquireLock(
       continue;
     }
 
-    if (removeLockIfSnapshotMatches(flavor, snapshot, runtime.storage)) {
+    if (removeLockIfSnapshotMatches(runtime, snapshot)) {
       observedKey = null;
       observedAt = runtime.time.now();
       continue;
@@ -387,8 +382,8 @@ export async function acquireLock(
 }
 
 export function releaseLock(
-  instanceId?: string,
-  runtime?: Pick<Runtime, 'storage'>,
+  instanceId: string | undefined,
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
 ): void {
   const key = instanceId ?? [...activeLocks.keys()].at(-1);
   if (!key) {
@@ -400,21 +395,9 @@ export function releaseLock(
     return;
   }
 
-  const storage = runtime?.storage;
-  if (!storage) {
-    try {
-      readFileSync(lockFilePath(state.flavor), 'utf-8');
-    } catch {
-      activeLocks.delete(key);
-      return;
-    }
-    throw new Error('releaseLock requires runtime.storage when releasing an acquired coordinator lock');
-  }
-
   removeLockIfSnapshotMatches(
-    state.flavor,
+    runtime,
     { raw: JSON.stringify(state.record), record: state.record },
-    storage,
   );
   activeLocks.delete(key);
 }

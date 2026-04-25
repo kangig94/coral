@@ -1,16 +1,17 @@
-import { homedir } from 'node:os';
+// Canonical CoralPaths composer. The retired `src/infra/paths.ts` magnet
+// must not return — see tests/invariants/architecture-boundary.test.ts and
+// .claude/rules/design-philosophy.md Principle #7 (No Ambiguity).
+
 import { join } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoordinatorPaths } from './coordinator-paths.js';
 import { coordinatorPaths } from './coordinator-paths.js';
-import { coralRoot } from './coral-root.js';
+import { coralRoot, kbVaultRoot } from './coral-root.js';
 import type { EquipmentPaths } from './equipment-paths.js';
 import { equipmentPaths } from './equipment-paths.js';
 import type { StorePaths } from './store-paths.js';
 import { storePaths } from './store-paths.js';
-
-export { coralRoot } from './coral-root.js';
 
 export interface CorpusPaths {
   kbRoot: string;
@@ -36,22 +37,8 @@ export interface CorpusPathOptions {
   readonly baseDir?: string;
 }
 
-/**
- * Mirrors `kb/paths.ts:kbRoot` — the configured KB vault may be overridden
- * via CORAL_KB_PATH at the leaf level. Duplicated here (rather than imported
- * from kb/) to keep infra/ free of upward dependencies on kb/.
- */
-function corpusKbRoot(flavor: BuildFlavor, baseDir: string | undefined): string {
-  if (baseDir !== undefined) {
-    return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
-  }
-  const custom = process.env.CORAL_KB_PATH;
-  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
-  return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
-}
-
 export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
-  const kbRootDir = corpusKbRoot(flavor, opts?.baseDir);
+  const kbRootDir = kbVaultRoot(flavor, opts?.baseDir);
   return {
     kbRoot: kbRootDir,
     notesDir: join(kbRootDir, 'notes'),

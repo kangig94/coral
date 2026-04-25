@@ -553,9 +553,13 @@ describe('architecture boundary guard', () => {
   it('kb paths and read-model reads do not silently choose ambient roots', () => {
     const kbPathSource = readFileSync(resolve(REPO_ROOT, KB_PATHS_MODULE), 'utf8');
     // kbRoot/kbRuntimeDir are *defined* in kb/paths.ts; what we forbid is
-    // *calling* them as ambient lookups (i.e. using the result of a no-arg
-    // call as data). Match `= kbRoot()` / `= kbRuntimeDir()` patterns.
-    expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir)\s*\(\s*\)/u);
+    // *calling* them as ambient lookups — that is, binding their result without
+    // an explicit `baseDir` second argument. Both `= kbRoot()` (zero-arg) and
+    // `= kbRoot(flavor)` (flavor-only) fall back to env/homedir, so they count
+    // as ambient. Calls that pass a baseDir (`kbRoot(flavor, baseDir)`) are
+    // explicit and allowed. `kbRuntimeDir` accepts no baseDir at all, so any
+    // bound result is ambient.
+    expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir)\s*\(\s*[^,)]*\)/u);
     expect(kbPathSource).not.toContain('currentBuildFlavor');
     expect(collectReadModelAmbientRuntimeAccess()).toEqual([]);
   });
@@ -899,12 +903,18 @@ describe('architecture boundary guard', () => {
     expect(liveIndexes).toEqual(['src/store/index.ts']);
   });
   it('production keeps helper-style filenames out of src/', () => {
+    // Generic filenames become magnets — unrelated code accumulates because the
+    // name promises to host "anything that fits". Forbid the worst offenders.
+    // Domain-prefixed siblings like `manifest-types.ts` or `exec-types.ts` are
+    // allowed: the prefix declares scope so the file resists drift.
     const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter(
       (filePath) =>
         filePath.endsWith('/helper.ts') ||
         filePath.endsWith('/helpers.ts') ||
         filePath.endsWith('/shared.ts') ||
-        filePath.endsWith('/shared-utils.ts'),
+        filePath.endsWith('/shared-utils.ts') ||
+        filePath.endsWith('/utils.ts') ||
+        filePath.endsWith('/types.ts'),
     );
     expect(helperLikeFiles).toEqual([]);
   });
