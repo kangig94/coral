@@ -522,12 +522,18 @@ describe('architecture boundary guard', () => {
     expect(coordinatorContracts).not.toMatch(/ExecutionLaunch|ExecutionAdmission|ExecutionQueuedHandle/u);
     expect(coordinatorContracts).not.toContain('interface RecoveryCapableService');
   });
-  it('discuss root recovery contract stays shell-free', () => {
-    const recoveryContractPath = 'src/discuss/recovery-contract.ts';
-    const edges = PARSED_IMPORT_EDGES_BY_SOURCE.get(recoveryContractPath) ?? [];
+  it('discuss live-boundary predicate stays shell-free', () => {
+    // The `isWithinLiveSessionBoundary` predicate lives in `discuss/events.ts`
+    // alongside `PersistedDiscussSnapshot` (its only input). The earlier
+    // `discuss/recovery-contract.ts` split was over-decomposition; this
+    // invariant ensures the predicate's host file does not pull in shell
+    // types or shell-side helpers.
+    const eventsPath = 'src/discuss/events.ts';
+    const edges = PARSED_IMPORT_EDGES_BY_SOURCE.get(eventsPath) ?? [];
     expect(edges.map((edge) => edge.target).filter((target) => isWithinPath(target, 'src/discuss/shell'))).toEqual([]);
 
-    const source = readFileSync(resolve(REPO_ROOT, recoveryContractPath), 'utf8');
+    const source = readFileSync(resolve(REPO_ROOT, eventsPath), 'utf8');
+    expect(source).toContain('export function isWithinLiveSessionBoundary');
     expect(source).not.toContain('DiscussContext');
     expect(source).not.toContain('RecoveredDiscussResume');
   });

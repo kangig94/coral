@@ -68,3 +68,15 @@ export type WaitStreamEvent =
       continuity?: JobContinuitySnapshot | null;
     }
   | { type: 'waiting'; waitingJobIds: string[] };
+
+/**
+ * Coordinator-facing wait surface that the jobs domain exposes. Defined here
+ * (next to the WaitStream value types) so the port and the values it carries
+ * stay in one place — splitting the interface into a separate `wait-port.ts`
+ * was over-decomposition.
+ */
+export interface JobWaitPort {
+  waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
+  waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
+}

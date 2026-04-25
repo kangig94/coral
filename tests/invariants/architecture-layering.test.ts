@@ -52,7 +52,7 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/workflow-cleanup.ts',
-  'src/coordinator/shutdown/sequence.ts',
+  'src/coordinator/shutdown.ts',
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
 ]);

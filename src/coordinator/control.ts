@@ -16,21 +16,29 @@ import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/exports/result-artifact.js';
-import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
+import { StartupInterruptedError } from './startup-error.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
-import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './shutdown/sequence.js';
-import type { ShutdownMode } from './shutdown/mode.js';
+import {
+  SHUTDOWN_POLL_MS,
+  runShutdownSequence,
+  type LifecycleWiringState,
+  type ShutdownMode,
+} from './shutdown.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
 
-export { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from './shutdown/sequence.js';
-export type { ShutdownMode } from './shutdown/mode.js';
+export {
+  HANDOFF_DRAIN_TIMEOUT_MS,
+  SHUTDOWN_DRAIN_TIMEOUT_MS,
+  SHUTDOWN_POLL_MS,
+  type ShutdownMode,
+} from './shutdown.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 

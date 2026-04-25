@@ -10,9 +10,7 @@ import { nowIsoString } from '../../infra/time.js';
 import { isManualParticipant } from './runtime-build.js';
 import { attachSession } from './registry.js';
 import { appendRuntimeEvents, isAbortEnded, readSessionEvents } from './persistence.js';
-import { isWithinLiveSessionBoundary } from '../recovery-contract.js';
-
-export { isWithinLiveSessionBoundary } from '../recovery-contract.js';
+import { isWithinLiveSessionBoundary } from '../events.js';
 
 export type RecoveredDiscussResume = {
   ctx: DiscussContext;

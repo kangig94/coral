@@ -1,23 +1,34 @@
 import type { Server, ServerResponse } from 'node:http';
-import { errorMessage, formatError } from '../../infra/error-format.js';
-import { backendLog } from '../../infra/backend-log.js';
-import { listLiveJobs } from '../../jobs/reconcile/recovery-effects.js';
-import { isAppServerRuntime } from '../../jobs/records.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
-import type { KbRuntime } from '../../kb/contracts.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
-import type { IdleTimer } from '../live/idle.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
-import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
-import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
-import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
-import type { IpcListener } from '../../transport/ipc/server.js';
+import { errorMessage, formatError } from '../infra/error-format.js';
+import { backendLog } from '../infra/backend-log.js';
+import { listLiveJobs } from '../jobs/reconcile/recovery-effects.js';
+import { isAppServerRuntime } from '../jobs/records.js';
+import type { ProgressStore } from '../jobs/job-store.js';
+import type { KbRuntime } from '../kb/contracts.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
+import type { IdleTimer } from './live/idle.js';
+import type { Runtime } from '../runtime/ports.js';
+import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
+import type { ProviderHostManager } from './live/provider-hosts/pool.js';
+import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
+import type { IpcListener } from '../transport/ipc/server.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
+
+/**
+ * Shutdown mode derived from reason. Determines child process and job handling:
+ * - handoff: preserve wrappers/children for recovery; do NOT mark jobs as error or kill children
+ * - hard: kill children and mark jobs as error
+ */
+export type ShutdownMode = 'handoff' | 'hard';
+
+export function shutdownModeFromReason(reason: string): ShutdownMode {
+  if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
+  return 'hard';
+}
 
 export type LifecycleWiringState = {
   ownershipCheckerTeardown: (() => void) | null;

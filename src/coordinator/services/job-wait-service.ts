@@ -1,9 +1,13 @@
-import type { JobWaitPort } from '../../jobs/wait-port.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgress } from '../../jobs/records.js';
 import { deriveLaunchReadiness, type LaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
+import type {
+  JobWaitPort,
+  WaitStreamEvent,
+  WaitStreamOnceResult,
+  WaitStreamRequest,
+} from '../../jobs/wait.js';
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;

@@ -9,7 +9,7 @@ import { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../jobs/reconcile/cross-namespace-adoption.js';
-import { StartupInterruptedError } from '../../jobs/reconcile/errors.js';
+import { StartupInterruptedError } from '../startup-error.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../jobs/exports/result-artifact.js';
 import type { JobEventBus } from '../../jobs/event-bus.js';

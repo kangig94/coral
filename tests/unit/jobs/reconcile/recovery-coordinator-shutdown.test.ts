@@ -52,7 +52,7 @@ async function loadModules() {
   ] = await Promise.all([
     import('#src/jobs/job-store.js'),
     import('#src/coordinator/control.js'),
-    import('#src/jobs/reconcile/errors.js'),
+    import('#src/coordinator/startup-error.js'),
     import('#src/coordinator/live/admission.js'),
     import('#src/coordinator/event-bus.js'),
     import('#src/infra/paths.js'),
