@@ -61,6 +61,16 @@ export type CoordinatorServerController = {
 
 export type BackendServerController = CoordinatorServerController;
 
+function deriveCoordinatorFlavor(options: CoordinatorServerOptions): 'prod' | 'dev' {
+  if (options.bootSnapshot?.flavor) {
+    return options.bootSnapshot.flavor;
+  }
+  if (!options.pluginRoot) {
+    throw new Error('createCoordinatorServer requires bootSnapshot.flavor or pluginRoot');
+  }
+  return readBuildFlavor(options.pluginRoot);
+}
+
 function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
   const raw = runtime.env.get('CORAL_BOOT_FRESHNESS_TIMEOUT_MS');
   if (!raw) {
@@ -78,8 +88,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     registerBuiltInProvidersFn,
     ...coreOptions
   } = options;
-  const flavor =
-    options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? process.cwd());
+  const flavor = deriveCoordinatorFlavor(options);
   const runtime = providedRuntime ?? createRealRuntime(flavor);
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);

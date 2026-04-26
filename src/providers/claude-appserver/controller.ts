@@ -535,11 +535,11 @@ export class SingleSessionController {
       }
     }
 
-    if (this.activeTurn === null) {
+    if (this.activeTurn === null || !this.bootstrapSignature) {
       return;
     }
 
-    const progressMessage = extractClaudeProgressMessage(message, this.bootstrapSignature?.cwd);
+    const progressMessage = extractClaudeProgressMessage(message, this.bootstrapSignature.cwd);
     if (!progressMessage) {
       return;
     }

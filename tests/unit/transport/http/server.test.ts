@@ -591,6 +591,7 @@ describe('execution backend server', () => {
         token: 'test-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
+        flavor: 'prod',
         log: () => {},
         ...bootOverrides,
       },
@@ -803,6 +804,7 @@ describe('execution backend server', () => {
         token: 'test-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
+        flavor: 'prod',
         log: () => {},
       },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
@@ -851,7 +853,7 @@ describe('execution backend server', () => {
     expect(serviceA).toBeInstanceOf(ExecutionService);
     expect(serviceB).toBeInstanceOf(ExecutionService);
 
-    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec();
+    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec({ cwd: projectRootA });
     const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
       PROJECT_ROOT: 'a',
     });
@@ -4649,6 +4651,7 @@ describe('execution backend server', () => {
           token: 'test-token',
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           log: () => {},
         },
         createKbSubsystemFn: async () => createMockKbSubsystem(),

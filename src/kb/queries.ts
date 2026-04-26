@@ -27,7 +27,7 @@ import { listSources } from './ops/source-store.js';
 
 export async function searchKnowledgeBase(
   args: KbSearchInput,
-  context: KbQueryContext = {},
+  context: KbQueryContext,
 ): Promise<KbSearchResponse> {
   const kb = createDefaultKbQueryRuntime(context);
 
@@ -36,7 +36,7 @@ export async function searchKnowledgeBase(
 
 export function readKnowledgeBaseEntry(
   selector: KbReadInput,
-  context: KbQueryContext = {},
+  context: KbQueryContext,
 ): KbReadResult {
   return readEntry(selector, {
     projectRoot: resolveQueryProjectRoot(context),
@@ -46,20 +46,20 @@ export function readKnowledgeBaseEntry(
 
 export async function listKnowledgeBasePrinciples(
   args: KbPrinciplesInput,
-  context: KbQueryContext = {},
+  context: KbQueryContext,
 ): Promise<KbPrinciplesResult> {
   const kb = createDefaultKbQueryRuntime(context);
 
   return listPrinciples(kb, args);
 }
 
-export async function listKnowledgeBaseSources(context: KbQueryContext = {}): Promise<KbSourceListResult> {
+export async function listKnowledgeBaseSources(context: KbQueryContext): Promise<KbSourceListResult> {
   const kb = createDefaultKbQueryRuntime(context);
 
   return await listSources(kb);
 }
 
-export function diagnoseKnowledgeBase(context: KbQueryContext = {}): KbDiagnoseResult {
+export function diagnoseKnowledgeBase(context: KbQueryContext): KbDiagnoseResult {
   return buildKbDiagnoseResult(readCurateRetryQueue(getDefaultKbQueryDb(context)));
 }
 

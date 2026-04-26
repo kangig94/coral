@@ -42,15 +42,15 @@ describe('formatToolProgress', () => {
   });
 
   it('formats Bash/Grep/Glob/Agent tools', () => {
-    expect(formatToolProgress('Bash', { description: 'Run tests' })).toBe('Bash(Run tests)');
-    expect(formatToolProgress('Bash', { command: 'npm test' })).toBe('Bash(npm test)');
-    expect(formatToolProgress('Grep', { pattern: 'TODO' })).toBe('Grep(TODO)');
-    expect(formatToolProgress('Glob', { pattern: '**/*.ts' })).toBe('Glob(**/*.ts)');
-    expect(formatToolProgress('Agent', { description: 'parallel subtask' })).toBe('Agent(parallel subtask)');
+    expect(formatToolProgress('Bash', { description: 'Run tests' }, projectRoot)).toBe('Bash(Run tests)');
+    expect(formatToolProgress('Bash', { command: 'npm test' }, projectRoot)).toBe('Bash(npm test)');
+    expect(formatToolProgress('Grep', { pattern: 'TODO' }, projectRoot)).toBe('Grep(TODO)');
+    expect(formatToolProgress('Glob', { pattern: '**/*.ts' }, projectRoot)).toBe('Glob(**/*.ts)');
+    expect(formatToolProgress('Agent', { description: 'parallel subtask' }, projectRoot)).toBe('Agent(parallel subtask)');
   });
 
   it('falls back to generic format for unknown tool', () => {
-    expect(formatToolProgress('UnknownTool', {})).toBe('Using: UnknownTool');
+    expect(formatToolProgress('UnknownTool', {}, projectRoot)).toBe('Using: UnknownTool');
   });
 });
 
@@ -104,12 +104,12 @@ describe('formatToolProgress — adversarial', () => {
       { label: 'empty file_path', input: { file_path: '' }, expected: 'Read()' },
       { label: 'missing file_path', input: {}, expected: 'Read(file)' },
     ])('handles Read with $label', ({ input, expected }) => {
-      expect(formatToolProgress('Read', input)).toBe(expected);
+      expect(formatToolProgress('Read', input, projectRoot)).toBe(expected);
     });
 
     it('treats offset=0 as a provided offset', () => {
-      const withZero = formatToolProgress('Read', { file_path: '/x.ts', offset: 0, limit: 10 });
-      const withoutOffset = formatToolProgress('Read', { file_path: '/x.ts', limit: 10 });
+      const withZero = formatToolProgress('Read', { file_path: '/x.ts', offset: 0, limit: 10 }, projectRoot);
+      const withoutOffset = formatToolProgress('Read', { file_path: '/x.ts', limit: 10 }, projectRoot);
       expect(typeof withZero).toBe('string');
       expect(typeof withoutOffset).toBe('string');
       expect(withZero).toContain('x.ts');
@@ -139,7 +139,7 @@ describe('formatToolProgress — adversarial', () => {
         expected: 'Update(file, "x" → "y")',
       },
     ])('handles Edit with $label', ({ input, expected }) => {
-      expect(formatToolProgress('Edit', input)).toBe(expected);
+      expect(formatToolProgress('Edit', input, projectRoot)).toBe(expected);
     });
 
     it('truncates long old_string in Edit display', () => {
@@ -147,7 +147,7 @@ describe('formatToolProgress — adversarial', () => {
         file_path: 'big.ts',
         old_string: 'X'.repeat(200),
         new_string: 'replacement',
-      });
+      }, projectRoot);
       expect(message.length).toBeLessThan(300);
     });
   });
@@ -157,18 +157,18 @@ describe('formatToolProgress — adversarial', () => {
       { label: 'empty command and no description', input: { command: '' }, expected: 'Bash()' },
       { label: 'no input fields at all', input: {}, expected: 'Bash()' },
     ])('handles Bash with $label', ({ input, expected }) => {
-      expect(formatToolProgress('Bash', input)).toBe(expected);
+      expect(formatToolProgress('Bash', input, projectRoot)).toBe(expected);
     });
 
     it('truncates Bash description when it exceeds limit', () => {
-      const message = formatToolProgress('Bash', { command: 'ls', description: 'D'.repeat(200) });
+      const message = formatToolProgress('Bash', { command: 'ls', description: 'D'.repeat(200) }, projectRoot);
       expect(message.length).toBeLessThan(300);
       expect(message).toMatch(/^Bash\(/);
     });
 
     it('truncates Bash command when no description and command is long', () => {
       const longCmd = 'find /home -name "*.ts" -exec grep -l "import" {} \\; | sort | uniq -c | sort -rn | head -20';
-      const message = formatToolProgress('Bash', { command: longCmd });
+      const message = formatToolProgress('Bash', { command: longCmd }, projectRoot);
       expect(message.length).toBeLessThan(300);
       expect(message).toMatch(/^Bash\(/);
     });
@@ -177,18 +177,18 @@ describe('formatToolProgress — adversarial', () => {
       const message = formatToolProgress('Bash', {
         command: 'ls -la /some/path',
         description: 'List directory contents',
-      });
+      }, projectRoot);
       expect(message).toContain('List directory contents');
     });
   });
 
   describe('Grep and Glob edge cases', () => {
     it('formats Grep with only pattern', () => {
-      expect(formatToolProgress('Grep', { pattern: 'TODO' })).toBe('Grep(TODO)');
+      expect(formatToolProgress('Grep', { pattern: 'TODO' }, projectRoot)).toBe('Grep(TODO)');
     });
 
     it('formats Glob with only pattern', () => {
-      expect(formatToolProgress('Glob', { pattern: '**/*.ts' })).toBe('Glob(**/*.ts)');
+      expect(formatToolProgress('Glob', { pattern: '**/*.ts' }, projectRoot)).toBe('Glob(**/*.ts)');
     });
 
     it.each([
@@ -196,7 +196,7 @@ describe('formatToolProgress — adversarial', () => {
       { tool: 'Grep', input: {}, expected: 'Grep()' },
       { tool: 'Glob', input: { pattern: '' }, expected: 'Glob()' },
     ])('handles $tool with sparse input', ({ tool, input, expected }) => {
-      expect(formatToolProgress(tool, input)).toBe(expected);
+      expect(formatToolProgress(tool, input, projectRoot)).toBe(expected);
     });
   });
 
@@ -205,20 +205,20 @@ describe('formatToolProgress — adversarial', () => {
       const message = formatToolProgress('Write', {
         file_path: '/very/deep/nested/path/to/output.ts',
         content: 'file content',
-      });
+      }, projectRoot);
       expect(message).toBe('Write(/very/deep/nested/path/to/output.ts)');
     });
 
     it('formats Write with missing file_path', () => {
-      expect(formatToolProgress('Write', { content: 'hello' })).toBe('Write(file)');
+      expect(formatToolProgress('Write', { content: 'hello' }, projectRoot)).toBe('Write(file)');
     });
 
     it('formats Agent with missing description field', () => {
-      expect(formatToolProgress('Agent', {})).toBe('Agent()');
+      expect(formatToolProgress('Agent', {}, projectRoot)).toBe('Agent()');
     });
 
     it('truncates long Agent description', () => {
-      const message = formatToolProgress('Agent', { description: 'A'.repeat(200) });
+      const message = formatToolProgress('Agent', { description: 'A'.repeat(200) }, projectRoot);
       expect(message.length).toBeLessThan(300);
       expect(message).toMatch(/^Agent\(/);
     });
@@ -226,12 +226,12 @@ describe('formatToolProgress — adversarial', () => {
 
   describe('fallback and non-string file_path values', () => {
     it('returns "Using: <name>" for unknown tool', () => {
-      const message = formatToolProgress('MyCustomTool', { arg: 'val' });
+      const message = formatToolProgress('MyCustomTool', { arg: 'val' }, projectRoot);
       expect(message).toContain('MyCustomTool');
     });
 
     it('handles empty tool name for fallback', () => {
-      expect(formatToolProgress('', {})).toBe('Using: ');
+      expect(formatToolProgress('', {}, projectRoot)).toBe('Using: ');
     });
 
     it.each([
@@ -242,7 +242,7 @@ describe('formatToolProgress — adversarial', () => {
         expected: 'Update(file, "x" → "y")',
       },
     ])('handles non-string file_path for $tool', ({ tool, input, expected }) => {
-      expect(formatToolProgress(tool, input)).toBe(expected);
+      expect(formatToolProgress(tool, input, projectRoot)).toBe(expected);
     });
   });
 });

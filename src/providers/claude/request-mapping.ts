@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { isRecord } from '../../infra/json.js';
 import type { PermissionMode } from './control-protocol.js';
@@ -29,10 +29,6 @@ export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerTurnId?: string;
 }
 
-const pluginRoot =
-  typeof __PLUGIN_ROOT__ === 'string'
-    ? __PLUGIN_ROOT__
-    : resolve(process.cwd());
 let cachedBrokerEntrypoint: string | null = null;
 let envHashCache: {
   controllerEnv: Record<string, string> | undefined;
@@ -68,12 +64,12 @@ export function buildClaudeBootstrapSignature(
   };
 }
 
-export function buildClaudeProviderServerSpec(): ProviderServerSpec {
+export function buildClaudeProviderServerSpec(request: Pick<ProviderRequest, 'cwd'>): ProviderServerSpec {
   return {
     provider: 'claude',
     command: process.execPath,
     args: [resolveClaudeBrokerEntrypoint()],
-    cwd: process.cwd(),
+    cwd: request.cwd,
     shared: true,
     shutdownCapability: {
       method: 'broker/shutdown',
@@ -169,13 +165,17 @@ function resolveClaudeBrokerEntrypoint(): string {
     return cachedBrokerEntrypoint;
   }
 
-  const bundledPath = join(pluginRoot, 'bridge', 'coral-claude-appserver.cjs');
+  if (typeof __PLUGIN_ROOT__ !== 'string') {
+    throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
+  }
+
+  const bundledPath = join(__PLUGIN_ROOT__, 'bridge', 'coral-claude-appserver.cjs');
   if (existsSync(bundledPath)) {
     cachedBrokerEntrypoint = bundledPath;
     return bundledPath;
   }
 
-  const compiledPath = join(pluginRoot, 'dist', 'providers', 'claude-appserver', 'server.js');
+  const compiledPath = join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude-appserver', 'server.js');
   if (existsSync(compiledPath)) {
     cachedBrokerEntrypoint = compiledPath;
     return compiledPath;

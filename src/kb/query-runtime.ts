@@ -17,8 +17,8 @@ import { createKbRuntime } from './runtime.js';
 import type { KbReadPathResolver } from './read.js';
 
 export type KbQueryContext = {
+  pluginRoot: string;
   projectRoot?: string;
-  pluginRoot?: string;
 };
 
 let cachedQueryRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
@@ -31,19 +31,22 @@ function getQueryRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRunti
   return cachedQueryRuntime.runtime;
 }
 
-export function resolveQueryFlavor(context: KbQueryContext = {}): BuildFlavor {
-  return readBuildFlavor(context.pluginRoot ?? process.cwd());
+export function resolveQueryFlavor(context: KbQueryContext): BuildFlavor {
+  return readBuildFlavor(context.pluginRoot);
 }
 
-export function resolveQueryProjectRoot(context: KbQueryContext = {}): string {
-  return context.projectRoot ?? process.cwd();
+export function resolveQueryProjectRoot(context: KbQueryContext): string {
+  if (!context.projectRoot) {
+    throw new Error('KB query requires explicit projectRoot in context');
+  }
+  return context.projectRoot;
 }
 
-export function resolveQueryMarkdownRoot(context: KbQueryContext = {}): string {
+export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
   return kbRoot(resolveQueryFlavor(context));
 }
 
-export function createDefaultKbReadPaths(context: KbQueryContext = {}): KbReadPathResolver {
+export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathResolver {
   const root = resolveQueryMarkdownRoot(context);
   return {
     notePath: (note) => notePathFromName(note, root),
@@ -53,7 +56,7 @@ export function createDefaultKbReadPaths(context: KbQueryContext = {}): KbReadPa
   };
 }
 
-export function getDefaultKbQueryDb(context: KbQueryContext = {}): Database {
+export function getDefaultKbQueryDb(context: KbQueryContext): Database {
   const flavor = resolveQueryFlavor(context);
   if (cachedQueryDb?.flavor !== flavor) {
     cachedQueryDb = { flavor, db: openBackendStoreDb(getQueryRuntime(flavor)) };
@@ -61,7 +64,7 @@ export function getDefaultKbQueryDb(context: KbQueryContext = {}): Database {
   return cachedQueryDb.db;
 }
 
-export function createDefaultKbQueryRuntime(context: KbQueryContext = {}): KbRuntime {
+export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {
   const flavor = resolveQueryFlavor(context);
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),

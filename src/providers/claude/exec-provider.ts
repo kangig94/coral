@@ -32,8 +32,8 @@ type ClaudeContinuityState = ClaudePersistedContinuity & {
 const claudeAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec() {
-    return buildClaudeProviderServerSpec();
+  buildServerSpec(request) {
+    return buildClaudeProviderServerSpec(request);
   },
   interrupt: mapClaudeInterrupt,
 } satisfies AppServerContract;

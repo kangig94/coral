@@ -1,4 +1,5 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
+declare const __PLUGIN_ROOT__: string | undefined;
 
 import { dirname, join, resolve } from 'node:path';
 
@@ -99,7 +100,12 @@ export async function main(): Promise<number> {
     return handleSmokeOpenStore(process.argv);
   }
 
+  if (typeof __PLUGIN_ROOT__ !== 'string') {
+    throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
+  }
+
   const coordinator = createCoordinatorServer({
+    pluginRoot: __PLUGIN_ROOT__,
     onStopped: () => {
       process.exit(0);
     },

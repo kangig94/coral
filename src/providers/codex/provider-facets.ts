@@ -127,14 +127,14 @@ export const codexRecoveryLifecycle = {
   async probe(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
     const updatedContinuity = clearCodexTurnContinuity(continuity);
-    if (!parsed.threadId) {
+    if (!parsed.threadId || !parsed.cwd) {
       return { resumable: false, updatedContinuity };
     }
 
     try {
       await rpc(lease, 'thread/resume', {
         threadId: parsed.threadId,
-        cwd: parsed.cwd ?? process.cwd(),
+        cwd: parsed.cwd,
         model: null,
         approvalPolicy: 'never',
       });

@@ -27,7 +27,9 @@ function assistantToolEvent(name: string, input: Record<string, unknown> = {}): 
   return assistantEvent([toolUseBlock(name, input)]);
 }
 
-function expectNullMessage(event: ClaudeStreamEvent, projectRoot?: string): void {
+const TEST_PROJECT_ROOT = '/repo';
+
+function expectNullMessage(event: ClaudeStreamEvent, projectRoot: string = TEST_PROJECT_ROOT): void {
   expect(extractClaudeProgressMessage(event, projectRoot)).toBeNull();
 }
 
@@ -42,7 +44,7 @@ describe('extractClaudeProgressMessage', () => {
   it('returns generating message for assistant text blocks', () => {
     const event = assistantEvent([textBlock('drafting response')]);
 
-    expect(extractClaudeProgressMessage(event)).toBe('Generating response...');
+    expect(extractClaudeProgressMessage(event, TEST_PROJECT_ROOT)).toBe('Generating response...');
   });
 
   it('returns null for non-assistant events', () => {
@@ -62,7 +64,9 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         toolUseBlock('Read', { file_path: 'first.ts' }),
         toolUseBlock('Edit', { file_path: 'second.ts', old_string: 'x', new_string: 'y' }),
       ]);
-      expect(extractClaudeProgressMessage(event)).toBe(formatToolProgress('Read', { file_path: 'first.ts' }));
+      expect(extractClaudeProgressMessage(event, TEST_PROJECT_ROOT)).toBe(
+        formatToolProgress('Read', { file_path: 'first.ts' }, TEST_PROJECT_ROOT),
+      );
     });
 
     it('returns generating message when a text block appears first', () => {
@@ -70,7 +74,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         textBlock('I will now read the file.'),
         toolUseBlock('Read', { file_path: 'target.ts' }),
       ]);
-      expect(extractClaudeProgressMessage(event)).toBe('Generating response...');
+      expect(extractClaudeProgressMessage(event, TEST_PROJECT_ROOT)).toBe('Generating response...');
     });
 
     it('returns tool_use message when text block comes AFTER tool_use in same event', () => {
@@ -79,7 +83,9 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         toolUseBlock('Bash', input),
         textBlock('Listing directory contents...'),
       ]);
-      expect(extractClaudeProgressMessage(event)).toBe(formatToolProgress('Bash', input));
+      expect(extractClaudeProgressMessage(event, TEST_PROJECT_ROOT)).toBe(
+        formatToolProgress('Bash', input, TEST_PROJECT_ROOT),
+      );
     });
   });
 

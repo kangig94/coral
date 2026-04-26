@@ -166,6 +166,7 @@ describe('server discuss API', () => {
         token: 'test-token',
         version: '9.9.9',
         bundleHash: 'test-hash',
+        flavor: 'prod',
         log: () => {},
       },
       discussRegistry: registry,

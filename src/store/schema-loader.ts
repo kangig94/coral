@@ -25,19 +25,21 @@ function resolveModuleDir(): string {
     Error.prepareStackTrace = previousPrepareStackTrace;
   }
 
-  return join(process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd(), 'src', 'store');
+  throw new Error('Cannot resolve schema-loader module directory: pass schemasDir explicitly.');
 }
 
-const MODULE_SCHEMAS_DIR = join(resolveModuleDir(), 'schemas');
-const RUNTIME_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd();
-const DEFAULT_SCHEMAS_DIR_CANDIDATES = [
-  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'schemas') : undefined,
-  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'build', 'store', 'schemas') : undefined,
-  MODULE_SCHEMAS_DIR,
-  join(RUNTIME_ROOT, 'dist', 'store', 'schemas'),
-  join(RUNTIME_ROOT, 'build', 'store', 'schemas'),
-  join(RUNTIME_ROOT, 'src', 'store', 'schemas'),
-].filter((candidate): candidate is string => typeof candidate === 'string');
+function defaultSchemasDirCandidates(): string[] {
+  const moduleSchemasDir = join(resolveModuleDir(), 'schemas');
+  if (typeof __PLUGIN_ROOT__ === 'string') {
+    return [
+      join(__PLUGIN_ROOT__, 'dist', 'store', 'schemas'),
+      join(__PLUGIN_ROOT__, 'build', 'store', 'schemas'),
+      moduleSchemasDir,
+    ];
+  }
+  return [moduleSchemasDir];
+}
+
 const SEEDED_SCHEMAS_DIR = '/tmp/sim/store/schemas';
 
 type SchemaStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
@@ -83,7 +85,8 @@ function parseVersion(filename: string): number | null {
 }
 
 export function resolveDefaultSchemasDir(): string {
-  return DEFAULT_SCHEMAS_DIR_CANDIDATES.find((candidate) => existsSync(candidate)) ?? MODULE_SCHEMAS_DIR;
+  const candidates = defaultSchemasDirCandidates();
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[candidates.length - 1];
 }
 
 export function copySchemaAssets(

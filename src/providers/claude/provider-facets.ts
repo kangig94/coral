@@ -38,8 +38,8 @@ export async function claudePreflight(): Promise<void> {
 export const claudeAppServerLifecycle: ProviderAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec() {
-    return buildClaudeProviderServerSpec();
+  buildServerSpec(request) {
+    return buildClaudeProviderServerSpec(request);
   },
   async interrupt(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);

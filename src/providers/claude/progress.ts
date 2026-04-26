@@ -4,14 +4,13 @@ import { isRecord } from '../../infra/json.js';
 import { truncate } from '../../infra/text.js';
 import type { ClaudeStreamEvent } from './exec-types.js';
 
-function shortPath(filePath: string, projectRoot?: string): string {
-  const base = projectRoot ?? process.cwd();
-  const abs = isAbsolute(filePath) ? filePath : resolve(base, filePath);
-  const rel = relative(base, abs);
+function shortPath(filePath: string, projectRoot: string): string {
+  const abs = isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath);
+  const rel = relative(projectRoot, abs);
   return rel.startsWith('..') ? abs : rel;
 }
 
-function formatFilePath(input: Record<string, unknown>, projectRoot?: string): string {
+function formatFilePath(input: Record<string, unknown>, projectRoot: string): string {
   return typeof input.file_path === 'string' ? shortPath(input.file_path, projectRoot) : 'file';
 }
 
@@ -19,7 +18,7 @@ function firstLine(value: unknown): string {
   return typeof value === 'string' ? value.split('\n', 1)[0] : '';
 }
 
-export function formatToolProgress(name: string, input: Record<string, unknown>, projectRoot?: string): string {
+export function formatToolProgress(name: string, input: Record<string, unknown>, projectRoot: string): string {
   switch (name) {
     case 'Read': {
       const file = formatFilePath(input, projectRoot);
@@ -62,7 +61,7 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
   }
 }
 
-export function extractClaudeProgressMessage(event: ClaudeStreamEvent, projectRoot?: string): string | null {
+export function extractClaudeProgressMessage(event: ClaudeStreamEvent, projectRoot: string): string | null {
   if (event.type !== 'assistant') return null;
 
   const content = Array.isArray(event.message?.content) ? event.message.content : [];
