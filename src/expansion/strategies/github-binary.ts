@@ -25,8 +25,6 @@ export type GithubBinaryConfig = {
   pip?: string;
 };
 
-export type BinaryAtomicWriter = (ctx: ExpansionInstallContext, dest: string, content: Buffer, mode?: number) => void;
-
 export type GithubBinaryDeps = {
   arch(): string;
   downloadBuffer(runtime: ExpansionInstallContext['runtime'], url: string): Promise<Buffer>;

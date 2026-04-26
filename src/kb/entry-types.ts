@@ -394,10 +394,6 @@ export function vaultLinkToEntryId(link: string): KbEntryId | null {
   }
 }
 
-export function entrySeqFromRecord(entry: CuratableEntry): number | undefined {
-  return entry.entrySeq;
-}
-
 export function getEntry(index: KbIndex, id: KbEntryId): EntryRecord | undefined {
   return index.entries[id];
 }

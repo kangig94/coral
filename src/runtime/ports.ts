@@ -181,7 +181,6 @@ export interface Runtime {
 
 export type RuntimeTimePort = Runtime['time'];
 export type RuntimeStoragePort = Runtime['storage'];
-export type RuntimePathsPort = Runtime['paths'];
 export type RuntimeProcessPort = Runtime['process'];
 export type RuntimeIdsPort = Runtime['ids'];
 export type RuntimeEnvPort = Runtime['env'];

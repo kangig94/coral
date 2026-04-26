@@ -25,8 +25,6 @@ export type EquipmentAddonConfig = {
   onboarding?: OnboardingSpec;
 };
 
-export type AddonAtomicWriter = (ctx: ExpansionInstallContext, dest: string, content: Buffer) => void;
-
 export type EquipmentAddonDeps = {
   arch(): string;
   downloadBuffer(runtime: ExpansionInstallContext['runtime'], url: string): Promise<Buffer>;

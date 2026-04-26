@@ -170,9 +170,6 @@ export const catalogResultSchema = z
     packages: z.array(catalogEntrySchema),
   })
   .strict();
-/** Represents the catalog read result returned by expansion list operations. */
-export type CatalogResult = z.infer<typeof catalogResultSchema>;
-
 /** Encodes the single-entry read result so consumers retain activation-aware entry narrowing. */
 export const infoResultSchema = z
   .object({
@@ -180,11 +177,9 @@ export const infoResultSchema = z
     package: catalogEntrySchema,
   })
   .strict();
-/** Represents the single-entry read result returned by expansion info operations. */
-export type InfoResult = z.infer<typeof infoResultSchema>;
 
 /** Encodes the install/update/uninstall success surface before activation-specific results are added. */
-export const mutationResultSchema = z.discriminatedUnion('status', [
+const mutationResultSchema = z.discriminatedUnion('status', [
   installedResultSchema,
   updatedResultSchema,
   alreadyInstalledResultSchema,
@@ -192,8 +187,6 @@ export const mutationResultSchema = z.discriminatedUnion('status', [
   uninstalledResultSchema,
   notEquippedResultSchema,
 ]);
-/** Represents successful install, update, and uninstall mutations. */
-export type MutationResult = z.infer<typeof mutationResultSchema>;
 
 /** Encodes every public success/read result routed by expansion consumers. */
 export const installResultSchema = z.discriminatedUnion('status', [

@@ -156,23 +156,6 @@ export function decideSessionCreate(
   };
 }
 
-export function decideBiddingOpen(
-  state: DiscussState,
-  context: DecisionContext,
-  seq: number,
-  ts: string,
-): Result<DiscussDomainEvent[]> {
-  const { sessionId, projectRoot, topic } = context;
-  if (state.status !== 'setup') {
-    return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
-  }
-
-  return {
-    ok: true,
-    value: [makeEvent(sessionId, projectRoot, topic, seq, 'bidding.opened', ts, {})],
-  };
-}
-
 export function decideBid(
   state: DiscussState,
   agentName: string,

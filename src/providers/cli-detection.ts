@@ -2,8 +2,6 @@ import { execFile } from 'node:child_process';
 
 import { readProcessEnv } from '../infra/process-env.js';
 
-export type AuthState = 'authenticated' | 'unauthenticated' | 'unknown';
-
 export type CliInfo =
   | { available: false; error: string }
   | { available: true; version: string; authState: 'authenticated' }

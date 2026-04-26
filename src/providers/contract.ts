@@ -200,13 +200,6 @@ export const jobDiagnosticsSchema = z
   })
   .strict();
 
-export const providerProgressEventBodySchema = z
-  .object({
-    kind: z.literal('progress'),
-    message: z.string(),
-  })
-  .strict();
-
 export const providerContinuityEventBodySchema = z
   .object({
     kind: z.literal('continuity'),
@@ -240,12 +233,6 @@ export const providerTerminalEventBodySchema = z
       });
     }
   });
-
-export const providerEventBodySchema = z.union([
-  providerProgressEventBodySchema,
-  providerContinuityEventBodySchema,
-  providerTerminalEventBodySchema,
-]);
 
 export type ProviderContinuityUpdate = {
   conversationRef?: string | null;

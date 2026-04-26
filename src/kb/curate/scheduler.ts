@@ -32,30 +32,21 @@ import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './pipeline-t
 
 export type {
   ClassificationAssignment,
-  ClassificationNewEntity,
-  ClassificationRelationship,
-  CurateClaim,
   CurateClaimedEntry,
   CurateHandle,
   DiscoveryProposal,
-  MetadataTarget,
   SpawnCliFn,
 } from './pipeline-types.js';
 export {
   buildClassificationPrompt,
   chunkEntriesByPromptBudget,
-  estimateClassificationBatchTokens,
-  type ClassificationBatchShape,
 } from './classification/prompt.js';
 export { buildMetadataTargets, validateAssignments } from './classification/assignments.js';
 export { parseClassificationResponse } from './classification/parse.js';
 export {
   buildDiscoveryPrompt,
   parseDiscoveryResponse,
-  serializePrincipleDocument,
   validateDiscoveryProposals,
-  type DiscoveryBatch,
-  type DiscoveryPromptResult,
 } from './discovery.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';

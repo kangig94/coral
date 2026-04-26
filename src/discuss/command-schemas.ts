@@ -10,7 +10,6 @@ export const DemographicsSchema = z.object({
   origin_weights: z.record(z.number()),
   outlier_ratio: z.number().optional(),
 });
-export type Demographics = z.infer<typeof DemographicsSchema>;
 
 export const discussSeedSchema = z.object({
   controversy_axes: z.array(ControversyAxisSchema).min(1),
@@ -18,7 +17,6 @@ export const discussSeedSchema = z.object({
   demographics: DemographicsSchema.optional(),
   seed: z.number().int(),
 });
-export type DiscussSeedInput = z.infer<typeof discussSeedSchema>;
 
 export const AgentInputSchema = z.object({
   name: z.string(),
@@ -27,7 +25,6 @@ export const AgentInputSchema = z.object({
   provider: z.string().optional(),
   model: z.string().optional(),
 });
-export type AgentInput = z.infer<typeof AgentInputSchema>;
 
 export const discussStartSchema = z.object({
   topic: z.string().min(1),
@@ -38,7 +35,6 @@ export const discussStartSchema = z.object({
     })
     .optional(),
 });
-export type DiscussStartInput = z.infer<typeof discussStartSchema>;
 
 export const discussBidSchema = z.object({
   session: z.string().min(1),
@@ -47,7 +43,6 @@ export const discussBidSchema = z.object({
   thought: z.string(),
   content: z.undefined().optional(),
 });
-export type DiscussBidInput = z.infer<typeof discussBidSchema>;
 
 export const discussSpeechSchema = z.object({
   session: z.string().min(1),
@@ -56,4 +51,3 @@ export const discussSpeechSchema = z.object({
   score: z.undefined().optional(),
   thought: z.undefined().optional(),
 });
-export type DiscussSpeechInput = z.infer<typeof discussSpeechSchema>;

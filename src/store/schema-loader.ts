@@ -64,10 +64,6 @@ function readCurrentVersion(db: BetterSqlite3.Database): number {
   }
 }
 
-export function readStoreSchemaVersion(db: BetterSqlite3.Database): number {
-  return readCurrentVersion(db);
-}
-
 export function assertSupportedStoreSchema(db: BetterSqlite3.Database): void {
   const currentVersion = readCurrentVersion(db);
   if (currentVersion === CURRENT_STORE_SCHEMA_VERSION) {

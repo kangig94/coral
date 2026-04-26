@@ -122,19 +122,6 @@ export type DiscussCreateInput = {
   min_bid_delay_ms: number;
 };
 
-export type StepPhase =
-  | { status: 'setup'; phase: 'not_ready' }
-  | { status: 'bidding'; phase: 'bidding'; pending_bidders: string[]; pending_since_ts: number | null }
-  | { status: 'bidding'; phase: 'resolved'; winner: string }
-  | { status: 'bidding'; phase: 'epoch_transition'; epoch: number }
-  | { status: 'bidding'; phase: 'ended'; reason: EndReason }
-  | { status: 'bidding'; phase: 'expelled'; agents: string[]; hint: string }
-  | { status: 'speaking'; phase: 'speech_done'; speaker: string; content: string }
-  | { status: 'speaking'; phase: 'speech_pending'; elapsed: number }
-  | { status: 'speaking'; phase: 'speech_timeout'; speaker: string }
-  | { status: 'error'; phase: 'state_corrupt'; message: string }
-  | { status: 'ended'; phase: 'ended'; reason: EndReason };
-
 export type PersonaSeedInput = {
   demographics?: DemographicsInput;
   controversy_axes: ControversyAxis[];

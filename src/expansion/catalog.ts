@@ -206,8 +206,6 @@ export const CATALOG = Object.freeze(
   ) as Record<keyof typeof catalogSource, CatalogBinding<EquipmentAddonConfig | GithubBinaryConfig>>,
 );
 
-export type CatalogName = keyof typeof CATALOG;
-
 export function getCatalogEntry(name: string): CatalogBinding<EquipmentAddonConfig | GithubBinaryConfig> | null {
   return CATALOG[name as keyof typeof CATALOG] ?? null;
 }

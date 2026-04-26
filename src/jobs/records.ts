@@ -44,33 +44,6 @@ export interface JobStatus {
   continuity?: JobContinuitySnapshot | null;
 }
 
-export const jobStatusSchema = z
-  .object({
-    jobId: z.string(),
-    sessionId: z.string().nullable(),
-    provider: z.string().nullable(),
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    jobKind: z.enum(['provider', 'workflow', 'kb']),
-    phase: jobPhaseSchema,
-    updatedAt: z.string(),
-    lastSeq: z.number().int().nonnegative().optional(),
-    result: jobTerminalSchema.optional(),
-    diagnostics: jobDiagnosticsSchema.optional(),
-    continuity: jobContinuitySnapshotSchema.nullable().optional(),
-  })
-  .strict();
-
-export function parseJobStatus(value: unknown): JobStatus | null {
-  const parsed = jobStatusSchema.safeParse(value);
-  return parsed.success ? (parsed.data as JobStatus) : null;
-}
-
-export function safeParseJobStatus(value: unknown) {
-  return jobStatusSchema.safeParse(value);
-}
-
 export interface JobLaunch {
   jobId: string;
   sessionId: string | null;
@@ -125,10 +98,6 @@ export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime | InternalJo
 
 export function isAppServerRuntime(record: JobRuntime | null | undefined): record is AppServerRuntime {
   return record?.transport === 'app-server';
-}
-
-export function isInternalJobRuntime(record: JobRuntime | null | undefined): record is InternalJobRuntime {
-  return record?.transport === 'internal';
 }
 
 export interface JobProgress {

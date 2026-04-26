@@ -64,10 +64,6 @@ export class ReadCoralStoreRegistry {
     }
   }
 
-  noteMissing(note: string): void {
-    this.pendingNote = note;
-  }
-
   private closeCached(): void {
     if (!this.cached) {
       return;
@@ -151,18 +147,3 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   };
 }
 
-export async function withReadCoralStore<T>(
-  projectRoot: string,
-  read: (store: CoralStore) => Promise<T> | T,
-): Promise<T> {
-  const handle = openReadCoralStore(projectRoot);
-
-  if (handle.note) {
-    defaultRegistry.noteMissing(handle.note);
-  }
-  try {
-    return await read(handle.store);
-  } finally {
-    handle.close();
-  }
-}

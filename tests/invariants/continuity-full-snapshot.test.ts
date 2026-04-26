@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { continuitySnapshotSchema } from '#src/sessions/continuity.js';
-import { sessionContinuityCheckpointedBodySchema } from '#src/sessions/events.js';
+import { sessionContinuityCheckpointedBodySchema } from '#src/sessions/event-bodies.js';
 
 describe('Invariant #9 — continuity bodies are full snapshots', () => {
   it('continuitySnapshotSchema accepts a complete snapshot', () => {

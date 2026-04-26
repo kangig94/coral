@@ -21,8 +21,6 @@ export type ProviderFailureCause =
       };
     };
 
-export type ProviderFailureCauseBody = ProviderFailureCause['body'];
-
 type AdapterOutputUnparseableInput = {
   provider: string;
   exitCode: number | null;

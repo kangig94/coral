@@ -2,10 +2,8 @@ import { z } from 'zod';
 
 import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
 import { assertNever } from '../infra/error-format.js';
-import { ensureSentence } from '../infra/text.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
-export type SessionInterruptTrigger = z.infer<typeof sessionInterruptTriggerSchema>;
 
 export const sessionContinuityStateSchema = z.enum([
   'verified',
@@ -62,22 +60,6 @@ export type SessionCloseReason =
   | 'interrupted'
   | { kind: 'failed'; causeRef: CauseRef };
 
-export type SessionFault =
-  | SessionInterruptedFault
-  | SessionProviderFailedFault
-  | SessionAdapterUnparseableFault;
-
-function providerDisplayName(provider: string): string {
-  switch (provider) {
-    case 'claude':
-      return 'Claude';
-    case 'codex':
-      return 'Codex';
-    default:
-      return provider;
-  }
-}
-
 export function continuitySentenceFragment(continuity: SessionContinuityState): string {
   switch (continuity) {
     case 'verified':
@@ -103,29 +85,3 @@ export function describeSessionInterrupted(fault: SessionInterruptedFault): stri
   return `${triggerText}; ${continuitySentenceFragment(fault.continuity)}.`;
 }
 
-export function describeSessionProviderFailed(fault: SessionProviderFailedFault): string {
-  const provider = providerDisplayName(fault.provider);
-
-  switch (fault.reason) {
-    case 'session_unavailable':
-      return `${provider} session unavailable: ${ensureSentence(fault.message)}`;
-    case 'request_failed': {
-      const message = fault.message.trim();
-      if (!message) {
-        return `${provider} turn failed.`;
-      }
-      if (message.toLowerCase().startsWith(provider.toLowerCase())) {
-        return ensureSentence(message);
-      }
-      return `${provider} turn failed: ${ensureSentence(message)}`;
-    }
-    default:
-      return assertNever(fault.reason);
-  }
-}
-
-export function describeSessionAdapterUnparseable(fault: SessionAdapterUnparseableFault): string {
-  const provider = providerDisplayName(fault.provider);
-  const exit = fault.exitCode === null ? 'unknown' : String(fault.exitCode);
-  return `${provider} produced unparseable output (exit ${exit}): ${fault.parseError}.`;
-}

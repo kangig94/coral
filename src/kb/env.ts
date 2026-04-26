@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { coralRoot } from "../infra/path/root.js";
 
 export function coralEnvPath(): string {
@@ -38,25 +38,3 @@ export function readCoralEnvFile(): Record<string, string> {
   return parseCoralEnv(readFileSync(envPath, 'utf8'));
 }
 
-function serializeCoralEnvValue(value: string): string {
-  if (value === '' || /\s|#/.test(value)) {
-    return JSON.stringify(value);
-  }
-  return value;
-}
-
-export function writeCoralEnvConfig(values: Record<string, string>): void {
-  const envPath = coralEnvPath();
-  const current = existsSync(envPath) ? parseCoralEnv(readFileSync(envPath, 'utf8')) : {};
-  const merged = { ...current, ...values };
-  const lines = Object.entries(merged)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${serializeCoralEnvValue(value)}`);
-  const body = lines.length === 0 ? '' : `${lines.join('\n')}\n`;
-
-  mkdirSync(dirname(envPath), { recursive: true });
-  writeFileSync(envPath, body, { encoding: 'utf8', mode: 0o600 });
-  if (process.platform !== 'win32') {
-    chmodSync(envPath, 0o600);
-  }
-}

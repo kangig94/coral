@@ -38,8 +38,6 @@ export type RegisterEquipmentRequest = z.infer<typeof registerEquipmentRequestSc
 
 /** Lets callers distinguish new activation, catchup, and already-live registrations without client rewrites. */
 export const registerEquipmentStatusSchema = z.enum(['equipped', 'catching_up', 'already_equipped']);
-/** Mirrors the coordinator activation outcomes the CLI reports to users. */
-export type RegisterEquipmentStatus = z.infer<typeof registerEquipmentStatusSchema>;
 
 /** Returns the post-register equipment view so callers can render catchup and restart states directly. */
 export const registerEquipmentResultSchema = z
@@ -62,8 +60,6 @@ export type UnregisterEquipmentRequest = z.infer<typeof unregisterEquipmentReque
 
 /** Exposes the only two uninstall outcomes the coordinator promises. */
 export const unregisterResultStatusSchema = z.enum(['uninstalled', 'not_equipped']);
-/** Lets callers branch on idempotent uninstall without reinterpreting transport errors. */
-export type UnregisterResultStatus = z.infer<typeof unregisterResultStatusSchema>;
 
 /** Models uninstall as an explicit tagged union so the transport contract matches the public API. */
 export const unregisterResultSchema = z.union([

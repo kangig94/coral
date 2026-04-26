@@ -200,25 +200,3 @@ export async function collectProviderEvents(
   return events;
 }
 
-export async function collectProviderTerminalEvent(
-  stream: AsyncIterable<ProviderEventBody>,
-): Promise<ProviderTerminalEventBody> {
-  let terminal: ProviderTerminalEventBody | null = null;
-
-  for await (const event of stream) {
-    if (event.kind !== 'terminal') {
-      continue;
-    }
-
-    if (terminal !== null) {
-      throw new Error('Provider stream emitted multiple terminal events.');
-    }
-    terminal = event;
-  }
-
-  if (terminal === null) {
-    throw new Error('Provider stream ended without a terminal event.');
-  }
-
-  return terminal;
-}

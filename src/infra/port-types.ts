@@ -50,11 +50,6 @@ export interface InfraEnvPort {
   coralSnapshot(): Readonly<Record<string, string>>;
 }
 
-export interface InfraRuntimePaths {
-  projectSource(projectRoot: string): string;
-  readonly coral: unknown;
-}
-
 export interface InfraChildStdinLike {
   readonly destroyed: boolean;
   write(chunk: string | Uint8Array): boolean;

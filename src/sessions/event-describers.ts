@@ -12,7 +12,7 @@ import {
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
   sessionProviderFailedBodySchema,
-} from './events.js';
+} from './event-bodies.js';
 import { continuitySentenceFragment, type SessionContinuityState } from './fault.js';
 
 // AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch +

@@ -19,7 +19,6 @@ const installedPluginsFileSchema = z
   })
   .passthrough();
 
-export type InstalledPluginEntry = z.infer<typeof installedPluginEntrySchema>;
 export type InstalledPluginsFile = z.infer<typeof installedPluginsFileSchema>;
 
 export type PluginRegistry = {

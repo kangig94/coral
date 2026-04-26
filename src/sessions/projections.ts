@@ -9,11 +9,15 @@ import {
   sessionEntrySchema,
   type SessionEntry,
 } from './entry.js';
-import type { ContinuitySnapshot } from './continuity.js';
+import type {
+  SessionClaimedBody,
+  SessionClosedBody,
+  SessionContinuityCheckpointedBody,
+  SessionInterruptedBody,
+  SessionOpenedBody,
+} from './event-bodies.js';
 import type {
   SessionAdapterUnparseableFault,
-  SessionCloseReason,
-  SessionInterruptedFault,
   SessionProviderFailedFault,
 } from './fault.js';
 
@@ -25,35 +29,6 @@ export type ProjectionSessionRow = {
   scopeKey: string;
   entry: SessionEntry;
   lastSeq: number;
-};
-
-type SessionOpenedBody = {
-  entry: SessionEntry;
-  controller: string;
-  provider: string;
-  scope_key: string;
-};
-
-type SessionContinuityCheckpointedBody = {
-  entry: SessionEntry;
-  snapshot: ContinuitySnapshot;
-};
-
-type SessionInterruptedBody =
-  | SessionInterruptedFault
-  | {
-      entry?: SessionEntry;
-      fault: SessionInterruptedFault;
-    };
-
-type SessionClosedBody = {
-  entry?: SessionEntry;
-  reason: SessionCloseReason;
-};
-
-type SessionClaimedBody = {
-  entry: SessionEntry;
-  jobId: string;
 };
 
 type SessionProjectionPatch = {

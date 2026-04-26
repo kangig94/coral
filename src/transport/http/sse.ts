@@ -1,7 +1,5 @@
 export const HEALTH_TIMEOUT_MS = 3_000;
 export const TOOL_TIMEOUT_MS = 300_000;
-export const MAX_WAIT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
-export const WAIT_FETCH_MARGIN_MS = 30_000;
 
 export type SseEventBlock = {
   event?: string;

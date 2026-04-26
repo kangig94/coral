@@ -8,7 +8,6 @@ import {
 } from '../sse.js';
 import { isBackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
-import { isRecord } from '../../../infra/json.js';
 
 export type BackendStatus = {
   status: 'ok';
@@ -26,17 +25,6 @@ export type BackendStatus = {
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
-
-export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
-  const status = await getBackendStatusFull(pluginRoot);
-  if (status.status === 'ok') {
-    return status.health;
-  }
-  if (status.status === 'shutting_down') {
-    return { status: 'shutting_down' };
-  }
-  return null;
-}
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
@@ -72,6 +60,3 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   }
 }
 
-export function isBackendStatus(value: unknown): value is BackendStatus {
-  return isRecord(value) && typeof value.status === 'string' && (value.status === 'ok' || value.status === 'shutting_down');
-}

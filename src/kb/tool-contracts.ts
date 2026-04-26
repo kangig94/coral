@@ -2,31 +2,6 @@ import { z } from 'zod';
 
 import { parseBooleanQuery } from '../infra/json.js';
 
-export type {
-  KbDeleteInput,
-  KbDiagnoseResult,
-  KbMemoDeleteInput,
-  KbMemoDeleteResult,
-  KbMemoInput,
-  KbMemoListInput,
-  KbMemoListResult,
-  KbMemoPurgeInput,
-  KbMemoPurgeResult,
-  KbPrinciplesInput,
-  KbPrinciplesResult,
-  KbPromoteInput,
-  KbReadInput,
-  KbReadResult,
-  KbReindexInput,
-  KbSearchInput,
-  KbSearchResponse,
-  KbSourceDeleteInput,
-  KbSourceListResult,
-  KbSourcePersistInput,
-  KbUpdateInput,
-  ReindexResult,
-} from './entry-types.js';
-
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const slugSchema = z.string().min(1);
 const transportContextFieldsShape = {
