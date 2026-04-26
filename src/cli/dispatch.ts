@@ -1,6 +1,6 @@
-declare const __PLUGIN_ROOT__: string;
-
 import type { Command } from 'commander';
+
+import { resolvePluginRoot } from './plugin-root.js';
 
 import {
   type InvocationContext,
@@ -263,7 +263,7 @@ export type KbMemoPurgeOptions = {
 // for the final event (and its resume cursor) to reach stdout.
 export const WAIT_TIMEOUT_SECONDS = 590;
 
-const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
+// no module-level capture: callers go through resolvePluginRoot() at use time
 
 export function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
@@ -283,7 +283,7 @@ function collectCoralEnv(): Record<string, string> {
 
 function createDefaultInvocationContext(projectRoot: string): InvocationContext {
   return {
-    pluginRoot,
+    pluginRoot: resolvePluginRoot() ?? '',
     projectRoot,
     coralEnv: collectCoralEnv(),
   };
@@ -374,7 +374,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       remoteDispatchUnavailable(path);
     }
 
-    const client = await ensure(pluginRoot || undefined);
+    const client = await ensure(resolvePluginRoot());
     return client.request<TResult>(method, params, { timeoutMs: TOOL_TIMEOUT_MS });
   };
 
@@ -390,7 +390,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
     }
 
-    const client = await ensure(pluginRoot || undefined);
+    const client = await ensure(resolvePluginRoot());
     return client.subscribe<TResult>(method, params, {
       timeoutMs: HEALTH_TIMEOUT_MS,
       ...options,
@@ -582,5 +582,5 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 }
 
 export function getPluginRoot(): string {
-  return pluginRoot;
+  return resolvePluginRoot() ?? '';
 }

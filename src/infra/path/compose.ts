@@ -49,13 +49,21 @@ export interface FamilyPathOptions {
   readonly baseDir?: string;
 }
 
+export interface CorpusPathOptions extends FamilyPathOptions {
+  /** Resolved CORAL_KB_PATH value from caller's env port (vault override). */
+  readonly customKbRoot?: string;
+}
+
 // `corpusPaths` and `exportsPaths` live inside the composer file rather than
 // in their own siblings: corpus piggybacks on `kbVaultRoot` (already in
 // root.ts) and exports has a single field. Splitting either into its own
 // file would be premature per §10.4. They stay exported for path-layout
 // tests that assert each family in isolation.
-export function corpusPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): CorpusPaths {
-  const kbRootDir = kbVaultRoot(flavor, opts?.baseDir);
+export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
+  const kbRootDir = kbVaultRoot(flavor, {
+    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
+    ...(opts?.customKbRoot === undefined ? {} : { customRoot: opts.customKbRoot }),
+  });
   return {
     kbRoot: kbRootDir,
     notesDir: join(kbRootDir, 'notes'),
@@ -74,13 +82,19 @@ export function exportsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): Exp
 
 export interface ComposeCoralPathOptions {
   readonly baseDir?: string;
+  /** Resolved CORAL_KB_PATH value from caller's env port. */
+  readonly customKbRoot?: string;
 }
 
 export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
   const familyOpts = opts?.baseDir === undefined ? undefined : { baseDir: opts.baseDir };
+  const corpusOpts: CorpusPathOptions = {
+    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
+    ...(opts?.customKbRoot === undefined ? {} : { customKbRoot: opts.customKbRoot }),
+  };
   return {
     store: storePaths(flavor, familyOpts),
-    corpus: corpusPaths(flavor, familyOpts),
+    corpus: corpusPaths(flavor, corpusOpts),
     coordinator: coordinatorPaths(flavor, undefined, familyOpts),
     exports: exportsPaths(flavor, familyOpts),
     equipment: equipmentPaths(flavor, familyOpts),

@@ -84,7 +84,11 @@ export function buildPreparedClaudeRequest(
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
-  const injectMd = resolveInjectMd(request.cwd, request.coralEnv?.CORAL_OWNER);
+  const injectMd = resolveInjectMd({
+    workingDirectory: request.cwd,
+    ownerSessionId: request.coralEnv?.CORAL_OWNER,
+    coralEnv: request.coralEnv,
+  });
   if (injectMd) {
     systemParts.push(injectMd);
   }

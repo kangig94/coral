@@ -48,7 +48,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner only\n<!-- OWNER_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd', 'valid-session-123');
+    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'valid-session-123' });
     expect(result).toContain('base');
     expect(result).not.toContain('owner only');
     expect(result).toContain('rest');
@@ -58,7 +58,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd', 'valid-session-123');
+    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'valid-session-123' });
     expect(result).toContain('session content');
   });
 
@@ -66,7 +66,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd');
+    const result = resolveInjectMd({ workingDirectory: '/wd' });
     expect(result).toContain('base');
     expect(result).not.toContain('session content');
     expect(result).toContain('rest');
@@ -86,7 +86,7 @@ describe('resolveInjectMd', () => {
     ].join('\n');
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd');
+    const result = resolveInjectMd({ workingDirectory: '/wd' });
     expect(result).toContain('top');
     expect(result).not.toContain('owner stuff');
     expect(result).toContain('middle');
@@ -98,7 +98,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'owner: {{SESSION_ID}}';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd', 'my-session');
+    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'my-session' });
     expect(result).toContain('owner: my-session');
   });
 
@@ -106,7 +106,7 @@ describe('resolveInjectMd', () => {
     mockInjectMdError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd('/wd', 'sess');
+    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'sess' });
     expect(result).toBe('');
   });
 });

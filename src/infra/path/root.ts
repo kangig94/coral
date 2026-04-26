@@ -16,23 +16,28 @@ export function coralRoot(baseDir?: string): string {
   return baseDir ?? join(homedir(), '.coral');
 }
 
-/**
- * Resolves the KB markdown vault root. Honors `CORAL_KB_PATH` at the leaf
- * level so users can point at a synced/shared vault without disturbing the
- * machine-local runtime tree (kbRuntimeDir).
- *
- * Single canonical implementation — both `kb/paths.ts:kbRoot` (KB domain
- * caller) and `infra/path/compose.ts:corpusPaths` (CoralPaths composer)
- * delegate here. Per Principle #7 (No Ambiguity): a vault path resolver
- * has exactly one home, and that home must be at a layer both callers can
- * import without violating the layering rules — i.e. infra/path.
- */
-export function kbVaultRoot(flavor: BuildFlavor, baseDir?: string): string {
-  if (baseDir !== undefined) {
-    return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
-  }
+export interface KbVaultRootOptions {
+  readonly baseDir?: string;
+  /** Resolved `CORAL_KB_PATH` value from caller's env port. Honored to point
+   *  at a synced/shared vault without disturbing the machine-local runtime
+   *  tree (kbRuntimeDir). */
+  readonly customRoot?: string;
+}
 
-  const custom = process.env.CORAL_KB_PATH;
-  if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
+/**
+ * Resolves the KB markdown vault root. Pure: callers pass the resolved
+ * `CORAL_KB_PATH` value via `opts.customRoot` rather than this function
+ * reading ambient `process.env`. Per design-philosophy.md Principle #4,
+ * path resolvers do not read ambient state.
+ */
+export function kbVaultRoot(flavor: BuildFlavor, opts?: KbVaultRootOptions): string {
+  if (opts?.baseDir !== undefined) {
+    return join(coralRoot(opts.baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
+  }
+  if (opts?.customRoot) {
+    return opts.customRoot.startsWith('~')
+      ? join(homedir(), opts.customRoot.slice(1))
+      : opts.customRoot;
+  }
   return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
 }

@@ -44,7 +44,7 @@ export async function createKbSubsystem({
   onCorpusPublishSuccess,
 }: CreateKbSubsystemOptions): Promise<KnowledgeBaseRuntime> {
   const kb = createKbRuntime({
-    markdownRoot: kbRoot(flavor),
+    markdownRoot: kbRoot(flavor, envPort.get('CORAL_KB_PATH')),
     runtimeDir: kbRuntimeDir(flavor),
     db,
     time: timePort,

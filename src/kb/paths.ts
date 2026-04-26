@@ -4,16 +4,16 @@ import { coralRoot, kbVaultRoot } from '../infra/path/root.js';
 import { projectDataDir } from '../infra/project-source.js';
 
 /**
- * KB-domain re-export of the vault root. The canonical implementation
- * lives in `infra/path/root.ts:kbVaultRoot` so that the CoralPaths
- * composer (which can't depend upward on kb/) shares the exact same
- * env-override semantics.
- *
- * Pairs with kbRuntimeDir below — KB note `coral-kb-configured-root-
- * contract` documents the vault/runtime pair as load-bearing.
+ * KB-domain wrapper for the vault root. `customRoot` is the resolved
+ * CORAL_KB_PATH value from caller's env port (path resolvers do not read
+ * ambient env). Delegates to `infra/path/root.ts:kbVaultRoot` so KB and
+ * the CoralPaths composer share identical override semantics.
  */
-export function kbRoot(flavor: BuildFlavor, baseDir?: string): string {
-  return kbVaultRoot(flavor, baseDir);
+export function kbRoot(flavor: BuildFlavor, customRoot?: string, baseDir?: string): string {
+  return kbVaultRoot(flavor, {
+    ...(baseDir === undefined ? {} : { baseDir }),
+    ...(customRoot === undefined ? {} : { customRoot }),
+  });
 }
 
 /** Strip trailing `.md` extension if present. Idempotent. */

@@ -159,32 +159,6 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
   }
 }
 
-export function removeDiscoveryRecordIfOwner(
-  owner: string,
-  runtime: DiscoveryRuntime,
-): void {
-  const record = readDiscoveryRecord(runtime);
-  if (!record) {
-    return;
-  }
-
-  if (record.instanceId !== undefined) {
-    if (record.instanceId !== owner) {
-      return;
-    }
-  } else if (record.token !== owner) {
-    return;
-  }
-
-  try {
-    runtime.storage.unlinkSync(discoveryFilePath(runtime));
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
-  }
-}
 
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const record = readDiscoveryRecord(runtime);
@@ -223,5 +197,25 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
 }
 
 export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
-  removeDiscoveryRecordIfOwner(owner, runtime);
+  const record = readDiscoveryRecord(runtime);
+  if (!record) {
+    return;
+  }
+
+  if (record.instanceId !== undefined) {
+    if (record.instanceId !== owner) {
+      return;
+    }
+  } else if (record.token !== owner) {
+    return;
+  }
+
+  try {
+    runtime.storage.unlinkSync(discoveryFilePath(runtime));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return;
+    }
+    throw error;
+  }
 }

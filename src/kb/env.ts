@@ -24,16 +24,18 @@ export function parseCoralEnv(text: string): Record<string, string> {
   return env;
 }
 
-export function loadCoralEnv(): void {
+/**
+ * Reads the on-disk Coral env file and returns its parsed map. Does NOT
+ * mutate `process.env` — callers compose their own lookup chain (e.g.
+ * `process.env[key] ?? fileEnv[key]`) so env precedence stays explicit
+ * per design-philosophy.md Principle #4 (Single Runtime World).
+ */
+export function readCoralEnvFile(): Record<string, string> {
   const envPath = coralEnvPath();
   if (!existsSync(envPath)) {
-    return;
+    return {};
   }
-
-  const parsed = parseCoralEnv(readFileSync(envPath, 'utf8'));
-  for (const [key, value] of Object.entries(parsed)) {
-    process.env[key] ??= value;
-  }
+  return parseCoralEnv(readFileSync(envPath, 'utf8'));
 }
 
 function serializeCoralEnvValue(value: string): string {

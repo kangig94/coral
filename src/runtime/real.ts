@@ -178,9 +178,10 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
+  const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
   const paths: RuntimePaths = {
     projectSource: resolveProjectSource,
-    coral: composeCoralPaths(flavor),
+    coral: composeCoralPaths(flavor, customKbRoot ? { customKbRoot } : undefined),
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {

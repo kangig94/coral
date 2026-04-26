@@ -62,17 +62,17 @@ describe('kb detection and paths', () => {
     vi.resetModules();
   });
 
-  it('uses the process-level KB root when creating a runtime', async () => {
-    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'configured-kb');
+  it('honors a caller-provided custom root when creating a runtime', async () => {
+    const customRoot = join(mockState.tmpHome, 'configured-kb');
     const { createKbRuntime, paths, infraPaths } = await loadKbModules();
 
     const kb = createKbRuntime({
-      markdownRoot: infraPaths.kbRoot('prod'),
+      markdownRoot: infraPaths.kbRoot('prod', customRoot),
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
 
-    expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
+    expect(kb.markdownRoot).toBe(customRoot);
   });
 
   it('derives flavor-specific KB roots and runtime dirs', async () => {

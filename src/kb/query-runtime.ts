@@ -1,6 +1,5 @@
 import type { Database } from 'better-sqlite3';
 
-import { kbRoot } from "./paths.js";
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { openBackendStoreDb } from '../store/db.js';
@@ -43,7 +42,7 @@ export function resolveQueryProjectRoot(context: KbQueryContext): string {
 }
 
 export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
-  return kbRoot(resolveQueryFlavor(context));
+  return getQueryRuntime(resolveQueryFlavor(context)).paths.coral.corpus.kbRoot;
 }
 
 export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathResolver {
