@@ -217,6 +217,100 @@ For coordinator-mediated KB writes: the Corpus mutation lock wraps only authorit
 
 This decouples projection latency from authoritative write latency: a slow or failing retrieval projection never blocks the Corpus commit. A caller that needs strict retrieval readiness waits after commit via `waitFreshUntil`; if the wait fails, the Corpus commit remains durable and the running job reports the readiness failure. Failed drains retain the last-successful cursor for retry on next `notify` or startup. Fault isolation is structural.
 
+### 2.8a Slot-based provider architecture (newly added 2026-04-27 — design pending implementation)
+
+> **Status**: New section added on 2026-04-27. This subsection was missing from the original 2026-04-18 draft of §2.8 and is recorded here as a design the rewrite branch will adopt. The implementation has not yet landed; the current code still uses the binary "default + override" model described and superseded below. Open questions at the end of this section must be resolved before commit 1 of the migration order.
+
+The current implementation uses a binary "default owner + override" slot model: `EquipmentSlot.defaultOwner` returns Orama, `equip()` swaps in needle. This works for one equipment but encodes asymmetry — Orama is treated as fallback, needle as the only thing that can override. Adding a second backend (e.g. Pinecone) immediately needs a `'needle' | 'pinecone'` discriminator somewhere, and the `coordinator/coordinator.ts` `activeKind === 'needle'` branch returns under a new name. The default+override pattern *is* the smell.
+
+This subsection records the agreed redesign. The model unifies built-in defaults and equipment under one **slot + provider + expansion-contract** mechanism. Implementation lands across a sequence of commits (see *Migration order* below). Until that lands, the code differs from the description here; this section is the target.
+
+#### Core types (decided)
+
+```ts
+// SlotProvider — provider owns its readiness; the slot does not.
+interface SlotProvider<T> {
+  readonly id: string;            // "kb.vector.orama", "kb.vector.needle"
+  readonly priority: number;      // higher wins among READY providers
+  resolve(): T;                   // synchronous; called per request
+  isReady(): boolean;             // synchronous routing decision
+  waitForReady(timeoutMs: number, signal?: AbortSignal): Promise<void>;
+  onReadinessChange(listener: (ready: boolean) => void): () => void;
+}
+
+// Slot — one place where a class of provider plugs in.
+interface Slot<T> {
+  readonly id: string;            // "kb.vector"
+  current(): T;                       // priority-max ready provider; throws if none
+  active(): SlotProvider<T> | null;
+  list(): readonly SlotProvider<T>[];
+  waitForReady(timeoutMs: number): Promise<SlotProvider<T>>;
+  onChange(listener: (provider: SlotProvider<T> | null) => void): () => void;
+}
+
+// ExpansionContract — what every plugin (built-in or third-party) exports.
+interface ExpansionContract {
+  readonly id: string;                  // "needle" (catalog id)
+  readonly slot: string;                // "kb.vector"
+  readonly priority: number;            // 100 for equipment, 0 for built-ins
+  install(ctx, opts?): Promise<InstallResult>;
+  uninstall(ctx): Promise<UninstallResult>;
+  activate(ctx): Promise<SlotProvider<unknown>>;     // builds the SlotProvider
+  deactivate(ctx, provider): Promise<void>;          // idempotent
+}
+```
+
+Load-bearing invariants:
+- **Routing knows only `slot.current()`**. No `'orama' | 'needle'` literal anywhere outside the two provider modules.
+- **Orama registers eagerly** at backend startup (priority 0, always ready). It is a SlotProvider, not a fallback.
+- **Equipment registers lazily** on `/equip activate` (priority 100, ready only when corpus snapshot fresh).
+- **Provider owns readiness**: `isReady()` reads the provider's own `(snapshotId, contentManifestHash)` against `runtime.getCorpusStateSnapshot()`. The slot does not know corpus semantics.
+- **Router calls `slot.current()` per request** (no cached `vectorRoute`). Mid-flight staleness — needle goes stale during a search — automatically routes the next request to whichever provider is now `current()`.
+- **Slot's `waitForReady`** = `Promise.race(providers.map(p => p.waitForReady))`. First ready wins; coordinator uses this for source-import readiness without naming any backend.
+- **Adding a new backend** (e.g. Pinecone) = new module exporting an `ExpansionContract`. Coordinator/router/lifecycle code changes: zero.
+
+#### Ownership
+
+| Concern | Owner |
+|---|---|
+| `Slot`/`SlotProvider`/`SlotRegistry` primitives | `coordinator/equipment/slots.ts` (no domain imports) |
+| `ExpansionContract` shape | `expansion/contract.ts` |
+| Orama provider (`kb.vector.orama`) | `kb/search/orama/expansion.ts` |
+| Needle provider (`kb.vector.needle`) | `kb/search/needle/expansion.ts` |
+| Lifecycle (install/equip/unequip wiring, durable state, slot guard) | `coordinator/equipment/lifecycle.ts` (rewritten — generic over `ExpansionContract[]`) |
+| Catalog | `expansion/catalog.ts` (open registry, `z.string()` id) |
+| Bundled expansions array | `expansion/bundled.ts` |
+
+#### Migration order (each commit independently green)
+
+1. Introduce `SlotProvider`/`Slot`/`SlotRegistry` alongside existing types — no callers yet, types only.
+2. Move Orama into `kb/search/orama/` self-contained module (file moves, import updates).
+3. Define `ExpansionContract`; add Orama and needle expansion modules — typed but unwired.
+4. Rewrite `EquipmentLifecycleService` to walk `ExpansionContract[]`. Delete needle-specific lifecycle functions.
+5. Cut router over to `slot.current()`. Delete `'orama' | 'needle'` union and `resolveVectorRoute`.
+6. Cut coordinator source-import readiness over to `slot.waitForReady()`. Delete `activeKind === 'needle'` branches.
+7. Open the catalog: `catalogIdSchema = z.string()`; needle/cgc literal schemas migrate into their own expansion modules.
+
+#### Forward compatibility — Phase 2 (third-party loading)
+
+This contract is third-party-ready. "Third-party" = a published expansion module that follows `ExpansionContract`; loading mechanism is orthogonal:
+
+- **Phase 1 (this round)**: bundled only. `BUNDLED_EXPANSIONS: readonly ExpansionContract[]` in `expansion/bundled.ts`.
+- **Phase 2 (later)**: `lifecycle.ts` adds one line: `const all = [...BUNDLED, ...await loadDirectory(paths.expansionsDir)]`. Filesystem at `~/.coral/expansions/<name>/expansion.js` exports `default: ExpansionContract`. No contract change. Slot/router/coordinator stay byte-identical.
+
+The third-party test: bundled expansions and filesystem expansions get **equal treatment** — same priority knob, same readiness model, same lifecycle. If they require different code paths, the contract is wrong.
+
+#### Open questions (require future discussion before implementation lands)
+
+1. **Multi-slot expansion**. One expansion providing multiple capabilities (e.g. needle could plug `kb.vector` *and* `kb.embedding` if it ships an embedder). Initial scope is 1 expansion = 1 slot for simplicity; the contract may need to evolve to `slots: string[]` or compose multiple `ExpansionContract`s per package.
+2. **Capability negotiation**. Needle requires an embedding provider. Should the `ExpansionContract` declare prerequisites (`requires: ['kb.embedding']`) so the lifecycle refuses activation when a dependency is missing? Or stay implicit (provider's `isReady()` returns false)?
+3. **Test priority override**. The current proposal lets tests re-register with `priority + ε`. This is functional but not elegant — tests injecting fakes shouldn't need to know production priorities. Alternatives: explicit `slot.replaceForTest(provider)`; a separate test-only registry layer; named overrides via env. Decide before commit 1.
+4. **Phase 2 manifest format**. When `~/.coral/expansions/<name>/` is scanned, what file is read? `expansion.js` directly? `package.json` with a `coral.expansion` field? Plain JSON manifest plus a code module? Affects packaging UX for plugin authors.
+5. **Phase 2 security model**. Filesystem-discovered code runs in the coordinator process. Sandboxing? Capability tokens? Manifest signature verification? Out of scope for Phase 1 contract design but constrains Phase 2.
+6. **Onboarding ownership**. Today `expansion/catalog.ts` declares onboarding for needle (`buildNeedleOnboarding`). Under the new model, onboarding belongs to the expansion module (`kb/search/needle/expansion.ts`). Confirm the move; update `/equip` skill UX accordingly.
+7. **`coordinator/discovery-api.ts` and `expansion/paths.ts`** mentioned in §2.8 prose above do not exist in current code — they are themselves drift items orthogonal to this redesign. Decide whether they remain prescribed (and thus follow-up work) or get retired in favor of the unified contract.
+8. **Routing freshness vs. authority writes**. Router calls `slot.current()` per request. Under high-frequency Corpus mutations, this means every search re-evaluates `isReady()` for each provider. The cost is bounded (cursor compare, no I/O), but verify under load. If meaningful, providers can cache `isReady()` between explicit `notify()` events.
+
 ---
 
 ## 3. Journal Substrate (SQLite)
