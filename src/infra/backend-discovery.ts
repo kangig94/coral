@@ -1,14 +1,10 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/compose.js';
-import { composeCoralPaths } from './path/compose.js';
 import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
-import { readBuildFlavor } from './bundle-manifest.js';
 
 export interface CoordinatorDiscoveryRecord {
   pid: number;
@@ -35,16 +31,11 @@ type DiscoveryStorage = Pick<
   InfraStoragePort,
   'chmodSync' | 'mkdirSync' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
 >;
-type DiscoveryEnv = Pick<InfraEnvPort, 'platform'> & Partial<Pick<InfraEnvPort, 'fullSnapshot' | 'homedir'>>;
-type DiscoveryRuntime = {
-  storage: DiscoveryStorage;
-  env?: DiscoveryEnv;
-  paths?: { readonly coral: CoralPaths };
-};
-type ResolvedDiscoveryRuntime = {
+type DiscoveryEnv = Pick<InfraEnvPort, 'platform'>;
+export type DiscoveryRuntime = {
   storage: DiscoveryStorage;
   env: DiscoveryEnv;
-  paths?: { readonly coral: CoralPaths };
+  paths: { readonly coral: CoralPaths };
 };
 
 const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
@@ -126,101 +117,39 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   return normalized;
 }
 
-function defaultStorage(): DiscoveryStorage {
-  return {
-    chmodSync,
-    mkdirSync,
-    readFileSync,
-    unlinkSync,
-    writeAtomicSync: (path, data, options) => {
-      const tempPath = `${path}.tmp`;
-      try {
-        writeFileSync(tempPath, data, options);
-        renameSync(tempPath, path);
-        return true;
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) {
-          return false;
-        }
-        throw error;
-      }
-    },
-  };
-}
-
-function defaultEnv(): DiscoveryEnv {
-  return {
-    fullSnapshot: () =>
-      Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
-    homedir,
-    platform: () => process.platform,
-  };
-}
-
-function resolveDiscoveryRuntime(runtime?: DiscoveryRuntime): ResolvedDiscoveryRuntime {
-  return {
-    storage: runtime?.storage ?? defaultStorage(),
-    env: runtime?.env ?? defaultEnv(),
-    ...(runtime?.paths === undefined ? {} : { paths: runtime.paths }),
-  };
-}
-
-function discoveryFilePath(flavor: BuildFlavor, deps: ResolvedDiscoveryRuntime): string {
-  return resolveCoralPaths(flavor, deps).coordinator.infoFile;
-}
-
-function resolveCoralPaths(flavor: BuildFlavor, deps: ResolvedDiscoveryRuntime): CoralPaths {
-  if (deps.paths !== undefined) {
-    return deps.paths.coral;
-  }
-  const baseDir = deps.env.homedir === undefined ? undefined : join(deps.env.homedir(), '.coral');
-  return composeCoralPaths(flavor, baseDir === undefined ? undefined : { baseDir });
-}
-
-function flavorForPluginRoot(pluginRoot: string): BuildFlavor {
-  return readBuildFlavor(pluginRoot);
-}
-
-export function backendInfoPath(pluginRoot: string): string {
-  return discoveryFilePath(flavorForPluginRoot(pluginRoot), resolveDiscoveryRuntime());
+function discoveryFilePath(runtime: DiscoveryRuntime): string {
+  return runtime.paths.coral.coordinator.infoFile;
 }
 
 export function writeDiscoveryRecord(
-  flavor: BuildFlavor,
   record: CoordinatorDiscoveryRecord,
-  runtime?: DiscoveryRuntime,
+  runtime: DiscoveryRuntime,
 ): void {
-  const deps = resolveDiscoveryRuntime(runtime);
-  const infoPath = discoveryFilePath(flavor, deps);
+  const infoPath = discoveryFilePath(runtime);
   const payload = JSON.stringify({
     ...record,
     processStartedAt:
       record.processStartedAt
-      ?? probeProcessStartedAtSeconds(record.pid, deps.env.platform() as NodeJS.Platform)
+      ?? probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform)
       ?? undefined,
   });
 
-  deps.storage.mkdirSync(dirname(infoPath), { recursive: true });
-  if (!deps.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {
+  runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
+  if (!runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {
     return;
   }
-  if (deps.env.platform() !== 'win32') {
+  if (runtime.env.platform() !== 'win32') {
     try {
-      deps.storage.chmodSync(infoPath, 0o600);
+      runtime.storage.chmodSync(infoPath, 0o600);
     } catch {
       // Best-effort.
     }
   }
 }
 
-export function readDiscoveryRecord(
-  flavor: BuildFlavor,
-  runtime?: DiscoveryRuntime,
-): CoordinatorDiscoveryRecord | null {
-  const deps = resolveDiscoveryRuntime(runtime);
-
+export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   try {
-    const raw = deps.storage.readFileSync(discoveryFilePath(flavor, deps), 'utf-8');
+    const raw = runtime.storage.readFileSync(discoveryFilePath(runtime), 'utf-8');
     return normalizeDiscoveryRecord(JSON.parse(raw));
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) {
@@ -231,12 +160,10 @@ export function readDiscoveryRecord(
 }
 
 export function removeDiscoveryRecordIfOwner(
-  flavor: BuildFlavor,
   owner: string,
-  runtime?: DiscoveryRuntime,
+  runtime: DiscoveryRuntime,
 ): void {
-  const deps = resolveDiscoveryRuntime(runtime);
-  const record = readDiscoveryRecord(flavor, deps);
+  const record = readDiscoveryRecord(runtime);
   if (!record) {
     return;
   }
@@ -250,7 +177,7 @@ export function removeDiscoveryRecordIfOwner(
   }
 
   try {
-    deps.storage.unlinkSync(discoveryFilePath(flavor, deps));
+    runtime.storage.unlinkSync(discoveryFilePath(runtime));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return;
@@ -259,17 +186,13 @@ export function removeDiscoveryRecordIfOwner(
   }
 }
 
-export function probeCoordinator(
-  flavor: BuildFlavor,
-  runtime?: DiscoveryRuntime,
-): CoordinatorDiscoveryRecord | null {
-  const deps = resolveDiscoveryRuntime(runtime);
-  const record = readDiscoveryRecord(flavor, deps);
+export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
+  const record = readDiscoveryRecord(runtime);
   if (!record) {
     return null;
   }
 
-  const liveProcessStartedAt = probeProcessStartedAtSeconds(record.pid, deps.env.platform() as NodeJS.Platform);
+  const liveProcessStartedAt = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
   if (liveProcessStartedAt === null) {
     return null;
   }
@@ -281,20 +204,12 @@ export function probeCoordinator(
   return record;
 }
 
-export function writeBackendInfo(
-  pluginRoot: string,
-  info: BackendInfo,
-  runtime?: DiscoveryRuntime,
-): void {
-  const deps = resolveDiscoveryRuntime(runtime);
-  writeDiscoveryRecord(flavorForPluginRoot(pluginRoot), info, deps);
+export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {
+  writeDiscoveryRecord(info, runtime);
 }
 
-export function readBackendInfo(
-  pluginRoot: string,
-  runtime?: DiscoveryRuntime,
-): BackendInfo | null {
-  const record = readDiscoveryRecord(flavorForPluginRoot(pluginRoot), runtime);
+export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
+  const record = readDiscoveryRecord(runtime);
   if (!record || record.version === undefined || record.instanceId === undefined) {
     return null;
   }
@@ -307,10 +222,6 @@ export function readBackendInfo(
   };
 }
 
-export function removeBackendInfoIfOwner(
-  pluginRoot: string,
-  owner: string,
-  runtime?: DiscoveryRuntime,
-): void {
-  removeDiscoveryRecordIfOwner(flavorForPluginRoot(pluginRoot), owner, runtime);
+export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
+  removeDiscoveryRecordIfOwner(owner, runtime);
 }

@@ -6,9 +6,8 @@ import { equipmentPaths } from '#src/infra/path/equipment.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
-  it('returns a frozen record covering all five path families', () => {
+  it('returns a record covering all five path families', () => {
     const p = composeCoralPaths('prod');
-    expect(Object.isFrozen(p)).toBe(true);
     expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'equipment', 'exports', 'store']);
     expect(p.store.dbFile).toContain('.coral/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
@@ -28,12 +27,10 @@ describe('composeCoralPaths', () => {
     expect(dev.equipment.equipmentRoot).toContain('data-dev/equipment');
   });
 
-  it('throws when attempting to mutate the frozen record', () => {
+  it('rejects mutation at compile time via readonly modifier', () => {
     const p = composeCoralPaths('prod');
-    expect(() => {
-      // @ts-expect-error — mutation is what we are asserting fails
-      p.store = {} as never;
-    }).toThrow();
+    // @ts-expect-error — TypeScript readonly modifier blocks reassignment
+    p.store = {} as never;
   });
 
   it('storePaths accepts an explicit baseDir', () => {

@@ -86,7 +86,7 @@ function createHarness(options: HarnessOptions = {}) {
   };
 
   if (!options.skipPrime) {
-    writeBackendInfo(pluginRoot, info, runtime);
+    writeBackendInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   }
 
   return {

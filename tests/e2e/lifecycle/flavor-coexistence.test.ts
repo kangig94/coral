@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '#src/transport/http/backend/health.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from "#src/jobs/paths.js";
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { isProcessAlive } from '#src/infra/node-process.js';
@@ -174,9 +175,15 @@ function seedCompletedJob(
   }
 }
 
+function backendDiscoveryRuntime(pluginRoot: string) {
+  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+}
+
 async function requireBackendInfo(pluginRoot: string): Promise<BackendInfo> {
-  await waitForCondition(() => readBackendInfo(pluginRoot) !== null);
-  const info = readBackendInfo(pluginRoot);
+  const discoveryRuntime = backendDiscoveryRuntime(pluginRoot);
+  await waitForCondition(() => readBackendInfo(discoveryRuntime) !== null);
+  const info = readBackendInfo(discoveryRuntime);
   if (!info) {
     throw new Error(`Expected backend info for ${pluginRoot}`);
   }
@@ -192,7 +199,7 @@ async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 20
 }
 
 async function stopBackend(pluginRoot: string): Promise<void> {
-  const info = readBackendInfo(pluginRoot);
+  const info = readBackendInfo(backendDiscoveryRuntime(pluginRoot));
   if (!info || !isProcessAlive(info.pid)) {
     return;
   }

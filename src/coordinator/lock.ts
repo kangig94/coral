@@ -3,10 +3,8 @@ import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
-import { composeCoralPaths } from '../infra/path/compose.js';
 import type { LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { readBuildFlavor } from '../infra/bundle-manifest.js';
 
 const RETRY_DELAY_MS = 200;
 const HEALTHCHECK_TIMEOUT_MS = 1_000;
@@ -26,10 +24,6 @@ export class BackendAlreadyRunningError extends Error {
     super('Coral backend already running');
     this.name = 'BackendAlreadyRunningError';
   }
-}
-
-export function backendLockPath(pluginRoot: string): string {
-  return composeCoralPaths(readBuildFlavor(pluginRoot)).coordinator.lockFile;
 }
 
 type LockSnapshot = {
@@ -198,9 +192,10 @@ async function readHealth(
   runtime: CoordinatorLockRuntime,
   lockRecord: LockRecord,
 ): Promise<{ status: string; bundleHash?: string; flavor?: string } | null> {
-  const discovery = probeCoordinator(lockRecord.flavor, {
+  const discovery = probeCoordinator({
     storage: runtime.storage,
     env: runtime.env,
+    paths: runtime.paths,
   });
   if (!discovery) {
     return null;
@@ -232,10 +227,11 @@ async function readHealth(
   }
 }
 
-async function requestHandoff(runtime: CoordinatorLockRuntime, flavor: BuildFlavor): Promise<void> {
-  const discovery = probeCoordinator(flavor, {
+async function requestHandoff(runtime: CoordinatorLockRuntime): Promise<void> {
+  const discovery = probeCoordinator({
     storage: runtime.storage,
     env: runtime.env,
+    paths: runtime.paths,
   });
   if (!discovery) {
     return;
@@ -356,7 +352,7 @@ export async function acquireLock(
     }
 
     if (incumbent === 'healthy_replacing') {
-      await requestHandoff(runtime, flavor);
+      await requestHandoff(runtime);
       await sleepForRetry(runtime.time, RETRY_DELAY_MS);
       continue;
     }

@@ -1,3 +1,4 @@
+import type { DiscoveryRuntime } from '../infra/backend-discovery.js';
 import type { Runtime } from '../runtime/ports.js';
 
 type ReplacementBackendOwnershipCheckerInstaller = {
@@ -5,7 +6,7 @@ type ReplacementBackendOwnershipCheckerInstaller = {
 };
 
 type CreateReplacementBackendOwnershipCheckerContext = {
-  readBackendInfo: (pluginRoot: string, runtime: Runtime) => { instanceId: string } | null;
+  readBackendInfo: (runtime: DiscoveryRuntime) => { instanceId: string } | null;
   runtime: Runtime;
   runtimeState: { getLifecycle(): string };
   idleTimer: { isDraining: boolean; requestDrain(reason: string): void };
@@ -18,7 +19,7 @@ export function createReplacementBackendOwnershipChecker({
   runtime,
   runtimeState,
   idleTimer,
-  pluginRoot,
+  pluginRoot: _pluginRoot,
   instanceId,
 }: CreateReplacementBackendOwnershipCheckerContext): ReplacementBackendOwnershipCheckerInstaller {
   return {
@@ -29,7 +30,11 @@ export function createReplacementBackendOwnershipChecker({
         }
 
         try {
-          const current = readBackendInfo(pluginRoot, runtime);
+          const current = readBackendInfo({
+            storage: runtime.storage,
+            env: runtime.env,
+            paths: runtime.paths,
+          });
           if (current?.instanceId !== instanceId) {
             teardown();
             idleTimer.requestDrain('replaced');

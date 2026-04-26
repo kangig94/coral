@@ -1,5 +1,7 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
@@ -15,7 +17,12 @@ export function isShuttingDownError(value: unknown): value is { code: 'backend_s
 }
 
 export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
-  const info = readBackendInfo(pluginRoot);
+  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  const info = readBackendInfo({
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+  });
   if (!info || !isProcessAlive(info.pid)) {
     return { ok: false, reason: 'not_running' };
   }

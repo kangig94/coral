@@ -78,11 +78,11 @@ export interface ComposeCoralPathOptions {
 
 export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
   const familyOpts = opts?.baseDir === undefined ? undefined : { baseDir: opts.baseDir };
-  return Object.freeze({
+  return {
     store: storePaths(flavor, familyOpts),
     corpus: corpusPaths(flavor, familyOpts),
     coordinator: coordinatorPaths(flavor, undefined, familyOpts),
     exports: exportsPaths(flavor, familyOpts),
     equipment: equipmentPaths(flavor, familyOpts),
-  }) as CoralPaths;
+  };
 }

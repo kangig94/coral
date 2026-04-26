@@ -75,11 +75,11 @@ function resolveDefaultPluginRoot(): string {
 async function verifyBackendOwnershipWithHealthcheck(
   pluginRoot: string,
   record: LockRecord,
-  runtime: Pick<Runtime, 'process' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'time' | 'env' | 'paths'>,
   fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
   const expectedNamespace = pluginRootNamespace(pluginRoot);
-  const info = readBackendInfo(pluginRoot, runtime);
+  const info = readBackendInfo({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   if (!info) {
     return 'stale';
   }
@@ -130,7 +130,7 @@ async function verifyBackendOwnershipWithHealthcheck(
 }
 
 function createDefaultBackendOwnershipVerifier(
-  runtime: Pick<Runtime, 'process' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'time' | 'env' | 'paths'>,
   fetchFn: FetchFn,
 ): VerifyBackendOwnershipFn {
   return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime, fetchFn);
@@ -161,11 +161,11 @@ export function resolveBackendDefaults(
         runtime,
       });
     });
+  const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
   const writeBackendInfoFn =
-    options.writeBackendInfoFn ?? ((currentPluginRoot, info) => writeBackendInfo(currentPluginRoot, info, runtime));
+    options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
   const removeBackendInfoIfOwnerFn =
-    options.removeBackendInfoIfOwnerFn ??
-    ((currentPluginRoot, instanceId) => removeBackendInfoIfOwner(currentPluginRoot, instanceId, runtime));
+    options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
   const removeLockIfOwnerFn =
     options.removeLockIfOwnerFn ??
     ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage, paths: runtime.paths }));

@@ -9,7 +9,7 @@ import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
-  readDiscoveryRecord: vi.fn<(flavor: 'prod' | 'dev') => CoordinatorDiscoveryRecord | null>(),
+  readDiscoveryRecord: vi.fn<(runtime: unknown) => CoordinatorDiscoveryRecord | null>(),
   createIpcClient: vi.fn(),
 }));
 
@@ -115,7 +115,7 @@ describe('expansion activation (AC6)', () => {
     mockState.readDiscoveryRecord.mockReturnValue(null);
 
     await expect(activation.readEquipmentStatus('needle')).resolves.toEqual({ status: 'unavailable' });
-    expect(mockState.readDiscoveryRecord).toHaveBeenCalledWith('dev');
+    expect(mockState.readDiscoveryRecord).toHaveBeenCalled();
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
 
@@ -131,20 +131,22 @@ describe('expansion activation (AC6)', () => {
     vi.doUnmock('#src/infra/backend-discovery.js');
 
     try {
-      const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }] =
+      const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }, { createRealRuntime }] =
         await Promise.all([
           import('#src/infra/backend-discovery.js'),
           import('#src/cli/expansion-activation.js'),
+          import('#src/runtime/real.js'),
         ]);
       const request = vi.fn().mockResolvedValue({ equipment: [] });
 
       process.env.CORAL_FLAVOR = 'dev';
+      const runtime = createRealRuntime('dev');
       writeDiscoveryRecord(
-        'dev',
         makeDiscoveryRecord({
           flavor: 'dev',
           socketPath: '/tmp/coral-dev.sock',
         }),
+        { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
       );
       mockState.createIpcClient.mockReturnValue({ request });
 

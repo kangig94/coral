@@ -1,8 +1,10 @@
 declare const __PLUGIN_ROOT__: string;
 
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
-import { isProcessAlive } from '../../../infra/node-process.js';
+import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { BackendUnreachableError } from '../../../infra/http-errors.js';
+import { isProcessAlive } from '../../../infra/node-process.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 
 export type BackendHandle = {
   port: number;
@@ -38,7 +40,12 @@ export async function withAbortTimeout<T>(timeoutMs: number, run: (signal: Abort
 
 export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<BackendHandle> {
   const root = resolvePluginRoot(pluginRoot);
-  const info = readBackendInfo(root);
+  const runtime = createRealRuntime(readBuildFlavor(root));
+  const info = readBackendInfo({
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+  });
   if (!info || !isProcessAlive(info.pid)) {
     throw new BackendUnreachableError('Coral backend is not running.');
   }

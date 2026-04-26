@@ -1,7 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
-import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-discovery.js';
+import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -297,8 +297,8 @@ export type LifecycleDeps = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  readonly writeBackendInfoFn: typeof writeBackendInfo;
-  readonly removeBackendInfoIfOwnerFn: typeof removeBackendInfoIfOwner;
+  readonly writeBackendInfoFn: (info: BackendInfo) => void;
+  readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly removeLockIfOwnerFn: (pluginRoot: string, instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
@@ -439,7 +439,7 @@ async function runLifecycleStartup({
 
     assertStartupStillActive();
     const startedAt = runtimeState.getStartedAt();
-    writeBackendInfoFn(pluginRoot, {
+    writeBackendInfoFn({
       pid: backendPid,
       port,
       host,
@@ -507,7 +507,7 @@ async function runLifecycleStartup({
         // best effort
       }
     }
-    removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
+    removeBackendInfoIfOwnerFn(instanceId);
     removeLockIfOwnerFn(pluginRoot, instanceId);
 
     throw error;
@@ -607,7 +607,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       })
       .finally(() => {
         runtimeState.setLifecycle('stopped');
-        removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
+        removeBackendInfoIfOwnerFn(instanceId);
         removeLockIfOwnerFn(pluginRoot, instanceId);
         onStopped?.();
       });

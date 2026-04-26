@@ -8,7 +8,7 @@
 
 3. **Functional Core / Imperative Shell**: Domains own pure event vocabulary, reducers, read contracts, and shell-local orchestration. Cross-domain assembly happens only through coordinator composition and explicit owner contracts.
 
-4. **Single Runtime World**: Backend I/O flows through the Runtime ports selected at composition. Domains and coordinator services receive time, storage, paths, process, ids, and env through ports instead of reading ambient state.
+4. **Single Runtime World**: Backend I/O flows through the Runtime ports selected at composition. Domains and coordinator services receive time, storage, paths, process, ids, and env through ports instead of reading ambient state. Port objects are eager constants — `runtime.paths.coral` is composed once at `createRealRuntime(flavor)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime *after* the mock is set; do not rely on lazy re-evaluation.
 
 5. **Causal Faults**: Failure truth lives once on the originating stream. Job terminals point with `causeRef`; they do not wrap domain fault payloads. `JobLifecycleFault` is reserved for wrapper-local failures with no originating domain event.
 

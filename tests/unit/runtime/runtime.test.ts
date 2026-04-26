@@ -323,7 +323,7 @@ describe('createRealRuntime', () => {
     }
   });
 
-  it('runtime.paths.coral recomposes per access so node:os.homedir() mocks take effect', async () => {
+  it('runtime.paths.coral captures the active node:os.homedir() at construction', async () => {
     vi.resetModules();
     vi.doMock('node:os', async () => {
       const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -331,34 +331,30 @@ describe('createRealRuntime', () => {
     });
 
     try {
-      const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime('prod');
-
-      const firstStoreRoot = runtime.paths.coral.store.dbDir;
-      expect(firstStoreRoot.startsWith('/home/first/.coral')).toBe(true);
+      const { createRealRuntime: createFirst } = await import('#src/runtime/real.js');
+      const firstRuntime = createFirst('prod');
+      expect(firstRuntime.paths.coral.store.dbDir.startsWith('/home/first/.coral')).toBe(true);
 
       vi.doMock('node:os', async () => {
         const actual = await vi.importActual<typeof import('node:os')>('node:os');
         return { ...actual, homedir: () => '/home/second' };
       });
       vi.resetModules();
-      const { createRealRuntime: reMocked } = await import('#src/runtime/real.js');
-      const reRuntime = reMocked('prod');
-      expect(reRuntime.paths.coral.store.dbDir.startsWith('/home/second/.coral')).toBe(true);
+      const { createRealRuntime: createSecond } = await import('#src/runtime/real.js');
+      const secondRuntime = createSecond('prod');
 
-      expect(runtime.paths.coral).not.toBe(runtime.paths.coral);
+      expect(secondRuntime.paths.coral.store.dbDir.startsWith('/home/second/.coral')).toBe(true);
+      // Tests that mock node:os.homedir() per-test must construct the runtime
+      // AFTER the mock is set; runtime.paths.coral is an eager constant.
+      expect(firstRuntime.paths.coral.store.dbDir.startsWith('/home/first/.coral')).toBe(true);
     } finally {
       vi.doUnmock('node:os');
       vi.resetModules();
     }
   });
 
-  it('runtime.paths.coral returns a frozen object on each access', () => {
+  it('runtime.paths.coral is referentially stable across accesses', () => {
     const runtime = createRealRuntime('prod');
-    const coral = runtime.paths.coral;
-    expect(Object.isFrozen(coral)).toBe(true);
-    expect(() => {
-      (coral as unknown as { store: unknown }).store = null;
-    }).toThrow();
+    expect(runtime.paths.coral).toBe(runtime.paths.coral);
   });
 });

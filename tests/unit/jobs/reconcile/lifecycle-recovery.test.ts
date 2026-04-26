@@ -12,7 +12,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 
-const runtime = createRealRuntime('prod');
+let runtime: ReturnType<typeof createRealRuntime>;
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -515,6 +515,7 @@ describe('lifecycle recovery', () => {
     mkdirSync(mockState.baseTmp, { recursive: true });
     mockState.tmpRoot = mkdtempSync(join(mockState.baseTmp, 'run-'));
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
+    runtime = createRealRuntime('prod');
   });
 
   afterEach(() => {

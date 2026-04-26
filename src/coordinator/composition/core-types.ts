@@ -67,8 +67,8 @@ export type BackendCoreOptions = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  writeBackendInfoFn?: (pluginRoot: string, info: BackendInfo) => void;
-  removeBackendInfoIfOwnerFn?: (pluginRoot: string, instanceId: string) => void;
+  writeBackendInfoFn?: (info: BackendInfo) => void;
+  removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
   removeLockIfOwnerFn?: RemoveLockIfOwnerFn;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;

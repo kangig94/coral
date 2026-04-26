@@ -27,7 +27,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
-const runtime = createRealRuntime('prod');
+let runtime: ReturnType<typeof createRealRuntime>;
 
 function resolveScopeKey(projectRoot: string): string {
   return pluginRootNamespace(projectRoot);
@@ -36,6 +36,7 @@ function resolveScopeKey(projectRoot: string): string {
 describe('sessions shell store', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
+    runtime = createRealRuntime('prod');
   });
 
   afterEach(() => {
@@ -570,6 +571,7 @@ describe('sessions shell store', () => {
 describe('sessions shell store adversarial', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'red-sm-home-'));
+    runtime = createRealRuntime('prod');
   });
 
   afterEach(() => {

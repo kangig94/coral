@@ -459,11 +459,11 @@ describe('execution backend server', () => {
   let controller: BackendServerController | null = null;
 
   beforeEach(() => {
+    mkdirSync(mockState.tmpRoot, { recursive: true });
+    mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir();
-    mkdirSync(mockState.tmpRoot, { recursive: true });
     rmSync(JOBS_DIR, { recursive: true, force: true });
-    mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
   });
 
   afterEach(async () => {
@@ -620,27 +620,31 @@ describe('execution backend server', () => {
     const pluginRoot = createProjectRoot('backend-info-flavor');
     const namespace = pluginRootNamespace(pluginRoot);
 
-    backendInfo.writeBackendInfo(pluginRoot, {
-      pid: process.pid,
-      port: 4100,
-      socketPath: '/tmp/coral-dev.sock',
-      host: '127.0.0.1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      flavor: 'dev',
-      instanceId: 'backend-info-dev',
-      namespace,
-      startedAt: 1,
-    });
-    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
+    const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+    backendInfo.writeBackendInfo(
+      {
+        pid: process.pid,
+        port: 4100,
+        socketPath: '/tmp/coral-dev.sock',
+        host: '127.0.0.1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        flavor: 'dev',
+        instanceId: 'backend-info-dev',
+        namespace,
+        startedAt: 1,
+      },
+      discoveryRuntime,
+    );
+    expect(backendInfo.readBackendInfo(discoveryRuntime)).toMatchObject({
       host: '127.0.0.1',
       flavor: 'dev',
       namespace,
     });
 
     writeFileSync(
-      backendInfo.backendInfoPath(pluginRoot),
+      runtime.paths.coral.coordinator.infoFile,
       JSON.stringify({
         pid: process.pid,
         port: 4101,
@@ -654,7 +658,7 @@ describe('execution backend server', () => {
       }),
       'utf-8',
     );
-    expect(backendInfo.readBackendInfo(pluginRoot)).toBeNull();
+    expect(backendInfo.readBackendInfo(discoveryRuntime)).toBeNull();
   });
 
   it('returns 200 from /health with execution metadata', async () => {
@@ -4282,8 +4286,8 @@ describe('execution backend server', () => {
     await backend.controller.waitForShutdown();
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
-    expect(existsSync(backend.backendInfo.backendInfoPath(pluginRoot))).toBe(false);
-    expect(existsSync(backend.backendLock.backendLockPath(pluginRoot))).toBe(false);
+    expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+    expect(existsSync(runtime.paths.coral.coordinator.lockFile)).toBe(false);
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {

@@ -168,10 +168,14 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
-function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: string): FetchFn {
+function createSimulationHealthFetch(runtime: SimulationRuntime, _pluginRoot: string): FetchFn {
   return async (url, init) => {
     const parsed = new URL(url);
-    const info = readBackendInfo(pluginRoot, runtime);
+    const info = readBackendInfo({
+      storage: runtime.storage,
+      env: runtime.env,
+      paths: runtime.paths,
+    });
     const port = parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
 
     if (!info || parsed.pathname !== '/health' || parsed.hostname !== info.host || port !== info.port) {
@@ -514,14 +518,22 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         flavor,
       });
     },
-    writeBackendInfoFn: (bootPluginRoot, info) => {
-      hooks.writeBackendInfoCalls.push({ pluginRoot: bootPluginRoot, info });
+    writeBackendInfoFn: (info) => {
+      hooks.writeBackendInfoCalls.push({ pluginRoot, info });
       runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
-      writeBackendInfo(bootPluginRoot, info, runtime);
+      writeBackendInfo(info, {
+        storage: runtime.storage,
+        env: runtime.env,
+        paths: runtime.paths,
+      });
     },
-    removeBackendInfoIfOwnerFn: (bootPluginRoot, instanceId) => {
-      hooks.removeBackendInfoCalls.push({ pluginRoot: bootPluginRoot, instanceId });
-      removeBackendInfoIfOwner(bootPluginRoot, instanceId, runtime);
+    removeBackendInfoIfOwnerFn: (instanceId) => {
+      hooks.removeBackendInfoCalls.push({ pluginRoot, instanceId });
+      removeBackendInfoIfOwner(instanceId, {
+        storage: runtime.storage,
+        env: runtime.env,
+        paths: runtime.paths,
+      });
     },
     removeLockIfOwnerFn: (bootPluginRoot, instanceId) => {
       hooks.removeLockCalls.push({ pluginRoot: bootPluginRoot, instanceId });

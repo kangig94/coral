@@ -32,11 +32,12 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
-const runtime = createRealRuntime('prod');
+let runtime: ReturnType<typeof createRealRuntime>;
 
 describe('sessions shell resolve', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-resolve-home-'));
+    runtime = createRealRuntime('prod');
   });
 
   afterEach(() => {

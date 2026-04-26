@@ -24,7 +24,6 @@ import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/path/compose.js';
 import { resolveProjectSource } from "../infra/project-source.js";
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { CoralPaths } from '../infra/path/compose.js';
 import type {
   ChildProcessLike,
   DurableExecutionTransport,
@@ -179,16 +178,9 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
-  // CoralPaths is composed on each access so tests can mock node:os.homedir()
-  // per-test (in beforeEach) and still get the right roots back from a
-  // module-level Runtime instance. Path joins are cheap enough that
-  // recomputing per access is fine; caching here would freeze the very first
-  // mocked homedir into every subsequent test.
   const paths: RuntimePaths = {
     projectSource: resolveProjectSource,
-    get coral(): CoralPaths {
-      return composeCoralPaths(flavor);
-    },
+    coral: composeCoralPaths(flavor),
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {

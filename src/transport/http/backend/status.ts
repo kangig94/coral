@@ -1,5 +1,7 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
@@ -37,7 +39,12 @@ export async function getBackendStatus(pluginRoot: string): Promise<BackendStatu
 }
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
-  const info = readBackendInfo(pluginRoot);
+  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  const info = readBackendInfo({
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+  });
   if (!info || !isProcessAlive(info.pid)) return { status: 'not_running' };
 
   try {

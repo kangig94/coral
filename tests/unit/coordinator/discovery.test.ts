@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import type { DiscoveryRuntime } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',
@@ -41,12 +43,18 @@ function makeHome(): string {
   return root;
 }
 
+function makeDiscoveryRuntime(flavor: 'prod' | 'dev'): DiscoveryRuntime {
+  const runtime = createRealRuntime(flavor);
+  return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+}
+
 describe('coordinator discovery', () => {
   it('round-trips a discovery record through read/write', async () => {
     makeHome();
     const { readDiscoveryRecord, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
 
-    writeDiscoveryRecord('prod', {
+    writeDiscoveryRecord({
       pid: process.pid,
       port: 4312,
       socketPath: coordinatorPaths('prod').socketPath,
@@ -58,9 +66,9 @@ describe('coordinator discovery', () => {
       token: 'token-a',
       version: '1.2.3',
       instanceId: 'instance-a',
-    });
+    }, runtime);
 
-    expect(readDiscoveryRecord('prod')).toMatchObject({
+    expect(readDiscoveryRecord(runtime)).toMatchObject({
       pid: process.pid,
       port: 4312,
       host: '127.0.0.1',
@@ -78,8 +86,9 @@ describe('coordinator discovery', () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
+    const runtime = makeDiscoveryRuntime('dev');
 
-    writeDiscoveryRecord('dev', {
+    writeDiscoveryRecord({
       pid: process.pid,
       port: 9021,
       socketPath: coordinatorPaths('dev').socketPath,
@@ -89,9 +98,9 @@ describe('coordinator discovery', () => {
       startedAt: Date.now(),
       token: 'token-b',
       processStartedAt: probeProcessStartedAtSeconds(process.pid) ?? undefined,
-    });
+    }, runtime);
 
-    expect(probeCoordinator('dev')).toMatchObject({
+    expect(probeCoordinator(runtime)).toMatchObject({
       pid: process.pid,
       port: 9021,
       bundleHash: 'bundle-b',
@@ -105,8 +114,9 @@ describe('coordinator discovery', () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
+    const runtime = makeDiscoveryRuntime('prod');
 
-    writeDiscoveryRecord('prod', {
+    writeDiscoveryRecord({
       pid: process.pid,
       port: 9022,
       socketPath: coordinatorPaths('prod').socketPath,
@@ -116,8 +126,8 @@ describe('coordinator discovery', () => {
       startedAt: Date.now(),
       token: 'token-c',
       processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 1,
-    });
+    }, runtime);
 
-    expect(probeCoordinator('prod')).toBeNull();
+    expect(probeCoordinator(runtime)).toBeNull();
   });
 });
