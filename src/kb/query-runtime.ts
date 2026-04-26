@@ -20,15 +20,33 @@ export type KbQueryContext = {
   projectRoot?: string;
 };
 
-let cachedQueryRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
-let cachedQueryDb: { flavor: BuildFlavor; db: Database } | undefined;
+/**
+ * Per-process registry for KB read-side runtime + DB handles. CLI runs as a
+ * one-shot process, so reopening the SQLite handle for sequential KB queries
+ * is wasted work; this caches at most one open pair per flavor. Mirrors the
+ * `ReadCoralStoreRegistry` pattern in cli/read-store.ts so module-level
+ * mutables stay encapsulated and testable.
+ */
+export class KbQueryRegistry {
+  private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
+  private cachedDb: { flavor: BuildFlavor; db: Database } | undefined;
 
-function getQueryRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
-  if (cachedQueryRuntime?.flavor !== flavor) {
-    cachedQueryRuntime = { flavor, runtime: createRealRuntime(flavor) };
+  getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
+    if (this.cachedRuntime?.flavor !== flavor) {
+      this.cachedRuntime = { flavor, runtime: createRealRuntime(flavor) };
+    }
+    return this.cachedRuntime.runtime;
   }
-  return cachedQueryRuntime.runtime;
+
+  getDb(flavor: BuildFlavor): Database {
+    if (this.cachedDb?.flavor !== flavor) {
+      this.cachedDb = { flavor, db: openBackendStoreDb(this.getRuntime(flavor)) };
+    }
+    return this.cachedDb.db;
+  }
 }
+
+const defaultRegistry = new KbQueryRegistry();
 
 export function resolveQueryFlavor(context: KbQueryContext): BuildFlavor {
   return readBuildFlavor(context.pluginRoot);
@@ -42,7 +60,7 @@ export function resolveQueryProjectRoot(context: KbQueryContext): string {
 }
 
 export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
-  return getQueryRuntime(resolveQueryFlavor(context)).paths.coral.corpus.kbRoot;
+  return defaultRegistry.getRuntime(resolveQueryFlavor(context)).paths.coral.corpus.kbRoot;
 }
 
 export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathResolver {
@@ -56,11 +74,7 @@ export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathRes
 }
 
 export function getDefaultKbQueryDb(context: KbQueryContext): Database {
-  const flavor = resolveQueryFlavor(context);
-  if (cachedQueryDb?.flavor !== flavor) {
-    cachedQueryDb = { flavor, db: openBackendStoreDb(getQueryRuntime(flavor)) };
-  }
-  return cachedQueryDb.db;
+  return defaultRegistry.getDb(resolveQueryFlavor(context));
 }
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {

@@ -1283,365 +1283,83 @@ The read model lives in `workflow/read-queries.ts`. Workflow-domain reducers own
 
 ## 10. Topology
 
+This section specifies WHAT each top-level directory owns. It does **not**
+prescribe per-file layout — the canonical source of file lists is the
+directory itself, and per-domain internal structure follows §10.4
+(naming/subdivision policy). Earlier drafts of this section enumerated
+every file; that prescription accumulated drift, forced anti-cohesion
+splits (e.g., 2-file subdirs), and created competing canonical homes
+for the same concept. The ownership table below is the authority; §10.4
+governs how each domain shapes itself internally.
+
+### Top-level layout
+
 ```
 src/
-  coordinator/                       ← single-writer daemon; owns live state
-    bootstrap.ts                     — bundle entrypoint; argv parsing + `--smoke-open-store` bootstrap
-    coordinator.ts                   — composition root (factory + world + state + lifecycle)
-    contracts.ts                     — coordinator request/launch/wait/recovery port types
-    execution-service.ts             — request-scoped launch/resume/fork/workflow orchestration
-    workflow-cleanup.ts              — workflow-session artifact cleanup dispatch
-    event-bus.ts                     — typed in-process event bus (`job:*`, `session:released`,
-                                       `discuss:updated`)
-    control.ts                       — control-plane commands (shutdown, drain)
-    lock.ts                          — coordinator singleton lock. Implements warm-start handoff between
-                                       plugin-install versions: STARTUP_DEADLINE (30s), CONTENDER_BUDGET (90s),
-                                       bundleHash + flavor gating. Feature rationale: when user updates the
-                                       plugin, old coordinator detects new bundle and hands off cleanly so
-                                       CLI stays usable without manual intervention. This is process-identity
-                                       locking (one coordinator per flavor), separate from SQLite's BEGIN
-                                       IMMEDIATE (which serializes writes within one coordinator).
-    discovery-api.ts                 — passive reads of the coordinator discovery record for non-owner callers
-    invocation-scope.ts              — per-invocation event metadata scope
-    consumer-driver.ts               — projection consumer driver: push-triggered,
-                                       single-in-flight drain, condition-var waitFreshUntil
-    composition/                     — coordinator assembly helpers split out of the former execution root
-      backend-control.ts, backend-core-types.ts, backend-defaults.ts,
-      backend-world.ts, create-backend-core.ts, execution-services.ts
-    services/                        — request/repair services factored out of coordinator.ts
-      job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
-      kb-source-import-service.ts, kb-reindex-service.ts,
-      workflow-execution-service.ts, recovery-service.ts,
-      recovery-actions.ts, recovery-coordinator.ts, recovery-snapshot.ts,
-      execution-policies.ts
-    equipment/                       — active equipment slot lifecycle + RPC surface
-      slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts
-    corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver
-    shutdown/
-      mode.ts                        — graceful / drain / immediate
-      sequence.ts                    — ordered shutdown steps
-    live/
-      admission.ts                   — launch admission (seat/host pool)
-      provider-hosts/                — app-server host pool (lease, idle, drain, recovery; 16K file decomposed here)
-        pool.ts, lease.ts, idle.ts, drain.ts, recovery.ts, state.ts
-      durable-transport.ts           — DurableExecutionTransport seam for cli-runner durable spawns
-      provider-server-transport.ts   — provider-server transport seam over the host pool
-      process-helpers.ts             — per-launch process helpers shared by transports
-      idle.ts                        — idle-daemon eviction policy
-      worker-limits.ts               — per-provider launch concurrency clamps
-      curate-scheduler.ts            — periodic Corpus curation (discovery, community detection, repair retry).
-                                       Coordinator-owned: curate is a background scheduler, not a Corpus domain leaf,
-                                       because single-writer discipline requires it run inside the coordinator process.
-    recording/
-      observer.ts                    — journal append subscriber for telemetry
+  coordinator/   ← single-writer daemon; live state, cross-domain composition,
+                   warm-start lock, projection consumer driver, equipment
+                   lifecycle, shutdown sequencing, request/repair services
+  store/         ← SQL/Journal substrate over SQLite (event DB, schema loader,
+                   transactional append, projection consumer registration)
+  causality/     ← cross-domain `CauseRef` vocabulary + chain-walking renderer
+                   (imports no domain; describers injected via read-model)
+  read-model/    ← product read facade composing per-domain read queries +
+                   Corpus reads + cause-ref describer map. No write authority.
+  transport/     ← carriage only (HTTP, IPC, JSON-RPC envelope, SSE, RPC
+                   catalog dispatch). Imports contracts; never domain shells.
+  runtime/       ← `Runtime` port interfaces (time, storage, paths, process,
+                   ids, env) + production `createRealRuntime` adapter
+  infra/         ← flat low-level helpers with no domain knowledge
+                   (paths, errors, fs locks, env sanitizers, identifiers,
+                   build-flavor, plugin registry, backend discovery format)
+  jobs/          ← domain: job lifecycle events + projections + reconcile +
+                   imperative shell (launch/wait/abort)
+  sessions/      ← domain: session events + projections + resolve + shell
+  discuss/       ← event-sourced discussion (state machine + reducer + four
+                   sub-workflow flows + live-session registry)
+  workflow/      ← workflow syntax (parser/AST/normalize/compile) + plan +
+                   executor + reconcile, owns its own event vocabulary
+  kb/            ← Corpus authority (markdown is truth) — Corpus I/O,
+                   curate scheduler, search backends (FTS, vector, hybrid),
+                   user-facing ops (memo/promote/source-import/reindex)
+  providers/     ← provider plugin boundary (contract, registry, catalog,
+                   per-provider adapters: claude/codex/claude-appserver)
+  expansion/     ← installable equipment catalog (`needle`, `cgc`, …) +
+                   install/activate/workflow modules consumed by `/equip`
+  cli/           ← Commander CLI client (one-shot process); resolves plugin
+                   root, classifies command, dispatches to coordinator IPC
+                   or library-direct read paths
+  hooks/         ← Node.js ESM hook scripts (read stdin, fail open, never
+                   import from src/)
 
-  store/                             ← SQL/Journal substrate over SQLite event DB
-    db.ts                            — SQLite connection factory (WAL mode)
-    schema.ts                        — narrow TypeScript row contracts used by store helpers
-    schema-loader.ts                 — locates and applies numbered SQL schema files
-    envelope.ts                      — Zod validator for event envelope + upcaster registry
-    schemas/                         — SQL schema authority; numbered files applied in order
-      001_initial.sql                — clean-slate baseline (events, projection_*, meta)
-    append.ts                        — transactional append primitive (single-writer gate + composed validator runner)
-    reducers.ts                      — per-domain event schemas, append validators, and projection reducers
-    consumer-contract.ts             — neutral consumer error/kind vocabulary
-    projection-consumer.ts           — journal projection registration factory
-    index.ts                         — public Journal substrate barrel
-    queries/
-      events.ts                      — raw event lookup by (stream, seq) for causeRef deref
-
-  causality/                         ← cross-domain event-reference vocabulary
-    cause-ref.ts                     — cross-stream causeRef schema below jobs/sessions/discuss/workflow
-    render.ts                        — cause-ref renderer (chain walk + dispatcher); imports no domain.
-                                       Domains inject their describers via EventDescriberMap; composition
-                                       happens at read-model layer.
-
-  read-model/                        ← product read facade; no write authority
-    coral-store.ts                   — composed local read API across Journal projections + Corpus reads
-    read-context.ts                  — domain registry composition for upcast-aware reads
-    event-describers.ts              — composes default EventDescriberMap from per-domain describer maps
-                                       for the cause-ref renderer (mirrors how CoralStore composes
-                                       per-domain read queries).
-
-  transport/                         ← carriage only; imports only contracts
-    json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
-    rpc-catalog.ts                   — single coordinator RPC catalog shared by HTTP + IPC carriage
-    rpc-ports.ts                     — typed request-port surface projected from coordinator composition
-    context-profile.ts               — transport-context field ↔ CORAL env mapping
-    invocation-context.ts            — request/query → runtime InvocationContext builder
-    dispatch.ts                      — catalog method dispatch over injected request ports
-    response.ts                      — transport response mapping shared by IPC + HTTP
-    server-ports.ts                  — coordinator-composed server ports shared by IPC + HTTP
-    validation.ts                    — Zod validation formatting shared by IPC + HTTP
-    ipc/
-      server.ts                      — Unix socket server
-      client.ts                      — Unix socket client
-      ensure.ts                      — "start coordinator if needed" bootstrap helper (CLI-side)
-    http/
-      client.ts                      — HTTP client for CLI/tooling call-sites that speak HTTP directly
-      handler.ts                     — HTTP gateway handler; table-driven route array, auth gate, SSE endpoints
-      query-coerce.ts                — query-param coercion
-      sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
-
-  runtime/                           ← port interfaces + concrete runtime adapters
-    invocation-context.ts            — transport-independent project/plugin/env invocation input
-    ports.ts                         — time, storage, paths, process, ids, env
-    real.ts                          — production implementations
-    durable-runtime.ts               — durable child-process runtime result contracts
-    spawn.ts, exec-builder.ts        — spawn/exec construction helpers
-    cli-busy.ts, errors.ts           — runtime-local process/error helpers
-
-  infra/                             ← flat low-level helpers; no domain knowledge
-    build-flavor.ts                  — BuildFlavor + CORAL_FLAVOR resolution authority
-    backend-discovery.ts             — coordinator discovery record read/write
-    backend-log.ts                   — backend-local structured logging
-    plugin-registry.ts               — installed plugin discovery
-    paths.ts, store-paths.ts         — path/flavor layout
-    identifiers.ts                   — id generation + patterns
-    fs-errors.ts, fs-lock.ts         — low-level filesystem errors/locks
-    child-env.ts, process/           — child env and process helpers
-    json.ts, error-format.ts         — parse guards and error rendering
-    time.ts, format-progress.ts      — time and small formatting helpers
-
-  jobs/                              ← domain: jobs events + projections + shell
-    consumer.ts                      — Journal projection consumer registration for jobs
-    job-store.ts                     — journal append/read seam over jobsRegistry; sole owner of raw
-                                       `job.terminal.recorded` construction (invariant #47)
-    events.ts                        — jobs event body schemas + terminal-order append validator + projection_jobs reducers
-    outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef-aware describers
-    event-describers.ts              — per-event-type describer map for `job:*` events (consumed by the
-                                       cause-ref renderer through read-model composition)
-    read/queries.ts                  — JobView queries + progress/event lookup over the Journal substrate
-    read-contracts.ts                — read-side contract types shared by jobs/read and consumers
-    phase.ts                         — JobPhase + phaseForOutcome
-    launch.ts                        — LaunchDecision + launch body types
-    launch-readiness.ts              — readiness predicates over launch+queue events
-    launch-rejection.ts              — LaunchDecision rejection helper
-    admission-contract.ts            — launch admission/queue port contract
-    agent-resolution.ts              — resolve agent by id
-    abort-registry-contract.ts       — abort signal registry port
-    abort-result.ts                  — abort outcome shape consumed by abort handlers
-    job-runner-contract.ts           — provider/workflow/recovery lifecycle ports
-    progress-store-contract.ts       — progress-store port consumed by coordinator services
-    provider-request.ts              — persisted launch → ProviderRequest mapper
-    session-claim.ts                 — session job-claim error/options owned by jobs
-    continuity.ts                    — provider continuity snapshot type owned by jobs (mirrors sessions/continuity)
-    terminal-write-error.ts          — terminal append failure error
-    result.ts                        — JobTerminal + JobDiagnostics
-    terminal-materializer.ts         — provider/session/recovery terminal cause materialization
-    wait.ts                          — WaitCursor + wait body types + terminal wait defaults
-    wait-port.ts                     — wait coordinator port contract
-    wait-stream-event.ts             — wait stream envelope shape (progress / queued / waiting / terminal)
-    records.ts                       — job record DTOs shared across readers and shells
-    event-bus.ts                     — typed in-process bus for `job:*` lifecycle notifications
-                                       (in-memory only; not the durable progress log retired in §1.4)
-    startup.ts                       — jobs-domain startup helpers consumed by coordinator boot
-    exports/
-      result-artifact.ts             — canonical `<os-tmpdir>/coral-jobs/<jobId>/result.md` path + atomic writes
-      result-markdown.ts             — materialize/rebuild result.md from terminal events
-    reconcile/                       — imperative reconciliation (not pure replay)
-      contracts.ts                   — recovery plan contracts shared by recovery services
-      plan.ts                        — classify world-state divergence
-      registry.ts                    — known classifications
-      cross-namespace-adoption.ts    — cross-ns orphan adoption
-      recovery-effects.ts            — recovery-only job transitions
-      errors.ts                      — reconciliation-local error types
-      (world snapshot/actions/orchestration live under coordinator/services/recovery-*.ts)
-    shell/                           — imperative I/O over jobs domain
-      abort-registry.ts              — in-memory abort signal registry
-      continuity-consumer.ts         — provider stream continuity checkpoint consumer
-      launch.ts                      — launch job helper
-      event-subscription.ts          — journal-backed wait/reconnect event streaming
-      wait.ts                        — wait stream helper
-
-  sessions/                          ← domain: session events + projections
-    entry.ts                         — SessionEntry + controller profiles
-    allocation-contract.ts           — session allocation input contract
-    command-schemas.ts               — sessions transport/CLI request schemas
-    events.ts                        — session event body schemas
-    event-describers.ts              — per-event-type describer map for `session:*` events
-    continuity.ts                    — continuity snapshot type
-    execution-contract.ts            — coordinator-facing session execution/recovery ports
-    job-release.ts                   — session-owned job claim release helper
-    job-claim-contract.ts            — session-owned job claim/read port consumed by jobs shell
-    projections.ts                   — SessionView reducer
-    resolve.ts                       — session resolution by id/ref
-    shell/
-      store.ts                       — session store helpers
-
-  discuss/                           ← event-sourced discussion domain
-    state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
-    consumer.ts                      — Journal projection consumer registration for discuss
-    store-registry.ts                — discuss DomainEventRegistry (per-kind strict body schemas)
-    event-describers.ts              — per-event-type describer map for `discuss:*` events
-    recovery-contract.ts             — shell-free live-boundary predicate
-    shell/                           — imperative shell (moved from execution/discuss/)
-      recovery.ts                    — recovered resume contract + startup recovery + shutdown abort persistence
-      bid-flow.ts, speech-flow.ts, followup-flow.ts, synthesis-flow.ts
-                                       — sub-workflow loops (one per discuss phase, decomposed per §10.1a)
-      session-store.ts               — persistence glue for discuss sessions
-      live-registry.ts               — attached-session + watch buffers
-      persistence.ts                 — atomic session-state persistence helpers
-      registry.ts                    — DiscussContextRegistry (live session map owned by coordinator)
-      session-read-service.ts        — read-side service collecting attached sessions for queries
-      runtime-build.ts               — discuss runtime composition (services + ports)
-      runtime-services.ts            — service surface consumed by coordinator composition
-      context.ts                     — per-session DiscussContext value
-      flow-primitives.ts             — shared step primitives across the four flows
-      loop.ts                        — top-level discuss loop driving the flows
-      operations.ts                  — discuss-domain operations (start, seed, end, …)
-      prompts.ts                     — discuss prompt templates and assembly
-      tools.ts                       — discuss-tool dispatch helpers
-
-  kb/                                ← Corpus-authority domain (markdown is truth)
-    contracts.ts                     — public KB types
-    entry-types.ts                   — KB entity types (Note, Source, Principle, Community, EntityGraph)
-    validation.ts                    — entry validation
-    read.ts                          — load entry from markdown
-    read-contract.ts                 — read interface
-    corpus/                          — Corpus authority: markdown I/O
-      consumer-contract.ts           — Corpus consumer registration/apply contract
-      snapshot.ts                    — Corpus freshness snapshot identity
-      frontmatter.ts                 — parse/serialize YAML frontmatter
-      markdown-entries.ts            — markdown ↔ entry conversion
-      mutation-lock.ts               — single-writer lock around the Corpus
-      file-atomic.ts                 — atomic writes for markdown authority files
-      index-mutations.ts             — content/metadata sequence commits
-      index-records.ts               — markdown entry → index record builders
-      manifest-authority.ts          — manifest hash/delta authority checks
-      repair/                        — Corpus repair detection and remediation
-        corpus-scan.ts               — scan/incident types plus filesystem scan
-        classify.ts, fix.ts, incident-ids.ts
-    runtime-state.ts                 — in-memory Corpus state mirror (`kb_corpus_state`, index handles)
-    state/
-      corpus-state.ts                — persisted Corpus snapshot cursors
-      schema.ts                      — Corpus state row contracts
-    queries.ts                       — Corpus read/search/list/diagnose owner module for read paths
-    direct-read-index.ts             — transient/persisted list index selection for no-mutation reads
-    orama-factory.ts, orama-schema.ts — Orama construction/schema shared by base retrieval surfaces
-    search/                          — search backend abstraction (equipment-aware)
-      contract.ts                    — SearchBackend interface (fts, vector, hybrid)
-      router.ts                      — picks active backend per query type; detects equipment
-      chunking.ts                    — text chunking (shared by vector backends)
-      embedding.ts                   — embedding provider abstraction (shared)
-      orama-backend.ts               — base tier: FTS + vector (both at first deploy)
-      needle-contract.ts             — lightweight needle constants/types safe for coordinator imports
-      needle-backend.ts              — equipment implementation; dynamically imported by lifecycle activation
-      hybrid.ts                      — RRF fusion over active FTS + vector backends
-    ops/                             — user-facing operations (coordinator-mediated writes)
-      memo.ts, principles-list.ts, promote.ts, update.ts, delete.ts
-      source-import.ts, source-store.ts
-      reindex.ts                     — full Corpus rescan + projection rebuild
-      search.ts                      — search entrypoint (routes via search/router.ts)
-    curate/                          — background curation (graph + communities + principles)
-      runner.ts, scheduler.ts        — orchestration
-      discovery.ts                   — new-entry discovery
-      classification.ts              — entity classification
-      community-detection.ts         — community clustering
-      entity-consolidation.ts        — merge/refine entities
-      principles.ts                  — principle extraction
-      tags.ts                        — tag normalization
-      text-artifacts.ts              — text snapshot capture under mutation lock
-      metadata-commit.ts             — metadata-only lane commits
-      git-sync.ts                    — git integration (auto-commit, push, pull)
-      state.ts                       — curate-frontier + cursors (Corpus-side scheduler state)
-      claim-io.ts, content-normalize.ts, types.ts, operations.ts, usage-budget.ts
-
-  providers/                         ← plugin boundary
-    contract.ts                      — Provider + ProviderEventBody + middleware types
-    catalog.ts                       — provider catalog (workflow-facing allowlist)
-    registry.ts                      — registered provider instances
-    bootstrap.ts                     — provider wiring at coordinator start
-    cli-runner.ts                    — generic CLI runner
-    cli-detection.ts                 — detect installed CLIs
-    terminal.ts                      — provider-side terminal builder
-    inject.ts                        — provider dependency injection
-    middleware/
-      app-server-session.ts          — app-server lifecycle middleware
-      session-continuity.ts          — continuity tracking middleware
-      adapter-parse-guard.ts         — adapter output parse-guard middleware
-    app-server/
-      driver.ts                      — app-server driver (JSON-RPC lifecycle)
-      types.ts                       — app-server local types
-    claude/
-      exec-provider.ts               — compose claude exec kernel + middleware
-      exec-kernel.ts                 — pure claude exec call
-      session-kernel.ts              — claude app-server turn kernel
-      control-protocol.ts            — claude control messages
-      output-parser.ts               — claude JSON parsing
-      progress.ts                    — claude progress extraction
-      request-mapping.ts             — request → claude args
-      request-prep.ts
-      types.ts
-    claude-appserver/
-      server.ts                        — appserver daemon entry
-      controller.ts                    — SingleSessionController (turn + interrupt + child lifecycle, coherent unit)
-      protocol.ts                      — wire/control protocol handling
-                                         (35K `session.ts` decomposed to 2 responsibility files; §10.1a)
-    codex/
-      thread-provider.ts             — compose codex thread kernel + middleware
-      thread-kernel.ts               — pure codex turn kernel
-      protocol.ts                    — codex protocol types
-      request-mapping.ts             — request → codex thread/turn messages
-
-  workflow/                          ← owns syntax, plan, and execution semantics
-    parser.ts                        — pipe syntax parser
-    ast.ts                           — workflow AST types
-    input.ts                         — pipeline input → AST entrypoint
-    normalize.ts                     — AST normalization (desugaring) → WorkflowPlan
-    compile.ts                       — compile WorkflowPlan into atom launch sequence
-    plan.ts                          — WorkflowPlan + WorkflowSlot types + validation
-    command.ts                       — workflow command schema
-    consumer.ts                      — Journal projection consumer registration for workflow
-    dispatch.ts                      — workflow command dispatch entrypoint
-    events.ts                        — workflow event body schemas + projection_workflows reducers
-    event-describers.ts              — per-event-type describer map for `workflow:*` events
-    projections.ts                   — workflow journal append helper for tests/recovery over workflowRegistry
-    read-queries.ts                  — WorkflowView queries (plan + slot outcomes derived from child jobs)
-    executor.ts                      — top-level orchestration: declares plan, schedules launches, emits workflow.completed
-    launch.ts                        — atom launch + retry (intertwined per current code; §10.1a)
-    wait.ts                          — await-step state + multi-atom wait + cascade
-    recover.ts                       — workflow recovery + step resumption
-    stale-recovery.ts                — stale-atom recovery paths (split from recover.ts for cohesion)
-    internal/                        — workflow-internal contracts not exported to other domains
-      execution-contract.ts          — workflow execution port + WorkflowExecutionError
-      format.ts                      — workflow-local rendering helpers
-
-  tools/testing/                     ← test helpers; never imported by production
-    deferred.ts                      — test-only async primitive
-    hooks/                           — hook test helpers + hook tests
-    skills/                          — skill test helpers
-
-  cli/                               ← Commander CLI client (preserved)
-    bootstrap.ts, + subcommand modules
-
-  hooks/                             ← Node.js ESM hook scripts (preserved)
-```
-
-```
 tools/
-  simulation/                        ← debug-only executable harness; never user-facing, never bundled into coral-cli
-    cli.ts                           — `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` entrypoint
-    scenarios/*.yaml                 — executable debug scenario corpus
-    runtime.ts                       — SimulationRuntime (Runtime impl)
-    runner.ts                        — deterministic run loop
-    recording.ts                     — event recording for replay diagnostics
-    adversarial.ts                   — adversarial lifecycle/recovery scenario helpers
-    no-real-io.ts                    — sealing gate that fails on real-io leakage at type-check time
-    scenario-schema.ts               — Zod schema for scenario YAML
-    scenario-normalize.ts            — normalize parsed scenarios into runner input
-    scenario-http.ts                 — HTTP-shaped scenario step decoder
-    core/
-      backend.ts                     — simulation backend composition
-      constants.ts                   — simulation defaults/limits
-      memory-storage.ts              — in-memory StoragePort
-      mock-app.ts                    — generic mock app harness
-      mock-app-server.ts             — claude app-server mock
-      mock-process.ts                — process port double
-      mock-script-types.ts           — scripted-step value types shared by mocks
-      runtime-doubles.ts             — runtime port doubles
-      virtual-time.ts                — deterministic virtual TimePort
+  simulation/    ← debug-only executable harness; never bundled into the
+                   coral-cli plugin. Owns its own runtime doubles, scenario
+                   schema, deterministic run loop. Production code never
+                   imports from here.
+  testing/       ← test helpers shared across vitest suites; never imported
+                   by production src/.
 ```
+
+### Cross-domain ownership rules
+
+The full ownership matrix lives in §2.6 (Ownership Matrix). Restated for the
+topology lens:
+
+- **Coordinator** is the only layer allowed to compose multiple domains and
+  transport at once. It owns no domain vocabulary.
+- **Store** owns the Journal SQL substrate; domains own their event
+  vocabulary, append validators, and projection reducers.
+- **Causality** owns `CauseRef` and the renderer; describers are injected
+  from each domain through `read-model/event-describers.ts`.
+- **Read-model** composes per-domain read queries; it never writes.
+- **Transport** (HTTP/IPC) carries requests; it imports contracts only.
+- **Runtime/infra** sit below domains; they import nothing from domains,
+  transport, coordinator, or cli.
+
+Per-file lists are *generated* from the actual codebase, not specified
+here. When a new responsibility appears, §10.4 governs whether it warrants
+a new file, where it goes, and whether a subdirectory is justified.
 
 ### 10.1 What is deleted
 
@@ -1653,7 +1371,7 @@ tools/
 
 ### 10.1a Large-module decomposition (>500 lines as a review signal)
 
-Current code has several files in the 20K-60K range. §10 names their destinations but real decomposition splits them by responsibility boundaries, not single-file relocation.
+Current code has several files in the 20K-60K range. The table below records the historical decomposition — destination domains rather than per-file prescriptions, since real decomposition splits by responsibility boundaries (governed by §10.4), not single-file relocation.
 
 The 500-line mark is a **review trigger, not a hard split rule**. A file over that size is acceptable when it is a cohesive unit: one state machine, one domain algorithm, one controller with shared mutable state, or one implementation whose private helpers are only meaningful inside that flow. Splitting such a file can make the design worse by exporting private state, creating artificial seams, or forcing readers to jump across files to understand one concept.
 
@@ -1664,7 +1382,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
 | `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/response.ts`, `transport/server-ports.ts`, `transport/validation.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
-| `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts` (see §10 coordinator entry). |
+| `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts`. |
 | `src/execution/progress-store.ts` | 24K | REMOVED — job lifecycle events replace six-file progress. `jobs/shell/wait.ts` owns live-tail + SSE. `jobs/reconcile/` owns startup classification. |
 | `src/execution/runtime.ts` | 22K | `runtime/ports.ts` (interface) + `runtime/real.ts` (production implementation). Current composition stays roughly this size; no further split needed since it is interface + single implementation. |
 | `src/workflow/pipe-executor.ts` | 37K | Decompose along the natural seams in the current code (atom launch/retry coupling at `launchAtomWithRetry`, wait-state at `createAwaitStepState`, stale recovery at `recoverStaleAtom`, multi-atom wait at `waitForAtoms`): `workflow/executor.ts` (top-level orchestration), `workflow/launch.ts` (atom launch + retry — they are intertwined, not separable), `workflow/wait.ts` (await-step state + multi-atom wait + cascade), `workflow/recover.ts` (stale-atom recovery). Fault mapping lives inside whichever module emits the fault, not in a separate `error.ts`. |
