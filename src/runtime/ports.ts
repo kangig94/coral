@@ -76,7 +76,7 @@ export interface ChildProcessLike {
 }
 
 export interface Disposable {
-  dispose(): void;
+  [Symbol.dispose](): void;
 }
 
 export interface SpawnEvent {

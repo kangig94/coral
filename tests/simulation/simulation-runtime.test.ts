@@ -313,7 +313,7 @@ describe('simulation runtime', () => {
       },
     ]);
 
-    subscription.dispose();
+    subscription[Symbol.dispose]();
 
     world.runtime.process.spawn({
       command: 'after-dispose',

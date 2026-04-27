@@ -25,7 +25,7 @@ export class EventEmitterObserver implements EmittingRuntimeObserver {
   onSpawn(listener: SpawnListener): Disposable {
     this.listeners.add(listener);
     return {
-      dispose: () => {
+      [Symbol.dispose]: () => {
         this.listeners.delete(listener);
       },
     };

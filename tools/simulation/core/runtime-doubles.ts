@@ -42,7 +42,7 @@ export class InMemoryObserver implements RuntimeObserver {
   onSpawn(listener: SpawnListener): Disposable {
     this.listeners.add(listener);
     return {
-      dispose: () => {
+      [Symbol.dispose]: () => {
         this.listeners.delete(listener);
       },
     };

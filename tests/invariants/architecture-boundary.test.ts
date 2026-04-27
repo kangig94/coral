@@ -616,6 +616,12 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
+  it('runtime/binding.ts stays runtime-local and imports only its error and port homes', () => {
+    expect((PARSED_IMPORT_EDGES_BY_SOURCE.get('src/runtime/binding.ts') ?? []).map((edge) => edge.target)).toEqual([
+      'src/runtime/errors.ts',
+      'src/runtime/ports.ts',
+    ]);
+  });
   it('session continuity mutation contracts stay under the session owner', () => {
     const providerShimExists =
       PRODUCTION_SOURCE_FILES.includes(RETIRED_PROVIDERS_CONTINUITY_MUTATION) ||
