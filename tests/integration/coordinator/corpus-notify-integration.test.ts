@@ -11,7 +11,7 @@ import { commitMetadataTargets, commitMetadataTargetsLocked } from '#src/kb/cura
 import { readCurateState } from '#src/kb/curate/state/index.js';
 import { applyNoteUpdateLocked, update } from '#src/kb/ops/update.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

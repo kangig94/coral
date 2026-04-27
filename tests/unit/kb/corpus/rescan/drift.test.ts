@@ -177,7 +177,7 @@ describe('detectEntityGraphDrift', () => {
     };
     const reordered: EntityGraph = {
       entityMeta: {},
-      relationships: [indexedTwoRel.relationships[1]!, indexedTwoRel.relationships[0]!],
+      relationships: [indexedTwoRel.relationships[1], indexedTwoRel.relationships[0]],
     };
     expect(detectEntityGraphDrift(entityGraphScan(reordered), indexedTwoRel)).toBe('metadata');
   });

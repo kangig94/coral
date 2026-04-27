@@ -17,7 +17,7 @@ import {
   buildSourceIndexEntry,
   cloneKbIndex,
 } from '#src/kb/corpus/index-records.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/kb/search/orama/backend.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';

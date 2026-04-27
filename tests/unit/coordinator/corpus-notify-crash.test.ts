@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';

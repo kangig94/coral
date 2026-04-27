@@ -142,22 +142,26 @@ function filesOfKind(scan: CorpusScanView, kind: CorpusMarkdownFileScan['kind'])
   return scan.markdownFiles.filter((file) => file.kind === kind);
 }
 
+function asError(value: unknown, fallback: string): Error {
+  return value instanceof Error ? value : new Error(fallback);
+}
+
 function requireTypedFrontmatter<T>(file: CorpusMarkdownFileScan): T {
   if (file.frontmatter.typed !== null) {
     return file.frontmatter.typed as T;
   }
   if (file.frontmatter.typedError !== null) {
-    throw file.frontmatter.typedError;
+    throw asError(file.frontmatter.typedError, 'Frontmatter typed-error');
   }
   if (file.frontmatter.error !== null) {
-    throw file.frontmatter.error;
+    throw asError(file.frontmatter.error, 'Frontmatter parse error');
   }
   throw new Error(`Frontmatter unavailable (status: ${file.frontmatter.status})`);
 }
 
 function requireTitle(file: CorpusMarkdownFileScan): string {
   if (file.titleError !== null) {
-    throw file.titleError;
+    throw asError(file.titleError, 'Title error');
   }
   if (file.title === null) {
     throw new Error('Title unavailable');

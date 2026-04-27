@@ -227,7 +227,6 @@ export async function runClassificationBatches(
 
 export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: CurateCursor): Promise<boolean> {
   return kb.withMutationLock(() => {
-    const state = readCurateState(kb);
     const index = kb.readIndex();
     if (index === null) {
       return false;

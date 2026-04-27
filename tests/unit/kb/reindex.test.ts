@@ -746,7 +746,7 @@ This note has malformed frontmatter.
     expect(detectedAt).toBeDefined();
     setMtime(
       join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
-      new Date(Date.parse(detectedAt!) + 60_000),
+      new Date(Date.parse(detectedAt) + 60_000),
     );
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
@@ -853,9 +853,9 @@ This note is valid now.
     );
     setMtime(
       join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
-      new Date(Date.parse(detectedAt!) - 60_000),
+      new Date(Date.parse(detectedAt) - 60_000),
     );
-    setMtime(paths.notesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt!) - 60_000));
+    setMtime(paths.notesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
@@ -928,9 +928,9 @@ Source body.
     );
     setMtime(
       join(paths.sourcesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
-      new Date(Date.parse(detectedAt!) - 60_000),
+      new Date(Date.parse(detectedAt) - 60_000),
     );
-    setMtime(paths.sourcesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt!) - 60_000));
+    setMtime(paths.sourcesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
