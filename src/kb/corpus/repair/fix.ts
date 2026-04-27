@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { backendLog } from '../../../infra/backend-log.js';
@@ -20,9 +21,8 @@ import {
   type KbIndex,
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
-import { createGitSyncController } from '../../curate/git-sync.js';
+import type { GitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
-import type { GitSyncRuntimePicks, SpawnCliFn } from '../../curate/pipeline-types.js';
 import { writeFileAtomic } from '../file-atomic.js';
 import {
   commitIndexUpdate,
@@ -132,24 +132,20 @@ const AUTO_FIX_HANDLERS: Readonly<
     applyOrphanEntityGraphFixLocked(kb, mutation),
 };
 
-const noopSpawnCli: SpawnCliFn = async () => {
-  throw new Error('KB repair git-sync conflict resolution is unavailable in the standalone auto-fix runner.');
-};
-
-/** Applies deterministic KB repair actions and queues manual follow-up when automation must stop. */
-export async function applyDetectedIncidentFixes(
-  incidents: readonly DetectedIncident[],
+/**
+ * Applies deterministic KB repair actions and queues manual follow-up when automation must stop.
+ *
+ * @precondition Caller already holds `kb.withMutationLock()` and supplies the `mutation` context
+ * captured by that lock. The caller also constructs the `gitSync` controller from production ports
+ * (KbRuntime carries `storagePort`/`processPort`/`envPort`/`spawnCli`); auto-fix never reaches the
+ * lock-acquiring surface, so reentrant deadlock is structurally impossible.
+ */
+export async function applyDetectedIncidentFixesLocked(
   kb: KbRuntime,
-  runtime: GitSyncRuntimePicks,
+  mutation: KbMutationEffects,
+  gitSync: Pick<GitSyncController, 'scheduleDeferredCommit'>,
+  incidents: readonly DetectedIncident[],
 ): Promise<RepairResult[]> {
-  const gitSync = createGitSyncController({
-    kb,
-    spawnCli: noopSpawnCli,
-    processPort: runtime.processPort,
-    storagePort: runtime.storagePort,
-    envPort: runtime.envPort,
-  });
-
   const results: RepairResult[] = [];
 
   for (const incident of incidents) {
@@ -158,18 +154,18 @@ export async function applyDetectedIncidentFixes(
     try {
       const classification = resolveRepairClassification(incident);
       if (classification === 'auto-fixable') {
-        const outcome = await kb.withMutationLock((mutation) => applyAutoFixLocked(kb, mutation, incident));
+        const outcome = applyAutoFixLocked(kb, mutation, incident);
         if (outcome.kind === 'fixed') {
           gitSync.scheduleDeferredCommit();
           result = createRepairResult(incident, 'fixed', nowIsoString(kb.time));
         } else if (outcome.kind === 'manual') {
-          const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
+          const enqueued = enqueueManualRepairLocked(kb, incident);
           result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
         } else {
           result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
         }
       } else if (classification === 'needs-manual') {
-        const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
+        const enqueued = enqueueManualRepairLocked(kb, incident);
         result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
       } else {
         result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
@@ -440,12 +436,16 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
 
   const target = resolveMarkdownRepairTarget(kb, incident.entryId);
   const content = target?.content ?? null;
+  // observedContentHash lets pendingRepairNeedsRetry skip re-detection until the file content changes;
+  // typed-incident enqueues now record it so a re-running rebuild does not re-fire the same incident.
+  const observedContentHash = content === null ? undefined : createHash('sha256').update(content, 'utf8').digest('hex');
 
   const now = nowIsoString(kb.time);
   upsertCurateRetryEntry(kb, {
     entryId,
     entrySeq: readLenientEntrySeq(content),
     detectedAt: now,
+    ...(observedContentHash === undefined ? {} : { observedContentHash }),
     reason: incident.canonical,
     locus: incident.locus,
     canonicalIncident: incident.canonical,

@@ -2,7 +2,8 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { ConsumerRegistration } from '../store/consumer-contract.js';
-import type { EnvPort, IdPort, TimePort } from '../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
+import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
@@ -89,13 +90,25 @@ export interface KbMutationEffects {
   writeEntityGraph(graph: EntityGraph): void;
 }
 
+/**
+ * kb-domain port aggregator. Carries the ports that domain orchestrators
+ * (performRescan, gitSync) construct from; cross-domain consumers should
+ * compose at the subsystem level instead.
+ */
 export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
   readonly time: Pick<TimePort, 'now'>;
   readonly ids: Pick<IdPort, 'uuid'>;
-  readonly env: Pick<EnvPort, 'get'>;
+  /**
+   * general-purpose I/O surface used by gitSync; do NOT use for corpus
+   * markdown reads — use corpusStorage (added in Phase 8) instead.
+   */
+  readonly storagePort: StoragePort;
+  readonly spawnCli: SpawnCliFn;
+  readonly processPort: ProcessPort;
+  readonly envPort: EnvPort;
   readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
   readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
   readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;

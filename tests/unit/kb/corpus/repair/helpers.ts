@@ -5,17 +5,17 @@ import { fileURLToPath } from 'node:url';
 
 import { expect } from 'vitest';
 
-import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { sortedMarkdownEntries } from '#src/kb/corpus/markdown-entries.js';
+import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { classifyIncident, type IncidentClassification } from '#src/kb/corpus/repair/classify.js';
 import { fileSyntaxDetector } from '#src/kb/corpus/repair/detect/file-syntax.js';
 import { frontmatterShapeDetector } from '#src/kb/corpus/repair/detect/frontmatter-shape.js';
 import { identitySequenceDetector } from '#src/kb/corpus/repair/detect/identity-sequence.js';
 import { referenceIntegrityDetector } from '#src/kb/corpus/repair/detect/reference-integrity.js';
-import { REPAIR_HINTS, applyDetectedIncidentFixes } from '#src/kb/corpus/repair/fix.js';
+import { REPAIR_HINTS, applyDetectedIncidentFixesLocked } from '#src/kb/corpus/repair/fix.js';
 import { repairIncidentLocus, type RepairIncidentId } from '#src/kb/corpus/repair/incident-ids.js';
 import {
   createCorpusEntityGraphScan,
@@ -25,6 +25,7 @@ import {
   type DetectedIncident,
 } from '#src/kb/corpus/repair/corpus-scan.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 const DETECTORS = [
@@ -68,7 +69,7 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
 
   cpSync(join(FIXTURES_DIR, fixture), markdownRoot, { recursive: true });
 
-  const kb = createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot,
     runtimeDir,
     db: createKbTestDb(runtimeDir),
@@ -125,11 +126,16 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     expect(classifications).toEqual(testCase.expectedIncidents.map(() => testCase.classification));
 
     const runtime = createRealRuntime('prod');
-    const results = await applyDetectedIncidentFixes(detected, harness.kb, {
+    const gitSync = createGitSyncController({
+      kb: harness.kb,
+      spawnCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
       processPort: runtime.process,
       storagePort: runtime.storage,
       envPort: runtime.env,
     });
+    const results = await harness.kb.withMutationLock((mutation) =>
+      applyDetectedIncidentFixesLocked(harness.kb, mutation, gitSync, detected),
+    );
     expect(results).toHaveLength(testCase.expectedIncidents.length);
     expect(results.map((result) => result.action)).toEqual(
       testCase.expectedIncidents.map(() => (testCase.classification === 'auto-fixable' ? 'fixed' : 'enqueued')),

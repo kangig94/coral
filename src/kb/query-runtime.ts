@@ -13,6 +13,7 @@ import {
   sourcePathFromName,
 } from './paths.js';
 import { createKbRuntime } from './runtime.js';
+import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type { KbReadPathResolver } from './read.js';
 
 export type KbQueryContext = {
@@ -79,10 +80,27 @@ export function getDefaultKbQueryDb(context: KbQueryContext): Database {
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {
   const flavor = resolveQueryFlavor(context);
+  const runtime = defaultRegistry.getRuntime(flavor);
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),
     runtimeDir: kbRuntimeDir(flavor),
     db: getDefaultKbQueryDb(context),
     readOnlyOrama: true,
+    envPort: runtime.env,
+    storage: runtime.storage,
+    spawnCli: createReadOnlyKbSpawnCli(),
+    processPort: runtime.process,
   });
+}
+
+/**
+ * KB query runtime is read-only: it answers `kb` CLI subcommands without touching
+ * `gitSync.scheduleDeferredCommit()` or the auto-fix dispatcher. The spawnCli surface
+ * is therefore unreachable from the read path; rejecting any invocation here makes
+ * accidental future writes fail loudly instead of silently spawning a real provider.
+ */
+function createReadOnlyKbSpawnCli(): SpawnCliFn {
+  return async () => {
+    throw new Error('KB query runtime is read-only and cannot spawn provider CLIs.');
+  };
 }

@@ -1,10 +1,12 @@
+import type BetterSqlite3 from 'better-sqlite3';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
-import type { KbRuntime } from '#src/kb/contract.js';
+import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
+import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -12,6 +14,56 @@ import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '#src/store/consumer-contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '../../tools/simulation/runtime.js';
+
+/**
+ * Benign default `spawnCli` for KB tests: returns a clean exit. Tests that exercise
+ * provider-launching code paths must override this explicitly so accidental real
+ * spawns surface as test-time mismatches, not silent successes.
+ */
+const TEST_SPAWN_CLI_NOOP: SpawnCliFn = async () => ({
+  stdout: '',
+  stderr: '',
+  code: 0,
+  aborted: false,
+});
+
+export interface CreateTestKbRuntimeOptions {
+  markdownRoot: string;
+  runtimeDir: string;
+  db: BetterSqlite3.Database;
+  /**
+   * Source for the four port slots (`storage`/`spawnCli`/`processPort`/`envPort`).
+   * Defaults to a fresh `SimulationRuntime`. Pass an explicit runtime when the
+   * test exercises gitSync or shares state across kb instances.
+   */
+  runtime?: Runtime;
+  corpusPublishCallbacks?: KbCorpusPublishCallbacks;
+  readOnlyOrama?: boolean;
+  spawnCli?: SpawnCliFn;
+}
+
+/**
+ * Constructs a `KbRuntime` for tests, sourcing the four port slots
+ * (`storage`, `spawnCli`, `processPort`, `envPort`) from a `SimulationRuntime`
+ * by default. Tests pass their own `runtime` to share state with surrounding
+ * fixture code. `time`/`ids` defer to `createKbRuntime`'s `SYSTEM_TIME_PORT` /
+ * `randomUUID` defaults so existing tests that rely on `vi.setSystemTime` keep
+ * working without re-injecting clock ports through the helper.
+ */
+export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRuntime {
+  const runtime = options.runtime ?? new SimulationRuntime();
+  return createKbRuntime({
+    markdownRoot: options.markdownRoot,
+    runtimeDir: options.runtimeDir,
+    db: options.db,
+    ...(options.corpusPublishCallbacks === undefined ? {} : { corpusPublishCallbacks: options.corpusPublishCallbacks }),
+    ...(options.readOnlyOrama === undefined ? {} : { readOnlyOrama: options.readOnlyOrama }),
+    envPort: runtime.env,
+    storage: runtime.storage,
+    spawnCli: options.spawnCli ?? TEST_SPAWN_CLI_NOOP,
+    processPort: runtime.process,
+  });
+}
 
 function createHandle(reg: ConsumerRegistration): ConsumerHandle {
   const status: ConsumerHandleStatus =
@@ -76,13 +128,11 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
       storage: runtime.storage,
       schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
-    return createKbRuntime({
+    return createTestKbRuntime({
       markdownRoot: runtime.paths.coral.corpus.kbRoot,
       runtimeDir: join(root, 'kb-runtime'),
       db,
-      time: runtime.time,
-      ids: runtime.ids,
-      env: runtime.env,
+      runtime,
     });
   })();
   const registerConsumer = options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));

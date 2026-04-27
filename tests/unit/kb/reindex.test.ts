@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -35,10 +36,10 @@ async function loadKbModules() {
 }
 
 function createRuntime(
-  createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
+  _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createKbRuntime({
+  return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
@@ -76,14 +77,17 @@ function expectPendingRepairEntries(
   for (const expectedEntry of expected) {
     const repair = pendingRepair?.find((entry) => entry.entryId === expectedEntry.entryId);
     expect(repair).toBeDefined();
+    // Phase 3+ writes typed canonical incident reasons (e.g. `frontmatter-shape/yaml-parse-error`)
+    // when the typed-detector pipeline supersedes the shallow `pending-repair` row in the queue.
+    // The shallow `pending-repair` reason still appears for entries the typed pipeline does not touch.
     expect(repair).toEqual(
       expect.objectContaining({
         entryId: expectedEntry.entryId,
         entrySeq: expectedEntry.entrySeq,
-        reason: 'pending-repair',
         retryCount: 0,
       }),
     );
+    expect(repair?.reason).toMatch(/^(?:pending-repair|[a-z-]+\/[a-z-]+)$/);
     expect(repair?.retryNotBefore).toBe(repair?.detectedAt);
   }
 }

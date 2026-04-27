@@ -192,6 +192,7 @@ export function buildCorpusScanView(
   return createCorpusScanView({ markdownFiles });
 }
 
+
 function scanMarkdownDirectory(kind: CorpusMarkdownKind, dirPath: string): CorpusMarkdownFileScan[] {
   return sortedMarkdownEntries(dirPath).map((entry) => {
     const path = join(dirPath, entry);

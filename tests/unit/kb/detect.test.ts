@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -64,9 +65,9 @@ describe('kb detection and paths', () => {
 
   it('honors a caller-provided custom root when creating a runtime', async () => {
     const customRoot = join(mockState.tmpHome, 'configured-kb');
-    const { createKbRuntime, paths, infraPaths } = await loadKbModules();
+    const { paths, infraPaths } = await loadKbModules();
 
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: infraPaths.kbRoot('prod', customRoot),
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
@@ -99,8 +100,8 @@ describe('kb detection and paths', () => {
 
   it('creates the runtime without requiring needle equipment at startup', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { createKbRuntime, paths } = await loadKbModules();
-    const kb = createKbRuntime({
+    const { paths } = await loadKbModules();
+    const kb = createTestKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
@@ -115,8 +116,8 @@ describe('kb detection and paths', () => {
 
   it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { createKbRuntime, paths } = await loadKbModules();
-    const kb = createKbRuntime({
+    const { paths } = await loadKbModules();
+    const kb = createTestKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
@@ -139,8 +140,8 @@ describe('kb detection and paths', () => {
 
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { createKbRuntime, paths } = await loadKbModules();
-    const kb = createKbRuntime({
+    const { paths } = await loadKbModules();
+    const kb = createTestKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir('dev'),
       db: createKbTestDb(paths.kbRuntimeDir('dev')),

@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 import { createRuntimeBinding } from '../runtime/binding.js';
-import { readProcessEnv } from '../infra/process-env.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
-import type { EnvPort, IdPort, TimePort } from '../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
+import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type {
   Backed,
   EmbeddingService,
@@ -88,7 +88,10 @@ export interface CreateKbRuntimeOptions {
   readOnlyOrama?: boolean;
   time?: Pick<TimePort, 'now'>;
   ids?: Pick<IdPort, 'uuid'>;
-  env?: Pick<EnvPort, 'get'>;
+  envPort: EnvPort;
+  storage: StoragePort;
+  spawnCli: SpawnCliFn;
+  processPort: ProcessPort;
 }
 
 class KbRuntimeImpl implements KbRuntime {
@@ -97,7 +100,10 @@ class KbRuntimeImpl implements KbRuntime {
   readonly db: BetterSqlite3.Database;
   readonly time: Pick<TimePort, 'now'>;
   readonly ids: Pick<IdPort, 'uuid'>;
-  readonly env: Pick<EnvPort, 'get'>;
+  readonly storagePort: StoragePort;
+  readonly spawnCli: SpawnCliFn;
+  readonly processPort: ProcessPort;
+  readonly envPort: EnvPort;
   readonly vector: KbRuntime['vector'];
   readonly embedding: KbRuntime['embedding'];
   readonly fts: KbRuntime['fts'];
@@ -152,14 +158,20 @@ class KbRuntimeImpl implements KbRuntime {
     readOnlyOrama,
     time,
     ids,
-    env,
+    envPort,
+    storage,
+    spawnCli,
+    processPort,
   }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.time = time ?? SYSTEM_TIME_PORT;
     this.ids = ids ?? { uuid: () => randomUUID() };
-    this.env = env ?? { get: readProcessEnv };
+    this.storagePort = storage;
+    this.spawnCli = spawnCli;
+    this.processPort = processPort;
+    this.envPort = envPort;
     this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
     this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', createOramaBacked(this, this.baseProjection));

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
@@ -61,7 +61,7 @@ describe('KbRuntime base vector binding stability', () => {
     const root = allocateRoot();
     writeNote(root, 1, 'Initial corpus body.');
 
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
       db: createKbTestDb(join(root, '.runtime')),
@@ -81,7 +81,7 @@ describe('KbRuntime base vector binding stability', () => {
 
   it('defaults vector and fts to Orama while leaving embedding unbound', () => {
     const root = allocateRoot();
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
       db: createKbTestDb(join(root, '.runtime')),

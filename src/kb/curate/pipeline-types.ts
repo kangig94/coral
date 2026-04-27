@@ -8,22 +8,7 @@ import type {
 import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
 import type { CurateCursor } from './state/index.js';
 
-export type SpawnCliResult = {
-  stdout: string;
-  stderr: string;
-  code: number | null;
-  aborted: boolean;
-};
-
-export type SpawnCliFn = (options: {
-  provider: string;
-  command: string;
-  args: string[];
-  prompt?: string;
-  cwd?: string;
-  pool?: 'default' | 'discuss' | 'curate';
-  signal?: AbortSignal;
-}) => Promise<SpawnCliResult>;
+export type { SpawnCliFn, SpawnCliResult } from './spawn-cli.js';
 
 export type GitSyncRuntimePicks = {
   processPort: Pick<ProcessPort, 'exec' | 'execSync'>;

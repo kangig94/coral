@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
@@ -228,7 +229,7 @@ describe('Corpus notify crash replay', () => {
         }),
       );
 
-      const kb = createKbRuntime({
+      const kb = createTestKbRuntime({
         markdownRoot: vaultDir,
         runtimeDir,
         db: primaryDb,

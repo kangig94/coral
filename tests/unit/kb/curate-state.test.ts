@@ -33,10 +33,10 @@ import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 function expectPendingRepairEntries(
   pendingRepair: PendingRepair[] | null,
@@ -202,12 +202,14 @@ let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
-  runtime = createKbRuntime({
+  gitSyncRuntime = createRealRuntime('prod');
+  runtime = createTestKbRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
     db: createKbTestDb(tempDir),
+    runtime: gitSyncRuntime,
+    spawnCli: noopSpawnCli,
   });
-  gitSyncRuntime = createRealRuntime('prod');
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli: noopSpawnCli,

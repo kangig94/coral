@@ -11,7 +11,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -168,12 +168,13 @@ describe('curate related-resolution and budget guards', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-ac6-ac8-'));
-    runtime = createKbRuntime({
+    gitSyncRuntime = createRealRuntime('prod');
+    runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
       db: createKbTestDb(tempDir),
+      runtime: gitSyncRuntime,
     });
-    gitSyncRuntime = createRealRuntime('prod');
     useScheduler(async () => ({
       stdout: '[]',
       stderr: '',
@@ -338,10 +339,11 @@ describe('curate related-resolution and budget guards', () => {
   });
 
   it('auto-commit stages source metadata writes', async () => {
-    runtime = createKbRuntime({
+    runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: join(tempDir, 'data'),
       db: createKbTestDb(join(tempDir, 'data')),
+      runtime: gitSyncRuntime,
     });
     mkdirSync(runtime.notesDir(), { recursive: true });
     mkdirSync(runtime.principlesDir(), { recursive: true });

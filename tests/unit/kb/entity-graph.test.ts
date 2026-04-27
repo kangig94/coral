@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 function createGraph(): EntityGraph {
   return {
@@ -39,7 +39,7 @@ describe('entity-graph', () => {
 
   it('reads valid graphs and treats missing files as unavailable without warnings', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
       db: createKbTestDb(root),
@@ -59,7 +59,7 @@ describe('entity-graph', () => {
 
   it('degrades on malformed, invalid, and conflict-marked files without rewriting them', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
       db: createKbTestDb(root),
@@ -101,7 +101,7 @@ describe('entity-graph', () => {
 
   it('writes graphs atomically through a tmp file and updates the live index copy', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
       db: createKbTestDb(root),
@@ -136,7 +136,7 @@ describe('entity-graph', () => {
 
   it('rejects index snapshots without entity graph fields', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
-    const kb = createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
       db: createKbTestDb(root),

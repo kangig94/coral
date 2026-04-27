@@ -14,6 +14,7 @@ import {
   seedNeedleRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -65,10 +66,10 @@ function asUnknownHandler<TArgs extends unknown[], TResult>(
 }
 
 function createRuntime(
-  createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
+  _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createKbRuntime({
+  return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),

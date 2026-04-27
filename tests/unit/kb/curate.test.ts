@@ -24,7 +24,7 @@ import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/cu
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -233,12 +233,14 @@ async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-'));
-  runtime = createKbRuntime({
+  gitSyncRuntime = createRealRuntime('prod');
+  runtime = createTestKbRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
     db: createKbTestDb(tempDir),
+    runtime: gitSyncRuntime,
+    spawnCli: noopSpawnCli,
   });
-  gitSyncRuntime = createRealRuntime('prod');
   useScheduler();
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
@@ -1900,10 +1902,12 @@ describe('curate', () => {
       expect(afterFirstStart).toContain('notes/\n');
       expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
 
-      const secondRuntime = createKbRuntime({
+      const secondRuntime = createTestKbRuntime({
         markdownRoot: tempDir,
         runtimeDir: tempDir,
         db: createKbTestDb(tempDir),
+        runtime: gitSyncRuntime,
+        spawnCli: noopSpawnCli,
       });
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,

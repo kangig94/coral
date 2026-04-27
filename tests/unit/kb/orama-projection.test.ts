@@ -21,6 +21,7 @@ import { createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/kb/search/orama/backend.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const TOP_K = 10;
 const QUERY_PANEL = ['graph retrieval', 'sqlite planner', 'community summary', 'metadata tags'];
@@ -389,7 +390,7 @@ async function installCurrentFullSnapshot(runtime: ReturnType<typeof createKbRun
 }
 
 async function createSeededRuntime(root: string): Promise<ReturnType<typeof createKbRuntime>> {
-  const runtime = createKbRuntime({
+  const runtime = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
     db: createKbTestDb(join(root, '.runtime')),

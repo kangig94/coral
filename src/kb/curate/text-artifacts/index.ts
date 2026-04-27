@@ -1,5 +1,8 @@
 import { readCurateState, writeCurateState, type PendingRepair } from '../state/index.js';
 import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
+import { projectIncidents } from '../../corpus/repair/project-incidents.js';
+import { applyDetectedIncidentFixesLocked } from '../../corpus/repair/fix.js';
+import { createGitSyncController } from '../git-sync.js';
 import { applyLaneMutation, detectTextArtifactRebuildInfo } from './drift.js';
 import {
   prepareCommunityTopologyRefresh,
@@ -119,6 +122,11 @@ export async function rebuildTextArtifacts(
  *
  * This rebuild path refreshes curate repair state and the JSON text artifact only.
  * Retrieval projections are owned by CorpusConsumers after the Corpus state commits.
+ *
+ * After the rebuild succeeds, runs the typed-detector pipeline against a fresh corpus
+ * scan and dispatches each incident through `applyDetectedIncidentFixesLocked` (auto-fix
+ * runs inline; manual cases enqueue typed rows on `kb_curate_retry_queue` alongside the
+ * shallow `pendingRepair[]` rows produced during loading).
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,
@@ -128,6 +136,7 @@ export async function rebuildTextArtifactsAndPersistRepairState(
   try {
     const result = await rebuildTextArtifacts(kb, mutation, startState);
     persistPendingRepair(kb, result.pendingRepair);
+    await runTypedRepairPipelineLocked(kb, mutation);
     return result;
   } catch (error: unknown) {
     if (error instanceof TextSnapshotRebuildError) {
@@ -135,4 +144,23 @@ export async function rebuildTextArtifactsAndPersistRepairState(
     }
     throw error;
   }
+}
+
+async function runTypedRepairPipelineLocked(
+  kb: KbRuntime,
+  mutation: KbMutationEffects,
+): Promise<void> {
+  const incidents = projectIncidents(buildCorpusScanView(kb));
+  if (incidents.length === 0) {
+    return;
+  }
+
+  const gitSync = createGitSyncController({
+    kb,
+    spawnCli: kb.spawnCli,
+    processPort: kb.processPort,
+    storagePort: kb.storagePort,
+    envPort: kb.envPort,
+  });
+  await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
 }

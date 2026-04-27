@@ -12,6 +12,7 @@ import { readCurateState } from '#src/kb/curate/state/index.js';
 import { applyNoteUpdateLocked, update } from '#src/kb/ops/update.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
@@ -200,7 +201,7 @@ async function createHarness(options?: {
   driver.register(metadataConsumer);
 
   const notifyCorpusMutation = createNotifyCorpusMutation(driver);
-  const kb = createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: vaultDir,
     runtimeDir,
     db,

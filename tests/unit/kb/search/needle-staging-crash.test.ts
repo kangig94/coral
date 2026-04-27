@@ -23,7 +23,7 @@ function createNotifyCorpusMutation(driver: ConsumerDriver) {
 }
 
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import {
   __setNeedleBackendStagingHookForTests,
@@ -173,7 +173,7 @@ function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: Inst
   let bindingScope = {
     [Symbol.dispose]() {},
   };
-  const kb = createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot,
     runtimeDir,
     db,

@@ -28,14 +28,14 @@ async function loadMainModule(): Promise<MainModule> {
 }
 
 async function seedKbSearchSnapshot(): Promise<void> {
-  const [{ reindex }, { closeNeedleBackend }, runtime, kbPaths] = await Promise.all([
+  const [{ reindex }, { closeNeedleBackend }, kbPaths, { createTestKbRuntime }] = await Promise.all([
     import('#src/kb/ops/reindex.js'),
     import('#src/kb/search/needle/backend.js'),
-    import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
+    import('#tests/fixtures/test-runtime.js'),
   ]);
   const realRuntime = createRealRuntime('prod');
-  const kb = runtime.createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbPaths.kbRuntimeDir('prod'),
     db: openStoreDatabase({
@@ -43,6 +43,7 @@ async function seedKbSearchSnapshot(): Promise<void> {
       storage: realRuntime.storage,
       schemasDir: ensureStoreSchemasDir(realRuntime.storage),
     }),
+    runtime: realRuntime,
   });
 
   try {

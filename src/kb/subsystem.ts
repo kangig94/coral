@@ -4,11 +4,10 @@ import { kbRoot } from "./paths.js";
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
-import type { GitSyncRuntimePicks } from './curate/pipeline-types.js';
 import { kbRuntimeDir } from './paths.js';
 import { createKbRuntime } from './runtime.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
-import type { Runtime } from '../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, Runtime, StoragePort, TimePort } from '../runtime/ports.js';
 
 export type KnowledgeBaseRuntime = {
   kb: KbRuntime;
@@ -20,11 +19,16 @@ export type CreateKbSubsystemOptions = {
   pluginRoot: string;
   flavor: BuildFlavor;
   spawnCli: SpawnCliFn;
+  processPort: ProcessPort;
+  storagePort: StoragePort;
+  envPort: EnvPort;
+  timePort?: Pick<TimePort, 'now'>;
+  idsPort?: Pick<IdPort, 'uuid'>;
   persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
   notifyCorpusMutation?: KbCorpusPublishCallbacks['notifyCorpusMutation'];
   onCorpusPublishFailure?: KbCorpusPublishCallbacks['onPublishFailure'];
   onCorpusPublishSuccess?: KbCorpusPublishCallbacks['onPublishSuccess'];
-} & GitSyncRuntimePicks;
+};
 
 export async function createKbSubsystem({
   db,
@@ -47,7 +51,10 @@ export async function createKbSubsystem({
     db,
     time: timePort,
     ids: idsPort,
-    env: envPort,
+    envPort,
+    storage: storagePort,
+    spawnCli: spawnKbCli,
+    processPort,
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {
     kb.register({

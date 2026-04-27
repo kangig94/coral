@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -49,7 +49,7 @@ function allocateRoot(): string {
 }
 
 async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
-  const kb = createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: root,
     db: createKbTestDb(root),
@@ -94,10 +94,12 @@ function renderNote({
   title,
   tags,
   body,
+  entrySeq = 1,
 }: {
   title: string;
   tags: string[];
   body: string;
+  entrySeq?: number;
 }): string {
   return [
     '---',
@@ -107,7 +109,7 @@ function renderNote({
     '  - kangig94/coral',
     'createdAt: 2026-04-01T00:00:00.000Z',
     'updatedAt: 2026-04-01T00:00:00.000Z',
-    'entrySeq: 1',
+    `entrySeq: ${entrySeq}`,
     '---',
     `# ${title}`,
     '',
@@ -120,10 +122,12 @@ function renderSource({
   title,
   tags,
   body,
+  entrySeq = 2,
 }: {
   title: string;
   tags: string[];
   body: string;
+  entrySeq?: number;
 }): string {
   return [
     '---',
@@ -131,7 +135,7 @@ function renderSource({
     'type: article',
     `tags: [${tags.join(', ')}]`,
     'importedAt: 2026-04-01',
-    'entrySeq: 1',
+    `entrySeq: ${entrySeq}`,
     '---',
     `# ${title}`,
     '',

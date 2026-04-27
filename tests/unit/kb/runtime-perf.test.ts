@@ -31,6 +31,7 @@ import type * as PrinciplesModule from '#src/kb/curate/principles.js';
 import type * as GitSyncModule from '#src/kb/curate/git-sync.js';
 import type * as ReindexModule from '#src/kb/ops/reindex.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 type LoadedPerfModules = {
   runtime: typeof RuntimeModule;
@@ -151,7 +152,7 @@ afterEach(() => {
 
 describe('runtime hot-path perf regressions', () => {
   it('single-note metadata edit avoids unrelated corpus reads and directory walks', async () => {
-    const { runtime, metadataCommit, principles, reindex } = await loadPerfModules();
+    const { metadataCommit, principles, reindex } = await loadPerfModules();
     void principles;
 
     mkdirSync(join(tempRoot, 'notes'), { recursive: true });
@@ -187,7 +188,7 @@ describe('runtime hot-path perf regressions', () => {
       'utf-8',
     );
 
-    const kb = runtime.createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
       db: createKbTestDb(tempRoot),
@@ -218,7 +219,7 @@ describe('runtime hot-path perf regressions', () => {
   });
 
   it('100 no-op gitSync calls avoid corpus file reads and directory walks', async () => {
-    const { runtime, metadataCommit, principles, gitSync } = await loadPerfModules();
+    const { metadataCommit, principles, gitSync } = await loadPerfModules();
     void metadataCommit;
     void principles;
 
@@ -245,7 +246,7 @@ describe('runtime hot-path perf regressions', () => {
       'utf-8',
     );
 
-    const kb = runtime.createKbRuntime({
+    const kb = createTestKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
       db: createKbTestDb(tempRoot),

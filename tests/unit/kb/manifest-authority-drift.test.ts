@@ -9,7 +9,7 @@ import { update } from '#src/kb/ops/update.js';
 import { persistPreparedSource } from '#src/kb/ops/source-store.js';
 import { promote } from '#src/kb/ops/promote.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createKbRuntime } from '#src/kb/runtime.js';
+import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { noteEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
@@ -19,7 +19,8 @@ import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { recordMetadataMutation } from '#src/kb/corpus/index-mutations.js';
 import { computeFullCollectorManifestHash } from '#src/kb/corpus/manifest-authority.js';
-import { applyDetectedIncidentFixes } from '#src/kb/corpus/repair/fix.js';
+import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/repair/fix.js';
+import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '#src/kb/corpus/repair/incident-ids.js';
 import type { DetectedIncident } from '#src/kb/corpus/repair/corpus-scan.js';
 import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
@@ -124,7 +125,7 @@ async function createRuntimeFixture(
   tempRoots.push(root);
   seed(root);
 
-  const kb = createKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: root,
     db: createKbTestDb(root),
@@ -486,15 +487,22 @@ describe('manifest authority drift checks', () => {
       },
     },
     {
-      name: 'applyDetectedIncidentFixes',
+      name: 'applyDetectedIncidentFixesLocked',
       run: async () => {
         const fixture = await createRuntimeFixture((root) => {
           writeRootNote(root, 'repair-target', renderMalformedEntrySeqNote());
         }, { reindexOnBoot: false });
 
         const runtime = createRealRuntime('prod');
-        await applyDetectedIncidentFixes(
-          [
+        const gitSync = createGitSyncController({
+          kb: fixture.kb,
+          spawnCli: discoverySpawn(''),
+          processPort: runtime.process,
+          storagePort: runtime.storage,
+          envPort: runtime.env,
+        });
+        await fixture.kb.withMutationLock((mutation) =>
+          applyDetectedIncidentFixesLocked(fixture.kb, mutation, gitSync, [
             {
               locus: repairIncidentLocus(REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT),
               canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT,
@@ -506,13 +514,7 @@ describe('manifest authority drift checks', () => {
                 normalizedValue: 31,
               },
             } as DetectedIncident,
-          ],
-          fixture.kb,
-          {
-            processPort: runtime.process,
-            storagePort: runtime.storage,
-            envPort: runtime.env,
-          },
+          ]),
         );
 
         assertAuthorityMatchesDisk(fixture.kb);
