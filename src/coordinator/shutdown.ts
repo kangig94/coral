@@ -1,6 +1,6 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage, formatError } from '../infra/error-format.js';
-import { backendLog } from '../infra/backend-log.js';
+import { coordinatorLog } from '../infra/coordinator-log.js';
 import { listLiveJobs } from '../jobs/reconcile/recovery-effects.js';
 import { isAppServerRuntime } from '../jobs/records.js';
 import type { ProgressStore } from '../jobs/job-store.js';
@@ -184,7 +184,7 @@ export async function runShutdownSequence({
     await Promise.race([curateSchedulerStop(), runtime.time.sleep(kbStopBudgetMs)]);
   }
   await expansionLifecycleService?.shutdownActiveExpansions().catch((error: unknown) => {
-    backendLog.warn(`expansion shutdown failed: ${errorMessage(error)}`);
+    coordinatorLog.warn(`expansion shutdown failed: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);
   for (const store of discussStores.values()) {

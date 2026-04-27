@@ -1,7 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../infra/error-format.js';
-import { backendLog } from '../infra/backend-log.js';
-import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
+import { coordinatorLog } from '../infra/coordinator-log.js';
+import { readCoordinatorInfo, type CoordinatorInfo } from '../infra/coordinator-discovery.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -11,7 +11,7 @@ import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
-import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/coordinator.js';
+import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
@@ -41,7 +41,7 @@ export {
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
-export type BackendServerInfo = {
+export type CoordinatorServerInfo = {
   port: number;
   host: string;
   socketPath: string;
@@ -54,7 +54,7 @@ export type BackendServerInfo = {
   startedAt: number;
 };
 
-export interface BackendIdentity {
+export interface CoordinatorIdentity {
   readonly pluginRoot: string;
   readonly namespace: string;
   readonly version: string;
@@ -253,7 +253,7 @@ export type RecoverPersistedDiscussDeps = {
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
 
 export type StartupRecoveryDeps = {
-  readonly identity: BackendIdentity;
+  readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly progressStore: ProgressStore;
   readonly providerRegistry: ProviderRegistry;
@@ -272,7 +272,7 @@ export type StartupRecoveryDeps = {
 export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<RecoveredDiscussResume[]>;
 
 export type LifecycleDeps = {
-  readonly identity: BackendIdentity;
+  readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly backendPid: number;
   readonly runtimeState: MutableRuntimeState;
@@ -297,7 +297,7 @@ export type LifecycleDeps = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  readonly writeBackendInfoFn: (info: BackendInfo) => void;
+  readonly writeBackendInfoFn: (info: CoordinatorInfo) => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly removeLockIfOwnerFn: (pluginRoot: string, instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
@@ -320,7 +320,7 @@ export type LifecycleDeps = {
 };
 
 export type LifecycleController = {
-  start(): Promise<BackendServerInfo>;
+  start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: string): Promise<void>;
   waitForShutdown(): Promise<void>;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -347,7 +347,7 @@ async function runLifecycleStartup({
   recoveryCoordinator,
   ownershipChecker,
   shutdown,
-}: LifecycleStartupContext): Promise<BackendServerInfo> {
+}: LifecycleStartupContext): Promise<CoordinatorServerInfo> {
   const {
     identity,
     runtime,
@@ -409,7 +409,7 @@ async function runLifecycleStartup({
       runtimeState.setKbSubsystem(kbSub);
     } catch (error: unknown) {
       const message = errorMessage(error);
-      backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
+      coordinatorLog.error('KB subsystem failed to initialize — running in degraded mode', error);
       runtimeState.setKbInitError(message);
     }
     assertStartupStillActive();
@@ -547,7 +547,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     ownershipCheckerTeardown: null,
   };
   const ownershipChecker = createReplacementBackendOwnershipChecker({
-    readBackendInfo,
+    readCoordinatorInfo,
     runtime,
     runtimeState,
     idleTimer,
@@ -615,7 +615,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     return state.shutdownPromise;
   }
 
-  async function start(): Promise<BackendServerInfo> {
+  async function start(): Promise<CoordinatorServerInfo> {
     try {
       return await runLifecycleStartup({
         deps,

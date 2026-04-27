@@ -20,9 +20,9 @@ import {
 } from './entry-types.js';
 import { memoDir } from './paths.js';
 import { expandKbReadSelector, parseKbSelector, type KbResolvedReadSelector } from './read-contract.js';
-import type { RuntimeStoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../runtime/ports.js';
 
-export type KbReadStorage = Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'>;
+export type KbReadStorage = Pick<StoragePort, 'existsSync' | 'readFileSync'>;
 
 export type KbReadPathResolver = {
   notePath(note: string): string;

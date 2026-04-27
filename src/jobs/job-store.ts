@@ -68,7 +68,7 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly appendEvents: AppendEventsFn;
-  private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
+  private readonly namespaceOverrides = new Map<string, { coordinatorNamespace: string; bundleHash?: string }>();
   private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
@@ -201,7 +201,7 @@ export class JobStore implements JobProgressStore {
 
     return {
       ...status,
-      backendNamespace: override.backendNamespace,
+      coordinatorNamespace: override.coordinatorNamespace,
       ...(override.bundleHash === undefined ? {} : { bundleHash: override.bundleHash }),
     };
   }
@@ -219,7 +219,7 @@ export class JobStore implements JobProgressStore {
           ? null
           : {
               ...detail.launch,
-              backendNamespace: override.backendNamespace,
+              coordinatorNamespace: override.coordinatorNamespace,
               ...(override.bundleHash === undefined ? {} : { bundleHash: override.bundleHash }),
             },
       status:
@@ -227,7 +227,7 @@ export class JobStore implements JobProgressStore {
           ? null
           : {
               ...detail.status,
-              backendNamespace: override.backendNamespace,
+              coordinatorNamespace: override.coordinatorNamespace,
               ...(override.bundleHash === undefined ? {} : { bundleHash: override.bundleHash }),
             },
     };
@@ -328,7 +328,7 @@ export class JobStore implements JobProgressStore {
       sessionId: opts.sessionId,
       provider: opts.provider,
       projectRoot: opts.projectRoot,
-      backendNamespace: opts.backendNamespace,
+      coordinatorNamespace: opts.coordinatorNamespace,
       ...(opts.bundleHash === undefined ? {} : { bundleHash: opts.bundleHash }),
       jobKind: opts.jobKind ?? 'provider',
       pool: 'default',
@@ -347,7 +347,7 @@ export class JobStore implements JobProgressStore {
       this.appendEvent({
         type: 'job.queue.queued',
         stream: { kind: 'job', id: opts.jobId },
-        namespace: opts.backendNamespace,
+        namespace: opts.coordinatorNamespace,
         project: opts.projectRoot,
         refs: { jobId: opts.jobId, sessionId: opts.sessionId },
         bodyVersion: 1,
@@ -363,7 +363,7 @@ export class JobStore implements JobProgressStore {
       this.appendEvent({
         type: 'job.runtime.started',
         stream: { kind: 'job', id: opts.jobId },
-        namespace: opts.backendNamespace,
+        namespace: opts.coordinatorNamespace,
         project: opts.projectRoot,
         refs: { jobId: opts.jobId, sessionId: opts.sessionId },
         bodyVersion: 1,
@@ -411,7 +411,7 @@ export class JobStore implements JobProgressStore {
     const body = launch.jobKind === 'kb'
       ? {
           projectRoot: launch.projectRoot,
-          backendNamespace: launch.backendNamespace,
+          coordinatorNamespace: launch.coordinatorNamespace,
           bundleHash: launch.bundleHash,
           jobKind: launch.jobKind,
           pool: launch.pool,
@@ -428,7 +428,7 @@ export class JobStore implements JobProgressStore {
             sessionId: launch.sessionId,
             provider: launch.provider,
             projectRoot: launch.projectRoot,
-            backendNamespace: launch.backendNamespace,
+            coordinatorNamespace: launch.coordinatorNamespace,
             bundleHash: launch.bundleHash,
             jobKind: launch.jobKind,
             pool: launch.pool,
@@ -448,7 +448,7 @@ export class JobStore implements JobProgressStore {
     this.appendEvent({
       type: 'job.launch.requested',
       stream: { kind: 'job', id: jobId },
-      namespace: launch.backendNamespace,
+      namespace: launch.coordinatorNamespace,
       project: launch.projectRoot,
       refs,
       bodyVersion: 1,
@@ -466,7 +466,7 @@ export class JobStore implements JobProgressStore {
     this.appendEvent({
       type: 'job.runtime.started',
       stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
+      namespace: status?.coordinatorNamespace ?? this.namespace,
       project: status?.projectRoot,
       refs: {
         jobId,
@@ -523,7 +523,7 @@ export class JobStore implements JobProgressStore {
     const detail = this.detail(jobId);
     if (detail.launch !== null || detail.status !== null) {
       this.namespaceOverrides.set(jobId, {
-        backendNamespace: newNamespace,
+        coordinatorNamespace: newNamespace,
         ...(newBundleHash === undefined ? {} : { bundleHash: newBundleHash }),
       });
     }
@@ -541,7 +541,7 @@ export class JobStore implements JobProgressStore {
 
     return (
       this.countProjectedLiveJobsByNamespace(namespace) +
-      this.countLiveOverrideJobs((status) => status.backendNamespace === namespace)
+      this.countLiveOverrideJobs((status) => status.coordinatorNamespace === namespace)
     );
   }
 
@@ -566,7 +566,7 @@ export class JobStore implements JobProgressStore {
     const [appended] = this.appendEventsWithResult([{
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
+      namespace: status?.coordinatorNamespace ?? this.namespace,
       project: status?.projectRoot,
       refs: {
         jobId,
@@ -597,7 +597,7 @@ export class JobStore implements JobProgressStore {
     const [appended] = this.appendEventsWithResult([{
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
+      namespace: status?.coordinatorNamespace ?? this.namespace,
       project: status?.projectRoot,
       refs: {
         jobId,

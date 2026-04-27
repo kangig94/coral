@@ -5,14 +5,14 @@ import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const COORDINATOR_ROOT_PATH = join(REPO_ROOT, 'src/coordinator/coordinator.ts');
+const COORDINATOR_ROOT_PATH = join(REPO_ROOT, 'src/coordinator/index.ts');
 const CONTRACTS_PATH = join(REPO_ROOT, 'src/coordinator/contracts.ts');
 const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
-  'createBackendCore',
+  'createCoordinatorCore',
   'listInstantiatedExecutionServices',
-  'BackendBootSnapshot',
-  'BackendCoreOptions',
-  'BackendCoreResult',
+  'CoordinatorBootSnapshot',
+  'CoordinatorCoreOptions',
+  'CoordinatorCoreResult',
   'CreateServerFn',
   'FetchFn',
 ]);
@@ -102,7 +102,7 @@ describe('coordinator api export scope invariant', () => {
     ).toEqual([]);
   });
 
-  it('keeps coordinator/coordinator.ts as a composition root, not a composition barrel', () => {
+  it('keeps coordinator/index.ts as a composition root, not a composition barrel', () => {
     const sourceFile = ts.createSourceFile(
       COORDINATOR_ROOT_PATH,
       readFileSync(COORDINATOR_ROOT_PATH, 'utf-8'),
@@ -116,7 +116,7 @@ describe('coordinator api export scope invariant', () => {
 
     expect(
       forbidden,
-      'src/coordinator/coordinator.ts must not re-export backend-core composition helpers or types',
+      'src/coordinator/index.ts must not re-export composition helpers or types',
     ).toEqual([]);
   });
 

@@ -4,11 +4,11 @@ import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { ProviderRegistry } from '../../providers/registry.js';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
-import type { BackendIdentity } from '../control.js';
+import type { CoordinatorIdentity } from '../control.js';
 import { TypedEventBus } from '../event-bus.js';
-import type { BackendCoreOptions } from './core-types.js';
+import type { CoordinatorCoreOptions } from './types.js';
 import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
@@ -27,8 +27,8 @@ import { sessionsRegistry } from '../../sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../discuss/event-registry.js';
 import { workflowRegistry } from '../../workflow/events.js';
 
-export interface BackendWorld {
-  readonly identity: BackendIdentity;
+export interface CoordinatorWorld {
+  readonly identity: CoordinatorIdentity;
   readonly namespace: string;
   readonly bindHost: string;
   readonly advertiseHost?: string;
@@ -48,19 +48,19 @@ export interface BackendWorld {
   readonly log: (message: string) => void;
 }
 
-export function createBackendWorld(
-  options: BackendCoreOptions,
+export function createCoordinatorWorld(
+  options: CoordinatorCoreOptions,
   runtime: Runtime,
   defaultsPlan: BackendDefaultsPlan,
-): BackendWorld {
+): CoordinatorWorld {
   const bootSnapshot = options.bootSnapshot ?? {};
   const pluginRoot = defaultsPlan.eager.resolvedPluginRoot;
-  const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
+  const namespace = options.coordinatorNamespace ?? pluginRootNamespace(pluginRoot);
   const resolveProjectSource =
     options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(pluginRoot);
-  backendLog.init({ version, bundleHash });
+  coordinatorLog.init({ version, bundleHash });
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
@@ -72,10 +72,10 @@ export function createBackendWorld(
   const log =
     bootSnapshot.log ??
     ((message: string) => {
-      backendLog.raw(message);
+      coordinatorLog.raw(message);
     });
 
-  // backendLog.init must complete before constructing singletons; do not move it below this point.
+  // coordinatorLog.init must complete before constructing singletons; do not move it below this point.
   const idleTimer = defaultsPlan.eager.createIdleTimer();
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const progressStoreEventBus = options.progressStore?.getEventBus();
@@ -108,7 +108,7 @@ export function createBackendWorld(
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
 
-  const identity: BackendIdentity = {
+  const identity: CoordinatorIdentity = {
     pluginRoot,
     namespace,
     version,

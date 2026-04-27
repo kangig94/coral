@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import type { BundledExpansion } from '../expansion/contract.js';
 import { BUNDLED_EXPANSIONS } from '../expansion/bundled.js';
-import { readDiscoveryRecord } from '../infra/backend-discovery.js';
+import { readDiscoveryRecord } from '../infra/coordinator-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -42,7 +42,7 @@ function isIpcConnectFailed(error: unknown): boolean {
 }
 
 export type ExpansionStatus =
-  | { status: 'available'; equipment: Array<ExpansionView & { slot: string }> }
+  | { status: 'available'; expansions: Array<ExpansionView & { slot: string }> }
   | { status: 'unavailable' };
 
 export interface CliExpansionActivation {
@@ -98,7 +98,7 @@ function toCatalogEntry(
     id: entry.id,
     name: entry.id,
     description: entry.metadata.description,
-    activation: 'equipment',
+    activation: 'equip',
     status,
     ...(requiresLocalInstall(entry) ? { addonPath: local.addonPath } : {}),
     version: local.version ?? entry.version,
@@ -113,7 +113,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       const result = equipExpansionResultSchema.parse(await client.request('coordinator.equipExpansion', { name }));
       return installResultSchema.parse({
         ...result,
-        equipment: withManifestSlot(result.equipment),
+        expansion: withManifestSlot(result.expansion),
       });
     },
 
@@ -143,11 +143,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const result = listExpansionResultSchema.parse(
           await createIpcClient(record.socketPath).request('coordinator.listExpansion', {}),
         );
-        const equipment = result.equipment.map(withManifestSlot);
+        const expansions = result.expansions.map(withManifestSlot);
 
         return {
           status: 'available',
-          equipment: name === undefined ? equipment : equipment.filter((entry) => entry.name === name),
+          expansions: name === undefined ? expansions : expansions.filter((entry) => entry.name === name),
         };
       } catch (error: unknown) {
         if (isIpcConnectFailed(error)) {
@@ -164,12 +164,12 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       try {
         const runtime = resolveRuntime();
         const passive = await lowLevel.readExpansionStatus();
-        const equipmentByName =
-          passive.status === 'available' ? new Map(passive.equipment.map((entry) => [entry.name, entry])) : new Map();
+        const expansionByName =
+          passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
 
         return catalogResultSchema.parse({
           status: 'catalog',
-          packages: BUNDLED_EXPANSIONS.map((entry) => toCatalogEntry(entry, runtime, equipmentByName.get(entry.id) ?? null)),
+          packages: BUNDLED_EXPANSIONS.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -186,7 +186,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const passive = await lowLevel.readExpansionStatus(name);
         return infoResultSchema.parse({
           status: 'info',
-          package: toCatalogEntry(entry, resolveRuntime(), passive.status === 'available' ? (passive.equipment[0] ?? null) : null),
+          package: toCatalogEntry(entry, resolveRuntime(), passive.status === 'available' ? (passive.expansions[0] ?? null) : null),
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -221,7 +221,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         }
 
         const passive = await lowLevel.readExpansionStatus(name);
-        const activeEntry = passive.status === 'available' ? passive.equipment[0] : undefined;
+        const activeEntry = passive.status === 'available' ? passive.expansions[0] : undefined;
         if (activeEntry !== undefined) {
           await lowLevel.deactivateExpansion(name);
         }

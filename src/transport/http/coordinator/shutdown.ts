@@ -1,4 +1,4 @@
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -16,9 +16,9 @@ export function isShuttingDownError(value: unknown): value is { code: 'backend_s
   return isRecord(value) && value.code === 'backend_shutting_down';
 }
 
-export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
+export async function shutdownCoordinator(pluginRoot: string): Promise<ShutdownResult> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readBackendInfo({
+  const info = readCoordinatorInfo({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,

@@ -11,8 +11,8 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import { attachSession } from '#src/discuss/shell/registry.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
-import type { BackendServerController } from '#src/coordinator/coordinator.js';
-import { createBackendServer } from '#src/coordinator/coordinator.js';
+import type { CoordinatorServerController } from '#src/coordinator/index.js';
+import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ProgressStore } from '#src/jobs/job-store.js';
 import {
@@ -128,7 +128,7 @@ function realTimePort(): Runtime['time'] {
 }
 
 describe('server discuss API', () => {
-  let controller: BackendServerController | null = null;
+  let controller: CoordinatorServerController | null = null;
 
   afterEach(async () => {
     if (!controller) return;
@@ -158,7 +158,7 @@ describe('server discuss API', () => {
     resolveProjectSourceFn?: (projectRoot: string) => string,
     progressStore?: ProgressStore,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
-    controller = createBackendServer({
+    controller = createCoordinatorServer({
       runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,
       resolveProjectSourceFn,
       bootSnapshot: {

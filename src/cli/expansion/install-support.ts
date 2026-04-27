@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { Runtime, RuntimeStoragePort } from '../../runtime/ports.js';
+import type { Runtime, StoragePort } from '../../runtime/ports.js';
 
 const COMMAND_TIMEOUT_MS = 120_000;
 
@@ -88,7 +88,7 @@ async function downloadBufferWithCommand(
 }
 
 export function readInstallMeta(
-  storage: Pick<RuntimeStoragePort, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   candidates: readonly string[],
 ): InstallMeta | null {
   for (const path of candidates) {
@@ -109,7 +109,7 @@ export function readInstallMeta(
 }
 
 export function writeInstallMeta(
-  storage: Pick<RuntimeStoragePort, 'mkdirSync' | 'writeAtomicSync'>,
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   filePath: string,
   value: InstallMeta,
 ): void {

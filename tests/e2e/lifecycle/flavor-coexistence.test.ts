@@ -3,8 +3,8 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BackendHealth } from '#src/transport/http/backend/health.js';
-import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import type { BackendHealth } from '#src/transport/http/coordinator/health.js';
+import { readCoordinatorInfo, type CoordinatorInfo } from '#src/infra/coordinator-discovery.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from "#src/jobs/paths.js";
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
@@ -133,7 +133,7 @@ function seedCompletedJob(
             sessionId,
             provider: 'codex',
             projectRoot,
-            backendNamespace: namespace,
+            coordinatorNamespace: namespace,
             bundleHash,
             jobKind: 'provider',
             pool: 'default',
@@ -180,17 +180,17 @@ function backendDiscoveryRuntime(pluginRoot: string) {
   return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
 }
 
-async function requireBackendInfo(pluginRoot: string): Promise<BackendInfo> {
+async function requireBackendInfo(pluginRoot: string): Promise<CoordinatorInfo> {
   const discoveryRuntime = backendDiscoveryRuntime(pluginRoot);
-  await waitForCondition(() => readBackendInfo(discoveryRuntime) !== null);
-  const info = readBackendInfo(discoveryRuntime);
+  await waitForCondition(() => readCoordinatorInfo(discoveryRuntime) !== null);
+  const info = readCoordinatorInfo(discoveryRuntime);
   if (!info) {
     throw new Error(`Expected backend info for ${pluginRoot}`);
   }
   return info;
 }
 
-async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 200): Promise<T> {
+async function fetchJson<T>(info: CoordinatorInfo, path: string, expectedStatus = 200): Promise<T> {
   const response = await fetch(`http://${info.host}:${info.port}${path}`, {
     headers: { 'X-Coral-Backend-Token': info.token },
   });
@@ -199,7 +199,7 @@ async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 20
 }
 
 async function stopBackend(pluginRoot: string): Promise<void> {
-  const info = readBackendInfo(backendDiscoveryRuntime(pluginRoot));
+  const info = readCoordinatorInfo(backendDiscoveryRuntime(pluginRoot));
   if (!info || !isProcessAlive(info.pid)) {
     return;
   }
@@ -299,8 +299,8 @@ describe('flavor coexistence integration', () => {
 
     expect(prodJobs.jobs.map((job) => job.jobId)).toEqual([prodJobId]);
     expect(devJobs.jobs.map((job) => job.jobId)).toEqual([devJobId]);
-    expect(prodJobs.jobs[0]?.status.backendNamespace).toBe(prodNamespace);
-    expect(devJobs.jobs[0]?.status.backendNamespace).toBe(devNamespace);
+    expect(prodJobs.jobs[0]?.status.coordinatorNamespace).toBe(prodNamespace);
+    expect(devJobs.jobs[0]?.status.coordinatorNamespace).toBe(devNamespace);
 
     await fetchJson<{ status: JobStatus; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
     await fetchJson<{ status: JobStatus; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);

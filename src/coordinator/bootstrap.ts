@@ -5,8 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 
 import { BackendAlreadyRunningError } from './lock.js';
 import { StartupInterruptedError } from './startup-error.js';
-import { createCoordinatorServer } from './coordinator.js';
-import { backendLog } from '../infra/backend-log.js';
+import { createCoordinatorServer } from './index.js';
+import { coordinatorLog } from '../infra/coordinator-log.js';
 import { nowDate } from '../infra/time.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
@@ -37,7 +37,7 @@ function resolveSmokeSchemasDir(storage: Pick<StoragePort, 'existsSync'>): strin
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
   if (pathIdx === -1 || !argv[pathIdx + 1]) {
-    backendLog.error('smoke open-store: missing --path');
+    coordinatorLog.error('smoke open-store: missing --path');
     return 1;
   }
 
@@ -73,13 +73,13 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
       );
 
       if (!event) {
-        backendLog.error('smoke append failed');
+        coordinatorLog.error('smoke append failed');
         return 1;
       }
 
       const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq, readCtx);
       if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
-        backendLog.error('smoke read-back failed');
+        coordinatorLog.error('smoke read-back failed');
         return 1;
       }
 
@@ -90,7 +90,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    backendLog.error('smoke open-store failed', message);
+    coordinatorLog.error('smoke open-store failed', message);
     return 1;
   }
 }
@@ -110,7 +110,7 @@ export async function main(): Promise<number> {
       process.exit(0);
     },
     onFatalShutdownError: (error) => {
-      backendLog.error('Fatal shutdown error', error);
+      coordinatorLog.error('Fatal shutdown error', error);
       process.exit(1);
     },
   });
@@ -124,18 +124,18 @@ export async function main(): Promise<number> {
 
   try {
     const info = await coordinator.start();
-    backendLog.info(`Running on ${info.host}:${info.port}`);
+    coordinatorLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
     if (error instanceof BackendAlreadyRunningError) {
-      backendLog.info(error.message);
+      coordinatorLog.info(error.message);
       return 0;
     }
     if (error instanceof StartupInterruptedError) {
       return 0;
     }
 
-    backendLog.error('Fatal startup error', error);
+    coordinatorLog.error('Fatal startup error', error);
     return 1;
   }
 }
@@ -148,7 +148,7 @@ if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN_
       }
     })
     .catch((error: unknown) => {
-      backendLog.error('Fatal startup error', error);
+      coordinatorLog.error('Fatal startup error', error);
       process.exit(1);
     });
 }

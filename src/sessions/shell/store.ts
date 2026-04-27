@@ -7,7 +7,7 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
-import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
+import type { Runtime, IdPort, TimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
@@ -40,7 +40,7 @@ export type SessionManagerOptions = {
 
 function toSessionNamespace(
   dir: string,
-  ids: Pick<RuntimeIdsPort, 'sha256'>,
+  ids: Pick<IdPort, 'sha256'>,
 ): string {
   try {
     return pluginRootNamespace(dir);
@@ -159,7 +159,7 @@ function sessionClosedEvent(sessionId: string, reason: SessionCloseReason, entry
   };
 }
 
-function createLocalSessionAppendEvents(db: Database, time: RuntimeTimePort): AppendEventsFn {
+function createLocalSessionAppendEvents(db: Database, time: TimePort): AppendEventsFn {
   const reducers = composeReducers(sessionsRegistry);
   const upcasters = createDefaultUpcasterRegistry();
 
@@ -172,8 +172,8 @@ function createLocalSessionAppendEvents(db: Database, time: RuntimeTimePort): Ap
 }
 
 export class SessionManager {
-  private readonly time: RuntimeTimePort;
-  private readonly ids: RuntimeIdsPort;
+  private readonly time: TimePort;
+  private readonly ids: IdPort;
   private readonly appendEvents: AppendEventsFn;
   private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly scopeKey: string;
@@ -269,7 +269,7 @@ export class SessionManager {
       model: options.model,
       cwd: options.cwd,
       projectRoot: options.projectRoot,
-      backendNamespace: options.backendNamespace,
+      coordinatorNamespace: options.coordinatorNamespace,
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -304,7 +304,7 @@ export class SessionManager {
               model,
               cwd: resolvedCwd,
               projectRoot: resolvedProjectRoot,
-              backendNamespace: pluginRootNamespace(resolvedProjectRoot),
+              coordinatorNamespace: pluginRootNamespace(resolvedProjectRoot),
             };
           })()
         : optionsOrProvider;

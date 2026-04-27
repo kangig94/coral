@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
-import { createCoordinatorServer } from '#src/coordinator/coordinator.js';
+import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot, VectorRetrieval } from '#src/kb/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';

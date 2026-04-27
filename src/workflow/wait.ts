@@ -1,5 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { RuntimeTimePort } from '../runtime/ports.js';
+import type { TimePort } from '../runtime/ports.js';
 import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
@@ -29,7 +29,7 @@ export function formatAtomProgress(atom: LaunchedAtom, message: string): string 
 }
 
 export type WaitForAtomsOptions = {
-  time: Pick<RuntimeTimePort, 'now'>;
+  time: Pick<TimePort, 'now'>;
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
@@ -49,7 +49,7 @@ export type WaitStaleRecoveryHandler = (
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
-    time: Pick<RuntimeTimePort, 'now'>;
+    time: Pick<TimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     workDir?: string;
@@ -92,7 +92,7 @@ function cloneSet<T>(value?: Set<T>): Set<T> {
 export function createAwaitStepState(
   atoms: LaunchedAtom[],
   initialState: Partial<WaitInternalState> = {},
-  time: Pick<RuntimeTimePort, 'now'>,
+  time: Pick<TimePort, 'now'>,
 ): AwaitStepState {
   const pending = new Map<string, LaunchedAtom>();
   const results = cloneMap(initialState.completedOutputs);

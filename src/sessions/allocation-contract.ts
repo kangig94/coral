@@ -7,7 +7,7 @@ export type SessionAllocateOptions = {
   model?: string;
   cwd: string;
   projectRoot: string;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   agentName?: string;
   instruction?: ProviderInstruction;
   bypassPermissions?: boolean;

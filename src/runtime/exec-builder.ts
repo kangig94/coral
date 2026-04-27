@@ -3,7 +3,7 @@ import type {
   ChildProcessLike,
   ExecResult,
   RuntimeSpawnOptions,
-  RuntimeTimerHandle,
+  TimerHandle,
 } from './ports.js';
 
 export interface BuildExecPromiseOptions {
@@ -17,8 +17,8 @@ export interface BuildExecPromiseOptions {
   encoding: 'utf-8';
   spawn: (options: RuntimeSpawnOptions) => ChildProcessLike;
   kill: (pid: number, signal: NodeJS.Signals | 0) => void;
-  setTimeout: (fn: () => void, ms: number) => RuntimeTimerHandle;
-  clearTimeout: (handle: RuntimeTimerHandle | null) => void;
+  setTimeout: (fn: () => void, ms: number) => TimerHandle;
+  clearTimeout: (handle: TimerHandle | null) => void;
 }
 
 function appendOutput(
@@ -75,8 +75,8 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     let stdout = '';
     let stderr = '';
     let resolved = false;
-    let timeoutHandle: RuntimeTimerHandle | null = null;
-    let killTimer: RuntimeTimerHandle | null = null;
+    let timeoutHandle: TimerHandle | null = null;
+    let killTimer: TimerHandle | null = null;
     let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
 
     const child = spawn({

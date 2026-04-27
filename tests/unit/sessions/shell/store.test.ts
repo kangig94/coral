@@ -89,7 +89,7 @@ describe('sessions shell store', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: workDir,
-      backendNamespace: 'ns-a',
+      coordinatorNamespace: 'ns-a',
     });
 
     expect(entry.state).toBe('pending');
@@ -113,7 +113,7 @@ describe('sessions shell store', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: workDir,
-      backendNamespace: 'ns-a',
+      coordinatorNamespace: 'ns-a',
       controllerProfile: { owner: 'team-a' },
     });
 
@@ -178,11 +178,11 @@ describe('sessions shell store', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: '/my/project',
-      backendNamespace: 'ns-beta',
+      coordinatorNamespace: 'ns-beta',
     });
 
     expect(entry.projectRoot).toBe('/my/project');
-    expect(entry.backendNamespace).toBe('ns-beta');
+    expect(entry.coordinatorNamespace).toBe('ns-beta');
     expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
   });
 
@@ -203,7 +203,7 @@ describe('sessions shell store', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: '/my/project',
-      backendNamespace: 'ns-local',
+      coordinatorNamespace: 'ns-local',
       agentName: 'debugger',
       instruction: { content: 'Follow the debugger playbook.', channel: 'system' },
       bypassPermissions: true,
@@ -218,7 +218,7 @@ describe('sessions shell store', () => {
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
       projectRoot: '/my/project',
-      backendNamespace: 'ns-local',
+      coordinatorNamespace: 'ns-local',
       agentName: 'debugger',
       instruction: { content: 'Follow the debugger playbook.', channel: 'system' },
       bypassPermissions: true,

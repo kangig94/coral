@@ -81,7 +81,7 @@ function createHarness(options: {
     sessionId: 'workflow-session-1',
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
-    backendNamespace: BACKEND_NAMESPACE,
+    coordinatorNamespace: BACKEND_NAMESPACE,
     jobKind: 'workflow',
     initialPhase: 'running',
   });
@@ -92,7 +92,7 @@ function createHarness(options: {
       sessionId: 'session-atom-1',
       provider: 'codex',
       projectRoot: PROJECT_ROOT,
-      backendNamespace: BACKEND_NAMESPACE,
+      coordinatorNamespace: BACKEND_NAMESPACE,
       initialPhase: options.atomPhase,
     });
   }

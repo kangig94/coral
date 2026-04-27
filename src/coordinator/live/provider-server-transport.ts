@@ -1,5 +1,5 @@
 import { createInterface, type Interface } from 'node:readline';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
 import type { ChildProcessLike, Runtime } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, requirePipedHandles } from './process-helpers.js';
@@ -129,7 +129,7 @@ export async function spawnProviderServerTransport(params: {
     const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
       stderr: entry.stderr,
     });
-    backendLog.error(stdinError.message, error);
+    coordinatorLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
     gracefulKill(child, runtime);
   });
@@ -139,7 +139,7 @@ export async function spawnProviderServerTransport(params: {
       stderr: entry.stderr,
     });
     if (!entry.closeRequested) {
-      backendLog.error(`Provider server ${options.provider} failed`, error);
+      coordinatorLog.error(`Provider server ${options.provider} failed`, error);
     }
     detachProviderServer(entry, closeError);
     entry.resolveClose(entry.closeRequested ? undefined : closeError);
@@ -151,7 +151,7 @@ export async function spawnProviderServerTransport(params: {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
       closeError = createProviderServerError(options.provider, detail, { stderr: entry.stderr });
       if (code !== 0 || signal !== null) {
-        backendLog.error(closeError.message);
+        coordinatorLog.error(closeError.message);
       }
     }
     finalizeClose(closeError);
@@ -185,7 +185,7 @@ export async function spawnProviderServerTransport(params: {
       } catch (error) {
         const notifyError =
           error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`);
-        backendLog.error(notifyError.message, error);
+        coordinatorLog.error(notifyError.message, error);
         detachProviderServer(entry, notifyError);
         gracefulKill(entry.child, runtime);
       }
@@ -285,7 +285,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
       stderr: entry.stderr,
       data: { line, message: error instanceof Error ? error.message : String(error) },
     });
-    backendLog.error(parseError.message, error);
+    coordinatorLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
     gracefulKill(entry.child, runtime);
     return;
@@ -300,7 +300,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     } catch (error) {
       const protocolError =
         error instanceof Error ? error : createProviderServerError(entry.provider, 'failed to answer server request');
-      backendLog.error(protocolError.message, error);
+      coordinatorLog.error(protocolError.message, error);
       detachProviderServer(entry, protocolError);
       gracefulKill(entry.child, runtime);
     }
@@ -332,7 +332,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
       stderr: entry.stderr,
       data: message,
     });
-    backendLog.error(protocolError.message);
+    coordinatorLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
     gracefulKill(entry.child, runtime);
     return;

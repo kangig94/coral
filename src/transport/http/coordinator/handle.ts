@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { BackendUnreachableError } from '../../../infra/http-errors.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
@@ -41,7 +41,7 @@ export async function withAbortTimeout<T>(timeoutMs: number, run: (signal: Abort
 export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<BackendHandle> {
   const root = resolvePluginRoot(pluginRoot);
   const runtime = createRealRuntime(readBuildFlavor(root));
-  const info = readBackendInfo({
+  const info = readCoordinatorInfo({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,

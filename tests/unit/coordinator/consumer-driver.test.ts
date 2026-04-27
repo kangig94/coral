@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { backendLog } from '#src/infra/backend-log.js';
+import { coordinatorLog } from '#src/infra/coordinator-log.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type {
   ConsumerApplyError,
@@ -49,7 +49,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
   it('logs apply failures, invokes onApplyFailure, and isolates healthy consumers on the same journal notify', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(coordinatorLog, 'error').mockImplementation(() => {});
     const healthyCalls: Array<{ fromSeq: number; upToSeq: number }> = [];
     const onApplyFailure = vi.fn((_err: ConsumerApplyError) => {
       throw new Error('callback exploded');
@@ -158,7 +158,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
     try {
       const handle = driver.register({
-        id: 'equipment-consumer',
+        id: 'expansion-consumer',
         authority: 'journal',
         registrationKind: 'expansion',
         async apply({ fromSeq, upToSeq }) {
@@ -183,11 +183,11 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         lastApplyError: null,
       });
       expect(applyCalls).toEqual([{ fromSeq: 0, upToSeq: 5 }]);
-      expect(readCursorCount(db, 'equipment-consumer')).toBe(1);
+      expect(readCursorCount(db, 'expansion-consumer')).toBe(1);
 
       await handle.unregister();
 
-      expect(readCursorCount(db, 'equipment-consumer')).toBe(0);
+      expect(readCursorCount(db, 'expansion-consumer')).toBe(0);
     } finally {
       releaseGate?.();
       await driver.shutdown();
@@ -439,7 +439,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
     try {
       driver.register({
-        id: 'equipment-cursor',
+        id: 'expansion-cursor',
         authority: 'journal',
         registrationKind: 'expansion',
         async apply() {},
@@ -449,8 +449,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       await driver.drainAll();
       await driver.shutdown();
 
-      expect(readJournalCursor(db, 'equipment-cursor')).toBe(8);
-      expect(readCursorCount(db, 'equipment-cursor')).toBe(1);
+      expect(readJournalCursor(db, 'expansion-cursor')).toBe(8);
+      expect(readCursorCount(db, 'expansion-cursor')).toBe(1);
     } finally {
       db.close();
     }

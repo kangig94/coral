@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BackendHandle } from '#src/transport/http/backend/handle.js';
+import type { BackendHandle } from '#src/transport/http/coordinator/handle.js';
 import {
   BackendClient,
   BackendToolHttpError,
@@ -925,7 +925,7 @@ describe('transport/http http-client', () => {
             sessionId: 'session-1',
             provider: 'codex',
             projectRoot: '/tmp/project',
-            backendNamespace: 'test',
+            coordinatorNamespace: 'test',
             phase: 'running' as const,
             updatedAt: '2026-04-08T00:00:00.000Z',
           },

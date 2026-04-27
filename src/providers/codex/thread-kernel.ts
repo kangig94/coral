@@ -1,5 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
-import type { RuntimeTimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../runtime/ports.js';
 import { resolveModelTier } from '../request-policy.js';
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
@@ -65,11 +65,11 @@ export type CodexTurnState = {
   finalAnswerSeen: boolean;
   pendingCollaborations: Set<string>;
   activeSubagentTurns: Set<string>;
-  completionTimer: ReturnType<RuntimeTimePort['setTimeout']> | null;
+  completionTimer: ReturnType<TimePort['setTimeout']> | null;
   lastAgentMessage: string;
   error: { message?: string } | null;
   interruptRequest: Promise<void> | null;
-  time: Pick<RuntimeTimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
 };
 
 type CodexKernelResult =

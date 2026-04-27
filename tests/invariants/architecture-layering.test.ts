@@ -42,11 +42,11 @@ const TRANSPORT_ALLOWED = new Set([
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
   'src/kb/read-contract.ts',
-  'src/expansion/equipment-contract.ts',
+  'src/expansion/contract.ts',
   'src/providers/request-policy.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
-  'src/coordinator/coordinator.ts',
+  'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',

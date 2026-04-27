@@ -1,4 +1,4 @@
-import type { RuntimeTimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../runtime/ports.js';
 import { parsePositiveInt } from './worker-limits.js';
 
 export const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
@@ -9,17 +9,17 @@ export function resolveIdleTimeoutMs(raw: string | undefined): number {
 }
 
 export class IdleTimer {
-  private readonly time: RuntimeTimePort;
+  private readonly time: TimePort;
   private readonly idleTimeoutMs: number;
   private inflight = 0;
   private lastActiveAt: number;
-  private interval: ReturnType<RuntimeTimePort['setInterval']> | null = null;
+  private interval: ReturnType<TimePort['setInterval']> | null = null;
   private idleTriggered = false;
   private drainReason: string | null = null;
   private checkIdle: (() => boolean) | null = null;
   private onIdle: ((reason: string) => void) | null = null;
 
-  constructor(options: { time: RuntimeTimePort; timeoutMs?: number }) {
+  constructor(options: { time: TimePort; timeoutMs?: number }) {
     this.time = options.time;
     this.idleTimeoutMs = options.timeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.lastActiveAt = this.time.now();

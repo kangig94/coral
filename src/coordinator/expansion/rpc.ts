@@ -15,7 +15,7 @@ const expansionCatalogStatusLiterals = [
 ] as const;
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
-const postInstallActionLiterals = ['register_equipment'] as const;
+const postInstallActionLiterals = ['register_expansion'] as const;
 
 const catalogEntryCommonShape = {
   id: z.string(),
@@ -69,10 +69,10 @@ export const onboardingSchema = z
   .strict();
 export type Onboarding = z.infer<typeof onboardingSchema>;
 
-const equipmentEntrySchema = z
+const expansionEntrySchema = z
   .object({
     ...catalogEntryCommonShape,
-    activation: z.literal('equipment'),
+    activation: z.literal('equip'),
     status: z.enum(expansionCatalogStatusLiterals),
     addonPath: z.string().min(1).optional(),
     lastError: z.string().min(1).optional(),
@@ -103,7 +103,7 @@ export const catalogEntryStatusSchema = z.union([
 ]);
 export type CatalogEntryStatus = z.infer<typeof catalogEntryStatusSchema>;
 
-export const catalogEntrySchema = z.discriminatedUnion('activation', [equipmentEntrySchema, installOnlyEntrySchema]);
+export const catalogEntrySchema = z.discriminatedUnion('activation', [expansionEntrySchema, installOnlyEntrySchema]);
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>;
 
 export const catalogResultSchema = z
@@ -161,7 +161,7 @@ const equipExpansionStatusSchema = z.enum(['equipped', 'catching_up', 'already_e
 export const equipExpansionResultSchema = z
   .object({
     status: equipExpansionStatusSchema,
-    equipment: expansionViewSchema,
+    expansion: expansionViewSchema,
   })
   .strict();
 export type EquipExpansionResult = z.infer<typeof equipExpansionResultSchema>;
@@ -184,7 +184,7 @@ export type ListExpansionRequest = z.infer<typeof listExpansionRequestSchema>;
 
 export const listExpansionResultSchema = z
   .object({
-    equipment: z.array(expansionViewSchema),
+    expansions: z.array(expansionViewSchema),
   })
   .strict();
 export type ListExpansionResult = z.infer<typeof listExpansionResultSchema>;
@@ -272,9 +272,9 @@ export const installResultSchema = z.discriminatedUnion('status', [
   catalogResultSchema,
   infoResultSchema,
   ...mutationResultSchema.options,
-  z.object({ status: z.literal('equipped'), equipment: installExpansionViewSchema }).strict(),
-  z.object({ status: z.literal('catching_up'), equipment: installExpansionViewSchema }).strict(),
-  z.object({ status: z.literal('already_equipped'), equipment: installExpansionViewSchema }).strict(),
+  z.object({ status: z.literal('equipped'), expansion: installExpansionViewSchema }).strict(),
+  z.object({ status: z.literal('catching_up'), expansion: installExpansionViewSchema }).strict(),
+  z.object({ status: z.literal('already_equipped'), expansion: installExpansionViewSchema }).strict(),
 ]);
 export type InstallResult = z.infer<typeof installResultSchema>;
 
@@ -309,14 +309,14 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
       if (lifecycleService.isActive(request.name)) {
         return {
           status: 'already_equipped',
-          equipment: toExpansionView(lifecycleService.info(request.name)),
+          expansion: toExpansionView(lifecycleService.info(request.name)),
         };
       }
 
       await lifecycleService.equip(request.name);
       return {
         status: 'equipped',
-        equipment: toExpansionView(lifecycleService.info(request.name)),
+        expansion: toExpansionView(lifecycleService.info(request.name)),
       };
     },
     unequipExpansion: async (request) => {
@@ -328,7 +328,7 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
       return { status: 'uninstalled' };
     },
     listExpansion: async (_request) => ({
-      equipment: lifecycleService.list().map(toExpansionView),
+      expansions: lifecycleService.list().map(toExpansionView),
     }),
     readBinding: async (request) => lifecycleService.readBinding(request.binding),
   };
@@ -340,7 +340,7 @@ export function createUnavailableExpansionRpc(): ExpansionRequestPort {
       throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
     },
     unequipExpansion: async (_request) => ({ status: 'not_equipped' }),
-    listExpansion: async (_request) => ({ equipment: [] }),
+    listExpansion: async (_request) => ({ expansions: [] }),
     readBinding: async (_request) => ({ bound: false }),
   };
 }

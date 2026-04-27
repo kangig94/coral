@@ -3,8 +3,8 @@ import { describeTerminalOutcome } from '../jobs/outcome.js';
 import type { JobsListResponse } from '../transport/http/client.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
-import type { BackendStatusFull } from '../transport/http/backend/status.js';
-import type { ShutdownResult } from '../transport/http/backend/shutdown.js';
+import type { BackendStatusFull } from '../transport/http/coordinator/status.js';
+import type { ShutdownResult } from '../transport/http/coordinator/shutdown.js';
 import type {
   AcceptedLaunchResponse,
   BackendToolHttpError,
@@ -522,7 +522,7 @@ export function formatKbReindex(data: ReindexResult, cliPrefix = 'coral-cli'): s
   ]);
 }
 
-export function formatBackendStatus(result: BackendStatusFull): string {
+export function formatCoordinatorStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return joinLines([

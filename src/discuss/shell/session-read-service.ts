@@ -1,5 +1,5 @@
 /**
- * Discuss session read service extracted from `createBackendServer()`.
+ * Discuss session read service extracted from `createCoordinatorServer()`.
  *
  * The server composition root owns the mutable discuss registry and store
  * lookup, while this module owns the read-side query behavior.

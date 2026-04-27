@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/compose.js';
-import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
+import type { EnvPort, StoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 
@@ -21,17 +21,17 @@ export interface CoordinatorDiscoveryRecord {
   processStartedAt?: number;
 }
 
-export interface BackendInfo extends CoordinatorDiscoveryRecord {
+export interface CoordinatorInfo extends CoordinatorDiscoveryRecord {
   host: string;
   version: string;
   instanceId: string;
 }
 
 type DiscoveryStorage = Pick<
-  InfraStoragePort,
+  StoragePort,
   'chmodSync' | 'mkdirSync' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
 >;
-type DiscoveryEnv = Pick<InfraEnvPort, 'platform'>;
+type DiscoveryEnv = Pick<EnvPort, 'platform'>;
 export type DiscoveryRuntime = {
   storage: DiscoveryStorage;
   env: DiscoveryEnv;
@@ -178,11 +178,11 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscover
   return record;
 }
 
-export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {
+export function writeCoordinatorInfo(info: CoordinatorInfo, runtime: DiscoveryRuntime): void {
   writeDiscoveryRecord(info, runtime);
 }
 
-export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
+export function readCoordinatorInfo(runtime: DiscoveryRuntime): CoordinatorInfo | null {
   const record = readDiscoveryRecord(runtime);
   if (!record || record.version === undefined || record.instanceId === undefined) {
     return null;
@@ -196,7 +196,7 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
   };
 }
 
-export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
+export function removeCoordinatorInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
     return;

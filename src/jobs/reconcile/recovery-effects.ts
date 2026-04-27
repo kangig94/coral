@@ -15,7 +15,7 @@ type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
   return {
     ...status,
-    backendNamespace: namespace,
+    coordinatorNamespace: namespace,
   } as JobStatus;
 }
 
@@ -26,11 +26,11 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
     const status = progressStore.readStatus(jobId);
     if (!status || !isLivePhase(status.phase)) continue;
 
-    const backendNamespace =
-      typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
-        ? status.backendNamespace
+    const coordinatorNamespace =
+      typeof status.coordinatorNamespace === 'string' && status.coordinatorNamespace.length > 0
+        ? status.coordinatorNamespace
         : null;
-    if (backendNamespace === namespace) {
+    if (coordinatorNamespace === namespace) {
       results.push(status);
     }
   }
@@ -69,7 +69,7 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
     sessionId: status.sessionId,
     provider: status.provider,
     projectRoot: status.projectRoot,
-    backendNamespace: status.backendNamespace,
+    coordinatorNamespace: status.coordinatorNamespace,
     ...(status.bundleHash === undefined ? {} : { bundleHash: status.bundleHash }),
     jobKind: status.jobKind,
     pool: 'default',

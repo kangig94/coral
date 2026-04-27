@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
-import type { RuntimeDirentLike, EnvPort, StoragePort } from '#src/runtime/ports.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/runtime/ports.js';
 import { claudeArtifactCleanup } from '#src/providers/claude/provider-facets.js';
 
-function makeDirent(name: string, kind: 'file' | 'dir'): RuntimeDirentLike {
+function makeDirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
     name,
     isDirectory: () => kind === 'dir',
@@ -12,7 +12,7 @@ function makeDirent(name: string, kind: 'file' | 'dir'): RuntimeDirentLike {
   };
 }
 
-function makeRuntime(tree: Record<string, RuntimeDirentLike[]>, homedir = '/home/user'): {
+function makeRuntime(tree: Record<string, DirentLike[]>, homedir = '/home/user'): {
   runtime: ArtifactCleanupRuntime;
   unlinkSync: ReturnType<typeof vi.fn>;
   existsSync: ReturnType<typeof vi.fn>;

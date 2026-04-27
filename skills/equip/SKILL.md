@@ -46,7 +46,7 @@ Install and configure Coral companion tooling for Claude Code.
 | `installed`                  | Install-only expansion is installed locally and ready to use    |
 
 5. When rendering `activation`, translate internally:
-   - `activation: 'equipment'` -> `Active in Coordinator`
+   - `activation: 'equip'` -> `Active in Coordinator`
    - `activation: 'none'` -> `Install-only (use directly via the installed path)`
 6. Bundled expansions only auto-load after restart when an `expansion_state` row already exists for them. First-time bootstrap loads nothing automatically; once equipped successfully, restart recovery replays that recorded row.
 7. Ask the user which package to install.

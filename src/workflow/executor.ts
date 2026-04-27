@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
-import type { RuntimeTimePort } from '../runtime/ports.js';
+import type { TimePort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
   formatStepOutput,
@@ -24,7 +24,7 @@ import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 
 type ExecutePlannedStepsOptions = {
-  time: Pick<RuntimeTimePort, 'now'>;
+  time: Pick<TimePort, 'now'>;
   context?: string;
   workDir?: string;
   signal?: AbortSignal;
@@ -61,7 +61,7 @@ async function drainLaunchedAtoms(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
-    time: Pick<RuntimeTimePort, 'now'>;
+    time: Pick<TimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -101,7 +101,7 @@ async function awaitLaunchedStepResults(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
-    time: Pick<RuntimeTimePort, 'now'>;
+    time: Pick<TimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -252,7 +252,7 @@ export async function executePipeline(
     staleCheckIntervalMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
-    time?: Pick<RuntimeTimePort, 'now'>;
+    time?: Pick<TimePort, 'now'>;
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});

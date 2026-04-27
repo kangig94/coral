@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from "../../infra/project-source.js";
 import { SYSTEM_TIME_PORT, nowDate } from '../../infra/time.js';
-import type { RuntimeTimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {
@@ -16,7 +16,7 @@ import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';
 
-function generateTimestamp(time: Pick<RuntimeTimePort, 'now'> = SYSTEM_TIME_PORT): string {
+function generateTimestamp(time: Pick<TimePort, 'now'> = SYSTEM_TIME_PORT): string {
   const now = nowDate(time);
   const pad = (n: number, len = 2): string => String(n).padStart(len, '0');
   return [
@@ -33,7 +33,7 @@ function generateTimestamp(time: Pick<RuntimeTimePort, 'now'> = SYSTEM_TIME_PORT
 export function writeMemo(
   projectRoot: string,
   input: KbMemoInput,
-  time: Pick<RuntimeTimePort, 'now'> = SYSTEM_TIME_PORT,
+  time: Pick<TimePort, 'now'> = SYSTEM_TIME_PORT,
 ): { filename: string; path: string } {
   const source = resolveProjectSource(projectRoot);
   const dir = memoDir(projectRoot);

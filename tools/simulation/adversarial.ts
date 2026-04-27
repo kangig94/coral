@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { SessionManager } from '../../src/sessions/shell/store.js';
-import type { BackendServerInfo, LifecycleState } from '../../src/coordinator/control.js';
+import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/control.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
@@ -61,12 +61,12 @@ export type SimulationHttpResponse = {
 export type SimulationGeneration = {
   index: number;
   backend: SimulationBackend;
-  startedInfo: BackendServerInfo | null;
+  startedInfo: CoordinatorServerInfo | null;
 };
 
 type WorldGenerationState = {
   backend: SimulationBackend;
-  startedInfo: BackendServerInfo | null;
+  startedInfo: CoordinatorServerInfo | null;
   phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
 };
 
@@ -134,7 +134,7 @@ export class SimulationWorld {
     this.current = this.createGenerationState();
   }
 
-  async boot(): Promise<BackendServerInfo> {
+  async boot(): Promise<CoordinatorServerInfo> {
     this.assertUsable();
     const info = await this.current.backend.backend.start();
     this.current.startedInfo = info;
@@ -150,7 +150,7 @@ export class SimulationWorld {
     };
   }
 
-  async cycle(): Promise<BackendServerInfo> {
+  async cycle(): Promise<CoordinatorServerInfo> {
     this.assertUsable();
     this.elapsedOffsetMs = this.getVirtualElapsedMs();
     await this.current.backend.backend.shutdown('cycle');

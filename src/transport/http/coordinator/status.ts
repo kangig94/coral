@@ -1,4 +1,4 @@
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -26,9 +26,9 @@ export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
 
-export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+export async function getCoordinatorStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readBackendInfo({
+  const info = readCoordinatorInfo({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,

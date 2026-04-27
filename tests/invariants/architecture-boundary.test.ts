@@ -55,7 +55,6 @@ const RETIRED_HTTP_TOOL_RESPONSE = ['src', 'transport', 'http', 'tool-response.t
 const RETIRED_JOBS_INDEX = ['src', 'jobs', 'index.ts'].join('/');
 const RETIRED_SESSIONS_INDEX = ['src', 'sessions', 'index.ts'].join('/');
 const RETIRED_TRANSPORT_HTTP_INDEX = ['src', 'transport', 'http', 'index.ts'].join('/');
-const RETIRED_COORDINATOR_INDEX = ['src', 'coordinator', 'index.ts'].join('/');
 const RETIRED_WORKFLOW_INDEX = ['src', 'workflow', 'index.ts'].join('/');
 const RETIRED_RUNTIME_INDEX = ['src', 'runtime', 'index.ts'].join('/');
 const RETIRED_DISCUSS_API = ['src', 'discuss', 'api.ts'].join('/');
@@ -747,10 +746,6 @@ describe('architecture boundary guard', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_TRANSPORT_HTTP_INDEX);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_TRANSPORT_HTTP_INDEX))).toBe(false);
   });
-  it('the retired coordinator barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_COORDINATOR_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_COORDINATOR_INDEX))).toBe(false);
-  });
   it('the retired workflow barrel must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_WORKFLOW_INDEX);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_WORKFLOW_INDEX))).toBe(false);
@@ -944,7 +939,7 @@ describe('architecture boundary guard', () => {
   });
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
-      'src/infra/backend-discovery.ts',
+      'src/infra/coordinator-discovery.ts',
       'src/infra/path/compose.ts',
       'src/infra/path/root.ts',
       'src/infra/plugin-registry.ts',
@@ -1309,7 +1304,7 @@ describe('architecture boundary guard', () => {
 
     expect(violations).toEqual([]);
   });
-  it('removed equipment vocabulary stays purged from src and removed expansion files remain deleted', () => {
+  it('removed equipment + Backend vocabulary stays purged from src and removed paths remain deleted', () => {
     const removedPaths = [
       'src/expansion/contracts.ts',
       'src/expansion/equipment-contract.ts',
@@ -1355,6 +1350,11 @@ describe('architecture boundary guard', () => {
       [/\bequipment_state\b/u, 'equipment_state'],
       [/\bequipment_cursors\b/u, 'equipment_cursors'],
       [/\bequipped_at\b/u, 'equipped_at'],
+      [/\bEquipmentStateRow\b/u, 'EquipmentStateRow'],
+      [/\bequipmentEntrySchema\b/u, 'equipmentEntrySchema'],
+      [/\bregister_equipment\b/u, 'register_equipment'],
+      [/activation:\s*['"]equipment['"]/u, "activation: 'equipment'"],
+      [/'Invalid equipment/u, "'Invalid equipment ...'"],
       [/['"]coordinator\.registerEquipment['"]/u, 'coordinator.registerEquipment'],
       [/['"]coordinator\.unregisterEquipment['"]/u, 'coordinator.unregisterEquipment'],
       [/['"]coordinator\.listEquipment['"]/u, 'coordinator.listEquipment'],
@@ -1369,6 +1369,33 @@ describe('architecture boundary guard', () => {
       [/\bequipment_install_path_unwritable\b/u, 'equipment_install_path_unwritable'],
       [/backend:\s*['"]orama['"]\s*\|\s*['"]needle['"]/u, "backend: 'orama' | 'needle'"],
       [/paths\.coral\.equipment\b/u, 'paths.coral.equipment'],
+      // Coordinator-namespace purge — daemon vocabulary is "Coordinator", not "Backend".
+      [/\bBackendCoreOptions\b/u, 'BackendCoreOptions'],
+      [/\bBackendCoreResult\b/u, 'BackendCoreResult'],
+      [/\bcreateBackendCore\b/u, 'createBackendCore'],
+      [/\bBackendIdentity\b/u, 'BackendIdentity'],
+      [/\bBackendIdentityWriter\b/u, 'BackendIdentityWriter'],
+      [/\bBackendWorld\b/u, 'BackendWorld'],
+      [/\bMutableBackendRuntimeState\b/u, 'MutableBackendRuntimeState'],
+      [/\bBackendServerOptions\b/u, 'BackendServerOptions'],
+      [/\bBackendServerController\b/u, 'BackendServerController'],
+      [/\bBackendServerInfo\b/u, 'BackendServerInfo'],
+      [/\bBackendBootSnapshot\b/u, 'BackendBootSnapshot'],
+      [/\bcreateBackendServer\b/u, 'createBackendServer'],
+      [/\bcreateBackendControl\b/u, 'createBackendControl'],
+      [/\bcreateBackendWorld\b/u, 'createBackendWorld'],
+      [/\bresolveBackendDefaults\b/u, 'resolveBackendDefaults'],
+      [/\bBackendInfo\b/u, 'BackendInfo'],
+      [/\breadBackendInfo\b/u, 'readBackendInfo'],
+      [/\bwriteBackendInfo\b/u, 'writeBackendInfo'],
+      [/\bremoveBackendInfoIfOwner\b/u, 'removeBackendInfoIfOwner'],
+      [/\bbackendNamespace\b/u, 'backendNamespace'],
+      [/\bbackendIdentity\b/u, 'backendIdentity'],
+      [/\bbackendLog\b/u, 'backendLog'],
+      [/\bregisterBackendCommands\b/u, 'registerBackendCommands'],
+      [/\bgetBackendStatusFull\b/u, 'getBackendStatusFull'],
+      [/\bshutdownBackend\b/u, 'shutdownBackend'],
+      [/\bformatBackendStatus\b/u, 'formatBackendStatus'],
     ];
     const violations = PRODUCTION_FILE_PATHS.flatMap((filePath) => {
       const source = readFileSync(filePath, 'utf8');
@@ -1381,7 +1408,7 @@ describe('architecture boundary guard', () => {
     expect(violations).toEqual([]);
 
     const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');
-    expect(skillSource).toContain("activation: 'equipment'");
+    expect(skillSource).toContain("activation: 'equip'");
     expect(skillSource).toContain('~/.coral/data/expansion/needle/coral-needle.node');
   });
 });

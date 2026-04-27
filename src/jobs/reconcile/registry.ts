@@ -1,7 +1,7 @@
 import type { JobLaunch, JobRuntime } from '../records.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { AbortResult } from '../contracts/abort-registry.js';
-import type { RuntimeProcessPort } from '../../runtime/ports.js';
+import type { ProcessPort } from '../../runtime/ports.js';
 
 export interface RecoveryEntry {
   launchRecord: JobLaunch;
@@ -12,7 +12,7 @@ export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
   private readonly abortHandlers = new Map<string, () => void>();
 
-  constructor(private readonly runtimeProcess?: Pick<RuntimeProcessPort, 'kill'>) {}
+  constructor(private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>) {}
 
   register(
     jobId: string,

@@ -28,14 +28,14 @@ describe('createExpansionRpc', () => {
 
     await expect(rpc.equipExpansion({ name: 'needle' })).resolves.toEqual({
       status: 'equipped',
-      equipment: {
+      expansion: {
         name: 'needle',
         status: 'equipped',
       },
     });
     await expect(rpc.equipExpansion({ name: 'needle' })).resolves.toEqual({
       status: 'already_equipped',
-      equipment: {
+      expansion: {
         name: 'needle',
         status: 'equipped',
       },
@@ -43,7 +43,7 @@ describe('createExpansionRpc', () => {
     await expect(rpc.unequipExpansion({ name: 'needle' })).resolves.toEqual({ status: 'uninstalled' });
     await expect(rpc.unequipExpansion({ name: 'missing' })).resolves.toEqual({ status: 'not_equipped' });
     await expect(rpc.listExpansion({})).resolves.toEqual({
-      equipment: [{ name: 'failed', status: 'installed-not-active', lastError: 'boom' }],
+      expansions: [{ name: 'failed', status: 'installed-not-active', lastError: 'boom' }],
     });
     await expect(rpc.readBinding({ binding: 'kb.vector' })).resolves.toEqual({ bound: true, heldBy: 'needle' });
   });

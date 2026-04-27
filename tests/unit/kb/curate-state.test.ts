@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '#src/infra/backend-log.js';
+import { coordinatorLog } from '#src/infra/coordinator-log.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contract.js';
@@ -741,7 +741,7 @@ describe('curate state', () => {
 
       const detectedAt = '2026-03-25T12:00:00.000Z';
       const scan = scanCorpus(runtime, detectedAt);
-      const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+      const warn = vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
       const pendingRepair = detectRepairs(scan.scanFailures, detectedAt);
 
       expect(pendingRepair).toEqual([
@@ -799,7 +799,7 @@ describe('curate state', () => {
       });
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
-      vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+      vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
       const pendingRepair = detectRepairs(scan.scanFailures, scan.detectedAt);
       const assignment = assignEntrySeqs(runtime.readIndexState(), scan.scannedNotes, scan.scannedSources, pendingRepair);
 
@@ -938,7 +938,7 @@ describe('curate state', () => {
 
       const detectedAt = '2026-03-25T12:00:00.000Z';
       const scan = scanCorpus(runtime, detectedAt);
-      vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+      vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
       const pendingRepair = detectRepairs(scan.scanFailures, detectedAt);
 
       persistState(

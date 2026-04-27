@@ -1,5 +1,5 @@
 import type { ProviderServerHandle } from '../durable-transport.js';
-import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
+import type { Runtime, TimePort } from '../../../runtime/ports.js';
 import { activeLeaseCount } from './lease.js';
 import type { HostStatsState, ProviderHostEntry } from './state.js';
 
@@ -40,7 +40,7 @@ export function readHostStats(params: Record<string, unknown> | undefined): Host
 
 export function clearIdleTimer(
   entry: ProviderHostEntry,
-  time: Pick<RuntimeTimePort, 'clearTimeout'>,
+  time: Pick<TimePort, 'clearTimeout'>,
 ): void {
   if (!entry.idleTimer) {
     return;

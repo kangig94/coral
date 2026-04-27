@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
+import type * as BackendDiscoveryModule from '#src/infra/coordinator-discovery.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/coordinator-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -17,8 +17,8 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/infra/backend-discovery.js', async () => {
-  const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/backend-discovery.js');
+vi.mock('#src/infra/coordinator-discovery.js', async () => {
+  const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/coordinator-discovery.js');
   return {
     ...actual,
     readDiscoveryRecord: mockState.readDiscoveryRecord,
@@ -71,7 +71,7 @@ describe('expansion activation', () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({
       status: 'equipped',
-      equipment: {
+      expansion: {
         name: 'needle',
         status: 'equipped',
       },
@@ -80,7 +80,7 @@ describe('expansion activation', () => {
 
     await expect(activation.activateExpansion('needle')).resolves.toEqual({
       status: 'equipped',
-      equipment: {
+      expansion: {
         slot: 'kb.vector',
         name: 'needle',
         status: 'equipped',
@@ -127,16 +127,16 @@ describe('expansion activation', () => {
     mockState.createIpcClient.mockReset();
     mockState.readDiscoveryRecord.mockReset();
     vi.resetModules();
-    vi.doUnmock('#src/infra/backend-discovery.js');
+    vi.doUnmock('#src/infra/coordinator-discovery.js');
 
     try {
       const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }, { createRealRuntime }] =
         await Promise.all([
-          import('#src/infra/backend-discovery.js'),
+          import('#src/infra/coordinator-discovery.js'),
           import('#src/cli/expansion-activation.js'),
           import('#src/runtime/real.js'),
         ]);
-      const request = vi.fn().mockResolvedValue({ equipment: [] });
+      const request = vi.fn().mockResolvedValue({ expansions: [] });
 
       process.env.CORAL_FLAVOR = 'dev';
       const runtime = createRealRuntime('dev');
@@ -151,7 +151,7 @@ describe('expansion activation', () => {
 
       await expect(createFreshActivation().readExpansionStatus()).resolves.toEqual({
         status: 'available',
-        equipment: [],
+        expansions: [],
       });
       expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-dev.sock');
       expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});

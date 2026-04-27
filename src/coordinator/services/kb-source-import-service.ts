@@ -39,7 +39,7 @@ export type KbSourceImportReadinessWaiter = (params: {
 export interface KbSourceImportServiceDeps {
   runtime: Pick<Runtime, 'ids' | 'time' | 'storage' | 'env' | 'process'>;
   progressStore: JobProgressStore;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
 }

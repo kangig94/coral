@@ -136,7 +136,7 @@ function createService(
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
-    backendNamespace?: string;
+    coordinatorNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
@@ -185,7 +185,7 @@ function createService(
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
-    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: options.coordinatorNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
@@ -260,7 +260,7 @@ function makeLaunchRecord(
   return {
     provider: 'codex',
     projectRoot: '/tmp/project',
-    backendNamespace: 'old-backend-ns',
+    coordinatorNamespace: 'old-backend-ns',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
@@ -638,9 +638,9 @@ describe('ExecutionService', () => {
         model: 'gpt-5',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
       });
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.resumeBySessionId(
         { provider: 'claude', sessionId: entry.sessionId, prompt: 'hello' },
@@ -671,10 +671,10 @@ describe('ExecutionService', () => {
         model: 'gpt-5',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
       });
       mgr.setConversationRef(entry.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.resumeBySessionId(
         { provider: 'codex', sessionId: entry.sessionId, prompt: 'hello' },
@@ -705,10 +705,10 @@ describe('ExecutionService', () => {
         model: 'gpt-5',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
       });
       mgr.setConversationRef(entry.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
@@ -747,7 +747,7 @@ describe('ExecutionService', () => {
         model: 'gpt-5',
         cwd: otherCtx.projectRoot,
         projectRoot: otherCtx.projectRoot,
-        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(otherCtx.pluginRoot),
       });
       const service = createService(ctx);
 
@@ -776,7 +776,7 @@ describe('ExecutionService', () => {
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
         instruction,
         bypassPermissions: true,
         systemPrompt: 'Persisted system prompt',
@@ -951,9 +951,9 @@ describe('ExecutionService', () => {
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
       });
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.forkBySessionId(
         { provider: 'claude', sessionId: source.sessionId, prompt: 'branch' },
@@ -988,7 +988,7 @@ describe('ExecutionService', () => {
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
         agentName: 'architect',
         instruction,
         bypassPermissions: true,
@@ -1000,7 +1000,7 @@ describe('ExecutionService', () => {
         },
       });
       mgr.setConversationRef(source.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.forkBySessionId(
         { provider: 'codex', sessionId: source.sessionId, prompt: 'branch' },
@@ -1060,7 +1060,7 @@ describe('ExecutionService', () => {
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
         projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot),
         agentName: 'architect',
         instruction,
         bypassPermissions: true,
@@ -1072,7 +1072,7 @@ describe('ExecutionService', () => {
         },
       });
       mgr.setConversationRef(source.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+      const service = createService(ctx, { coordinatorNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
@@ -1136,7 +1136,7 @@ describe('ExecutionService', () => {
         model: 'gpt-5',
         cwd: otherCtx.projectRoot,
         projectRoot: otherCtx.projectRoot,
-        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+        coordinatorNamespace: pluginRootNamespace(otherCtx.pluginRoot),
       });
       const service = createService(ctx);
 
@@ -1491,7 +1491,7 @@ describe('ExecutionService', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: 'test-ns',
+      coordinatorNamespace: 'test-ns',
     });
     progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
@@ -1525,7 +1525,7 @@ describe('ExecutionService', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: 'test-ns',
+      coordinatorNamespace: 'test-ns',
     });
     progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
@@ -1584,7 +1584,7 @@ describe('ExecutionService', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: 'test-ns',
+      coordinatorNamespace: 'test-ns',
     });
     progressStore.appendLaunchRequested(
       jobId,
@@ -1668,7 +1668,7 @@ describe('ExecutionService', () => {
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot: ctx.projectRoot,
-        backendNamespace: 'test-ns',
+        coordinatorNamespace: 'test-ns',
         jobKind: 'workflow',
       });
       progressStore.appendLaunchRequested(
@@ -1746,7 +1746,7 @@ describe('ExecutionService', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: 'test-ns',
+      coordinatorNamespace: 'test-ns',
       jobKind: 'workflow',
     });
     progressStore.appendLaunchRequested(
@@ -1857,7 +1857,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'queued',
         });
 
@@ -1887,7 +1887,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'queued',
         });
 
@@ -1897,7 +1897,7 @@ describe('ExecutionService', () => {
         service.recoverQueuedJob(launchRecord);
 
         const status = progressStore.readStatus(jobId);
-        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+        expect(status?.coordinatorNamespace).not.toBe('old-backend-ns');
       });
 
       it('recovers queued jobs without hydrating retired progress counters', () => {
@@ -1917,7 +1917,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'queued',
         });
 
@@ -1955,7 +1955,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'queued',
         });
 
@@ -1994,7 +1994,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'running',
         });
 
@@ -2029,7 +2029,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'running',
         });
 
@@ -2063,7 +2063,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'running',
         });
 
@@ -2076,7 +2076,7 @@ describe('ExecutionService', () => {
         const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
 
         const status = progressStore.readStatus(jobId);
-        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+        expect(status?.coordinatorNamespace).not.toBe('old-backend-ns');
         cleanup();
       });
 
@@ -2096,7 +2096,7 @@ describe('ExecutionService', () => {
           sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
+          coordinatorNamespace: 'old-backend-ns',
           initialPhase: 'running',
         });
 
@@ -2133,7 +2133,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
         progressStore.appendLaunchRequested(
@@ -2191,7 +2191,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
 
@@ -2273,7 +2273,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
         progressStore.appendLaunchRequested(
@@ -2359,7 +2359,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
 
@@ -2452,7 +2452,7 @@ describe('ExecutionService', () => {
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           initialPhase: 'running',
         });
 

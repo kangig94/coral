@@ -5,11 +5,11 @@
  * Output goes to stderr so backend logs stay separate from stdout responses.
  *
  * Usage:
- *   import { backendLog } from './backend-log.js';
- *   backendLog.init({ version: '0.4.12', bundleHash: 'abc123' });
- *   backendLog.info('Server started');
- *   backendLog.warn('Session file corrupt, skipping');
- *   backendLog.error('Fatal startup error', error);
+ *   import { coordinatorLog } from './coordinator-log.js';
+ *   coordinatorLog.init({ version: '0.4.12', bundleHash: 'abc123' });
+ *   coordinatorLog.info('Server started');
+ *   coordinatorLog.warn('Session file corrupt, skipping');
+ *   coordinatorLog.error('Fatal startup error', error);
  */
 
 let _tag = '';
@@ -22,7 +22,7 @@ function write(level: string, message: string): void {
   process.stderr.write(`${ts()} ${level}${_tag} ${message}\n`);
 }
 
-export const backendLog = {
+export const coordinatorLog = {
   /** Call once at startup with version + bundleHash. */
   init(identity: { version: string; bundleHash: string }): void {
     _tag = ` [${identity.version}/${identity.bundleHash.slice(0, 8)}]`;

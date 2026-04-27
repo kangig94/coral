@@ -4,7 +4,7 @@ import type {
   ProviderTerminalEventBody,
 } from '../../providers/contract.js';
 import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 
 export async function consumeJobStream(options: {
   jobId: string;
@@ -41,7 +41,7 @@ export async function consumeJobStream(options: {
         },
       });
       if (!result.ok) {
-        backendLog.warn(
+        coordinatorLog.warn(
           `Continuity checkpoint went stale for claimed job ${options.jobId} on session ${sessionId}; draining terminal.`,
         );
         continue;

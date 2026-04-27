@@ -21,7 +21,7 @@ import type {
   ExecResult,
   RuntimeExecOptions,
   RuntimeSpawnOptions,
-  RuntimeTimerHandle,
+  TimerHandle,
 } from '../../../src/runtime/ports.js';
 import { createDeferred, type Deferred } from '../../testing/deferred.js';
 import { toError } from './constants.js';
@@ -47,7 +47,7 @@ type RegisteredProcess = {
   pid: number;
   alive: boolean;
   closed: boolean;
-  timers: Set<RuntimeTimerHandle>;
+  timers: Set<TimerHandle>;
   child: MockChildProcess | null;
   killActions: MockKillAction[];
   complete: (outcome: ProcessExitOutcome) => void;

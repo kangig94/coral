@@ -40,7 +40,7 @@ function launchBody(jobId: string): JobLaunchRequestBody {
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: `/workspace/${jobId}`,
-    backendNamespace: 'tests',
+    coordinatorNamespace: 'tests',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,

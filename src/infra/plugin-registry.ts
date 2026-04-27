@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { InfraEnvPort, InfraStoragePort } from './port-types.js';
+import type { EnvPort, StoragePort } from './port-types.js';
 import { isNoEntryError } from './fs-errors.js';
 
 const installedPluginEntrySchema = z
@@ -26,23 +26,23 @@ export type PluginRegistry = {
 };
 
 export type PluginRegistryDeps = {
-  storage?: Pick<InfraStoragePort, 'existsSync' | 'readFileSync'>;
-  env?: Pick<InfraEnvPort, 'get'>;
+  storage?: Pick<StoragePort, 'existsSync' | 'readFileSync'>;
+  env?: Pick<EnvPort, 'get'>;
   registryPath?: string;
   homeDir?: string;
 };
 
 type ResolvedPluginRegistryDeps = {
-  storage: Pick<InfraStoragePort, 'existsSync' | 'readFileSync'>;
-  env: Pick<InfraEnvPort, 'get'>;
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync'>;
+  env: Pick<EnvPort, 'get'>;
   registryPath?: string;
   homeDir?: string;
 };
-function defaultStorage(): Pick<InfraStoragePort, 'existsSync' | 'readFileSync'> {
+function defaultStorage(): Pick<StoragePort, 'existsSync' | 'readFileSync'> {
   return { existsSync, readFileSync };
 }
 
-function defaultEnv(): Pick<InfraEnvPort, 'get'> {
+function defaultEnv(): Pick<EnvPort, 'get'> {
   return {
     get: (key) => process.env[key],
   };

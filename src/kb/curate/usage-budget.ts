@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { RuntimeStoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../runtime/ports.js';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
 
-export type UsageBudgetStorage = Pick<RuntimeStoragePort, 'readFileSync'>;
+export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 
 export type UsageBudgetOptions = {
   homeDir?: string;

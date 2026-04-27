@@ -15,7 +15,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-import { backendLog } from './backend-log.js';
+import { coordinatorLog } from './coordinator-log.js';
 
 const ENV_BUDGET_FALLBACK_BYTES = 2 * 1024 * 1024;
 const ENV_BUDGET_HEADROOM_RATIO = 0.8;
@@ -117,7 +117,7 @@ export function shedIfOverBudget(
   }
 
   const shedList = shedNames.join(', ') + (shedCount > shedNames.length ? `, ... (+${shedCount - shedNames.length} more)` : '');
-  backendLog.warn(
+  coordinatorLog.warn(
     `child-env: shed ${shedCount}/${originalCount} vars ` +
       `(${(originalSize / 1024).toFixed(0)}KB -> ${(currentSize / 1024).toFixed(0)}KB, ` +
       `budget=${(budget / 1024).toFixed(0)}KB) [${shedList}]` +

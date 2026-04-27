@@ -183,7 +183,7 @@ function stubLaunchRecord(
     sessionId: string;
     provider: string;
     projectRoot: string;
-    backendNamespace: string;
+    coordinatorNamespace: string;
     enqueueSequence?: number;
     pool?: string;
   },
@@ -193,7 +193,7 @@ function stubLaunchRecord(
     sessionId: overrides.sessionId,
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
-    backendNamespace: overrides.backendNamespace,
+    coordinatorNamespace: overrides.coordinatorNamespace,
     jobKind: 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: overrides.enqueueSequence ?? 0,
@@ -362,7 +362,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     sessionId: 'running-adoption-session',
     provider: 'fakeprovider',
     projectRoot,
-    backendNamespace: namespace,
+    coordinatorNamespace: namespace,
     initialPhase: 'running',
   });
   stubLaunchRecord(progressStore, {
@@ -370,7 +370,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     sessionId: 'running-adoption-session',
     provider: 'fakeprovider',
     projectRoot,
-    backendNamespace: namespace,
+    coordinatorNamespace: namespace,
   });
 
   return {

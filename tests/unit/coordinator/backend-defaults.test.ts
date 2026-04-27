@@ -4,9 +4,9 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { writeCoordinatorInfo, type CoordinatorInfo } from '#src/infra/coordinator-discovery.js';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
-import { resolveBackendDefaults } from '#src/coordinator/composition/defaults.js';
+import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
 import type { LockRecord } from '#src/coordinator/lock.js';
 
 const mockState = vi.hoisted(() => ({
@@ -25,7 +25,7 @@ vi.mock('node:os', async () => {
 });
 
 type HarnessOptions = {
-  infoOverrides?: Partial<BackendInfo>;
+  infoOverrides?: Partial<CoordinatorInfo>;
   recordOverrides?: Partial<LockRecord>;
   skipPrime?: boolean;
 };
@@ -52,7 +52,7 @@ function createHarness(options: HarnessOptions = {}) {
 
   const runtime = createRealRuntime('prod');
   const fetchFn = vi.fn(async (_url: string, _init?: RequestInit) => new Response());
-  const defaultsPlan = resolveBackendDefaults(
+  const defaultsPlan = resolveCoordinatorDefaults(
     {
       runtime,
       fetchFn,
@@ -61,7 +61,7 @@ function createHarness(options: HarnessOptions = {}) {
     runtime,
   );
   const expectedNamespace = pluginRootNamespace(pluginRoot);
-  const info: BackendInfo = {
+  const info: CoordinatorInfo = {
     pid: process.pid,
     port: 4312,
     socketPath: '/tmp/coral-backend-defaults.sock',
@@ -86,7 +86,7 @@ function createHarness(options: HarnessOptions = {}) {
   };
 
   if (!options.skipPrime) {
-    writeBackendInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+    writeCoordinatorInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   }
 
   return {
@@ -100,7 +100,7 @@ function createHarness(options: HarnessOptions = {}) {
   };
 }
 
-describe('resolveBackendDefaults verifyBackendOwnershipFn', () => {
+describe('resolveCoordinatorDefaults verifyBackendOwnershipFn', () => {
   beforeEach(() => {
     mkdirSync(mockState.baseTmp, { recursive: true });
     mockState.tmpRoot = mkdtempSync(join(mockState.baseTmp, 'run-'));

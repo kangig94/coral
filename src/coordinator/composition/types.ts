@@ -1,8 +1,8 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { BackendInfo } from '../../infra/backend-discovery.js';
+import type { CoordinatorInfo } from '../../infra/coordinator-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState } from '../control.js';
+import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../control.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/context.js';
@@ -29,7 +29,7 @@ import type { IpcListener } from '../../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb-source-import-service.js';
 
-export type BackendBootSnapshot = {
+export type CoordinatorBootSnapshot = {
   version?: string;
   bundleHash?: string;
   flavor?: 'prod' | 'dev';
@@ -46,12 +46,12 @@ export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerRespons
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
 
-export type BackendCoreOptions = {
+export type CoordinatorCoreOptions = {
   runtime: Runtime;
-  bootSnapshot?: BackendBootSnapshot;
+  bootSnapshot?: CoordinatorBootSnapshot;
   progressStore?: ProgressStore;
   pluginRoot?: string;
-  backendNamespace?: string;
+  coordinatorNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
   createServerFn?: CreateServerFn;
   fetchFn?: FetchFn;
@@ -67,7 +67,7 @@ export type BackendCoreOptions = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  writeBackendInfoFn?: (info: BackendInfo) => void;
+  writeBackendInfoFn?: (info: CoordinatorInfo) => void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
   removeLockIfOwnerFn?: RemoveLockIfOwnerFn;
   closeServerFn?: (server: Server) => Promise<void>;
@@ -89,14 +89,14 @@ export type BackendCoreOptions = {
   discussRegistry?: DiscussContextRegistry;
 };
 
-export type BackendCoreResult = {
-  identity: BackendIdentity;
+export type CoordinatorCoreResult = {
+  identity: CoordinatorIdentity;
   server: Server;
   handleRequest: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   lifecycleController: LifecycleController;
   idleTimer: IdleTimer;
   discussRegistry: DiscussContextRegistry;
-  runtimeState: MutableBackendRuntimeState;
+  runtimeState: MutableCoordinatorRuntimeState;
   progressStore: ProgressStore;
   eventBus: TypedEventBus;
   launchCoordinator: LaunchCoordinator;

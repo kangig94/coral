@@ -1,13 +1,13 @@
 import { raceTimeout } from '../../../infra/async.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
+import type { Runtime, TimePort } from '../../../runtime/ports.js';
 import { clearIdleTimer } from './idle.js';
 import type { ProviderHostEntry } from './state.js';
 
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
 
-export function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<RuntimeTimePort, 'setTimeout'>): Promise<T> {
+export function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<TimePort, 'setTimeout'>): Promise<T> {
   return new Promise<T>((resolve) => {
     const timer = time.setTimeout(() => resolve(value), timeoutMs);
     timer.unref?.();
@@ -17,7 +17,7 @@ export function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<Runtim
 export function waitForCloseWithin(
   closed: Promise<Error | void>,
   timeoutMs: number,
-  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
 ): Promise<boolean> {
   return raceTimeout(closed, timeoutMs, time);
 }

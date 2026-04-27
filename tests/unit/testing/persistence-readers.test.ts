@@ -37,7 +37,7 @@ function makeLaunchBody(overrides: Record<string, unknown> = {}): Record<string,
     sessionId: 's1',
     provider: 'codex',
     projectRoot: '/tmp/project',
-    backendNamespace: 'ns',
+    coordinatorNamespace: 'ns',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
@@ -95,7 +95,7 @@ function seedJobProjection(
     sessionId?: string;
     provider?: string;
     projectRoot?: string;
-    backendNamespace?: string;
+    coordinatorNamespace?: string;
     jobKind?: 'provider' | 'workflow';
     createdAt?: string;
   } = {},
@@ -137,7 +137,7 @@ function seedJobProjection(
       options.sessionId ?? 's1',
       options.provider ?? 'codex',
       options.projectRoot ?? '/tmp/project',
-      options.backendNamespace ?? 'ns',
+      options.coordinatorNamespace ?? 'ns',
       options.jobKind === 'workflow' ? 'workflow' : 'provider',
       options.createdAt ?? NOW,
       lastSeq,
@@ -169,7 +169,7 @@ describe('readStatusRecord', () => {
     expect(result!.sessionId).toBe('s1');
     expect(result!.provider).toBe('codex');
     expect(result!.projectRoot).toBe('/tmp/project');
-    expect(result!.backendNamespace).toBe('ns');
+    expect(result!.coordinatorNamespace).toBe('ns');
     expect(result!.phase).toBe('completed');
     expect(result!.updatedAt).toBe(NOW);
   });
@@ -195,7 +195,7 @@ describe('readStatusRecord', () => {
       sessionId: 's1',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: 'ns',
+      coordinatorNamespace: 'ns',
       jobKind: 'provider',
       phase: 'running',
       updatedAt: NOW,

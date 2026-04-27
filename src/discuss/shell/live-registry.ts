@@ -1,5 +1,5 @@
 import type { DiscussSessionStore } from './session-store.js';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, DiscussService, LiveDiscussSession } from './context.js';
 import { isWithinLiveSessionBoundary } from '../events.js';
 
@@ -86,7 +86,7 @@ export async function clearAllDiscuss(
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {
           const detail = error instanceof Error ? error.message : String(error);
-          backendLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
+          coordinatorLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
         }
       }
       if (!session.controller.signal.aborted) {

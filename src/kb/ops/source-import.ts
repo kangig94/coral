@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { basename, delimiter, extname, join } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeProcessPort, RuntimeTimePort } from '../../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, TimePort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
 import { sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';
@@ -35,10 +35,10 @@ export type PreparedSourceImport = {
 };
 
 export type SourceImportRuntime = {
-  env: Pick<RuntimeEnvPort, 'fullSnapshot' | 'homedir' | 'platform'>;
-  process: Pick<RuntimeProcessPort, 'exec'>;
-  ids: Pick<RuntimeIdsPort, 'uuid'>;
-  time: Pick<RuntimeTimePort, 'now'>;
+  env: Pick<EnvPort, 'fullSnapshot' | 'homedir' | 'platform'>;
+  process: Pick<ProcessPort, 'exec'>;
+  ids: Pick<IdPort, 'uuid'>;
+  time: Pick<TimePort, 'now'>;
 };
 
 export type SourceImportContext = {

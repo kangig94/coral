@@ -1,13 +1,13 @@
 import { mkdirSync, rmSync, statSync } from 'node:fs';
-import type { InfraStoragePort, InfraTimePort } from './port-types.js';
+import type { StoragePort, TimePort } from './port-types.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 export type DirectoryLockDeps = {
-  storage: Pick<InfraStoragePort, 'mkdirSync' | 'rmSync' | 'statSync'>;
-  time: Pick<InfraTimePort, 'now' | 'sleep'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'statSync'>;
+  time: Pick<TimePort, 'now' | 'sleep'>;
 };
 
 export class DirectoryLockTimeoutError extends Error {

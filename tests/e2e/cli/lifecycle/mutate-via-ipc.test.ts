@@ -15,14 +15,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/coordinator-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
-import { openStoreDatabase } from '#src/store/index.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
 

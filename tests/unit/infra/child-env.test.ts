@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock backendLog before importing the module under test
-vi.mock('#src/infra/backend-log.js', () => ({
-  backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
+// Mock coordinatorLog before importing the module under test
+vi.mock('#src/infra/coordinator-log.js', () => ({
+  coordinatorLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
 
 import { buildChildEnv } from '#src/infra/env-sanitize.js';
 import { measureEnv, resolveEnvBudgetBytes as envBudgetBytes } from '#src/infra/env-sanitize.js';
-import { backendLog } from '#src/infra/backend-log.js';
+import { coordinatorLog } from '#src/infra/coordinator-log.js';
 
 /** Fill env with vars of given size until total exceeds budget. Track size incrementally. */
 function fillUntilOverBudget(env: Record<string, string>, prefix: string, valueSize: number): void {
@@ -26,7 +26,7 @@ describe('buildChildEnv', () => {
 
   beforeEach(() => {
     originalEnv = process.env;
-    vi.mocked(backendLog.warn).mockReset();
+    vi.mocked(coordinatorLog.warn).mockReset();
   });
 
   afterEach(() => {
@@ -88,7 +88,7 @@ describe('buildChildEnv', () => {
     expect(result.PATH).toBe('/usr/bin');
     expect(result.CFLAGS).toBe('-O2 -Wall -Wextra');
     expect(result.CMAKE_PREFIX_PATH).toBe('/opt/local:/usr/local');
-    expect(backendLog.warn).not.toHaveBeenCalled();
+    expect(coordinatorLog.warn).not.toHaveBeenCalled();
   });
 
   it('should shed largest vars first when over budget', () => {
@@ -108,7 +108,7 @@ describe('buildChildEnv', () => {
     const keptBloat = Object.keys(result).filter((k) => k.startsWith('BLOAT_')).length;
     expect(keptBloat).toBeGreaterThan(0);
     expect(keptBloat).toBeLessThan(totalBloat);
-    expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('child-env: shed'));
+    expect(coordinatorLog.warn).toHaveBeenCalledWith(expect.stringContaining('child-env: shed'));
   });
 
   it('should produce env within budget after shedding', () => {
@@ -149,7 +149,7 @@ describe('buildChildEnv', () => {
     // Protected var survives despite being large
     expect(result.CRITICAL_BUILD_FLAGS).toBe('x'.repeat(8192));
     expect(result.PATH).toBe('/usr/bin');
-    expect(backendLog.warn).toHaveBeenCalled();
+    expect(coordinatorLog.warn).toHaveBeenCalled();
   });
 
   it('should log shed var names and passthrough hint', () => {
@@ -159,6 +159,6 @@ describe('buildChildEnv', () => {
     process.env = env;
     buildChildEnv();
 
-    expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('CORAL_ENV_PASSTHROUGH'));
+    expect(coordinatorLog.warn).toHaveBeenCalledWith(expect.stringContaining('CORAL_ENV_PASSTHROUGH'));
   });
 });

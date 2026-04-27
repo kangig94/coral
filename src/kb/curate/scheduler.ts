@@ -1,4 +1,4 @@
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contract.js';
@@ -146,7 +146,7 @@ export function createCurateScheduler({
         return false;
       }
 
-      backendLog.error('kb_curate: community batch failed', error);
+      coordinatorLog.error('kb_curate: community batch failed', error);
       const communityBatchFailures = await incrementCommunityBatchFailures();
       pendingCommunitySkipTicks = calculateCommunityBatchBackoffTicks(communityBatchFailures);
       schedule();
@@ -267,16 +267,16 @@ export function createCurateScheduler({
           try {
             await clearCurateRetryState(kb);
           } catch (stateError: unknown) {
-            backendLog.error('kb_curate: failed to clear stop state', stateError);
+            coordinatorLog.error('kb_curate: failed to clear stop state', stateError);
           }
           return;
         }
         const runError = error instanceof CurateRunError ? error : new CurateRunError(null, error);
-        backendLog.error('kb_curate: run failed', runError.cause);
+        coordinatorLog.error('kb_curate: run failed', runError.cause);
         try {
           await recordCurateFailure(kb, runError.through, runError.cause);
         } catch (stateError: unknown) {
-          backendLog.error('kb_curate: failed to persist retry state', stateError);
+          coordinatorLog.error('kb_curate: failed to persist retry state', stateError);
         }
       } finally {
         activeRun = null;
@@ -288,7 +288,7 @@ export function createCurateScheduler({
             armRetryWake();
           }
         } catch (error: unknown) {
-          backendLog.error('kb_curate', error);
+          coordinatorLog.error('kb_curate', error);
         }
         if (!stopped && lastCompletedThrough !== null) {
           try {
@@ -296,7 +296,7 @@ export function createCurateScheduler({
               schedule();
             }
           } catch (error: unknown) {
-            backendLog.error('kb_curate', error);
+            coordinatorLog.error('kb_curate', error);
           }
         }
       }

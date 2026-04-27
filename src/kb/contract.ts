@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { ConsumerRegistration } from '../store/consumer-contract.js';
-import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
+import type { EnvPort, IdPort, TimePort } from '../runtime/ports.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
@@ -93,9 +93,9 @@ export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
-  readonly time: Pick<RuntimeTimePort, 'now'>;
-  readonly ids: Pick<RuntimeIdsPort, 'uuid'>;
-  readonly env: Pick<RuntimeEnvPort, 'get'>;
+  readonly time: Pick<TimePort, 'now'>;
+  readonly ids: Pick<IdPort, 'uuid'>;
+  readonly env: Pick<EnvPort, 'get'>;
   readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
   readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
   readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;

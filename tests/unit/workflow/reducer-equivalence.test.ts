@@ -127,7 +127,7 @@ describe('workflow reducer equivalence', () => {
               provider: slot.provider,
               providerAction: 'exec' as const,
               projectRoot: '/workspace/coral',
-              backendNamespace: 'tests',
+              coordinatorNamespace: 'tests',
               jobKind: 'provider' as const,
               pool: 'default',
               enqueueSequence: slot.stepIndex + 1,

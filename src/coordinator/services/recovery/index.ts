@@ -6,7 +6,7 @@ import type { ProviderCatalog } from '../../../providers/catalog.js';
 import type { ProgressStore } from '../../../jobs/job-store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
-import type { Runtime, RuntimeTimerHandle } from '../../../runtime/ports.js';
+import type { Runtime, TimerHandle } from '../../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../../jobs/reconcile/cross-namespace-adoption.js';
 import { StartupInterruptedError } from '../../startup-error.js';
@@ -28,7 +28,7 @@ const RECOVERY_POLL_MS = 500;
 type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
-  recoveryPollIntervals: Map<string, RuntimeTimerHandle>;
+  recoveryPollIntervals: Map<string, TimerHandle>;
   adoptedRunningJobCleanups: Map<string, () => void>;
   teardownRequested: boolean;
 };
@@ -84,7 +84,7 @@ export function createRecoveryCoordinator({
   const state: RecoveryCoordinatorState = {
     recoveryRegistry: null,
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
-    recoveryPollIntervals: new Map<string, RuntimeTimerHandle>(),
+    recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     teardownRequested: false,
   };

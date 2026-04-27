@@ -20,7 +20,7 @@ import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { memoDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
-import { openStoreDatabase } from '#src/store/index.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';

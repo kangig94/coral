@@ -1,7 +1,7 @@
 import { decideBidRoundClose, decideEnd } from '../state-machine.js';
 import { nowIsoString } from '../../infra/time.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './runtime-build.js';
 import { type DiscussContext, DiscussManagerError } from './context.js';
@@ -96,7 +96,7 @@ export function resumeLoop(ctx: DiscussContext, sessionId: string, invocationCtx
   const timer = ctx.runtime.time.setTimeout(() => {
     void continueLoop(ctx, sessionId, invocationCtx, resumeScheduledAt).catch((error: unknown) => {
       void forceEndAfterLoopFailure(ctx, sessionId, error).catch((endErr: unknown) => {
-        backendLog.error(`Discuss session ${sessionId} force-end also failed`, endErr);
+        coordinatorLog.error(`Discuss session ${sessionId} force-end also failed`, endErr);
       });
     });
   }, 1);

@@ -1,4 +1,4 @@
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbCorpusPublishFailure } from '../../kb/contract.js';
@@ -74,7 +74,7 @@ export function createCoordinatorCurateScheduler(options: {
       recordRun.run(isoUtcDay(options.runtime.time.now()));
       options.scheduler.schedule();
     } catch (error: unknown) {
-      backendLog.warn(`Coordinator curate tick failed: ${errorMessage(error)}`);
+      coordinatorLog.warn(`Coordinator curate tick failed: ${errorMessage(error)}`);
     }
   };
 

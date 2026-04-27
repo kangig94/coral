@@ -36,7 +36,7 @@ export function asEmittingRuntimeObserver(observer: RuntimeObserver): EmittingRu
   if ('emit' in observer && typeof observer.emit === 'function') {
     return observer as EmittingRuntimeObserver;
   }
-  throw new Error('runtimeObserver must implement emit(event) when used by createBackendServer');
+  throw new Error('runtimeObserver must implement emit(event) when used by createCoordinatorServer');
 }
 
 export function observeRuntimeSpawns(runtime: Runtime, observer: EmittingRuntimeObserver): Runtime {

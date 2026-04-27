@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
@@ -31,7 +31,7 @@ export function readEntityGraphFile(graphPath: string): EntityGraph | null {
       return null;
     }
 
-    backendLog.warn(
+    coordinatorLog.warn(
       `KB entity graph is unavailable; graph and community-derived features are disabled: ${errorMessage(error)}`,
     );
     return null;

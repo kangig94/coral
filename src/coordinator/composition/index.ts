@@ -1,12 +1,12 @@
-// Backend assembly root — wires HTTP/IPC transports, domain shells, services,
-// coordinator lifecycle, and event subscriptions. This file is allowed to be
-// large because its single job is composition; that role does not turn it into
-// a magnet for unrelated logic.
+// Coordinator assembly root — wires HTTP/IPC transports, domain shells,
+// services, coordinator lifecycle, and event subscriptions. This file is
+// allowed to be large because its single job is composition; that role does
+// not turn it into a magnet for unrelated logic.
 // What it MUST NOT absorb:
 //   - Domain-specific logic (belongs in jobs/, sessions/, discuss/, kb/, ...)
-//   - Backend global state (belongs in BackendWorld via backend-world.ts)
-//   - Default resolution policy (belongs in backend-defaults.ts)
-//   - Job-control or drain logic (belongs in backend-control.ts)
+//   - Coordinator global state (belongs in CoordinatorWorld via world.ts)
+//   - Default resolution policy (belongs in defaults.ts)
+//   - Job-control or drain logic (belongs in control.ts)
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
@@ -56,14 +56,14 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../control.js';
-import type { BackendCoreOptions, BackendCoreResult } from './core-types.js';
+import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
-import { createBackendControl } from './control.js';
-import { resolveBackendDefaults } from './defaults.js';
+import { createCoordinatorControl } from './control.js';
+import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
-import { createBackendWorld } from './world.js';
+import { createCoordinatorWorld } from './world.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { createExpansionRpc, createUnavailableExpansionRpc } from '../expansion/rpc.js';
@@ -71,16 +71,16 @@ import { KbSourceImportService, parseKbSourceImportRequest } from '../services/k
 import { KbReindexService } from '../services/kb-reindex-service.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
 
-export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
+export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
   const runtime = options.runtime;
 
-  const defaultsPlan = resolveBackendDefaults(options, runtime);
-  const world = createBackendWorld(options, runtime, defaultsPlan);
+  const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
+  const world = createCoordinatorWorld(options, runtime, defaultsPlan);
   const identity = world.identity;
 
   // Eager defaults resolve from `runtime` alone.
   // `bindHost`, `advertiseHost`, `progressStore`, `launchCoordinator`, and `log`
-  // come from `BackendWorld`; this call is exact-once and throws on a second invocation.
+  // come from `CoordinatorWorld`; this call is exact-once and throws on a second invocation.
   const defaults = defaultsPlan.finalizeWithWorld(world);
   const runtimeState = createRuntimeState(world.now());
   const streamResponses = new Set<ServerResponse>();
@@ -89,7 +89,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     world,
     runtime,
     bundleHash: world.identity.bundleHash,
-    backendNamespace: world.namespace,
+    coordinatorNamespace: world.namespace,
     createExecutionService: defaults.createExecutionService,
   });
 
@@ -100,31 +100,31 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     runtime,
     getExecutionService: services.getExecutionService,
   });
-  const control = createBackendControl({
+  const control = createCoordinatorControl({
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
-    backendNamespace: world.namespace,
+    coordinatorNamespace: world.namespace,
     progressStore: world.progressStore,
   });
   const kbSourceImportService = new KbSourceImportService({
     runtime,
     progressStore: world.progressStore,
-    backendNamespace: world.namespace,
+    coordinatorNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
   });
   const kbReindexService = new KbReindexService({
     runtime,
     progressStore: world.progressStore,
-    backendNamespace: world.namespace,
+    coordinatorNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
   });
   const kbJobRecorder = new KbJobRecorder({
     runtime,
     progressStore: world.progressStore,
-    backendNamespace: world.namespace,
+    coordinatorNamespace: world.namespace,
     bundleHash: identity.bundleHash,
   });
 
@@ -204,7 +204,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       jobId,
       sessionId,
       projectRoot: status.projectRoot,
-      namespace: status.backendNamespace,
+      namespace: status.coordinatorNamespace,
       operation,
       code: result.code,
       message: result.message,

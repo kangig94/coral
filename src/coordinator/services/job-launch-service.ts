@@ -32,7 +32,7 @@ import {
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
   sessionManager: SessionExecutionPort;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   bundleHash: string;
   providerRegistry: ProviderCatalog;
   pluginRegistry: {
@@ -84,7 +84,7 @@ export class JobLaunchService {
       model,
       cwd,
       projectRoot: ctx.projectRoot,
-      backendNamespace: this.deps.backendNamespace,
+      coordinatorNamespace: this.deps.coordinatorNamespace,
       ...(resolvedAgent !== null ? { agentName: resolvedAgent.agentName } : {}),
       ...(instruction !== undefined ? { instruction } : {}),
       bypassPermissions,
@@ -257,7 +257,7 @@ export class JobLaunchService {
         `Session ${sessionId} belongs to provider '${session.provider}'. Use \`coral-cli ${session.provider} -s ${sessionId} ...\` instead.`,
       );
     }
-    if (session.backendNamespace !== this.deps.backendNamespace || session.projectRoot !== ctx.projectRoot) {
+    if (session.coordinatorNamespace !== this.deps.coordinatorNamespace || session.projectRoot !== ctx.projectRoot) {
       return rejectLaunch(
         'scope_mismatch',
         `Session ${sessionId} does not belong to this backend namespace and project scope.`,
@@ -388,7 +388,7 @@ export class JobLaunchService {
         model: continuation.model,
         cwd: continuation.cwd,
         projectRoot: ctx.projectRoot,
-        backendNamespace: this.deps.backendNamespace,
+        coordinatorNamespace: this.deps.coordinatorNamespace,
         ...(continuation.agentName !== undefined ? { agentName: continuation.agentName } : {}),
         ...(continuation.instruction !== undefined ? { instruction: continuation.instruction } : {}),
         bypassPermissions: continuation.bypassPermissions,

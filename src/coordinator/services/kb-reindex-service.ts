@@ -10,7 +10,7 @@ import { KbJobRecorder, normalizeKbFailureDetail } from './kb-job-recorder.js';
 export interface KbReindexServiceDeps {
   runtime: Pick<Runtime, 'ids' | 'time' | 'storage'>;
   progressStore: JobProgressStore;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
 }

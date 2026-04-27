@@ -1,8 +1,8 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
-import { probeCoordinator } from '../infra/backend-discovery.js';
+import type { Runtime, StoragePort } from '../runtime/ports.js';
+import { probeCoordinator } from '../infra/coordinator-discovery.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
-import { backendLog } from '../infra/backend-log.js';
+import { coordinatorLog } from '../infra/coordinator-log.js';
 import type { LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 
@@ -37,7 +37,7 @@ type IncumbentState = 'healthy_same' | 'healthy_replacing' | 'contended' | 'stal
 
 const activeLocks = new Map<string, LockRecord>();
 
-type LockFileStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
+type LockFileStorage = Pick<StoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
 
 function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
   if (typeof time.setTimeout !== 'function') {
@@ -321,7 +321,7 @@ export async function acquireLock(
 
   while (true) {
     if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      backendLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
+      coordinatorLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
       throw new Error('Coordinator lock acquisition timed out');
     }
 

@@ -465,7 +465,7 @@ describe('simulation runtime', () => {
       sessionId: 'session-a',
       provider: 'fake-provider',
       projectRoot: worldA.projectRoot,
-      backendNamespace: worldA.namespace,
+      coordinatorNamespace: worldA.namespace,
     });
 
     const sessionA = new SessionManager(worldA.projectRoot, worldA.runtime).allocate({
@@ -473,7 +473,7 @@ describe('simulation runtime', () => {
       name: 'world-a',
       cwd: worldA.projectRoot,
       projectRoot: worldA.projectRoot,
-      backendNamespace: worldA.namespace,
+      coordinatorNamespace: worldA.namespace,
     });
 
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);

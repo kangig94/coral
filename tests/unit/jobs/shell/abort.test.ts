@@ -142,7 +142,7 @@ function createService(
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
-    backendNamespace?: string;
+    coordinatorNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
@@ -153,7 +153,7 @@ function createService(
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
-    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: options.coordinatorNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
@@ -528,7 +528,7 @@ function _createClaimedJob(
     sessionId: session.sessionId,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
   expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
@@ -577,7 +577,7 @@ function _makeStatusRecord(
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
     phase,
     updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),

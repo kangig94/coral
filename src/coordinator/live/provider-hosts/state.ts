@@ -1,5 +1,5 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { RuntimeTimePort } from '../../../runtime/ports.js';
+import type { TimePort } from '../../../runtime/ports.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 
 export type ProviderServerAttachment = {
@@ -29,7 +29,7 @@ export type ProviderHostEntry = {
   waiters: ProviderServerWaiter[];
   closingError: Error | null;
   hostStats: HostStatsState | null;
-  idleTimer: ReturnType<RuntimeTimePort['setTimeout']> | null;
+  idleTimer: ReturnType<TimePort['setTimeout']> | null;
   disposeHostNotifications: (() => void) | null;
 };
 

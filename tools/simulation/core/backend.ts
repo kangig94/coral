@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 import {
-  readBackendInfo,
-  removeBackendInfoIfOwner,
-  writeBackendInfo,
-  type BackendInfo,
-} from '../../../src/infra/backend-discovery.js';
+  readCoordinatorInfo,
+  removeCoordinatorInfoIfOwner,
+  writeCoordinatorInfo,
+  type CoordinatorInfo,
+} from '../../../src/infra/coordinator-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import type {
   JobTerminal,
@@ -33,8 +33,8 @@ import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
-import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';
-import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/core-types.js';
+import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
+import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
@@ -171,7 +171,7 @@ function jsonResponse(body: unknown, status: number): Response {
 function createSimulationHealthFetch(runtime: SimulationRuntime, _pluginRoot: string): FetchFn {
   return async (url, init) => {
     const parsed = new URL(url);
-    const info = readBackendInfo({
+    const info = readCoordinatorInfo({
       storage: runtime.storage,
       env: runtime.env,
       paths: runtime.paths,
@@ -373,7 +373,7 @@ export type SimulationHookLog = {
     bundleHash: string;
     flavor: 'prod' | 'dev';
   }>;
-  writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
+  writeBackendInfoCalls: Array<{ pluginRoot: string; info: CoordinatorInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
   removeLockCalls: Array<{ pluginRoot: string; instanceId: string }>;
   createKbSubsystemCalls: Array<{
@@ -386,10 +386,10 @@ export type SimulationHookLog = {
 };
 
 export type SimulationController = {
-  start: BackendCoreResult['lifecycleController']['start'];
-  shutdown: BackendCoreResult['lifecycleController']['shutdown'];
-  waitForShutdown: BackendCoreResult['lifecycleController']['waitForShutdown'];
-  getLifecycle: () => ReturnType<BackendCoreResult['runtimeState']['getLifecycle']>;
+  start: CoordinatorCoreResult['lifecycleController']['start'];
+  shutdown: CoordinatorCoreResult['lifecycleController']['shutdown'];
+  waitForShutdown: CoordinatorCoreResult['lifecycleController']['waitForShutdown'];
+  getLifecycle: () => ReturnType<CoordinatorCoreResult['runtimeState']['getLifecycle']>;
 };
 
 export type SimulationBackend = {
@@ -474,10 +474,10 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const listenHost = scenario.listen?.host ?? DEFAULT_LISTEN_HOST;
   const listenPort = scenario.listen?.port ?? DEFAULT_LISTEN_PORT;
 
-  const core = createBackendCore({
+  const core = createCoordinatorCore({
     runtime,
     pluginRoot,
-    backendNamespace: namespace,
+    coordinatorNamespace: namespace,
     progressStore,
     launchCoordinator,
     eventBus,
@@ -521,7 +521,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     writeBackendInfoFn: (info) => {
       hooks.writeBackendInfoCalls.push({ pluginRoot, info });
       runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
-      writeBackendInfo(info, {
+      writeCoordinatorInfo(info, {
         storage: runtime.storage,
         env: runtime.env,
         paths: runtime.paths,
@@ -529,7 +529,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     removeBackendInfoIfOwnerFn: (instanceId) => {
       hooks.removeBackendInfoCalls.push({ pluginRoot, instanceId });
-      removeBackendInfoIfOwner(instanceId, {
+      removeCoordinatorInfoIfOwner(instanceId, {
         storage: runtime.storage,
         env: runtime.env,
         paths: runtime.paths,

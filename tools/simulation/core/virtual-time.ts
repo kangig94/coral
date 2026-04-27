@@ -1,4 +1,4 @@
-import type { RuntimeTimerHandle, TimePort } from '../../../src/runtime/ports.js';
+import type { TimerHandle, TimePort } from '../../../src/runtime/ports.js';
 
 export const DEFAULT_EPOCH_MS = 1_000_000;
 
@@ -74,7 +74,7 @@ function compareTimers(left: TimerRecord, right: TimerRecord): number {
   return left.deadline - right.deadline || left.order - right.order;
 }
 
-export class VirtualTimerHandle implements RuntimeTimerHandle {
+export class VirtualTimerHandle implements TimerHandle {
   constructor(readonly id: number) {}
 
   unref(): void {}
@@ -115,22 +115,22 @@ export class VirtualTime implements TimePort {
     });
   }
 
-  setTimeout(fn: () => void, ms: number): RuntimeTimerHandle {
+  setTimeout(fn: () => void, ms: number): TimerHandle {
     assertFiniteNonNegative(ms, 'setTimeout(ms)');
     return this.schedule(fn, ms, null);
   }
 
-  clearTimeout(handle: RuntimeTimerHandle | null): void {
+  clearTimeout(handle: TimerHandle | null): void {
     this.clear(handle);
   }
 
-  setInterval(fn: () => void, ms: number): RuntimeTimerHandle {
+  setInterval(fn: () => void, ms: number): TimerHandle {
     assertFiniteNonNegative(ms, 'setInterval(ms)');
     const delay = Math.max(1, Math.floor(ms));
     return this.schedule(fn, delay, delay);
   }
 
-  clearInterval(handle: RuntimeTimerHandle | null): void {
+  clearInterval(handle: TimerHandle | null): void {
     this.clear(handle);
   }
 
@@ -181,7 +181,7 @@ export class VirtualTime implements TimePort {
     }
   }
 
-  private schedule(fn: () => void, ms: number, intervalMs: number | null): RuntimeTimerHandle {
+  private schedule(fn: () => void, ms: number, intervalMs: number | null): TimerHandle {
     const delay = Math.max(1, Math.floor(ms));
     const handle = new VirtualTimerHandle(this.nextId++);
     const record = {
@@ -197,7 +197,7 @@ export class VirtualTime implements TimePort {
     return handle;
   }
 
-  private clear(handle: RuntimeTimerHandle | null): void {
+  private clear(handle: TimerHandle | null): void {
     if (!(handle instanceof VirtualTimerHandle)) {
       return;
     }

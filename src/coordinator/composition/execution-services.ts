@@ -3,14 +3,14 @@ import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ExecutionServiceDeps } from '../contracts.js';
-import type { BackendWorld } from './world.js';
+import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 
 type CreateExecutionServicesDeps = {
-  world: BackendWorld;
+  world: CoordinatorWorld;
   runtime: Runtime;
   bundleHash: string;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
@@ -24,7 +24,7 @@ export function createExecutionServices({
   world,
   runtime,
   bundleHash,
-  backendNamespace,
+  coordinatorNamespace,
   createExecutionService,
 }: CreateExecutionServicesDeps): {
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
@@ -41,7 +41,7 @@ export function createExecutionServices({
       runtime,
       progressStore: world.progressStore,
       bundleHash,
-      backendNamespace,
+      coordinatorNamespace,
       providerHostManager: world.providerHostManager,
       launchCoordinator: world.launchCoordinator,
       eventBus: world.eventBus,

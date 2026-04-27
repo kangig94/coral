@@ -119,7 +119,7 @@ describe('installExpansion', () => {
       method: 'prebuild',
       version: '0.2.0',
       targetDir: expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
-      postInstall: ['register_equipment'],
+      postInstall: ['register_expansion'],
     });
     expect(readFileSync(expansionPaths('prod', { baseDir: fixture.baseDir }).addonPath('needle'))).toEqual(addonBytes);
     expect(
@@ -156,7 +156,7 @@ describe('installExpansion', () => {
       method: 'prebuild',
       version: '0.2.0',
       targetDir,
-      postInstall: ['register_equipment'],
+      postInstall: ['register_expansion'],
     });
     expect(mockState.downloadBuffer).not.toHaveBeenCalled();
   });

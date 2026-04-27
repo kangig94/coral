@@ -43,7 +43,7 @@ type RawCoordinatorHealth = {
   namespace: string;
 };
 
-type BackendInfo = {
+type CoordinatorInfo = {
   pid: number;
   port: number;
   socketPath: string;
@@ -60,7 +60,7 @@ type BackendInfo = {
 
 type DiscoverySnapshot = {
   raw: string;
-  info: BackendInfo | null;
+  info: CoordinatorInfo | null;
 };
 
 type LockSnapshot = {
@@ -93,14 +93,14 @@ export type DaemonObservation =
       pid: number;
       ownership: VerifiedOwnership | UnverifiedOwnership;
     }
-  | { observedAt: number; type: 'healthyCompatible'; info: BackendInfo }
-  | { observedAt: number; type: 'healthyIncompatible'; info: BackendInfo }
+  | { observedAt: number; type: 'healthyCompatible'; info: CoordinatorInfo }
+  | { observedAt: number; type: 'healthyIncompatible'; info: CoordinatorInfo }
   | { observedAt: number; type: 'staleLock'; pid: number; snapshot: LockSnapshot }
   | { observedAt: number; type: 'corruptLock' };
 
 export type DaemonAction =
   | { type: 'wait' }
-  | { type: 'requestShutdown'; info: BackendInfo }
+  | { type: 'requestShutdown'; info: CoordinatorInfo }
   | { type: 'ensureReplacement'; replacedInstanceId: string | null }
   | { type: 'clearStaleLock'; pid: number; snapshot: LockSnapshot }
   | {
@@ -110,7 +110,7 @@ export type DaemonAction =
     }
   | { type: 'failUnsafeReplacement'; pid: number; reason: string }
   | { type: 'quarantineCorruptLock' }
-  | { type: 'converged'; info: BackendInfo };
+  | { type: 'converged'; info: CoordinatorInfo };
 
 export type ControllerState = {
   sickSince: number | null;
@@ -140,7 +140,7 @@ export type EnsuredIpcClient = IpcClient & {
   readonly version: string;
 };
 
-function summarizeBackend(info: BackendInfo): EnsuredIpcClient {
+function summarizeBackend(info: CoordinatorInfo): EnsuredIpcClient {
   return Object.assign(createIpcClient(info.socketPath), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
@@ -210,7 +210,7 @@ function isLockRecord(value: unknown): value is LockRecord {
   );
 }
 
-function isObservedBackendInfo(value: unknown): value is BackendInfo {
+function isObservedBackendInfo(value: unknown): value is CoordinatorInfo {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return (
@@ -239,7 +239,7 @@ function isObservedBackendInfo(value: unknown): value is BackendInfo {
   );
 }
 
-async function readRawCoordinatorHealth(info: BackendInfo): Promise<RawCoordinatorHealth | null> {
+async function readRawCoordinatorHealth(info: CoordinatorInfo): Promise<RawCoordinatorHealth | null> {
   try {
     const health = await createIpcClient(info.socketPath).health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
     return isRawCoordinatorHealth(health) ? health : null;
@@ -278,7 +278,7 @@ function readLockSnapshot(paths: CoordinatorFilePaths): LockSnapshot | 'corrupt'
   }
 }
 
-function mergeDiscoveryWithHealth(info: BackendInfo, health: RawCoordinatorHealth): BackendInfo {
+function mergeDiscoveryWithHealth(info: CoordinatorInfo, health: RawCoordinatorHealth): CoordinatorInfo {
   return {
     ...info,
     version: health.version,
@@ -543,7 +543,7 @@ export function reconcile(
   }
 }
 
-async function requestCoordinatorShutdown(info: BackendInfo): Promise<void> {
+async function requestCoordinatorShutdown(info: CoordinatorInfo): Promise<void> {
   try {
     await createIpcClient(info.socketPath).shutdown({ timeoutMs: HEALTH_TIMEOUT_MS });
   } catch {
@@ -661,7 +661,7 @@ async function waitForReplacementCoordinator(
   desired: DesiredCoordinator,
   oldInstanceId: string | null,
   deadline: number,
-): Promise<BackendInfo> {
+): Promise<CoordinatorInfo> {
   while (Date.now() < deadline) {
     const observation = await observe(paths, desired);
     if (
@@ -684,7 +684,7 @@ async function ensureReplacement(
   backendBin: string,
   replacedInstanceId: string | null,
   deadline: number,
-): Promise<BackendInfo | null> {
+): Promise<CoordinatorInfo | null> {
   const replacementLock = tryAcquireReplacementLock(paths, desired.version, desired.bundleHash, desired.flavor);
   if (!replacementLock) {
     await delay(STARTUP_POLL_MS);
@@ -734,7 +734,7 @@ async function applyAction(
   backendBin: string,
   deadline: number,
   action: DaemonAction,
-): Promise<BackendInfo | null> {
+): Promise<CoordinatorInfo | null> {
   switch (action.type) {
     case 'wait':
       await delay(STARTUP_POLL_MS);

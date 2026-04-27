@@ -11,11 +11,11 @@ import {
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
 import {
-  createBackendCore,
-} from './composition/create-backend-core.js';
-import type { BackendCoreOptions, BackendCoreResult } from './composition/core-types.js';
+  createCoordinatorCore,
+} from './composition/index.js';
+import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
-import type { BackendServerInfo, LifecycleState } from './control.js';
+import type { CoordinatorServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './execution-service.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
@@ -42,23 +42,19 @@ import { createHostFactory } from './expansion/host-factory.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 
-export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
+export type CoordinatorServerOptions = Omit<CoordinatorCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
 };
 
-export type BackendServerOptions = CoordinatorServerOptions;
-
 export type CoordinatorServerController = {
-  server: BackendCoreResult['server'];
-  start: () => Promise<BackendServerInfo>;
+  server: CoordinatorCoreResult['server'];
+  start: () => Promise<CoordinatorServerInfo>;
   shutdown: (reason: string) => Promise<void>;
   waitForShutdown: () => Promise<void>;
   getLifecycle: () => LifecycleState;
-  getIdleTimer: () => BackendCoreResult['idleTimer'];
+  getIdleTimer: () => CoordinatorCoreResult['idleTimer'];
 };
-
-export type BackendServerController = CoordinatorServerController;
 
 function deriveCoordinatorFlavor(options: CoordinatorServerOptions): 'prod' | 'dev' {
   if (options.bootSnapshot?.flavor) {
@@ -174,7 +170,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return appended;
   };
 
-  const core = createBackendCore({
+  const core = createCoordinatorCore({
     ...coreOptions,
     runtime,
     expansionLifecycleService,
@@ -365,5 +361,3 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getIdleTimer: () => core.idleTimer,
   };
 }
-
-export const createBackendServer = createCoordinatorServer;

@@ -28,7 +28,7 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
     state: overrides.state ?? 'pending',
     cwd: overrides.cwd ?? '/tmp/project',
     projectRoot: overrides.projectRoot ?? '/tmp/project',
-    backendNamespace: overrides.backendNamespace ?? 'ns-a',
+    coordinatorNamespace: overrides.coordinatorNamespace ?? 'ns-a',
     createdAt: overrides.createdAt ?? NOW.toISOString(),
     lastUsedAt: overrides.lastUsedAt ?? NOW.toISOString(),
     version: overrides.version ?? 1,
@@ -232,7 +232,7 @@ describe('sessions reducer equivalence', () => {
         sessionId: 'session-2',
         provider: 'claude',
         controllerProfile: { owner: 'team-b' },
-        backendNamespace: 'ns-b',
+        coordinatorNamespace: 'ns-b',
       });
       const readyEntry = sessionEntry({
         ...openedEntry,

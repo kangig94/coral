@@ -1,7 +1,7 @@
-import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend/handle.js';
-import type { BackendHealth } from './backend/health.js';
-import { isBackendHealth } from './backend/health.js';
-import { throwBackendCommunicationError } from './backend/communication.js';
+import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './coordinator/handle.js';
+import type { BackendHealth } from './coordinator/health.js';
+import { isBackendHealth } from './coordinator/health.js';
+import { throwBackendCommunicationError } from './coordinator/communication.js';
 import { BackendToolHttpError } from './errors.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';

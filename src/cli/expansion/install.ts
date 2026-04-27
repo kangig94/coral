@@ -19,7 +19,7 @@ const NEEDLE_ARCH_MAP: Record<string, string> = {
 
 const NEEDLE_INSTALL_LOCK_TIMEOUT_MS = 250;
 const NEEDLE_GITHUB_REPO = 'kangig94/coral-needle';
-const NEEDLE_POST_INSTALL = ['register_equipment'] as const;
+const NEEDLE_POST_INSTALL = ['register_expansion'] as const;
 const NEEDLE_ENTRY = (() => {
   const entry = BUNDLED_EXPANSIONS.find((candidate) => candidate.id === 'needle');
   if (!entry) {

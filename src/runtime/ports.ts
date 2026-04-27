@@ -1,78 +1,33 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/compose.js';
+import type {
+  ChildProcessLike,
+  ChildReadableLike,
+  ChildStdinLike,
+  DirentLike,
+  EnvPort,
+  StorageData,
+  StoragePort,
+  TimePort,
+  TimerHandle,
+} from '../infra/port-types.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
-export interface RuntimeTimerHandle {
-  unref?(): void;
-}
-
-export interface TimePort {
-  now(): number;
-  sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void>;
-  setTimeout(fn: () => void, ms: number): RuntimeTimerHandle;
-  clearTimeout(handle: RuntimeTimerHandle | null): void;
-  setInterval(fn: () => void, ms: number): RuntimeTimerHandle;
-  clearInterval(handle: RuntimeTimerHandle | null): void;
-}
-
-export interface RuntimeDirentLike {
-  name: string;
-  isDirectory(): boolean;
-  isFile(): boolean;
-}
-
-export type StorageData = string | Uint8Array;
-
-export interface StoragePort {
-  readFileSync(path: string, encoding: 'utf-8'): string;
-  writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void;
-  renameSync(oldPath: string, newPath: string): void;
-  mkdirSync(path: string, options?: { recursive?: boolean }): void;
-  rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
-  readdirSync(path: string, options: { withFileTypes: true }): RuntimeDirentLike[];
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  existsSync(path: string): boolean;
-  openSync(path: string, flags: string): number;
-  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
-  closeSync(fd: number): void;
-  appendFileSync(path: string, data: string): void;
-  appendFileDurableSync(path: string, data: string): boolean;
-  unlinkSync(path: string): void;
-  tryExclusiveWriteSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicDurableSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  chmodSync(path: string, mode: number): void;
-}
+export type {
+  ChildProcessLike,
+  ChildReadableLike,
+  ChildStdinLike,
+  DirentLike,
+  EnvPort,
+  StorageData,
+  StoragePort,
+  TimePort,
+  TimerHandle,
+};
 
 export interface RuntimePaths {
   projectSource(projectRoot: string): string;
   readonly coral: CoralPaths;
-}
-
-export interface ChildStdinLike {
-  readonly destroyed: boolean;
-  write(chunk: string | Uint8Array): boolean;
-  end(chunk?: string | Uint8Array): void;
-  on(event: 'error', listener: (error: Error) => void): this;
-}
-
-export interface ChildReadableLike {
-  setEncoding(encoding: BufferEncoding): this;
-  on(event: 'data', listener: (chunk: string | Buffer) => void): this;
-  on(event: 'end', listener: () => void): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  [Symbol.asyncIterator]?(): AsyncIterableIterator<string | Buffer>;
-}
-
-export interface ChildProcessLike {
-  readonly pid: number | undefined;
-  readonly stdin: ChildStdinLike | null;
-  readonly stdout: ChildReadableLike | null;
-  readonly stderr: ChildReadableLike | null;
-  on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  kill(signal?: NodeJS.Signals): boolean;
-  unref?(): void;
 }
 
 export interface Disposable {
@@ -159,16 +114,6 @@ export interface IdPort {
   sha256(input: string): string;
 }
 
-export interface EnvPort {
-  get(key: string): string | undefined;
-  homedir(): string;
-  pid(): number;
-  platform(): string;
-  cwd(): string;
-  fullSnapshot(): Readonly<Record<string, string>>;
-  coralSnapshot(): Readonly<Record<string, string>>;
-}
-
 export interface Runtime {
   readonly flavor: BuildFlavor;
   readonly time: TimePort;
@@ -178,9 +123,3 @@ export interface Runtime {
   readonly env: EnvPort;
   readonly paths: RuntimePaths;
 }
-
-export type RuntimeTimePort = Runtime['time'];
-export type RuntimeStoragePort = Runtime['storage'];
-export type RuntimeProcessPort = Runtime['process'];
-export type RuntimeIdsPort = Runtime['ids'];
-export type RuntimeEnvPort = Runtime['env'];

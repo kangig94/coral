@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RuntimeTimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
+import type { TimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver.js';
 import type { JournalConsumerRegistration } from '#src/store/consumer-contract.js';
@@ -100,7 +100,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
 
   it('uses the injected timer port for waitFreshUntil timeouts', async () => {
     const db = createDb();
-    const timerHandle: RuntimeTimerHandle = {};
+    const timerHandle: TimerHandle = {};
     const timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = {
       setTimeout: vi.fn(() => timerHandle),
       clearTimeout: vi.fn(),

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
-import type { BackendStatusFull } from '#src/transport/http/backend/status.js';
-import type { ShutdownResult } from '#src/transport/http/backend/shutdown.js';
+import type { BackendStatusFull } from '#src/transport/http/coordinator/status.js';
+import type { ShutdownResult } from '#src/transport/http/coordinator/shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/transport/http/client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
 import type { WatchState } from '#src/discuss/watch.js';
@@ -13,7 +13,7 @@ import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-err
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   formatAbortResult,
-  formatBackendStatus,
+  formatCoordinatorStatus,
   formatDiscussAbort,
   formatDiscussParticipate,
   formatDiscussStart,
@@ -286,21 +286,21 @@ describe('cli format', () => {
         },
       } satisfies BackendStatusFull;
 
-      expect(formatBackendStatus(status)).toBe(
+      expect(formatCoordinatorStatus(status)).toBe(
         'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
       );
     });
 
     it('formats a not-running backend status', () => {
-      expect(formatBackendStatus({ status: 'not_running' })).toBe('Backend not running');
+      expect(formatCoordinatorStatus({ status: 'not_running' })).toBe('Backend not running');
     });
 
     it('formats a shutting-down backend status', () => {
-      expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
+      expect(formatCoordinatorStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });
 
     it('formats an unauthorized backend status', () => {
-      expect(formatBackendStatus({ status: 'unauthorized' })).toBe('Backend unauthorized');
+      expect(formatCoordinatorStatus({ status: 'unauthorized' })).toBe('Backend unauthorized');
     });
 
     it('formats a successful shutdown result', () => {

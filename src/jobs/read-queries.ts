@@ -25,7 +25,7 @@ type JobLaunchProjection = {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   bundleHash?: string;
   jobKind: 'provider' | 'workflow' | 'kb';
   pool: string;
@@ -379,7 +379,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       sessionId: null,
       provider: null,
       projectRoot: body.projectRoot,
-      backendNamespace: body.backendNamespace,
+      coordinatorNamespace: body.coordinatorNamespace,
       bundleHash: body.bundleHash,
       jobKind: body.jobKind,
       pool: body.pool,
@@ -396,7 +396,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
     sessionId: body.sessionId,
     provider: body.provider,
     projectRoot: body.projectRoot,
-    backendNamespace: body.backendNamespace,
+    coordinatorNamespace: body.coordinatorNamespace,
     bundleHash: body.bundleHash,
     jobKind: body.jobKind,
     pool: body.pool,
@@ -530,7 +530,7 @@ function projectionRowToStatus(
     sessionId: projection.session_id,
     provider: projection.provider,
     projectRoot: projection.project_root,
-    backendNamespace: projection.backend_namespace,
+    coordinatorNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
     phase: projection.phase as JobPhase,

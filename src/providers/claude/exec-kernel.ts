@@ -1,7 +1,7 @@
 import type { EffortLevel } from '../request-policy.js';
 import type { Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../cli-runner.js';
-import type { RuntimeTimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../runtime/ports.js';
 import { providerRequestFailed } from '../fault.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
@@ -23,7 +23,7 @@ type ClaudeForkOptions = {
   onEvent?: (line: string) => void;
   runCli: ProviderCliRunner;
   environment: Record<string, string>;
-  time: Pick<RuntimeTimePort, 'now'>;
+  time: Pick<TimePort, 'now'>;
 };
 
 class ClaudeExecParseError extends Error {

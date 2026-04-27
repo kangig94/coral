@@ -4,18 +4,18 @@ import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
-import type { BackendWorld } from './world.js';
+import type { CoordinatorWorld } from './world.js';
 import type { ScopeCheckResult } from '../../transport/rpc/ports.js';
 
 type CreateBackendControlDeps = {
-  world: BackendWorld;
+  world: CoordinatorWorld;
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   progressStore: ProgressStore;
 };
 
-export function createBackendControl({
+export function createCoordinatorControl({
   world,
   listExecutionServices,
   getLifecycleController,

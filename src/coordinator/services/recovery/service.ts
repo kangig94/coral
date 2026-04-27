@@ -4,7 +4,7 @@ import type {
   ProviderServerSpec,
 } from '../../../providers/contract.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
-import { backendLog } from '../../../infra/backend-log.js';
+import { coordinatorLog } from '../../../infra/coordinator-log.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
 import {
   isAppServerRuntime,
@@ -56,7 +56,7 @@ export interface RecoveryServiceDeps {
   runtime: Runtime;
   sessionManager: SessionRecoveryPort;
   abortRegistry: JobAbortRegistryPort;
-  backendNamespace: string;
+  coordinatorNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
   providerHostManager: ExecutionProviderHostManager;
@@ -203,7 +203,7 @@ export class RecoveryService {
             }
           }
         } catch (error: unknown) {
-          backendLog.error(
+          coordinatorLog.error(
             `Probe failed for ${launchRecord.jobId}: ${error instanceof Error ? error.message : String(error)}`,
           );
           probeOutcome = 'unavailable';
@@ -268,7 +268,7 @@ export class RecoveryService {
     try {
       writeResultArtifact(this.deps.runtime.storage, launchRecord.jobId, interruptedReport);
     } catch (error: unknown) {
-      backendLog.warn(`Writing terminal artifact failed for ${launchRecord.jobId}: ${String(error)}`);
+      coordinatorLog.warn(`Writing terminal artifact failed for ${launchRecord.jobId}: ${String(error)}`);
     }
     this.deps.abortRegistry.remove(launchRecord.jobId);
     this.deps.launchAdmission.releaseLaunch(
@@ -296,7 +296,7 @@ export class RecoveryService {
       queuedHandle.cancel();
     });
 
-    this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
+    this.deps.progressStore.rebindNamespace(jobId, this.deps.coordinatorNamespace, this.deps.bundleHash);
 
     const provider = this.deps.providerRegistry.get(launchRecord.provider);
     if (provider) {
@@ -319,7 +319,7 @@ export class RecoveryService {
     this.deps.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
     this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, pool);
-    this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
+    this.deps.progressStore.rebindNamespace(jobId, this.deps.coordinatorNamespace, this.deps.bundleHash);
 
     const pid = runtimeRecord.pid;
     this.deps.abortRegistry.register(jobId, () => {
@@ -352,7 +352,7 @@ export class RecoveryService {
     try {
       writeResultArtifact(this.deps.runtime.storage, jobId, result.content);
     } catch (error: unknown) {
-      backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
+      coordinatorLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
     }
     this.deps.abortRegistry.remove(jobId);
     const pool = this.deps.jobPools.get(jobId) ?? 'default';

@@ -87,7 +87,7 @@ describe('sessions consumer-driver notify', () => {
         model: 'gpt-5',
         cwd: workDir,
         projectRoot: workDir,
-        backendNamespace: pluginRootNamespace(workDir),
+        coordinatorNamespace: pluginRootNamespace(workDir),
       });
 
       await driver.drainAll();

@@ -18,11 +18,3 @@ export interface MetaRow {
   key: string;
   value: string;
 }
-
-export interface EquipmentStateRow {
-  name: string;
-  state: string;
-  installed_at: string | null;
-  last_error_code: string | null;
-  last_error_message: string | null;
-}

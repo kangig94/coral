@@ -9,7 +9,7 @@ import {
 import { join } from 'node:path';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import type * as NodeOs from 'node:os';
-import type * as ServerMod from '#src/coordinator/coordinator.js';
+import type * as ServerMod from '#src/coordinator/index.js';
 import type * as ServerTestDepsMod from '#tests/unit/coordinator/server-test-deps.js';
 import type * as BackendLockMod from '#src/coordinator/lock.js';
 import type * as LifecycleMod from '#src/coordinator/control.js';
@@ -34,7 +34,7 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from "#src/jobs/paths.js";
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { projectDataDir, resolveProjectSource } from "#src/infra/project-source.js";
-import type { BackendServerController } from '#src/coordinator/coordinator.js';
+import type { CoordinatorServerController } from '#src/coordinator/index.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -64,7 +64,7 @@ import {
   LaunchCoordinator,
   TypedEventBus,
   createProviderHostManager,
-  type MutableBackendRuntimeState,
+  type MutableCoordinatorRuntimeState,
 } from '#tests/unit/coordinator/server-test-deps.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
@@ -343,7 +343,7 @@ async function loadExecutionModules(): Promise<{
 }> {
   vi.resetModules();
   const [serverModule, backendInfo, backendLock, lifecycleModule] = await Promise.all([
-    import('#src/coordinator/coordinator.js'),
+    import('#src/coordinator/index.js'),
     import('#tests/unit/coordinator/server-test-deps.js').then((module) => module.backendDiscovery),
     import('#src/coordinator/lock.js'),
     import('#src/coordinator/control.js'),
@@ -358,7 +358,7 @@ function stubLaunchRecord(
     sessionId: string;
     provider: string;
     projectRoot: string;
-    backendNamespace: string;
+    coordinatorNamespace: string;
     pool?: string;
     jobKind?: 'provider' | 'workflow';
   },
@@ -368,7 +368,7 @@ function stubLaunchRecord(
     sessionId: overrides.sessionId,
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
-    backendNamespace: overrides.backendNamespace,
+    coordinatorNamespace: overrides.coordinatorNamespace,
     jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: 0,
@@ -408,7 +408,7 @@ function stubSessionProjection(
     sessionId: string;
     provider: string;
     projectRoot: string;
-    backendNamespace: string;
+    coordinatorNamespace: string;
   },
 ): void {
   const scopeKey = pluginRootNamespace(overrides.projectRoot);
@@ -419,7 +419,7 @@ function stubSessionProjection(
       {
         type: 'session.opened',
         stream: { kind: 'session', id: overrides.sessionId },
-        namespace: overrides.backendNamespace,
+        namespace: overrides.coordinatorNamespace,
         project: overrides.projectRoot,
         refs: { sessionId: overrides.sessionId },
         bodyVersion: 1,
@@ -431,7 +431,7 @@ function stubSessionProjection(
             state: 'pending',
             cwd: overrides.projectRoot,
             projectRoot: overrides.projectRoot,
-            backendNamespace: overrides.backendNamespace,
+            coordinatorNamespace: overrides.coordinatorNamespace,
             createdAt: new Date(runtime.time.now()).toISOString(),
             lastUsedAt: new Date(runtime.time.now()).toISOString(),
             version: 1,
@@ -458,7 +458,7 @@ function parseToolData(result: ToolDomainResult): unknown {
 }
 
 describe('execution backend server', () => {
-  let controller: BackendServerController | null = null;
+  let controller: CoordinatorServerController | null = null;
 
   beforeEach(() => {
     mkdirSync(mockState.tmpRoot, { recursive: true });
@@ -557,7 +557,7 @@ describe('execution backend server', () => {
   }
 
   function createRuntimeStateMock(): {
-    runtimeState: MutableBackendRuntimeState;
+    runtimeState: MutableCoordinatorRuntimeState;
     setLifecycle: ReturnType<typeof vi.fn>;
   } {
     let lifecycle: LifecycleState = 'starting';
@@ -584,7 +584,7 @@ describe('execution backend server', () => {
       setLaunchFenceActive: vi.fn((active: boolean) => {
         launchFenceActive = active;
       }),
-    } satisfies MutableBackendRuntimeState;
+    } satisfies MutableCoordinatorRuntimeState;
 
     return {
       runtimeState,
@@ -592,10 +592,10 @@ describe('execution backend server', () => {
     };
   }
 
-  async function startBackendServer(overrides: Parameters<ServerModule['createBackendServer']>[0] = {}) {
+  async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
     const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
-    controller = serverModule.createBackendServer({
+    controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
@@ -632,7 +632,7 @@ describe('execution backend server', () => {
     const namespace = pluginRootNamespace(pluginRoot);
 
     const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
-    backendInfo.writeBackendInfo(
+    backendInfo.writeCoordinatorInfo(
       {
         pid: process.pid,
         port: 4100,
@@ -648,7 +648,7 @@ describe('execution backend server', () => {
       },
       discoveryRuntime,
     );
-    expect(backendInfo.readBackendInfo(discoveryRuntime)).toMatchObject({
+    expect(backendInfo.readCoordinatorInfo(discoveryRuntime)).toMatchObject({
       host: '127.0.0.1',
       flavor: 'dev',
       namespace,
@@ -669,7 +669,7 @@ describe('execution backend server', () => {
       }),
       'utf-8',
     );
-    expect(backendInfo.readBackendInfo(discoveryRuntime)).toBeNull();
+    expect(backendInfo.readCoordinatorInfo(discoveryRuntime)).toBeNull();
   });
 
   it('returns 200 from /health with execution metadata', async () => {
@@ -760,7 +760,7 @@ describe('execution backend server', () => {
       sessionId: 'session-a',
       provider: 'codex',
       projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -768,7 +768,7 @@ describe('execution backend server', () => {
       sessionId: 'session-a',
       provider: 'codex',
       projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     progressStore.appendTerminal(jobIdA, 'session-a', { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
 
@@ -777,7 +777,7 @@ describe('execution backend server', () => {
       sessionId: 'session-b',
       provider: 'codex',
       projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -785,7 +785,7 @@ describe('execution backend server', () => {
       sessionId: 'session-b',
       provider: 'codex',
       projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     progressStore.appendTerminal(jobIdB, 'session-b', { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
 
@@ -808,7 +808,7 @@ describe('execution backend server', () => {
       .mockResolvedValueOnce(codexHandleA.handle)
       .mockResolvedValueOnce(codexHandleB.handle);
     const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
-    controller = serverModule.createBackendServer({
+    controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
@@ -901,7 +901,7 @@ describe('execution backend server', () => {
       sessionId: 'session-local-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
       bundleHash: 'testhash1234',
       initialPhase: 'running',
     });
@@ -910,7 +910,7 @@ describe('execution backend server', () => {
       sessionId: 'session-local-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
     progressStore.initJob({
@@ -918,7 +918,7 @@ describe('execution backend server', () => {
       sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
       bundleHash: 'testhash1234',
       initialPhase: 'running',
     });
@@ -927,7 +927,7 @@ describe('execution backend server', () => {
       sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
@@ -998,7 +998,7 @@ describe('execution backend server', () => {
       return createMockKbSubsystem();
     });
 
-    controller = serverModule.createBackendServer({
+    controller = serverModule.createCoordinatorServer({
       pluginRoot,
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -3521,7 +3521,7 @@ describe('execution backend server', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
@@ -3575,7 +3575,7 @@ describe('execution backend server', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
@@ -3674,14 +3674,14 @@ describe('execution backend server', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubLaunchRecord(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     progressStore.appendProgress('job-1', 'session-1', 'working');
     progressStore.appendTerminal('job-1', 'session-1', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
@@ -3690,14 +3690,14 @@ describe('execution backend server', () => {
       sessionId: 'session-2',
       provider: 'claude',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubLaunchRecord(progressStore, {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'claude',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-2' });
 
@@ -3788,7 +3788,7 @@ describe('execution backend server', () => {
         sessionId: 'session-running',
         provider: 'codex',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
         initialPhase: 'running',
       });
       stubLaunchRecord(progressStore, {
@@ -3796,7 +3796,7 @@ describe('execution backend server', () => {
         sessionId: 'session-running',
         provider: 'codex',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       stubRuntimeRecord(progressStore, { jobId: 'job-running' });
       progressStore.initJob({
@@ -3804,7 +3804,7 @@ describe('execution backend server', () => {
         sessionId: 'session-queued',
         provider: 'claude',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
         initialPhase: 'queued',
       });
       stubLaunchRecord(progressStore, {
@@ -3812,21 +3812,21 @@ describe('execution backend server', () => {
         sessionId: 'session-queued',
         provider: 'claude',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       progressStore.initJob({
         jobId: 'job-completed',
         sessionId: 'session-completed',
         provider: 'claude',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       stubLaunchRecord(progressStore, {
         jobId: 'job-completed',
         sessionId: 'session-completed',
         provider: 'claude',
         projectRoot: '/tmp/project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       progressStore.appendTerminal(
         'job-completed',
@@ -3839,14 +3839,14 @@ describe('execution backend server', () => {
         sessionId: 'session-foreign-project',
         provider: 'codex',
         projectRoot: '/tmp/other-project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       stubLaunchRecord(progressStore, {
         jobId: 'job-foreign-project',
         sessionId: 'session-foreign-project',
         provider: 'codex',
         projectRoot: '/tmp/other-project',
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       stubRuntimeRecord(progressStore, { jobId: 'job-foreign-project' });
 
@@ -3974,13 +3974,13 @@ describe('execution backend server', () => {
       model: 'gpt-5',
       cwd: foreignProjectRoot,
       projectRoot: foreignProjectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubSessionProjection(progressStore, {
       sessionId: foreign.sessionId,
       provider: 'codex',
       projectRoot: foreignProjectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
 
     const backend = await startBackendServer({ progressStore });
@@ -4084,7 +4084,7 @@ describe('execution backend server', () => {
       sessionId: 'session-foreign',
       provider: 'codex',
       projectRoot: '/tmp/other-project',
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
 
     const backend = await startBackendServer({
@@ -4152,13 +4152,13 @@ describe('execution backend server', () => {
       sessionId: sessionA.sessionId,
       provider: 'codex',
       projectRoot: projectA,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubSessionProjection(progressStore, {
       sessionId: sessionB.sessionId,
       provider: 'codex',
       projectRoot: projectB,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
 
     new SessionManager(projectA, runtime).claimForJobSync(sessionA.sessionId, 'missing-job-a');
@@ -4188,7 +4188,7 @@ describe('execution backend server', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
 
     createdJobIds.add(jobId);
@@ -4197,14 +4197,14 @@ describe('execution backend server', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     stubLaunchRecord(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
     });
     progressStore.appendTerminal(jobId, session.sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
@@ -4234,7 +4234,7 @@ describe('execution backend server', () => {
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot,
-      backendNamespace: testBackendNamespace,
+      coordinatorNamespace: testBackendNamespace,
       jobKind: 'workflow',
     });
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
@@ -4313,7 +4313,7 @@ describe('execution backend server', () => {
       sessionId: 'session-foreign-drain',
       provider: 'codex',
       projectRoot: '/tmp/foreign-project',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -4321,7 +4321,7 @@ describe('execution backend server', () => {
       sessionId: 'session-foreign-drain',
       provider: 'codex',
       projectRoot: '/tmp/foreign-project',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
     });
 
     const backend = await startBackendServer({ pluginRoot, progressStore });
@@ -4330,7 +4330,7 @@ describe('execution backend server', () => {
     expect(statusBeforeShutdown).toMatchObject({
       jobId: foreignJobId,
       phase: 'error',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
     });
     expect(progressStore.liveJobCount('testhash1234')).toBe(0);
 
@@ -4357,9 +4357,9 @@ describe('execution backend server', () => {
     expect(statusAfterShutdown).toMatchObject({
       jobId: foreignJobId,
       phase: 'error',
-      backendNamespace: foreignBackendNamespace,
+      coordinatorNamespace: foreignBackendNamespace,
     });
-    expect(statusAfterShutdown?.backendNamespace).not.toBe(localNamespace);
+    expect(statusAfterShutdown?.coordinatorNamespace).not.toBe(localNamespace);
   });
 
   it('returns health with draining status after admin shutdown request', async () => {
@@ -4447,7 +4447,7 @@ describe('execution backend server', () => {
         sessionId: 'handoff-session',
         provider: 'codex',
         projectRoot: pluginRoot,
-        backendNamespace: namespace,
+        coordinatorNamespace: namespace,
         initialPhase: 'running',
       });
       stubLaunchRecord(progressStore, {
@@ -4455,7 +4455,7 @@ describe('execution backend server', () => {
         sessionId: 'handoff-session',
         provider: 'codex',
         projectRoot: pluginRoot,
-        backendNamespace: namespace,
+        coordinatorNamespace: namespace,
       });
       progressStore.appendRuntimeStarted(jobId, {
         transport: 'app-server',
@@ -4655,7 +4655,7 @@ describe('execution backend server', () => {
       const releaseStartup = createDeferred();
       const startupRegistry = createDiscussContextRegistry();
 
-      controller = serverModule.createBackendServer({
+      controller = serverModule.createCoordinatorServer({
         bootSnapshot: {
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
@@ -4927,7 +4927,7 @@ describe('execution backend server', () => {
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot,
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
         initialPhase: 'launching',
       });
       new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
@@ -4961,7 +4961,7 @@ describe('execution backend server', () => {
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot,
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
         initialPhase: 'launching',
       });
       stubLaunchRecord(progressStore, {
@@ -4969,7 +4969,7 @@ describe('execution backend server', () => {
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot,
-        backendNamespace: testBackendNamespace,
+        coordinatorNamespace: testBackendNamespace,
       });
       new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 

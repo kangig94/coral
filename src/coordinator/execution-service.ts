@@ -42,7 +42,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   private readonly runtime: ExecutionServiceDeps['runtime'];
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
-  private readonly backendNamespace: string;
+  private readonly coordinatorNamespace: string;
   private readonly bundleHash: string;
   private readonly progressStore: ExecutionServiceDeps['progressStore'];
   private readonly projectRoot: string;
@@ -70,7 +70,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       { db: deps.progressStore.getDb() },
     );
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
-    this.backendNamespace = deps.backendNamespace;
+    this.coordinatorNamespace = deps.coordinatorNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
     this.progressStore = deps.progressStore;
 
@@ -82,7 +82,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchAdmission: deps.launchCoordinator,
       durableSpawner: deps.launchCoordinator,
       runtime: this.runtime,
-      backendNamespace: this.backendNamespace,
+      coordinatorNamespace: this.coordinatorNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
       appendEvents,
@@ -112,7 +112,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       runtime: this.runtime,
       sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
-      backendNamespace: this.backendNamespace,
+      coordinatorNamespace: this.coordinatorNamespace,
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
       providerHostManager: deps.providerHostManager,
@@ -126,7 +126,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.launchService = new JobLaunchService({
       runtime: this.runtime,
       sessionManager: this.sessionManager,
-      backendNamespace: this.backendNamespace,
+      coordinatorNamespace: this.coordinatorNamespace,
       bundleHash: this.bundleHash,
       providerRegistry: deps.providerRegistry,
       pluginRegistry: deps.pluginRegistry,
@@ -145,7 +145,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       runtime: this.runtime,
       sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
-      backendNamespace: this.backendNamespace,
+      coordinatorNamespace: this.coordinatorNamespace,
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
       providerRegistry: deps.providerRegistry,
@@ -181,9 +181,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   private runWithInvocationScope<T>(ctx: InvocationContext, run: () => T): T {
     return withInvocationScope(
       {
-        namespace: this.backendNamespace,
+        namespace: this.coordinatorNamespace,
         project: ctx.projectRoot,
-        correlationId: `${this.backendNamespace}:${this.projectRoot}:${++this.invocationCorrelationSeq}`,
+        correlationId: `${this.coordinatorNamespace}:${this.projectRoot}:${++this.invocationCorrelationSeq}`,
       },
       run,
     );

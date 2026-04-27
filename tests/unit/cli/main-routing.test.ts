@@ -30,8 +30,8 @@ const mockState = vi.hoisted(() => ({
   listJobs: vi.fn(),
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
-  getBackendStatusFull: vi.fn(),
-  shutdownBackend: vi.fn(),
+  getCoordinatorStatusFull: vi.fn(),
+  shutdownCoordinator: vi.fn(),
   streamWait: vi.fn(),
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
@@ -84,12 +84,12 @@ vi.mock('#src/transport/http/client.js', () => ({
   BackendToolHttpError: mockHttpErrors.BackendToolHttpError,
 }));
 
-vi.mock('#src/transport/http/backend/status.js', () => ({
-  getBackendStatusFull: mockState.getBackendStatusFull,
+vi.mock('#src/transport/http/coordinator/status.js', () => ({
+  getCoordinatorStatusFull: mockState.getCoordinatorStatusFull,
 }));
 
-vi.mock('#src/transport/http/backend/shutdown.js', () => ({
-  shutdownBackend: mockState.shutdownBackend,
+vi.mock('#src/transport/http/coordinator/shutdown.js', () => ({
+  shutdownCoordinator: mockState.shutdownCoordinator,
 }));
 
 vi.mock('#src/cli/follow.js', () => ({
@@ -230,7 +230,7 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
         sessionId: `session-${jobId}`,
         provider,
         projectRoot: process.cwd(),
-        backendNamespace: 'default',
+        coordinatorNamespace: 'default',
         phase,
         updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
       },
@@ -262,8 +262,8 @@ describe('cli main routing', () => {
     mockState.listJobs.mockReset();
     mockState.abortJobs.mockReset();
     mockState.launchAndFollow.mockReset();
-    mockState.getBackendStatusFull.mockReset();
-    mockState.shutdownBackend.mockReset();
+    mockState.getCoordinatorStatusFull.mockReset();
+    mockState.shutdownCoordinator.mockReset();
     mockState.streamWait.mockReset();
     mockState.discussSeed.mockReset();
     mockState.discussStart.mockReset();
@@ -332,7 +332,7 @@ describe('cli main routing', () => {
   it.each([
     { label: 'codex', path: ['codex'] },
     { label: 'workflow', path: ['workflow'] },
-    { label: 'backend', path: ['backend'] },
+    { label: 'coordinator', path: ['coordinator'] },
     { label: 'discuss', path: ['discuss'] },
     { label: 'expansion', path: ['expansion'] },
     { label: 'kb', path: ['kb'] },
@@ -412,7 +412,7 @@ describe('cli main routing', () => {
             id: 'needle',
             name: 'Needle',
             description: 'Needle vector expansion',
-            activation: 'equipment',
+            activation: 'equip',
             status: 'not_equipped',
             statusDescription: 'Needle is not installed.',
             addonPath: '/tmp/coral-needle.node',

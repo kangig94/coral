@@ -67,13 +67,13 @@ function createStore(db: InstanceType<typeof Database> = createDb()): {
   };
 }
 
-function launchRecord(jobId: string, sessionId: string, backendNamespace: string, bundleHash?: string): JobLaunch {
+function launchRecord(jobId: string, sessionId: string, coordinatorNamespace: string, bundleHash?: string): JobLaunch {
   return {
     jobId,
     sessionId,
     provider: 'codex',
     projectRoot: `/workspace/${jobId}`,
-    backendNamespace,
+    coordinatorNamespace,
     jobKind: 'provider',
     ...(bundleHash === undefined ? {} : { bundleHash }),
     pool: 'default',
@@ -98,7 +98,7 @@ function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: 
     return 0;
   }
 
-  return statuses.filter(({ status }) => isLivePhase(status.phase) && status.backendNamespace === namespace).length;
+  return statuses.filter(({ status }) => isLivePhase(status.phase) && status.coordinatorNamespace === namespace).length;
 }
 
 function initProviderJob(store: JobStore, jobId: string, sessionId: string): void {
@@ -107,7 +107,7 @@ function initProviderJob(store: JobStore, jobId: string, sessionId: string): voi
     sessionId,
     provider: 'codex',
     projectRoot: `/workspace/${jobId}`,
-    backendNamespace: 'test-ns',
+    coordinatorNamespace: 'test-ns',
   });
 }
 
@@ -165,7 +165,7 @@ describe('JobStore', () => {
       sessionId,
       provider: 'codex',
       projectRoot: '/workspace/progress-tail',
-      backendNamespace: 'test-ns',
+      coordinatorNamespace: 'test-ns',
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested(jobId, launchRecord(jobId, sessionId, 'test-ns', 'bundle-a'));
@@ -207,7 +207,7 @@ describe('JobStore', () => {
       sessionId: 'session-alpha',
       provider: 'codex',
       projectRoot: '/workspace/alpha',
-      backendNamespace: 'alpha',
+      coordinatorNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested('job-alpha', launchRecord('job-alpha', 'session-alpha', 'alpha', 'bundle-a'));
@@ -217,7 +217,7 @@ describe('JobStore', () => {
       sessionId: 'session-beta',
       provider: 'codex',
       projectRoot: '/workspace/beta',
-      backendNamespace: 'beta',
+      coordinatorNamespace: 'beta',
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested('job-beta', launchRecord('job-beta', 'session-beta', 'beta', 'bundle-a'));
@@ -227,7 +227,7 @@ describe('JobStore', () => {
       sessionId: 'session-override',
       provider: 'codex',
       projectRoot: '/workspace/override',
-      backendNamespace: 'alpha',
+      coordinatorNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested('job-override', launchRecord('job-override', 'session-override', 'alpha', 'bundle-a'));
@@ -238,7 +238,7 @@ describe('JobStore', () => {
       sessionId: 'session-done',
       provider: 'codex',
       projectRoot: '/workspace/done',
-      backendNamespace: 'alpha',
+      coordinatorNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested('job-done', launchRecord('job-done', 'session-done', 'alpha', 'bundle-a'));
@@ -249,7 +249,7 @@ describe('JobStore', () => {
       sessionId: 'session-draft',
       provider: 'codex',
       projectRoot: '/workspace/draft',
-      backendNamespace: 'alpha',
+      coordinatorNamespace: 'alpha',
       bundleHash: 'bundle-a',
       initialPhase: 'queued',
     });

@@ -3,11 +3,11 @@ import type { JobProgress, JobStatus } from '../records.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEvent, type WaitStreamOnceResult, type WaitStreamRequest } from '../wait.js';
 import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
-import type { RuntimeTimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
@@ -91,11 +91,11 @@ function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<
 }
 
 function createTimeoutWaiter(
-  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
   timeoutMs: number,
 ): { promise: Promise<typeof TIMED_OUT>; dispose(): void } {
   let settled = false;
-  let timeoutHandle: ReturnType<RuntimeTimePort['setTimeout']> | null = null;
+  let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
   const promise = new Promise<typeof TIMED_OUT>((resolve) => {
     timeoutHandle = time.setTimeout(() => {
       settled = true;
@@ -118,11 +118,11 @@ function createTimeoutWaiter(
 }
 
 function createJournalPollWaiter(
-  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
   timeoutMs: number,
 ): { promise: Promise<typeof JOURNAL_POLL>; dispose(): void } {
   let settled = false;
-  let timeoutHandle: ReturnType<RuntimeTimePort['setTimeout']> | null = null;
+  let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
   const promise = new Promise<typeof JOURNAL_POLL>((resolve) => {
     timeoutHandle = time.setTimeout(() => {
       settled = true;
@@ -149,7 +149,7 @@ export interface WaitCoordinatorDeps {
   launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
-  time: RuntimeTimePort;
+  time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobProgress: (jobId: string) => JobProgress[];
   subscribeJobEvents: (options: {
@@ -180,7 +180,7 @@ export class WaitCoordinator {
     try {
       return this.deps.ensureResultArtifact(jobId);
     } catch (error: unknown) {
-      backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
+      coordinatorLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
       return defaultResultPathFor(jobId);
     }
   }

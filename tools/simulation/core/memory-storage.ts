@@ -1,5 +1,5 @@
 import { dirname, normalize } from 'node:path';
-import type { RuntimeDirentLike, StorageData, StoragePort, TimePort } from '../../../src/runtime/ports.js';
+import type { DirentLike, StorageData, StoragePort, TimePort } from '../../../src/runtime/ports.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
 type FileNode = {
@@ -333,7 +333,7 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(normalized === '/' ? '/' : parentPath(normalized));
   }
 
-  readdirSync(path: string, options: { withFileTypes: true }): RuntimeDirentLike[] {
+  readdirSync(path: string, options: { withFileTypes: true }): DirentLike[] {
     if (!options.withFileTypes) {
       throw new Error('InMemoryStorage.readdirSync requires withFileTypes: true');
     }

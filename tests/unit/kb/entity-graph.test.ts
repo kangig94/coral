@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '#src/infra/backend-log.js';
+import { coordinatorLog } from '#src/infra/coordinator-log.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -44,7 +44,7 @@ describe('entity-graph', () => {
       runtimeDir: root,
       db: createKbTestDb(root),
     });
-    const warnSpy = vi.spyOn(backendLog, 'warn');
+    const warnSpy = vi.spyOn(coordinatorLog, 'warn');
 
     expect(kb.readEntityGraph()).toBeNull();
 
@@ -64,7 +64,7 @@ describe('entity-graph', () => {
       runtimeDir: root,
       db: createKbTestDb(root),
     });
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
 
     const malformed = '{';
     writeFileSync(kb.entityGraphPath(), malformed, 'utf-8');

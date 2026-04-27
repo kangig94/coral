@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
+import { readCoordinatorInfo, removeCoordinatorInfoIfOwner, writeCoordinatorInfo } from '../../infra/coordinator-discovery.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
@@ -19,32 +19,32 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
-import type { BackendCoreOptions, CreateServerFn, FetchFn } from './core-types.js';
+import type { CoordinatorCoreOptions, CreateServerFn, FetchFn } from './types.js';
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
 
 type BackendEagerDefaults = {
   readonly resolvedPluginRoot: string;
-  readonly createIdleTimer: NonNullable<BackendCoreOptions['createIdleTimer']>;
-  readonly createExecutionService: NonNullable<BackendCoreOptions['createExecutionService']>;
-  readonly verifyBackendOwnershipFn: NonNullable<BackendCoreOptions['verifyBackendOwnershipFn']>;
-  readonly acquireLockFn: NonNullable<BackendCoreOptions['acquireLockFn']>;
-  readonly writeBackendInfoFn: NonNullable<BackendCoreOptions['writeBackendInfoFn']>;
-  readonly removeBackendInfoIfOwnerFn: NonNullable<BackendCoreOptions['removeBackendInfoIfOwnerFn']>;
-  readonly removeLockIfOwnerFn: NonNullable<BackendCoreOptions['removeLockIfOwnerFn']>;
-  readonly closeServerFn: NonNullable<BackendCoreOptions['closeServerFn']>;
-  readonly createKbSubsystemFn: NonNullable<BackendCoreOptions['createKbSubsystemFn']>;
-  readonly registerBuiltInProvidersFn: NonNullable<BackendCoreOptions['registerBuiltInProvidersFn']>;
-  readonly recoverPersistedDiscussFn: NonNullable<BackendCoreOptions['recoverPersistedDiscussFn']>;
+  readonly createIdleTimer: NonNullable<CoordinatorCoreOptions['createIdleTimer']>;
+  readonly createExecutionService: NonNullable<CoordinatorCoreOptions['createExecutionService']>;
+  readonly verifyBackendOwnershipFn: NonNullable<CoordinatorCoreOptions['verifyBackendOwnershipFn']>;
+  readonly acquireLockFn: NonNullable<CoordinatorCoreOptions['acquireLockFn']>;
+  readonly writeBackendInfoFn: NonNullable<CoordinatorCoreOptions['writeBackendInfoFn']>;
+  readonly removeBackendInfoIfOwnerFn: NonNullable<CoordinatorCoreOptions['removeBackendInfoIfOwnerFn']>;
+  readonly removeLockIfOwnerFn: NonNullable<CoordinatorCoreOptions['removeLockIfOwnerFn']>;
+  readonly closeServerFn: NonNullable<CoordinatorCoreOptions['closeServerFn']>;
+  readonly createKbSubsystemFn: NonNullable<CoordinatorCoreOptions['createKbSubsystemFn']>;
+  readonly registerBuiltInProvidersFn: NonNullable<CoordinatorCoreOptions['registerBuiltInProvidersFn']>;
+  readonly recoverPersistedDiscussFn: NonNullable<CoordinatorCoreOptions['recoverPersistedDiscussFn']>;
   readonly fetchFn: FetchFn;
   readonly createServerFn: CreateServerFn;
 };
 
 type BackendWorldBoundDefaults = {
-  readonly listenFn: NonNullable<BackendCoreOptions['listenFn']>;
-  readonly cleanupStaleJobsFn: NonNullable<BackendCoreOptions['cleanupStaleJobsFn']>;
-  readonly markJobsAsErrorFn: NonNullable<BackendCoreOptions['markJobsAsErrorFn']>;
-  readonly terminateAllFn: NonNullable<BackendCoreOptions['terminateAllFn']>;
+  readonly listenFn: NonNullable<CoordinatorCoreOptions['listenFn']>;
+  readonly cleanupStaleJobsFn: NonNullable<CoordinatorCoreOptions['cleanupStaleJobsFn']>;
+  readonly markJobsAsErrorFn: NonNullable<CoordinatorCoreOptions['markJobsAsErrorFn']>;
+  readonly terminateAllFn: NonNullable<CoordinatorCoreOptions['terminateAllFn']>;
 };
 
 export type ResolvedBackendDefaults = BackendEagerDefaults & BackendWorldBoundDefaults;
@@ -61,7 +61,7 @@ export type BackendDefaultsBindings = {
  * Two-phase backend defaults plan. Eager defaults resolve from `runtime` only;
  * defaults that close over `bindHost`, `advertiseHost`, `progressStore`,
  * `launchCoordinator`, or `log` belong in `finalizeWithWorld(...)` because
- * those bindings come from `BackendWorld`.
+ * those bindings come from `CoordinatorWorld`.
  */
 export interface BackendDefaultsPlan {
   readonly eager: BackendEagerDefaults;
@@ -79,7 +79,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
   const expectedNamespace = pluginRootNamespace(pluginRoot);
-  const info = readBackendInfo({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+  const info = readCoordinatorInfo({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   if (!info) {
     return 'stale';
   }
@@ -136,18 +136,18 @@ function createDefaultBackendOwnershipVerifier(
   return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime, fetchFn);
 }
 
-export function resolveBackendDefaults(
-  options: BackendCoreOptions,
+export function resolveCoordinatorDefaults(
+  options: CoordinatorCoreOptions,
   runtime: Runtime,
   pluginRoot?: string,
   progressStore?: ProgressStore,
 ): BackendDefaultsPlan {
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   if (pluginRoot !== undefined && pluginRoot !== resolvedPluginRoot) {
-    throw new Error('resolveBackendDefaults received a mismatched pluginRoot bridge input');
+    throw new Error('resolveCoordinatorDefaults received a mismatched pluginRoot bridge input');
   }
 
-  const createExecutionService: NonNullable<BackendCoreOptions['createExecutionService']> =
+  const createExecutionService: NonNullable<CoordinatorCoreOptions['createExecutionService']> =
     options.createExecutionService ?? ((ctx: InvocationContext, deps) => new DefaultExecutionService(ctx, deps));
   const fetchFn: FetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
   const verifyBackendOwnershipFn =
@@ -163,9 +163,9 @@ export function resolveBackendDefaults(
     });
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
   const writeBackendInfoFn =
-    options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
+    options.writeBackendInfoFn ?? ((info) => writeCoordinatorInfo(info, discoveryRuntime));
   const removeBackendInfoIfOwnerFn =
-    options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
+    options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeCoordinatorInfoIfOwner(instanceId, discoveryRuntime));
   const removeLockIfOwnerFn =
     options.removeLockIfOwnerFn ??
     ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage, paths: runtime.paths }));
@@ -174,7 +174,7 @@ export function resolveBackendDefaults(
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});
   const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussRecovery.runStartup;
   const createServerFn: CreateServerFn = options.createServerFn ?? createServer;
-  const createIdleTimer: NonNullable<BackendCoreOptions['createIdleTimer']> =
+  const createIdleTimer: NonNullable<CoordinatorCoreOptions['createIdleTimer']> =
     options.createIdleTimer ??
     (() =>
       new IdleTimer({
@@ -210,7 +210,7 @@ export function resolveBackendDefaults(
       finalized = true;
 
       if (progressStore !== undefined && progressStore !== bindings.progressStore) {
-        throw new Error('resolveBackendDefaults received a mismatched progressStore bridge input');
+        throw new Error('resolveCoordinatorDefaults received a mismatched progressStore bridge input');
       }
 
       const listenFn =

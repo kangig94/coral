@@ -1,4 +1,4 @@
-import { backendLog } from '../../../infra/backend-log.js';
+import { coordinatorLog } from '../../../infra/coordinator-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
@@ -267,7 +267,7 @@ export function detectRepairs(scanFailures: CurateBootstrapScanFailure[], detect
     if (repair !== null) {
       pendingRepair.push(repair);
     }
-    backendLog.warn(
+    coordinatorLog.warn(
       `Skipping malformed KB ${failure.kind} ${failure.name} during curate bootstrap: ${errorMessage(failure.error)}`,
     );
   }

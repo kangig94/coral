@@ -196,7 +196,7 @@ export async function executeCatalogRequest(
     case 'coordinator.unequipExpansion': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
-      if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid equipment name')));
+      if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
       return unary(await rpcPorts.expansion.unequipExpansion({ name }));
     }
 

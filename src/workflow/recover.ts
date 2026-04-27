@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { RuntimeTimePort } from '../runtime/ports.js';
+import type { TimePort } from '../runtime/ports.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
@@ -212,7 +212,7 @@ async function resumeWorkflow(
   workflowId: string,
   plan: WorkflowPlan,
   options: {
-    time: Pick<RuntimeTimePort, 'now'>;
+    time: Pick<TimePort, 'now'>;
     onProgress: (workflowId: string, message: string) => void;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -374,7 +374,7 @@ export async function resumeAll(options: {
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
-  time?: Pick<RuntimeTimePort, 'now'>;
+  time?: Pick<TimePort, 'now'>;
 }): Promise<string[]> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;

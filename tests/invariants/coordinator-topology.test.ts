@@ -20,16 +20,16 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap.ts',
   'src/coordinator/composition/control.ts',
-  'src/coordinator/composition/core-types.ts',
+  'src/coordinator/composition/types.ts',
   'src/coordinator/composition/defaults.ts',
   'src/coordinator/composition/world.ts',
-  'src/coordinator/composition/create-backend-core.ts',
+  'src/coordinator/composition/index.ts',
   'src/coordinator/composition/execution-services.ts',
   'src/coordinator/consumer-driver-support.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
-  'src/coordinator/coordinator.ts',
+  'src/coordinator/index.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/expansion/host-factory.ts',
@@ -61,7 +61,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/kb-reindex-service.ts',
   'src/coordinator/services/kb-source-import-service.ts',
   'src/coordinator/services/recovery/actions.ts',
-  'src/coordinator/services/recovery/coordinator.ts',
+  'src/coordinator/services/recovery/index.ts',
   'src/coordinator/services/recovery/service.ts',
   'src/coordinator/services/recovery/snapshot.ts',
   'src/coordinator/services/workflow-execution-service.ts',
@@ -81,7 +81,7 @@ const CONTRACT_TARGETS = new Set([
 ]);
 const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts']);
 const COORDINATOR_GLUE_SOURCES = new Set([
-  'src/coordinator/coordinator.ts',
+  'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',

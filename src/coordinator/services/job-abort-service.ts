@@ -1,4 +1,4 @@
-import { backendLog } from '../../infra/backend-log.js';
+import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import {
   isAppServerRuntime,
@@ -46,7 +46,7 @@ export class JobAbortService {
       const launchRecord = this.deps.progressStore.readLaunchProjection(jobId);
       if (launchRecord && isAppServerRuntime(runtimeRecord)) {
         void this.deps.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
-          backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
+          coordinatorLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
         });
       }
 

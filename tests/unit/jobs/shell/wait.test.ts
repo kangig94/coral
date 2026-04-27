@@ -141,7 +141,7 @@ function createService(
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
-    backendNamespace?: string;
+    coordinatorNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
     subscribeJobEvents?: (options: {
@@ -195,7 +195,7 @@ function createService(
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
-    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: options.coordinatorNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
@@ -573,7 +573,7 @@ function createClaimedJob(
     sessionId: session.sessionId,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
   expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
@@ -622,7 +622,7 @@ function makeStatusRecord(
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
+    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
     phase,
     updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
@@ -820,7 +820,7 @@ describe('ExecutionService wait', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
+      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
       updatedAt: '2026-03-06T00:00:00.000Z',
     };
@@ -952,7 +952,7 @@ describe('ExecutionService wait', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
+      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'completed',
       updatedAt: '2026-03-06T00:00:00.000Z',
       result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1348,7 +1348,7 @@ describe('ExecutionService wait', () => {
             sessionId: 'session-a',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
-            backendNamespace: TEST_BACKEND_NAMESPACE,
+            coordinatorNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
             updatedAt: '',
           };
@@ -1359,7 +1359,7 @@ describe('ExecutionService wait', () => {
             sessionId: 'session-b',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
-            backendNamespace: TEST_BACKEND_NAMESPACE,
+            coordinatorNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
             updatedAt: '',
           };
@@ -1454,7 +1454,7 @@ describe('ExecutionService wait', () => {
           sessionId: 'session-1',
           provider: 'codex',
           projectRoot: ctx.projectRoot,
-          backendNamespace: TEST_BACKEND_NAMESPACE,
+          coordinatorNamespace: TEST_BACKEND_NAMESPACE,
           phase: 'running',
           updatedAt: '',
         };

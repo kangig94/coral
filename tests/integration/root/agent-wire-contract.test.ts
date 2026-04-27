@@ -250,7 +250,7 @@ describe('agent wire contract', () => {
         runtime,
         progressStore,
         bundleHash: 'agent-wire-contract-bundle',
-        backendNamespace: pluginRootNamespace(coralPluginRoot),
+        coordinatorNamespace: pluginRootNamespace(coralPluginRoot),
         providerHostManager,
         launchCoordinator,
         eventBus,
@@ -291,7 +291,7 @@ describe('agent wire contract', () => {
       expansion: {
         equipExpansion: vi.fn(),
         unequipExpansion: vi.fn(),
-        listExpansion: vi.fn(async () => ({ equipment: [] })),
+        listExpansion: vi.fn(async () => ({ expansions: [] })),
         readBinding: vi.fn(async () => ({ bound: false })),
       },
       health: {
