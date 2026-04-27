@@ -18,9 +18,33 @@ import type {
   KbSourceListResult,
   ReindexResult,
 } from '../../kb/entry-types.js';
-import { formatTable, joinLines, normalizeKbWarning, normalizeKbWarnings } from './primitives.js';
+import { formatTable, joinLines } from '../../infra/text.js';
 
 type KbReadDisplayResult = KbReadResult & { age?: string };
+
+function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'): string | undefined {
+  if (warning === undefined || warning.length === 0) {
+    return undefined;
+  }
+
+  return warning
+    .replace(
+      /\bkb_search_degraded_until_coordinator_rebuild\b/g,
+      'Search index is unavailable; start the Coral backend to rebuild it.',
+    )
+    .replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
+}
+
+function normalizeKbWarnings(
+  warnings: string[] | undefined,
+  cliPrefix = 'coral-cli',
+): string[] | undefined {
+  if (warnings === undefined || warnings.length === 0) {
+    return undefined;
+  }
+
+  return warnings.map((warning) => normalizeKbWarning(warning, cliPrefix) ?? warning);
+}
 
 function isVerbosePrincipleRows(
   principles: KbPrinciplesResult['principles'],

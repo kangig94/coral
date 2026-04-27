@@ -1,7 +1,7 @@
 import { isRecord } from '../../infra/json.js';
 import type { CoordinatorHttpError } from '../../transport/http/client.js';
 import type { CliErrorEnvelope } from '../errors.js';
-import { formatUnknown } from './primitives.js';
+import { formatUnknown } from '../../infra/text.js';
 
 function isCoordinatorHttpError(value: unknown): value is CoordinatorHttpError {
   return (

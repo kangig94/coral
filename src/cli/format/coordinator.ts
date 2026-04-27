@@ -1,7 +1,7 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { CoordinatorStatusFull } from '../../transport/http/coordinator/status.js';
 import type { ShutdownResult } from '../../transport/http/coordinator/shutdown.js';
-import { joinLines } from './primitives.js';
+import { joinLines } from '../../infra/text.js';
 
 export function formatCoordinatorStatus(result: CoordinatorStatusFull): string {
   switch (result.status) {
