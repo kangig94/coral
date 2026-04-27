@@ -22,12 +22,12 @@ import {
 } from './runner.js';
 import {
   isClaimStale,
-  initializeCurateStateIfNeeded,
   readCurateState,
   writeCurateState,
   type CurateCursor,
   type CurateState,
 } from './state/index.js';
+import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
 import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
 
 export type {

@@ -1,8 +1,9 @@
-import { readCurateState, writeCurateState, type PendingRepair } from '../state/index.js';
+import { readCurateState, writeCurateState } from '../state/index.js';
 import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
 import { projectIncidents } from '../../corpus/repair/project-incidents.js';
 import { applyDetectedIncidentFixesLocked } from '../../corpus/repair/fix.js';
 import { createGitSyncController } from '../git-sync.js';
+import { deleteCurateRetryEntry, readCurateRetryQueue } from '../retry.js';
 import { applyLaneMutation, detectTextArtifactRebuildInfo } from './drift.js';
 import {
   prepareCommunityTopologyRefresh,
@@ -16,7 +17,6 @@ import {
   loadSources,
 } from './loaders.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
-import { nowIsoString } from '../../../infra/time.js';
 import type {
   KbReindexCommunityRecord,
   KbReindexNoteRecord,
@@ -35,22 +35,12 @@ type ReindexCounts = Pick<
 
 export class TextSnapshotRebuildError extends Error {
   readonly counts: ReindexCounts;
-  readonly pendingRepair: PendingRepair[] | null;
 
-  constructor(message: string, counts: ReindexCounts, pendingRepair: PendingRepair[] | null) {
+  constructor(message: string, counts: ReindexCounts) {
     super(message);
     this.name = 'TextSnapshotRebuildError';
     this.counts = counts;
-    this.pendingRepair = pendingRepair;
   }
-}
-
-function persistPendingRepair(kb: KbRuntime, pendingRepair: PendingRepair[] | null): void {
-  const state = readCurateState(kb);
-  writeCurateState(kb, {
-    ...state,
-    pendingRepair,
-  });
 }
 
 /**
@@ -66,14 +56,11 @@ export async function rebuildTextArtifacts(
   communities: KbReindexCommunityRecord[];
   principles: Array<[string, string]>;
   counts: ReindexCounts;
-  pendingRepair: PendingRepair[] | null;
 }> {
-  const detectedAt = nowIsoString(kb.time);
   const scan = buildCorpusScanView(kb);
-  const { entries: notes, pendingRepair: malformedNotes } = loadNotes(scan, detectedAt);
-  const { entries: sources, pendingRepair: malformedSources } = loadSources(scan, detectedAt);
+  const notes = loadNotes(scan);
+  const sources = loadSources(scan);
   const principles = loadPrinciples(scan);
-  const pendingRepair = [...malformedNotes, ...malformedSources];
   const rebuildInfo = detectTextArtifactRebuildInfo(kb, scan);
   const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
@@ -81,7 +68,6 @@ export async function rebuildTextArtifacts(
   const communities = loadCommunities(buildCorpusScanView(kb));
   const index = buildKbIndex(kb, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
-  const pendingRepairState = pendingRepair.length === 0 ? null : pendingRepair;
   kb.writeIndex(index);
 
   const nextState = kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
@@ -94,7 +80,7 @@ export async function rebuildTextArtifacts(
     const reason = 'KB text index freshness changed during rebuild.';
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts, pendingRepairState);
+    throw new TextSnapshotRebuildError(reason, counts);
   }
 
   if (topologyRefresh.shouldPersistState) {
@@ -113,7 +99,6 @@ export async function rebuildTextArtifacts(
     communities,
     principles,
     counts,
-    pendingRepair: pendingRepairState,
   };
 }
 
@@ -125,25 +110,16 @@ export async function rebuildTextArtifacts(
  *
  * After the rebuild succeeds, runs the typed-detector pipeline against a fresh corpus
  * scan and dispatches each incident through `applyDetectedIncidentFixesLocked` (auto-fix
- * runs inline; manual cases enqueue typed rows on `kb_curate_retry_queue` alongside the
- * shallow `pendingRepair[]` rows produced during loading).
+ * runs inline; manual cases enqueue typed rows on `kb_curate_retry_queue`).
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,
   mutation: KbMutationEffects,
   startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
 ): Promise<Awaited<ReturnType<typeof rebuildTextArtifacts>>> {
-  try {
-    const result = await rebuildTextArtifacts(kb, mutation, startState);
-    persistPendingRepair(kb, result.pendingRepair);
-    await runTypedRepairPipelineLocked(kb, mutation);
-    return result;
-  } catch (error: unknown) {
-    if (error instanceof TextSnapshotRebuildError) {
-      persistPendingRepair(kb, error.pendingRepair);
-    }
-    throw error;
-  }
+  const result = await rebuildTextArtifacts(kb, mutation, startState);
+  await runTypedRepairPipelineLocked(kb, mutation);
+  return result;
 }
 
 async function runTypedRepairPipelineLocked(
@@ -151,16 +127,29 @@ async function runTypedRepairPipelineLocked(
   mutation: KbMutationEffects,
 ): Promise<void> {
   const incidents = projectIncidents(buildCorpusScanView(kb));
-  if (incidents.length === 0) {
-    return;
+
+  // Sweep stale typed-incident rows: a queue entry whose entryId no longer appears
+  // in the current incident set means the underlying file has been repaired.
+  const stillDetected = new Set(incidents.map((incident) => incident.entryId));
+  for (const queued of readCurateRetryQueue(kb.db)) {
+    if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
+      deleteCurateRetryEntry(kb.db, queued.entryId);
+    }
   }
 
-  const gitSync = createGitSyncController({
-    kb,
-    spawnCli: kb.spawnCli,
-    processPort: kb.processPort,
-    storagePort: kb.storagePort,
-    envPort: kb.envPort,
-  });
-  await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
+  if (incidents.length > 0) {
+    const gitSync = createGitSyncController({
+      kb,
+      spawnCli: kb.spawnCli,
+      processPort: kb.processPort,
+      storagePort: kb.storagePort,
+      envPort: kb.envPort,
+    });
+    await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
+  }
+
+  // Re-persist CurateState so normalizeCurateStateRepairFrontier clamps scheduler progress
+  // when pendingRepair surfaces a known frontier — preserving the pre-Phase-4 invariant that
+  // discoveryHighSeq/discoveryOffset are clamped on disk, not just at read time.
+  writeCurateState(kb, readCurateState(kb));
 }

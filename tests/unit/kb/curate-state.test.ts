@@ -2,32 +2,31 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '#src/infra/backend-log.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import {
-  assignEntrySeqs,
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
   applyRecordCurateFailure,
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
-  detectRepairs,
-  extractMalformedEntryRepair,
   isClaimStale,
   normalizeCurateStateRepairFrontier,
-  persistState,
   readCurateState,
-  reconcileSeqs,
-  rewriteFrontmatter,
-  scanCorpus,
-  syncIndex,
   writeCurateState,
   type CurateState,
   type PendingRepair,
 } from '#src/kb/curate/state/index.js';
+import {
+  assignEntrySeqs,
+  persistState,
+  reconcileSeqs,
+  rewriteFrontmatter,
+  scanCorpus,
+  syncIndex,
+} from '#src/kb/curate/state/bootstrap.js';
 import { readCurateDiscoveryBacklog } from '#src/kb/curate/discovery-backlog.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
@@ -425,57 +424,6 @@ describe('curate state', () => {
     ]);
   });
 
-  it('extracts malformed repair entries leniently from raw note and source content', () => {
-    const detectedAt = '2026-03-25T12:00:00.000Z';
-
-    expect(
-      extractMalformedEntryRepair(
-        'note',
-        'coral-broken-note',
-        [
-          '---',
-          'tags: [coral',
-          'principles: []',
-          'source:',
-          '  - kangig94/coral',
-          'createdAt: 2026-03-20T00:00:00.000Z',
-          'updatedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: 17',
-          '---',
-          '# Broken Note',
-          '',
-          'Body.',
-        ].join('\n'),
-        detectedAt,
-      ),
-    ).toEqual({
-      entryId: noteEntryId('coral-broken-note'),
-      entrySeq: 17,
-      detectedAt,
-    });
-
-    expect(
-      extractMalformedEntryRepair(
-        'source',
-        'coral-broken-source',
-        [
-          '---',
-          'title: Broken Source',
-          'type: spec',
-          'tags: [reference',
-          'importedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: nope',
-          '# Missing closing frontmatter delimiter on purpose',
-        ].join('\n'),
-        detectedAt,
-      ),
-    ).toEqual({
-      entryId: sourceEntryId('coral-broken-source'),
-      entrySeq: null,
-      detectedAt,
-    });
-  });
-
   it('normalizes repair frontiers without rewinding cursors that still sort before the malformed entry', () => {
     expect(
       normalizeCurateStateRepairFrontier(
@@ -705,95 +653,13 @@ describe('curate state', () => {
       ]);
     });
 
-    it('detectRepairs converts scan failures into pending repairs and warnings', () => {
-      mkdirSync(runtime.notesDir(), { recursive: true });
-      mkdirSync(runtime.sourcesDir(), { recursive: true });
-
-      writeFileSync(
-        join(runtime.notesDir(), 'coral-malformed-note.md'),
-        [
-          '---',
-          'tags: [coral',
-          'principles: []',
-          'source:',
-          '  - kangig94/coral',
-          'createdAt: 2026-03-20T00:00:00.000Z',
-          'updatedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: 7',
-          '---',
-          '# Coral Malformed Note',
-          '',
-          'Body.',
-        ].join('\n'),
-        'utf-8',
-      );
-      writeFileSync(
-        join(runtime.sourcesDir(), 'coral-malformed-source.md'),
-        [
-          '---',
-          'title: Coral Malformed Source',
-          'type: spec',
-          'tags: [reference',
-          'importedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: nope',
-          '# Missing closing frontmatter delimiter on purpose',
-        ].join('\n'),
-        'utf-8',
-      );
-
-      const detectedAt = '2026-03-25T12:00:00.000Z';
-      const scan = scanCorpus(runtime, detectedAt);
-      const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-      const pendingRepair = detectRepairs(scan.scanFailures, detectedAt);
-
-      expect(pendingRepair).toEqual([
-        expect.objectContaining({
-          entryId: noteEntryId('coral-malformed-note'),
-          entrySeq: 7,
-          detectedAt,
-          observedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-        }),
-        expect.objectContaining({
-          entryId: sourceEntryId('coral-malformed-source'),
-          entrySeq: null,
-          detectedAt,
-          observedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-        }),
-      ]);
-      expect(warn).toHaveBeenCalledTimes(2);
-      expect(String(warn.mock.calls[0]?.[0])).toContain(
-        'Skipping malformed KB note coral-malformed-note during curate bootstrap',
-      );
-      expect(String(warn.mock.calls[1]?.[0])).toContain(
-        'Skipping malformed KB source coral-malformed-source during curate bootstrap',
-      );
-    });
-
-    it('assignEntrySeqs uses the highest existing sequence from state, entries, and repairs', () => {
+    it('assignEntrySeqs uses the highest existing sequence from state, entries, and the retry queue', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
       mkdirSync(runtime.sourcesDir(), { recursive: true });
 
       writeFileSync(join(runtime.notesDir(), 'coral-existing.md'), renderNote({ title: 'Existing', entrySeq: 8 }), 'utf-8');
       writeFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), renderNote({ title: 'Needs Seq' }), 'utf-8');
       writeFileSync(join(runtime.sourcesDir(), 'source-needs-seq.md'), renderSource({ title: 'Source Needs Seq' }), 'utf-8');
-      writeFileSync(
-        join(runtime.notesDir(), 'coral-malformed.md'),
-        [
-          '---',
-          'tags: [coral',
-          'principles: []',
-          'source:',
-          '  - kangig94/coral',
-          'createdAt: 2026-03-20T00:00:00.000Z',
-          'updatedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: 30',
-          '---',
-          '# Coral Malformed',
-          '',
-          'Body.',
-        ].join('\n'),
-        'utf-8',
-      );
 
       runtime.writeIndexState({
         contentSeq: 5,
@@ -801,9 +667,14 @@ describe('curate state', () => {
       });
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
-      vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-      const pendingRepair = detectRepairs(scan.scanFailures, scan.detectedAt);
-      const assignment = assignEntrySeqs(runtime.readIndexState(), scan.scannedNotes, scan.scannedSources, pendingRepair);
+      const retryQueue: PendingRepair[] = [
+        {
+          entryId: noteEntryId('coral-malformed'),
+          entrySeq: 30,
+          detectedAt: '2026-03-25T12:00:00.000Z',
+        },
+      ];
+      const assignment = assignEntrySeqs(runtime.readIndexState(), scan.scannedNotes, scan.scannedSources, retryQueue);
 
       expect(scan.scannedNotes.find((entry) => entry.note === 'coral-existing')?.frontmatter.entrySeq).toBe(8);
       expect(scan.scannedNotes.find((entry) => entry.note === 'coral-needs-seq')?.frontmatter.entrySeq).toBe(31);
@@ -911,7 +782,7 @@ describe('curate state', () => {
       expect(writeIndexStateSpy).not.toHaveBeenCalled();
     });
 
-    it('persistState stores inferred progress and pending repairs', () => {
+    it('persistState stores inferred progress and reads pending repairs from the SQL retry queue', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
 
       writeFileSync(
@@ -919,29 +790,21 @@ describe('curate state', () => {
         renderNote({ title: 'Processed', entrySeq: 4 }),
         'utf-8',
       );
-      writeFileSync(
-        join(runtime.notesDir(), 'coral-malformed.md'),
-        [
-          '---',
-          'tags: [coral',
-          'principles: []',
-          'source:',
-          '  - kangig94/coral',
-          'createdAt: 2026-03-20T00:00:00.000Z',
-          'updatedAt: 2026-03-20T00:00:00.000Z',
-          'entrySeq: 7',
-          '---',
-          '# Coral Malformed',
-          '',
-          'Body.',
-        ].join('\n'),
-        'utf-8',
-      );
 
       const detectedAt = '2026-03-25T12:00:00.000Z';
       const scan = scanCorpus(runtime, detectedAt);
-      vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-      const pendingRepair = detectRepairs(scan.scanFailures, detectedAt);
+
+      // Seed the SQL retry queue (sole authority for pendingRepair after Phase 4).
+      writeCurateState(runtime, {
+        ...createCurateState(),
+        pendingRepair: [
+          {
+            entryId: noteEntryId('coral-malformed'),
+            entrySeq: 7,
+            detectedAt,
+          },
+        ],
+      });
 
       persistState(
         runtime,
@@ -950,7 +813,6 @@ describe('curate state', () => {
         }),
         scan.scannedNotes,
         scan.scannedSources,
-        pendingRepair,
       );
 
       const state = readCurateState(runtime);
@@ -1067,12 +929,15 @@ describe('curate state', () => {
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
     ).toBe(31);
-    expectPendingRepairEntries(readCurateState(runtime).pendingRepair, [
-      {
-        entryId: noteEntryId('coral-malformed'),
-        entrySeq: 30,
-      },
-    ]);
+    // Typed pipeline detects malformed YAML as frontmatter-shape and enqueues with the lenient
+    // entrySeq (30) so assignEntrySeqs uses it as the floor when allocating new sequences.
+    const queued = readCurateState(runtime).pendingRepair ?? [];
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      entryId: noteEntryId('coral-malformed'),
+      entrySeq: 30,
+      locus: 'frontmatter-shape',
+    });
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 31,
       metadataSeq: 31,
@@ -1156,16 +1021,22 @@ describe('curate state', () => {
       discoveryOffset: 0,
       initialized: true,
     });
-    expectPendingRepairEntries(state.pendingRepair, [
-      {
-        entryId: noteEntryId('coral-malformed-note'),
-        entrySeq: 7,
-      },
-      {
-        entryId: sourceEntryId('coral-malformed-source'),
-        entrySeq: null,
-      },
-    ]);
+    // Typed pipeline detects malformed YAML as frontmatter-shape/yaml-parse-error and enqueues
+    // typed rows on kb_curate_retry_queue, which project back into state.pendingRepair.
+    const queued = state.pendingRepair ?? [];
+    expect(queued.map((entry) => entry.entryId).sort()).toEqual(
+      [noteEntryId('coral-malformed-note'), sourceEntryId('coral-malformed-source')].sort(),
+    );
+    const noteRepair = queued.find((entry) => entry.entryId === noteEntryId('coral-malformed-note'));
+    const sourceRepair = queued.find((entry) => entry.entryId === sourceEntryId('coral-malformed-source'));
+    expect(noteRepair).toMatchObject({
+      entrySeq: 7,
+      locus: 'frontmatter-shape',
+    });
+    expect(sourceRepair).toMatchObject({
+      entrySeq: null,
+      locus: 'frontmatter-shape',
+    });
   });
 
   it('uses the current mutation sequence as the assignment floor and skips notes that already have mutation sequences', async () => {

@@ -1,5 +1,4 @@
 import type { KbRuntime } from './contract.js';
-import { nowIsoString } from '../infra/time.js';
 import type { KbIndex } from './entry-types.js';
 import { buildCorpusScanView } from './corpus/repair/corpus-scan.js';
 import {
@@ -11,10 +10,9 @@ import {
 } from './curate/text-artifacts/loaders.js';
 
 function buildTransientReadIndex(kb: KbRuntime): KbIndex {
-  const detectedAt = nowIsoString(kb.time);
   const scan = buildCorpusScanView(kb);
-  const { entries: notes } = loadNotes(scan, detectedAt);
-  const { entries: sources } = loadSources(scan, detectedAt);
+  const notes = loadNotes(scan);
+  const sources = loadSources(scan);
   const principles = loadPrinciples(scan);
   const communities = loadCommunities(scan);
 

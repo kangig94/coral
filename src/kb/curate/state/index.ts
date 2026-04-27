@@ -1,18 +1,3 @@
-export {
-  assignEntrySeqs,
-  detectRepairs,
-  initializeCurateStateIfNeeded,
-  persistState,
-  reconcileSeqs,
-  rewriteFrontmatter,
-  scanCorpus,
-  syncIndex,
-  type CurateBootstrapAssignment,
-  type CurateBootstrapScan,
-  type CurateBootstrapScanFailure,
-  type ScannedNote,
-  type ScannedSource,
-} from './bootstrap.js';
 export { readCurateState, writeCurateState } from './store.js';
 export {
   applyAddPendingDiscovery,
@@ -23,12 +8,10 @@ export {
   compareCursor,
   compareOptionalCursor,
   defaultCurateState,
-  extractMalformedEntryRepair,
   getCurateRepairFrontier,
   isClaimStale,
   normalizeCurateStateRepairFrontier,
   noteCursor,
-  readMalformedEntryRepair,
   resetCurateStateForBackfill,
   sameStringList,
   type CurateCursor,

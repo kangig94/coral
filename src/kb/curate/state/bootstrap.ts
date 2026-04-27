@@ -1,5 +1,5 @@
-import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
@@ -9,6 +9,11 @@ import { stripMdExt } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import type { KbIndexState, KbRuntime } from '../../contract.js';
 import { nowIsoString } from '../../../infra/time.js';
+import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
+import { projectIncidents } from '../../corpus/repair/project-incidents.js';
+import { applyDetectedIncidentFixesLocked } from '../../corpus/repair/fix.js';
+import { createGitSyncController } from '../git-sync.js';
+import { deleteCurateRetryEntry, readCurateRetryQueue } from '../retry.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -21,28 +26,12 @@ import {
 import {
   compareCursor,
   noteCursor,
-  readMalformedEntryRepair,
   sameStringList,
   type CurateCursor,
   type CurateState,
   type PendingRepair,
 } from './model.js';
 import { readCurateState, writeCurateState } from './store.js';
-
-type CurateStateRuntime = Pick<
-  KbRuntime,
-  | 'db'
-  | 'time'
-  | 'notesDir'
-  | 'notePath'
-  | 'sourcesDir'
-  | 'sourcePath'
-  | 'withMutationLock'
-  | 'readIndex'
-  | 'writeIndex'
-  | 'readIndexState'
-  | 'writeIndexState'
->;
 
 export type ScannedNote = {
   note: string;
@@ -259,27 +248,11 @@ export function scanCorpus(
   };
 }
 
-export function detectRepairs(scanFailures: CurateBootstrapScanFailure[], detectedAt: string): PendingRepair[] {
-  const pendingRepair: PendingRepair[] = [];
-
-  for (const failure of scanFailures) {
-    const repair = readMalformedEntryRepair(failure.path, failure.kind, failure.name, detectedAt);
-    if (repair !== null) {
-      pendingRepair.push(repair);
-    }
-    backendLog.warn(
-      `Skipping malformed KB ${failure.kind} ${failure.name} during curate bootstrap: ${errorMessage(failure.error)}`,
-    );
-  }
-
-  return pendingRepair;
-}
-
 export function assignEntrySeqs(
   indexState: KbIndexState,
   scannedNotes: ScannedNote[],
   scannedSources: ScannedSource[],
-  pendingRepair: PendingRepair[],
+  retryQueue: PendingRepair[],
 ): CurateBootstrapAssignment {
   let highestExistingEntrySeq = currentEntrySeq(indexState);
   for (const scannedNote of scannedNotes) {
@@ -292,7 +265,7 @@ export function assignEntrySeqs(
       highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedSource.frontmatter.entrySeq);
     }
   }
-  for (const repair of pendingRepair) {
+  for (const repair of retryQueue) {
     if (repair.entrySeq !== null) {
       highestExistingEntrySeq = Math.max(highestExistingEntrySeq, repair.entrySeq);
     }
@@ -383,18 +356,20 @@ export function persistState(
   state: CurateState,
   scannedNotes: ScannedNote[],
   scannedSources: ScannedSource[],
-  pendingRepair: PendingRepair[],
 ): void {
+  // Source pendingRepair from the SQL retry queue (sole authority); writeCurateState
+  // syncs it back idempotently without disturbing typed-pipeline rows just enqueued.
+  const retryQueue = readCurateRetryQueue(kb.db);
   writeCurateState(kb, {
     ...state,
     processedThrough: inferProcessedThrough(state, scannedNotes, scannedSources),
-    pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
+    pendingRepair: retryQueue.length === 0 ? null : retryQueue,
     initialized: true,
   });
 }
 
-export async function initializeCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
-  await kb.withMutationLock(() => {
+export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void> {
+  await kb.withMutationLock(async (mutation) => {
     const state = readCurateState(kb);
     if (state.initialized) {
       return;
@@ -402,18 +377,47 @@ export async function initializeCurateStateIfNeeded(kb: CurateStateRuntime): Pro
 
     const nextIndex = cloneKbIndex(kb.readIndex());
     const indexState = kb.readIndexState();
-    const { scannedNotes, scannedSources, scanFailures, detectedAt } = scanCorpus(kb);
-    const pendingRepair = detectRepairs(scanFailures, detectedAt);
+    const { scannedNotes, scannedSources, scanFailures } = scanCorpus(kb);
+    for (const failure of scanFailures) {
+      backendLog.warn(
+        `Skipping malformed KB ${failure.kind} ${failure.name} during curate bootstrap: ${errorMessage(failure.error)}`,
+      );
+    }
+
+    const incidents = projectIncidents(buildCorpusScanView(kb));
+    const gitSync = createGitSyncController({
+      kb,
+      spawnCli: kb.spawnCli,
+      processPort: kb.processPort,
+      storagePort: kb.storagePort,
+      envPort: kb.envPort,
+    });
+    await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
+
+    const retryQueue = readCurateRetryQueue(kb.db);
     const { highestAssignedEntrySeq, rewrittenNotes, rewrittenSources } = assignEntrySeqs(
       indexState,
       scannedNotes,
       scannedSources,
-      pendingRepair,
+      retryQueue,
     );
 
     rewriteFrontmatter(rewrittenNotes, rewrittenSources);
     syncIndex(kb, nextIndex, scannedNotes, scannedSources);
     reconcileSeqs(kb, indexState, highestAssignedEntrySeq);
-    persistState(kb, state, scannedNotes, scannedSources, pendingRepair);
+
+    // Sweep typed-incident rows that bootstrap's own rewrites resolved (e.g. assignEntrySeqs
+    // satisfying frontmatter-shape/missing-required-fields for entrySeq). Mirrors the rebuild
+    // pipeline's post-rebuild cleanup so persistState observes a queue that reflects the
+    // post-bootstrap corpus state.
+    const postRewriteIncidents = projectIncidents(buildCorpusScanView(kb));
+    const stillDetected = new Set(postRewriteIncidents.map((incident) => incident.entryId));
+    for (const queued of readCurateRetryQueue(kb.db)) {
+      if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
+        deleteCurateRetryEntry(kb.db, queued.entryId);
+      }
+    }
+
+    persistState(kb, state, scannedNotes, scannedSources);
   });
 }

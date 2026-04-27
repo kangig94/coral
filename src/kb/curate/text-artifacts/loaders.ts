@@ -1,6 +1,5 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import { backendLog } from '../../../infra/backend-log.js';
-import { readMalformedEntryRepair, type PendingRepair } from '../state/index.js';
 import {
   deriveNoteIdentity,
   extractBody,
@@ -29,14 +28,8 @@ import {
   type ReindexResult,
 } from '../../entry-types.js';
 
-type LoadedArtifacts<T> = {
-  entries: T[];
-  pendingRepair: PendingRepair[];
-};
-
-export function loadNotes(scan: CorpusScanView, detectedAt: string): LoadedArtifacts<KbReindexNoteRecord> {
+export function loadNotes(scan: CorpusScanView): KbReindexNoteRecord[] {
   const notes: KbReindexNoteRecord[] = [];
-  const pendingRepair: PendingRepair[] = [];
 
   for (const file of filesOfKind(scan, 'note')) {
     const filename = `${file.slug}.md`;
@@ -53,23 +46,15 @@ export function loadNotes(scan: CorpusScanView, detectedAt: string): LoadedArtif
         ...frontmatter,
       });
     } catch (error: unknown) {
-      const repair = readMalformedEntryRepair(file.path, 'note', file.slug, detectedAt);
-      if (repair !== null) {
-        pendingRepair.push(repair);
-      }
       backendLog.warn(`Skipping malformed KB note ${filename}: ${errorMessage(error)}`);
     }
   }
 
-  return {
-    entries: notes,
-    pendingRepair,
-  };
+  return notes;
 }
 
-export function loadSources(scan: CorpusScanView, detectedAt: string): LoadedArtifacts<KbReindexSourceRecord> {
+export function loadSources(scan: CorpusScanView): KbReindexSourceRecord[] {
   const sources: KbReindexSourceRecord[] = [];
-  const pendingRepair: PendingRepair[] = [];
 
   for (const file of filesOfKind(scan, 'source')) {
     const filename = `${file.slug}.md`;
@@ -82,18 +67,11 @@ export function loadSources(scan: CorpusScanView, detectedAt: string): LoadedArt
         ...frontmatter,
       });
     } catch (error: unknown) {
-      const repair = readMalformedEntryRepair(file.path, 'source', file.slug, detectedAt);
-      if (repair !== null) {
-        pendingRepair.push(repair);
-      }
       backendLog.warn(`Skipping malformed KB source ${filename}: ${errorMessage(error)}`);
     }
   }
 
-  return {
-    entries: sources,
-    pendingRepair,
-  };
+  return sources;
 }
 
 export function loadCommunities(scan: CorpusScanView): KbReindexCommunityRecord[] {

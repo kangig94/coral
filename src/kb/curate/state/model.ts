@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
@@ -7,7 +5,6 @@ import { SYSTEM_TIME_PORT, nowIsoString } from '../../../infra/time.js';
 import {
   noteEntryId,
   parseKbEntryId,
-  sourceEntryId,
   type KbEntryId,
 } from '../../entry-types.js';
 
@@ -15,8 +12,6 @@ const CLAIM_STALE_MS = 15 * 60 * 1000;
 const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
 const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
-const LENIENT_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)(?:\r?\n---(?:\r?\n|$)|$)/;
-const LENIENT_ENTRY_SEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
 
 export type CurateCursor = {
   entrySeq: number;
@@ -370,79 +365,3 @@ export function isClaimStale(state: CurateState, now: string): boolean {
   return nowMs - startedAt >= CLAIM_STALE_MS;
 }
 
-type MalformedEntryKind = 'note' | 'source';
-
-function extractLenientFrontmatterRegion(content: string): string {
-  const match = content.match(LENIENT_FRONTMATTER_PATTERN);
-  if (match !== null) {
-    return match[1];
-  }
-
-  if (!content.startsWith('---')) {
-    return content.slice(0, 2048);
-  }
-
-  return content.slice(4, 2048);
-}
-
-function extractLenientEntrySeq(content: string): number | null {
-  const match = extractLenientFrontmatterRegion(content).match(LENIENT_ENTRY_SEQ_PATTERN);
-  if (match === null) {
-    return null;
-  }
-
-  const entrySeq = Number.parseInt(match[1] ?? '', 10);
-  if (!Number.isSafeInteger(entrySeq) || entrySeq < 1) {
-    return null;
-  }
-
-  return entrySeq;
-}
-
-function parseMalformedEntryId(kind: MalformedEntryKind, slug: string): KbEntryId | null {
-  return parseKbEntryId(kind === 'note' ? noteEntryId(slug) : sourceEntryId(slug));
-}
-
-function hashObservedContent(raw: string): string {
-  return createHash('sha256').update(raw, 'utf8').digest('hex');
-}
-
-export function extractMalformedEntryRepair(
-  kind: MalformedEntryKind,
-  slug: string,
-  raw: string,
-  detectedAt: string,
-): PendingRepair | null {
-  const entryId = parseMalformedEntryId(kind, slug);
-  if (entryId === null) {
-    return null;
-  }
-
-  return {
-    entryId,
-    entrySeq: extractLenientEntrySeq(raw),
-    detectedAt,
-  };
-}
-
-export function readMalformedEntryRepair(
-  path: string,
-  kind: MalformedEntryKind,
-  slug: string,
-  detectedAt: string,
-): PendingRepair | null {
-  try {
-    const raw = readFileSync(path, 'utf-8');
-    const repair = extractMalformedEntryRepair(kind, slug, raw, detectedAt);
-    if (repair === null) {
-      return null;
-    }
-
-    return {
-      ...repair,
-      observedContentHash: hashObservedContent(raw),
-    };
-  } catch {
-    return null;
-  }
-}
