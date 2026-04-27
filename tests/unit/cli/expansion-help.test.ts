@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installErrorSchema } from '#src/expansion/contracts.js';
+import { installErrorSchema } from '#src/cli/expansion/contract.js';
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');

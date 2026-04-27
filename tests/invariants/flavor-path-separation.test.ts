@@ -3,7 +3,7 @@ import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { composeCoralPaths } from '#src/infra/path/compose.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
 
-const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'equipment'] as const;
+const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'expansion'] as const;
 
 function allLeafPaths(record: Record<string, unknown>, prefix = ''): { key: string; value: string }[] {
   const out: { key: string; value: string }[] = [];
@@ -48,7 +48,7 @@ describe('flavor path separation', () => {
     expect(dev.corpus.kbRoot).toContain('kb-dev');
     expect(dev.coordinator.runDir).toContain('run-dev');
     expect(dev.exports.jobsRoot).toContain('exports-dev/jobs');
-    expect(dev.equipment.equipmentRoot).toContain('data-dev/equipment');
+    expect(dev.expansion.expansionRoot).toContain('data-dev/expansion');
     expect(kbRuntimeDir(devFlavor)).toContain('data-dev/kb');
     expect(kbRuntimeDir(devFlavor)).not.toContain('data/kb-dev');
     expect(kbRuntimeDir(prodFlavor)).toContain('data/kb');

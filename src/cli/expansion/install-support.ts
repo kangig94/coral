@@ -87,16 +87,6 @@ async function downloadBufferWithCommand(
   }
 }
 
-export async function fetchLatestReleaseTag(runtime: Runtime, repo: string): Promise<string | null> {
-  try {
-    const payload = await downloadBuffer(runtime, `https://api.github.com/repos/${repo}/releases/latest`);
-    const parsed = JSON.parse(payload.toString('utf-8')) as { tag_name?: unknown };
-    return typeof parsed.tag_name === 'string' && parsed.tag_name.trim().length > 0 ? parsed.tag_name : null;
-  } catch {
-    return null;
-  }
-}
-
 export function readInstallMeta(
   storage: Pick<RuntimeStoragePort, 'readFileSync'>,
   candidates: readonly string[],
@@ -127,8 +117,4 @@ export function writeInstallMeta(
   if (!storage.writeAtomicSync(filePath, JSON.stringify(value), { encoding: 'utf-8' })) {
     throw new Error(`Atomic write failed: ${filePath}`);
   }
-}
-
-export function toolsDirForHome(homeDir: string): string {
-  return join(homeDir, '.claude', 'tools');
 }

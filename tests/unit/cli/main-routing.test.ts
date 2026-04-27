@@ -7,7 +7,7 @@ import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
 import type * as ErrorsMod from '#src/cli/errors.js';
 import type * as MainMod from '#src/cli/program.js';
-import { installErrorSchema, installResultSchema } from '#src/expansion/contracts.js';
+import { installErrorSchema, installResultSchema } from '#src/cli/expansion/contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import {
@@ -96,12 +96,14 @@ vi.mock('#src/cli/follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
 }));
 
-vi.mock('#src/expansion/workflow.js', () => ({
-  list: mockState.expansionList,
-  info: mockState.expansionInfo,
-  equip: mockState.expansionEquip,
-  unequip: mockState.expansionUnequip,
-  update: mockState.expansionUpdate,
+vi.mock('#src/cli/expansion-activation.js', () => ({
+  createCliExpansionActivation: () => ({
+    list: mockState.expansionList,
+    info: mockState.expansionInfo,
+    equip: mockState.expansionEquip,
+    unequip: mockState.expansionUnequip,
+    update: mockState.expansionUpdate,
+  }),
 }));
 
 vi.mock('#src/cli/dispatch.js', async () => {
@@ -214,16 +216,6 @@ function findCommand(root: Command, ...path: string[]): Command {
   }
 
   return current;
-}
-
-function expansionActivationOptions() {
-  return expect.objectContaining({
-    activation: expect.objectContaining({
-      readEquipmentStatus: expect.any(Function),
-      activateExpansion: expect.any(Function),
-      deactivateExpansion: expect.any(Function),
-    }),
-  });
 }
 
 function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; provider?: string } = {}) {
@@ -365,7 +357,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionList).toHaveBeenCalledWith(expansionActivationOptions());
+        expect(mockState.expansionList).toHaveBeenCalledWith();
       },
     },
     {
@@ -374,13 +366,13 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionEquip.mockResolvedValueOnce({
           status: 'installed',
-          method: 'equipment-addon',
+          method: 'prebuild',
           version: '1.0.0',
           targetDir: '/tmp/needle',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle', expansionActivationOptions());
+        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle');
       },
     },
     {
@@ -392,7 +384,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle', expansionActivationOptions());
+        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle');
       },
     },
     {
@@ -401,13 +393,13 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionUpdate.mockResolvedValueOnce({
           status: 'updated',
-          method: 'equipment-addon',
+          method: 'prebuild',
           version: '1.0.1',
           targetDir: '/tmp/needle',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle', expansionActivationOptions());
+        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle');
       },
     },
     {
@@ -428,7 +420,7 @@ describe('cli main routing', () => {
         });
       },
       assertCall: () => {
-        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle', expansionActivationOptions());
+        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle');
       },
     },
   ])('routes expansion $label success as one stdout JSON line with exit 0', async ({ argv, setup, assertCall }) => {
@@ -451,8 +443,8 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionList.mockResolvedValueOnce({
           status: 'error',
-          code: 'equipment_runtime_unavailable',
-          userMessage: 'Equipment runtime is unavailable.',
+          code: 'expansion_runtime_unavailable',
+          userMessage: 'Expansion runtime is unavailable.',
           remediation: 'Restart Coral and retry.',
         });
       },
@@ -463,7 +455,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionEquip.mockResolvedValueOnce({
           status: 'error',
-          code: 'unknown_equipment',
+          code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
           context: { name: 'needle' },
@@ -476,7 +468,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionUnequip.mockResolvedValueOnce({
           status: 'error',
-          code: 'unknown_equipment',
+          code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
           context: { name: 'needle' },
@@ -489,7 +481,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionUpdate.mockResolvedValueOnce({
           status: 'error',
-          code: 'equipment_install_lock_contended',
+          code: 'expansion_install_lock_contended',
           userMessage: 'Expansion install already in progress.',
           remediation: 'Retry after the current install finishes.',
           context: { name: 'needle' },
@@ -502,7 +494,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionInfo.mockResolvedValueOnce({
           status: 'error',
-          code: 'unknown_equipment',
+          code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
           context: { name: 'needle' },

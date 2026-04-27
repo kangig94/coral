@@ -48,13 +48,13 @@ describe('CoralSetupError', () => {
 
   it.each([
     [
-      'equipment_install_lock_contended',
+      'expansion_install_lock_contended',
       { name: 'needle' },
       'Another coral-cli expansion equip is in progress for needle.',
       'Wait for the in-flight install to complete or remove the stale lock file.',
     ],
     [
-      'equipment_binary_corrupt',
+      'expansion_binary_corrupt',
       { name: 'needle' },
       'The installed binary for needle could not be activated.',
       "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
@@ -66,22 +66,22 @@ describe('CoralSetupError', () => {
       'Retry the command. If this persists, report the code because the installer response failed internal validation.',
     ],
     [
-      'unknown_equipment',
+      'unknown_expansion',
       { name: 'needle' },
-      'The equipment needle is not registered in the Coral catalog.',
-      "Run 'coral-cli expansion list' to see available equipment.",
+      'The expansion needle is not registered in the Coral catalog.',
+      "Run 'coral-cli expansion list' to see available expansions.",
     ],
     [
-      'equipment_runtime_unavailable',
+      'expansion_runtime_unavailable',
       { name: 'needle' },
-      'Equipment runtime is not available for needle.',
+      'Expansion runtime is not available for needle.',
       "Restart Coral or run 'coral-cli expansion equip needle' to retry.",
     ],
     [
-      'equipment_embedding_provider_missing',
+      'expansion_embedding_provider_missing',
       { name: 'Needle' },
-      'Needle needs an embedding provider before it can be equipped.',
-      "Set CORAL_EMBEDDING_PROVIDER in ~/.coral/.env (and any required companion variables) before retrying 'coral-cli expansion equip Needle'.",
+      'Needle needs an embedding expansion before it can be equipped.',
+      "Equip an embedding expansion before retrying 'coral-cli expansion equip Needle'.",
     ],
     [
       'consumer_not_registered',
@@ -138,22 +138,10 @@ describe('CoralSetupError', () => {
       'Internal error: invalid consumer registration kind. Report it with the code if persistent.',
     ],
     [
-      'equipment_slot_not_declared',
-      { slotId: 'kb.vector' },
-      "Equipment slot 'kb.vector' is not declared.",
-      'Declare the slot before reading or equipping it.',
-    ],
-    [
-      'slot_already_equipped',
-      { slotId: 'kb.vector', equippedBy: 'needle' },
-      "Slot 'kb.vector' is equipped by 'needle'.",
-      "Run 'coral-cli expansion unequip needle' first.",
-    ],
-    [
-      'equipment_install_path_unwritable',
+      'expansion_install_path_unwritable',
       { name: 'needle' },
-      'Cannot write to the Coral equipment install path for needle.',
-      'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+      'Cannot write to the Coral expansion install path for needle.',
+      'Check filesystem permissions and free space under ~/.coral/data/expansion/, then retry.',
     ],
   ] satisfies Array<[DocumentedCoralSetupErrorCode, Record<string, unknown>, string, string]>)(
     'renders documented setup error %s through CoralSetupError',
@@ -170,8 +158,8 @@ describe('CoralSetupError', () => {
   );
 
   it('exposes stable documented specs for known setup codes', () => {
-    expect(documentedCoralSetupErrorSpec('equipment_binary_corrupt')).toEqual({
-      userMessage: 'The installed binary for this equipment could not be activated.',
+    expect(documentedCoralSetupErrorSpec('expansion_binary_corrupt')).toEqual({
+      userMessage: 'The installed binary for this expansion could not be activated.',
       remediation:
         "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
     });

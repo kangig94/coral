@@ -1,5 +1,5 @@
-import { encodeInstallError } from '#src/expansion/errors.js';
-import { installExpansion } from '#src/expansion/install.js';
+import { encodeInstallError } from '#src/cli/expansion/contract.js';
+import { installExpansion } from '#src/cli/expansion/install.js';
 
 type InvocationOptions = {
   readonly lockTimeoutMs?: number;

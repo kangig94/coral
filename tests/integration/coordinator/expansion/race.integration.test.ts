@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { installResponseSchema } from '#src/expansion/contracts.js';
+import { installResponseSchema } from '#src/cli/expansion/contract.js';
 import { spawnNodeScript } from '#tests/helpers/multi-process-driver.js';
 
 type WorkerProcessResult = Awaited<ReturnType<typeof spawnNodeScript<unknown>>>;
@@ -195,7 +195,7 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
       const firstCompleted = await waitForFirstCompletion(workers, 5_000);
       expect(installResponseSchema.parse(firstCompleted.parsed)).toMatchObject({
         status: 'error',
-        code: 'equipment_install_lock_contended',
+        code: 'expansion_install_lock_contended',
       });
       expect(existsSync(lockPath)).toBe(true);
       expect(enteredWorkerIds(curlMarkDir)).toHaveLength(1);
@@ -206,7 +206,7 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
       const results = completedWorkers.map((worker) => installResponseSchema.parse(worker.parsed));
       const installSuccesses = results.filter((result) => result.status === 'installed');
       const lockContentionErrors = results.filter(
-        (result) => result.status === 'error' && result.code === 'equipment_install_lock_contended',
+        (result) => result.status === 'error' && result.code === 'expansion_install_lock_contended',
       );
 
       expect(completedWorkers).toHaveLength(2);

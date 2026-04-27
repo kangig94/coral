@@ -4,14 +4,13 @@ import { z } from 'zod';
 
 import { UserInputError } from '#src/cli/commands/expansion.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { installErrorSchema } from '#src/expansion/contracts.js';
-import { encodeInstallError } from '#src/expansion/errors.js';
+import { installErrorSchema, encodeInstallError } from '#src/cli/expansion/contract.js';
 
 describe('encodeInstallError', () => {
   it('encodes CoralSetupError instances', () => {
     const encoded = encodeInstallError(
       new CoralSetupError({
-        code: 'equipment_binary_corrupt',
+        code: 'expansion_binary_corrupt',
         userMessage: 'Needle could not be activated.',
         remediation: 'Unequip needle and retry.',
         context: { name: 'needle' },
@@ -20,7 +19,7 @@ describe('encodeInstallError', () => {
 
     expect(encoded).toEqual({
       status: 'error',
-      code: 'equipment_binary_corrupt',
+      code: 'expansion_binary_corrupt',
       userMessage: 'Needle could not be activated.',
       remediation: 'Unequip needle and retry.',
       context: { name: 'needle' },
@@ -115,8 +114,8 @@ describe('encodeInstallError', () => {
 
   it('surfaces a nested CoralSetupError from the cause chain', () => {
     const inner = new CoralSetupError({
-      code: 'equipment_runtime_unavailable',
-      userMessage: 'Equipment runtime is unavailable.',
+      code: 'expansion_runtime_unavailable',
+      userMessage: 'Expansion runtime is unavailable.',
       remediation: 'Restart Coral and retry.',
       context: { name: 'needle' },
     });
@@ -127,8 +126,8 @@ describe('encodeInstallError', () => {
 
     expect(encoded).toEqual({
       status: 'error',
-      code: 'equipment_runtime_unavailable',
-      userMessage: 'Equipment runtime is unavailable.',
+      code: 'expansion_runtime_unavailable',
+      userMessage: 'Expansion runtime is unavailable.',
       remediation: 'Restart Coral and retry.',
       context: { name: 'needle' },
     });

@@ -140,7 +140,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     makeHost: (id, scope) => {
       const kbRuntime = currentKbRuntime;
       if (kbRuntime === null) {
-        throw documentedCoralSetupError('equipment_runtime_unavailable', { name: id });
+        throw documentedCoralSetupError('expansion_runtime_unavailable', { name: id });
       }
 
       return createHostFactory({

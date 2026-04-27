@@ -1,17 +1,29 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import {
-  equipExpansionResultSchema,
-  listExpansionResultSchema,
-  unequipExpansionResultSchema,
-} from '../coordinator/expansion/rpc.js';
-import { installResultSchema } from './expansion/contract.js';
-import type { ActivationDeps } from '../expansion/activate.js';
+import type { BundledExpansion } from '../expansion/contract.js';
+import { BUNDLED_EXPANSIONS } from '../expansion/bundled.js';
 import { readDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealRuntime } from '../runtime/real.js';
+import type { Runtime } from '../runtime/ports.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
+import {
+  equipExpansionResultSchema,
+  listExpansionResultSchema,
+  type ExpansionView,
+  infoResultSchema,
+  catalogEntrySchema,
+  catalogResultSchema,
+  installResultSchema,
+  unequipExpansionResultSchema,
+  type CatalogEntry,
+  type InstallResponse,
+  type InstallResult,
+} from '../coordinator/expansion/rpc.js';
+import { encodeInstallError } from './expansion/contract.js';
+import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './expansion/install.js';
 
 function resolvePluginRoot(): string | undefined {
   if (typeof process.env.CLAUDE_PLUGIN_ROOT === 'string' && process.env.CLAUDE_PLUGIN_ROOT.length > 0) {
@@ -22,14 +34,27 @@ function resolvePluginRoot(): string | undefined {
 
 function isIpcConnectFailed(error: unknown): boolean {
   return (
-    typeof error === 'object'
-    && error !== null
-    && 'code' in error
-    && (error as { code?: unknown }).code === 'ipc_connect_failed'
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ipc_connect_failed'
   );
 }
 
-type ExpansionStatus = Awaited<ReturnType<ActivationDeps['readEquipmentStatus']>>;
+export type ExpansionStatus =
+  | { status: 'available'; equipment: Array<ExpansionView & { slot: 'kb.vector' }> }
+  | { status: 'unavailable' };
+
+export interface CliExpansionActivation {
+  list(): Promise<InstallResponse>;
+  info(name: string): Promise<InstallResponse>;
+  equip(name: string): Promise<InstallResponse>;
+  unequip(name: string): Promise<InstallResponse>;
+  update(name: string): Promise<InstallResponse>;
+  activateExpansion(name: string): Promise<InstallResult>;
+  deactivateExpansion(name: string): Promise<InstallResult>;
+  readExpansionStatus(name?: string): Promise<ExpansionStatus>;
+}
 
 function withLegacySlot<T extends { name: string; status: string }>(view: T): T & { slot: 'kb.vector' } {
   return {
@@ -38,30 +63,55 @@ function withLegacySlot<T extends { name: string; status: string }>(view: T): T 
   };
 }
 
-export function createCliExpansionActivation(): ActivationDeps {
-  return {
-    async activateExpansion(name) {
+function resolveRuntime(): Runtime {
+  return createRealRuntime(resolveBuildFlavor(process.env));
+}
+
+function resolveBundledExpansion(name: string): BundledExpansion | null {
+  return BUNDLED_EXPANSIONS.find((entry) => entry.id === name) ?? null;
+}
+
+function unknownExpansionResponse(name: string) {
+  return encodeInstallError(documentedCoralSetupError('unknown_expansion', { name }));
+}
+
+function toCatalogEntry(
+  entry: BundledExpansion,
+  runtime: Runtime,
+  passive: (ExpansionView & { slot: 'kb.vector' }) | null,
+): CatalogEntry {
+  const local = inspectExpansionInstallState(runtime, entry.id);
+  return catalogEntrySchema.parse({
+    id: entry.id,
+    name: entry.id,
+    description: entry.metadata.description,
+    activation: 'equipment',
+    status: passive?.status ?? (local.installLocked ? 'installing' : local.installed ? 'inactive' : 'not_equipped'),
+    addonPath: local.addonPath,
+    version: local.version ?? entry.version,
+    ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
+  });
+}
+
+export function createCliExpansionActivation(): CliExpansionActivation {
+  const lowLevel = {
+    async activateExpansion(name: string) {
       const client = await ensure(resolvePluginRoot());
-      const result = equipExpansionResultSchema.parse(
-        await client.request('coordinator.equipExpansion', { name }),
-      );
+      const result = equipExpansionResultSchema.parse(await client.request('coordinator.equipExpansion', { name }));
       return installResultSchema.parse({
         ...result,
         equipment: withLegacySlot(result.equipment),
       });
     },
 
-    async deactivateExpansion(name) {
+    async deactivateExpansion(name: string) {
       const client = await ensure(resolvePluginRoot());
-      const result = unequipExpansionResultSchema.parse(
-        await client.request('coordinator.unequipExpansion', { name }),
-      );
+      const result = unequipExpansionResultSchema.parse(await client.request('coordinator.unequipExpansion', { name }));
       return installResultSchema.parse(result);
     },
 
-    async readEquipmentStatus(name): Promise<ExpansionStatus> {
-      const flavor = resolveBuildFlavor(process.env);
-      const runtime = createRealRuntime(flavor);
+    async readExpansionStatus(name?: string): Promise<ExpansionStatus> {
+      const runtime = resolveRuntime();
       let record;
       try {
         record = readDiscoveryRecord({
@@ -91,6 +141,93 @@ export function createCliExpansionActivation(): ActivationDeps {
           return { status: 'unavailable' };
         }
         throw error;
+      }
+    },
+  } satisfies Pick<CliExpansionActivation, 'activateExpansion' | 'deactivateExpansion' | 'readExpansionStatus'>;
+
+  return {
+    ...lowLevel,
+    async list(): Promise<InstallResponse> {
+      try {
+        const runtime = resolveRuntime();
+        const passive = await lowLevel.readExpansionStatus();
+        const equipmentByName =
+          passive.status === 'available' ? new Map(passive.equipment.map((entry) => [entry.name, entry])) : new Map();
+
+        return catalogResultSchema.parse({
+          status: 'catalog',
+          packages: BUNDLED_EXPANSIONS.map((entry) => toCatalogEntry(entry, runtime, equipmentByName.get(entry.id) ?? null)),
+        });
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async info(name: string): Promise<InstallResponse> {
+      try {
+        const entry = resolveBundledExpansion(name);
+        if (!entry) {
+          return unknownExpansionResponse(name);
+        }
+
+        const passive = await lowLevel.readExpansionStatus(name);
+        return infoResultSchema.parse({
+          status: 'info',
+          package: toCatalogEntry(entry, resolveRuntime(), passive.status === 'available' ? (passive.equipment[0] ?? null) : null),
+        });
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async equip(name: string): Promise<InstallResponse> {
+      try {
+        if (!resolveBundledExpansion(name)) {
+          return unknownExpansionResponse(name);
+        }
+
+        const installResult = await installExpansion(name);
+        if (installResult.status === 'error') {
+          return installResult;
+        }
+
+        return await lowLevel.activateExpansion(name);
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async unequip(name: string): Promise<InstallResponse> {
+      try {
+        if (!resolveBundledExpansion(name)) {
+          return unknownExpansionResponse(name);
+        }
+
+        const passive = await lowLevel.readExpansionStatus(name);
+        if (passive.status === 'available' && passive.equipment[0] !== undefined) {
+          await lowLevel.deactivateExpansion(name);
+        }
+
+        return await uninstallExpansion(name);
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async update(name: string): Promise<InstallResponse> {
+      try {
+        if (!resolveBundledExpansion(name)) {
+          return unknownExpansionResponse(name);
+        }
+
+        const installResult = await installExpansion(name, { update: true });
+        if (installResult.status === 'error' || installResult.status === 'already_up_to_date') {
+          return installResult;
+        }
+
+        return await lowLevel.activateExpansion(name);
+      } catch (error: unknown) {
+        return encodeInstallError(error);
       }
     },
   };

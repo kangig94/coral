@@ -769,7 +769,7 @@ export async function createNeedleBacked(
   embedder: Backed<EmbeddingService>,
 ): Promise<Backed<BoundVectorRetrieval>> {
   const backend = new NeedleBackend(kbRuntime, {
-    addonPath: runtime.paths.coral.equipment.addonPath('needle'),
+    addonPath: runtime.paths.coral.expansion.addonPath('needle'),
     ...(readNeedleBackedOptions(kbRuntime) ?? {}),
     embedder: resolveBoundNeedleEmbedder(embedder),
   });

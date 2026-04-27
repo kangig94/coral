@@ -1,22 +1,37 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { installResponseSchema } from '#src/expansion/contracts.js';
-import { equipmentPaths } from "#src/infra/path/equipment.js";
-import { equipmentAddonStrategy } from '#src/expansion/strategies/equipment-addon.js';
-import { installExpansion, removeInstallArtifacts } from '#src/expansion/install.js';
+import { installResponseSchema } from '#src/cli/expansion/contract.js';
+import { expansionPaths } from '#src/infra/path/expansion.js';
+import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+
+const mockState = vi.hoisted(() => ({
+  downloadBuffer: vi.fn(),
+}));
+
+vi.mock('#src/cli/expansion/install-support.js', async () => {
+  const actual = await vi.importActual<typeof import('#src/cli/expansion/install-support.js')>(
+    '#src/cli/expansion/install-support.js',
+  );
+  return {
+    ...actual,
+    downloadBuffer: mockState.downloadBuffer,
+  };
+});
 
 const createdRoots: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  mockState.downloadBuffer.mockReset();
   for (const root of createdRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -37,7 +52,7 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
-  const fixtureEquipment = equipmentPaths('prod', { baseDir: fixture.baseDir });
+  const fixtureExpansion = expansionPaths('prod', { baseDir: fixture.baseDir });
 
   return {
     ...realRuntime,
@@ -53,44 +68,68 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
     paths: {
       ...realRuntime.paths,
       get coral() {
-        return { ...realRuntime.paths.coral, equipment: fixtureEquipment };
+        return { ...realRuntime.paths.coral, expansion: fixtureExpansion };
       },
     },
   };
 }
 
+function writeTarString(header: Buffer, value: string, offset: number, length: number): void {
+  Buffer.from(value, 'utf-8').copy(header, offset, 0, length);
+}
+
+function writeTarOctal(header: Buffer, value: number, offset: number, length: number): void {
+  const encoded = `${value.toString(8).padStart(length - 1, '0')}\0`;
+  Buffer.from(encoded, 'utf-8').copy(header, offset, 0, length);
+}
+
+function createPrebuildArchive(content: Buffer): Buffer {
+  const header = Buffer.alloc(512, 0);
+  writeTarString(header, 'coral-needle.node', 0, 100);
+  writeTarOctal(header, 0o644, 100, 8);
+  writeTarOctal(header, 0, 108, 8);
+  writeTarOctal(header, 0, 116, 8);
+  writeTarOctal(header, content.length, 124, 12);
+  writeTarOctal(header, Math.floor(Date.now() / 1000), 136, 12);
+  header.fill(0x20, 148, 156);
+  header[156] = '0'.charCodeAt(0);
+  writeTarString(header, 'ustar', 257, 6);
+  writeTarString(header, '00', 263, 2);
+
+  let checksum = 0;
+  for (const byte of header) {
+    checksum += byte;
+  }
+  writeTarOctal(header, checksum, 148, 8);
+
+  const padding = Buffer.alloc((512 - (content.length % 512)) % 512, 0);
+  return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024, 0)]));
+}
+
 describe('installExpansion', () => {
-  it('resolves the catalog binding, creates the target dir, and dispatches to the strategy under the lock', async () => {
+  it('installs needle into the expansion path and writes install metadata', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const installSpy = vi.spyOn(equipmentAddonStrategy, 'install').mockImplementation(async (ctx) => {
-      expect(statSync(ctx.runtime.paths.coral.equipment.dataDir('needle')).isDirectory()).toBe(true);
-      expect(statSync(ctx.runtime.paths.coral.equipment.installLockPath('needle')).isDirectory()).toBe(true);
-      return {
-        status: 'installed',
-        method: 'prebuild',
-        version: '0.2.0',
-        targetDir: ctx.runtime.paths.coral.equipment.dataDir('needle'),
-        postInstall: ['register_equipment'],
-      };
-    });
+    const addonBytes = Buffer.from('needle-addon');
+    mockState.downloadBuffer.mockResolvedValue(createPrebuildArchive(addonBytes));
 
     const result = await installExpansion('needle', { runtime });
 
-    expect(installSpy).toHaveBeenCalledTimes(1);
     expect(installResponseSchema.parse(result)).toEqual({
       status: 'installed',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
+      targetDir: expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_equipment'],
     });
-    expect(pathExists(equipmentPaths("prod", { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(
-      false,
-    );
+    expect(readFileSync(expansionPaths('prod', { baseDir: fixture.baseDir }).addonPath('needle'))).toEqual(addonBytes);
+    expect(
+      JSON.parse(readFileSync(join(expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'), '.needle-meta.json'), 'utf-8')),
+    ).toEqual({ version: '0.2.0', method: 'prebuild' });
+    expect(pathExists(expansionPaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(false);
   });
 
-  it('returns a structured unknown_equipment error when the name is not in the catalog', async () => {
+  it('returns a structured unknown_expansion error for names outside the bundled manifest', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
 
@@ -98,21 +137,18 @@ describe('installExpansion', () => {
 
     expect(installResponseSchema.parse(result)).toMatchObject({
       status: 'error',
-      code: 'unknown_equipment',
+      code: 'unknown_expansion',
       context: { name: 'missing-package' },
     });
   });
 
-  it('forwards update intent through the install dispatcher', async () => {
+  it('returns already_up_to_date when the installed addon already matches the bundled version', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const installSpy = vi.spyOn(equipmentAddonStrategy, 'install').mockResolvedValue({
-      status: 'already_up_to_date',
-      method: 'prebuild',
-      version: '0.2.0',
-      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
-      postInstall: ['register_equipment'],
-    });
+    const targetDir = expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(expansionPaths('prod', { baseDir: fixture.baseDir }).addonPath('needle'), Buffer.from('addon'));
+    writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
 
     const result = await installExpansion('needle', { runtime, update: true });
 
@@ -120,56 +156,33 @@ describe('installExpansion', () => {
       status: 'already_up_to_date',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
+      targetDir,
       postInstall: ['register_equipment'],
     });
-    expect(installSpy).toHaveBeenCalledWith(expect.anything(), expect.anything(), { update: true });
+    expect(mockState.downloadBuffer).not.toHaveBeenCalled();
   });
 
-  it('returns equipment_install_lock_contended when another install holds the lock', async () => {
+  it('returns expansion_install_lock_contended when another install holds the runtime lock', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
     const blocker = createDeferred<void>();
-    const started = createDeferred<void>();
-    const installSpy = vi.spyOn(equipmentAddonStrategy, 'install').mockImplementation(async () => {
-      started.resolve();
+    mockState.downloadBuffer.mockImplementation(async () => {
       await blocker.promise;
-      return {
-        status: 'installed',
-        method: 'prebuild',
-        version: '0.2.0',
-        targetDir: equipmentPaths("prod", { baseDir: fixture.baseDir }).dataDir('needle'),
-        postInstall: ['register_equipment'],
-      };
+      return createPrebuildArchive(Buffer.from('addon'));
     });
 
     const firstInstall = installExpansion('needle', { runtime, lockTimeoutMs: 25 });
-    await started.promise;
+    await waitForCondition(() => pathExists(expansionPaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle')));
 
     const secondInstall = await installExpansion('needle', { runtime, lockTimeoutMs: 25 });
     blocker.resolve();
 
     expect(installResponseSchema.parse(secondInstall)).toMatchObject({
       status: 'error',
-      code: 'equipment_install_lock_contended',
+      code: 'expansion_install_lock_contended',
       context: { name: 'needle' },
     });
     expect((await firstInstall).status).toBe('installed');
-    expect(installSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('releases the lock and rethrows strategy failures', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const installSpy = vi
-      .spyOn(equipmentAddonStrategy, 'install')
-      .mockRejectedValueOnce(new Error('simulated install failure'));
-
-    await expect(installExpansion('needle', { runtime, lockTimeoutMs: 25 })).rejects.toThrow('simulated install failure');
-    expect(installSpy).toHaveBeenCalledTimes(1);
-    expect(pathExists(equipmentPaths("prod", { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(
-      false,
-    );
   });
 });
 
@@ -177,24 +190,12 @@ describe('removeInstallArtifacts', () => {
   it('removes local expansion artifacts for uninstall cleanup', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const targetDir = runtime.paths.coral.equipment.dataDir('needle');
+    const targetDir = runtime.paths.coral.expansion.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'coral-needle.node'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
 
     await removeInstallArtifacts(runtime, 'needle');
-
-    expect(pathExists(targetDir)).toBe(false);
-  });
-
-  it('removes the equipment data dir for github-binary cleanup', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const targetDir = runtime.paths.coral.equipment.dataDir('cgc');
-    mkdirSync(targetDir, { recursive: true });
-    writeFileSync(join(targetDir, 'state.json'), '{"ok":true}', 'utf-8');
-
-    await removeInstallArtifacts(runtime, 'cgc');
 
     expect(pathExists(targetDir)).toBe(false);
   });
@@ -207,4 +208,14 @@ function pathExists(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+async function waitForCondition(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('condition not met');
 }

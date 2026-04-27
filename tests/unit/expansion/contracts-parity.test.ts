@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { catalogEntryStatusSchema, installResultSchema } from '#src/expansion/contracts.js';
+import { catalogEntryStatusSchema, installResultSchema } from '#src/cli/expansion/contract.js';
 
 const SKILL_MD = readFileSync(new URL('../../../skills/equip/SKILL.md', import.meta.url), 'utf-8');
 

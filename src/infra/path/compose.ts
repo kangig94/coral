@@ -1,5 +1,5 @@
 // Canonical CoralPaths composer. Public surface of the `infra/path/` subdir;
-// sibling files (root/store/coordinator/equipment) stay subdir-internal so the
+// sibling files (root/store/coordinator/expansion) stay subdir-internal so the
 // runtime port (`runtime.paths.coral`) is the single access path. The retired
 // `src/infra/paths.ts` magnet must not return — see
 // tests/invariants/architecture-boundary.test.ts and
@@ -11,8 +11,8 @@ import type { BuildFlavor } from '../build-flavor.js';
 import type { CoordinatorPaths } from './coordinator.js';
 import { coordinatorPaths } from './coordinator.js';
 import { coralRoot, kbVaultRoot } from './root.js';
-import type { EquipmentPaths } from './equipment.js';
-import { equipmentPaths } from './equipment.js';
+import type { ExpansionPaths } from './expansion.js';
+import { expansionPaths } from './expansion.js';
 import type { StorePaths } from './store.js';
 import { storePaths } from './store.js';
 
@@ -33,7 +33,7 @@ export type CoralPaths = {
   readonly corpus: CorpusPaths;
   readonly coordinator: CoordinatorPaths;
   readonly exports: ExportsPaths;
-  readonly equipment: EquipmentPaths;
+  readonly expansion: ExpansionPaths;
 };
 
 // Re-export per-family types and the addon-filename registry so external
@@ -41,9 +41,9 @@ export type CoralPaths = {
 // The runtime functions stay subdir-internal — types and constants alone
 // don't construct paths.
 export type { CoordinatorPaths } from './coordinator.js';
-export type { EquipmentPaths } from './equipment.js';
+export type { ExpansionPaths } from './expansion.js';
 export type { StorePaths } from './store.js';
-export { EQUIPMENT_ADDON_FILENAMES } from './equipment.js';
+export { EXPANSION_ADDON_FILENAMES } from './expansion.js';
 
 export interface FamilyPathOptions {
   readonly baseDir?: string;
@@ -97,6 +97,6 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
     corpus: corpusPaths(flavor, corpusOpts),
     coordinator: coordinatorPaths(flavor, undefined, familyOpts),
     exports: exportsPaths(flavor, familyOpts),
-    equipment: equipmentPaths(flavor, familyOpts),
+    expansion: expansionPaths(flavor, familyOpts),
   };
 }

@@ -67,7 +67,7 @@ describe('expansion activation (AC6)', () => {
     }
   });
 
-  it('activates equipment through ensure-backed coordinator IPC', async () => {
+  it('activates expansions through ensure-backed coordinator IPC', async () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({
       status: 'equipped',
@@ -99,7 +99,7 @@ describe('expansion activation (AC6)', () => {
     expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
   });
 
-  it('deactivates equipment through ensure-backed coordinator IPC', async () => {
+  it('deactivates expansions through ensure-backed coordinator IPC', async () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({ status: 'uninstalled' });
     mockState.ensure.mockResolvedValue({ request });
@@ -113,7 +113,7 @@ describe('expansion activation (AC6)', () => {
     process.env.CORAL_FLAVOR = 'dev';
     mockState.readDiscoveryRecord.mockReturnValue(null);
 
-    await expect(activation.readEquipmentStatus('needle')).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readExpansionStatus('needle')).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.readDiscoveryRecord).toHaveBeenCalled();
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
@@ -149,7 +149,7 @@ describe('expansion activation (AC6)', () => {
       );
       mockState.createIpcClient.mockReturnValue({ request });
 
-      await expect(createFreshActivation().readEquipmentStatus()).resolves.toEqual({
+      await expect(createFreshActivation().readExpansionStatus()).resolves.toEqual({
         status: 'available',
         equipment: [],
       });
@@ -169,7 +169,7 @@ describe('expansion activation (AC6)', () => {
     mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }));
     mockState.createIpcClient.mockReturnValue({ request });
 
-    await expect(activation.readEquipmentStatus()).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readExpansionStatus()).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock');
     expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});
   });

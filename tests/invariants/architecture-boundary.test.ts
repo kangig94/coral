@@ -888,7 +888,7 @@ describe('architecture boundary guard', () => {
   it('production src/ imports infra/path/ subdir only via compose.ts (sibling files stay subdir-internal)', () => {
     // The infra/path/ subdir is the path subsystem: compose.ts is the public
     // composer (used by runtime port construction); root/store/coordinator/
-    // equipment are private family builders. External src/ callers must go
+    // expansion are private family builders. External src/ callers must go
     // through composeCoralPaths so that flavor-aware path resolution stays
     // funneled through one entry point. KB has a documented exception for
     // root.ts (cycle-break primitive needed for kbRuntimeDir).
@@ -965,7 +965,13 @@ describe('architecture boundary guard', () => {
     const legacyMembers = new Set(['install', 'uninstall', 'activate', 'deactivate', 'slots', 'priority', 'requires']);
     const expansionFiles = listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('/expansion.ts'))
       .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
-      .filter((filePath) => filePath !== 'src/cli/commands/expansion.ts')
+      .filter((filePath) => {
+        if (filePath === 'src/cli/commands/expansion.ts') {
+          return false;
+        }
+        const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+        return /from ['"][^'"]*\/expansion\/contract\.js['"]/u.test(source) && /\bExpansion\b/u.test(source);
+      })
       .sort();
     const violations: string[] = [];
 
@@ -1147,5 +1153,140 @@ describe('architecture boundary guard', () => {
     expect(runtimeSource).not.toMatch(
       /createRuntimeBinding<Backed<EmbeddingService>>\(\s*(?:undefined|create[A-Za-z0-9_]+|\{|\[|'|"|`)/,
     );
+  });
+  it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
+    const violations: string[] = [];
+
+    function exportedMemberNames(node: ts.Node): string[] {
+      if (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) {
+        return node.members.flatMap((member) => {
+          const name = member.name;
+          return name !== undefined && ts.isIdentifier(name) ? [name.text] : [];
+        });
+      }
+
+      if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+        return node.type.members.flatMap((member) => {
+          const name = member.name;
+          return name !== undefined && ts.isIdentifier(name) ? [name.text] : [];
+        });
+      }
+
+      if (ts.isVariableStatement(node)) {
+        return node.declarationList.declarations.flatMap((declaration) => {
+          if (!ts.isObjectLiteralExpression(declaration.initializer)) {
+            return [];
+          }
+          return declaration.initializer.properties.flatMap((property) => {
+            if (ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property)) {
+              return ts.isIdentifier(property.name) ? [property.name.text] : [];
+            }
+            return [];
+          });
+        });
+      }
+
+      return [];
+    }
+
+    for (const filePath of PRODUCTION_FILE_PATHS) {
+      const sourceText = readFileSync(filePath, 'utf8');
+      const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      for (const statement of sourceFile.statements) {
+        const modifiers = 'modifiers' in statement ? statement.modifiers : undefined;
+        if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+          continue;
+        }
+
+        const memberNames = exportedMemberNames(statement);
+        if (!memberNames.includes('consumer')) {
+          continue;
+        }
+
+        const readinessMethods = memberNames.filter((name) => name === 'isReady' || name === 'waitForReady');
+        if (readinessMethods.length > 0) {
+          violations.push(
+            `${toCanonicalSrcPath(REPO_ROOT, filePath)}: consumer declared alongside ${readinessMethods.sort().join(', ')}`,
+          );
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+  it('retired equipment vocabulary stays purged from src and legacy expansion files remain deleted', () => {
+    const legacyPaths = [
+      'src/expansion/contracts.ts',
+      'src/expansion/equipment-contract.ts',
+      'src/expansion/catalog.ts',
+      'src/expansion/errors.ts',
+      'src/expansion/activate.ts',
+      'src/expansion/workflow.ts',
+      'src/expansion/install.ts',
+      'src/expansion/strategies',
+      'src/coordinator/equipment',
+    ];
+    const forbiddenPatterns: Array<[RegExp, string]> = [
+      [/\bEquipmentLifecycleService\b/u, 'EquipmentLifecycleService'],
+      [/\bEquipmentLifecycleOptions\b/u, 'EquipmentLifecycleOptions'],
+      [/\bEquipmentDescriptor\b/u, 'EquipmentDescriptor'],
+      [/\bEquipmentDeps\b/u, 'EquipmentDeps'],
+      [/\bEquipmentStatus\b/u, 'EquipmentStatus'],
+      [/\bEquipmentSlot\b/u, 'EquipmentSlot'],
+      [/\bSlotProvider\b/u, 'SlotProvider'],
+      [/\bSlotRegistry\b/u, 'SlotRegistry'],
+      [/\bExpansionContract\b/u, 'ExpansionContract'],
+      [/\bRegisterEquipmentRequest\b/u, 'RegisterEquipmentRequest'],
+      [/\bUnregisterEquipmentRequest\b/u, 'UnregisterEquipmentRequest'],
+      [/\bListEquipmentRequest\b/u, 'ListEquipmentRequest'],
+      [/\bRegisterEquipmentResult\b/u, 'RegisterEquipmentResult'],
+      [/\bUnregisterResult\b/u, 'UnregisterResult'],
+      [/\bListEquipmentResult\b/u, 'ListEquipmentResult'],
+      [/\bequipmentViewSchema\b/u, 'equipmentViewSchema'],
+      [/\bequipmentStatusSchema\b/u, 'equipmentStatusSchema'],
+      [/\bEQUIPMENT_ADDON_FILENAMES\b/u, 'EQUIPMENT_ADDON_FILENAMES'],
+      [/\bEquipmentPaths\b/u, 'EquipmentPaths'],
+      [/\bEquipmentRequestPort\b/u, 'EquipmentRequestPort'],
+      [/\bgetActiveVectorSurface\b/u, 'getActiveVectorSurface'],
+      [/\bgetBaseRetrievalSurface\b/u, 'getBaseRetrievalSurface'],
+      [/\bgetEquipmentView\b/u, 'getEquipmentView'],
+      [/\bdefaultOwner\b/u, 'defaultOwner'],
+      [/\bactiveKind\b/u, 'activeKind'],
+      [/\bresolveVectorRoute\b/u, 'resolveVectorRoute'],
+      [/\bcachedVectorRoute\b/u, 'cachedVectorRoute'],
+      [/\bPluginHost\b/u, 'PluginHost'],
+      [/\b(?:interface|class|function)\s+Plugin\b/u, 'Plugin declaration'],
+      [/\btype\s+Plugin\s*=/u, 'Plugin type alias'],
+      [/\bequipment_state\b/u, 'equipment_state'],
+      [/\bequipment_cursors\b/u, 'equipment_cursors'],
+      [/\bequipped_at\b/u, 'equipped_at'],
+      [/['"]coordinator\.registerEquipment['"]/u, 'coordinator.registerEquipment'],
+      [/['"]coordinator\.unregisterEquipment['"]/u, 'coordinator.unregisterEquipment'],
+      [/['"]coordinator\.listEquipment['"]/u, 'coordinator.listEquipment'],
+      [/registrationKind\s*[:=]\s*['"]equipment['"]/u, "registrationKind: 'equipment'"],
+      [/\bunknown_equipment\b/u, 'unknown_equipment'],
+      [/\bequipment_install_lock_contended\b/u, 'equipment_install_lock_contended'],
+      [/\bequipment_binary_corrupt\b/u, 'equipment_binary_corrupt'],
+      [/\bequipment_runtime_unavailable\b/u, 'equipment_runtime_unavailable'],
+      [/\bequipment_embedding_provider_missing\b/u, 'equipment_embedding_provider_missing'],
+      [/\bequipment_slot_not_declared\b/u, 'equipment_slot_not_declared'],
+      [/\bslot_already_equipped\b/u, 'slot_already_equipped'],
+      [/\bequipment_install_path_unwritable\b/u, 'equipment_install_path_unwritable'],
+      [/backend:\s*['"]orama['"]\s*\|\s*['"]needle['"]/u, "backend: 'orama' | 'needle'"],
+      [/paths\.coral\.equipment\b/u, 'paths.coral.equipment'],
+    ];
+    const violations = PRODUCTION_FILE_PATHS.flatMap((filePath) => {
+      const source = readFileSync(filePath, 'utf8');
+      return forbiddenPatterns.flatMap(([pattern, label]) =>
+        pattern.test(source) ? [`${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${label}`] : [],
+      );
+    });
+
+    expect(legacyPaths.filter((filePath) => existsSync(resolve(REPO_ROOT, filePath)))).toEqual([]);
+    expect(violations).toEqual([]);
+
+    const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');
+    expect(skillSource).toContain("activation: 'equipment'");
+    expect(skillSource).toContain('~/.coral/data/expansion/needle/coral-needle.node');
   });
 });

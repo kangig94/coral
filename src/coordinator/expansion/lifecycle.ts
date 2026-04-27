@@ -3,7 +3,7 @@ import type { BundledExpansion, ExpansionHost } from '../../expansion/contract.j
 import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
 import { registeredConsumerHandles } from '../../expansion/host.js';
 import type { KbRuntime } from '../../kb/contract.js';
-import { CoralSetupError } from '../../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import type { ExpansionStateStore } from './state.js';
 
@@ -69,12 +69,7 @@ export class ExpansionLifecycleService {
   async equip(name: string): Promise<void> {
     const entry = this.manifest.find((candidate) => candidate.id === name);
     if (!entry) {
-      throw new CoralSetupError({
-        code: 'unknown-expansion',
-        userMessage: `Unknown expansion '${name}'.`,
-        remediation: "Check 'coral-cli expansion list'.",
-        context: { name },
-      });
+      throw documentedCoralSetupError('unknown_expansion', { name });
     }
 
     const scope = createScope();

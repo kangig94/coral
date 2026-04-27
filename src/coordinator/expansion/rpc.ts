@@ -337,7 +337,7 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
 export function createUnavailableExpansionRpc(): ExpansionRequestPort {
   return {
     equipExpansion: async (request) => {
-      throw documentedCoralSetupError('equipment_runtime_unavailable', { name: request.name });
+      throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
     },
     unequipExpansion: async (_request) => ({ status: 'not_equipped' }),
     listExpansion: async (_request) => ({ equipment: [] }),
