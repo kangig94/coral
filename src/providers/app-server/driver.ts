@@ -10,7 +10,6 @@ import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from '.
 export type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
-  ProviderTransportClose,
 } from './driver-types.js';
 
 export interface AppServerContract {

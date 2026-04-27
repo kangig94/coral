@@ -20,7 +20,7 @@ import type {
   ReindexResult,
 } from '../../entry-types.js';
 
-export { areCommunityDocumentsFresh, isCommunitySummaryFresh } from './community.js';
+export { areCommunityDocumentsFresh } from './community.js';
 export { detectTextArtifactRebuildInfo } from './drift.js';
 export { loadCommunities } from './loaders.js';
 

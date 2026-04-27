@@ -29,11 +29,3 @@ export function prepareCached<TParams extends unknown[] = unknown[], TResult = u
   return statement as BetterSqlite3.Statement<TParams, TResult>;
 }
 
-export function writeMetaValue(target: SqliteTarget, key: string, value: string): void {
-  prepareCached<[string, string]>(
-    target,
-    `INSERT INTO meta (key, value)
-     VALUES (?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-  ).run(key, value);
-}

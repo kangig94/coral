@@ -123,15 +123,6 @@ export function removeCurateDiscoveryBacklogEntry(
   ).run(entry.principle, entry.statement);
 }
 
-export function replaceCurateDiscoveryBacklog(
-  target: SqliteTarget,
-  entries: ReadonlyArray<PendingDiscovery>,
-): void {
-  prepareCached<[]>(target, `DELETE FROM kb_curate_discovery_backlog`).run();
-  for (const entry of entries) {
-    addCurateDiscoveryBacklogEntry(target, entry);
-  }
-}
 
 function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
   const canonicalEntry = canonicalPendingDiscovery(entry);

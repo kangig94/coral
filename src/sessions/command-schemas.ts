@@ -77,6 +77,3 @@ export const sessionForkRequestSchema = sessionForkSchema.extend({
   sessionId: sessionIdSchema,
 });
 
-export type SessionCreateRequest = z.infer<typeof sessionCreateSchema>;
-export type SessionMessageRequest = z.infer<typeof sessionMessageRequestSchema>;
-export type SessionForkRequest = z.infer<typeof sessionForkRequestSchema>;

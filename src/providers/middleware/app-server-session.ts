@@ -13,8 +13,8 @@ import {
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
-  ProviderTransportClose,
 } from '../app-server/driver-types.js';
+import type { ProviderTransportClose } from '../protocol.js';
 
 type DownstreamStep = IteratorResult<ProviderEventBody>;
 type ClosedResult = { kind: 'closed'; closed: Error | void };

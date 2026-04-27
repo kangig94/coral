@@ -9,8 +9,6 @@ import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } fr
 export { spawnProviderServerTransport } from './provider-server-transport.js';
 export type {
   ProviderServerHandle,
-  ProviderServerNotification,
-  ProviderServerRpc,
   SpawnProviderServerFn,
   SpawnProviderServerOptions,
 } from './provider-server-transport.js';

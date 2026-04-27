@@ -89,8 +89,6 @@ export const kbSourceDeleteSchema = z
   })
   .strict();
 
-export const kbReindexSchema = z.object({}).strict();
-
 export const kbMemoSchema = z
   .object({
     topic: z.string().min(1),

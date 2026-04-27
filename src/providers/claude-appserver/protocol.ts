@@ -43,8 +43,6 @@ export interface JsonRpcFailure {
   error: JsonRpcErrorObject;
 }
 
-export type JsonRpcResponse<TResult = unknown> = JsonRpcSuccess<TResult> | JsonRpcFailure;
-
 export interface ClaudeBootstrapSignature {
   cwd: string;
   systemPromptHash: string;
@@ -179,16 +177,6 @@ export type ClaudeBrokerNotification = {
     params: ClaudeBrokerNotificationMap[TMethod];
   };
 }[keyof ClaudeBrokerNotificationMap];
-
-export interface ClaudeBrokerMethodMap {
-  'session/ensure': { params: SessionEnsureParams; result: SessionEnsureResult };
-  'session/probe': { params: SessionProbeParams; result: SessionProbeResult };
-  'turn/start': { params: TurnStartParams; result: TurnStartResult };
-  'turn/interrupt': { params: TurnInterruptParams; result: TurnInterruptResult };
-  'broker/shutdown': { params: Record<string, never>; result: BrokerShutdownResult };
-}
-
-export type ClaudeBrokerMethod = keyof ClaudeBrokerMethodMap;
 
 export class ClaudeBrokerRpcError extends Error {
   readonly code: number;

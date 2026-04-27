@@ -48,14 +48,6 @@ function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<s
   throw new Error(`Step ${stepIndex}, atom '${atom.agent}' completed without a result`);
 }
 
-export function buildPartialStepDetails(
-  atoms: LaunchedAtom[],
-  completedStepDetails: StepDetail[],
-  results: Map<string, string>,
-): StepDetail[] {
-  return [...completedStepDetails, ...buildStepDetailsForAtoms(atoms, results)];
-}
-
 async function drainLaunchedAtoms(
   launchedAtoms: LaunchedAtom[],
   executionSvc: WorkflowExecutionPort,

@@ -1,24 +1,6 @@
-import { z } from 'zod';
-
 import type { BundledExpansion } from './contract.js';
 
 const PACKAGE_VERSION = '0.5.2';
-
-export const bundledEntrySchema = z
-  .object({
-    id: z.string(),
-    version: z.string().min(1),
-    specifier: z.string().min(1),
-    metadata: z
-      .object({
-        description: z.string().min(1),
-        repo: z.string().min(1).optional(),
-        onboarding: z.enum(['optional', 'required']).optional(),
-        slot: z.enum(['kb.vector', 'kb.embedding', 'kb.fts']).optional(),
-      })
-      .strict(),
-  })
-  .strict();
 
 export const BUNDLED_EXPANSIONS: readonly BundledExpansion[] = [
   {

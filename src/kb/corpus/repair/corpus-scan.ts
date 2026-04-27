@@ -20,7 +20,7 @@ import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
 import type { RepairIncidentId, RepairIncidentLocus } from './incident-ids.js';
 
-export type { RepairIncidentId, RepairLocus } from './incident-ids.js';
+export type { RepairIncidentId } from './incident-ids.js';
 
 export type DetectedIncident = {
   [IncidentId in RepairIncidentId]: {

@@ -71,11 +71,6 @@ export interface TurnInterruptResponse {
   turnId: string;
 }
 
-export interface ServerNotification {
-  method: string;
-  params?: Record<string, unknown>;
-}
-
 export interface AppServerMethodMap {
   'thread/start': { params: ThreadStartParams; result: ThreadStartResponse };
   'thread/resume': { params: ThreadResumeParams; result: ThreadResumeResponse };
@@ -86,4 +81,3 @@ export interface AppServerMethodMap {
 export type AppServerMethod = keyof AppServerMethodMap;
 export type AppServerRequestParams<M extends AppServerMethod> = AppServerMethodMap[M]['params'];
 export type AppServerResponse<M extends AppServerMethod> = AppServerMethodMap[M]['result'];
-export type AppServerNotification = ServerNotification;

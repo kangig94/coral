@@ -13,7 +13,7 @@ import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, pars
 import { closeAllProviderServerEntries, closeProviderServerEntry, shutdownHandle } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
 import { hostKeyFromSpec, type ProviderHostEntry, type ProviderServerAttachment } from './state.js';
-export type { HostStatsState, ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
+export type { ProviderHostEntry, ProviderServerAttachment } from './state.js';
 
 export interface ProviderHostManager {
   acquireServer(spec: ProviderServerSpec, options?: { signal?: AbortSignal }): Promise<ProviderServerLease>;
@@ -25,7 +25,7 @@ export interface ProviderHostManager {
   shutdown(): Promise<void>;
 }
 
-export { hostKeyFromSpec, normalizedHostEnvEntries } from './state.js';
+export { hostKeyFromSpec } from './state.js';
 
 export class DefaultProviderHostManager implements ProviderHostManager {
   private readonly entries = new Map<string, ProviderHostEntry>();

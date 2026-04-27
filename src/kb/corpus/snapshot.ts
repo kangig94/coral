@@ -52,20 +52,17 @@ export type HashedManifestEntry = {
   surfaceHash: string;
 };
 
-/** Parsed frontmatter metadata surface for manifest hashing. */
-export type FrontmatterMetadataManifestInput = {
-  manifestId: string;
+/** Parsed frontmatter metadata surface used by `computeMetadataSurfaceHash`. */
+type FrontmatterMetadataSurface = {
   frontmatter: CanonicalFrontmatterRecord;
 };
 
 /** Raw-byte metadata surface for artifacts whose canonical parser is the bytes themselves. */
-export type RawBytesMetadataManifestInput = {
-  manifestId: string;
+type RawBytesMetadataSurface = {
   rawBytes: Uint8Array | string;
 };
 
-export type MetadataManifestInput = FrontmatterMetadataManifestInput | RawBytesMetadataManifestInput;
-export type MetadataSurfaceInput = Omit<FrontmatterMetadataManifestInput, 'manifestId'> | Omit<RawBytesMetadataManifestInput, 'manifestId'>;
+export type MetadataSurfaceInput = FrontmatterMetadataSurface | RawBytesMetadataSurface;
 
 // Extensibility policy: any new array-valued frontmatter field is classified as set-like or list-like at introduction; set-like fields added to canonical sort list in same PR.
 export const SET_LIKE_FRONTMATTER_ARRAY_FIELDS = new Set([
@@ -87,16 +84,6 @@ export function computeContentSurfaceHash(entry: Pick<ContentManifestEntry, 'tit
   return sha256Hex(buildRetrievalAuthorityText(entry.title, entry.body));
 }
 
-/** Folds content entry hashes into one deterministic content manifest hash. */
-export function computeContentManifestHash(entries: Iterable<ContentManifestEntry>): string {
-  return computeManifestHash(
-    mapIterable(entries, (entry) => ({
-      manifestId: entry.entryId,
-      surfaceHash: computeContentSurfaceHash(entry),
-    })),
-  );
-}
-
 /** Hashes either canonical frontmatter or raw bytes for metadata freshness checks. */
 export function computeMetadataSurfaceHash(input: MetadataSurfaceInput): string {
   if ('frontmatter' in input) {
@@ -104,16 +91,6 @@ export function computeMetadataSurfaceHash(input: MetadataSurfaceInput): string 
   }
 
   return computeRawBytesSurfaceHash(input.rawBytes);
-}
-
-/** Folds metadata surfaces into one deterministic metadata manifest hash. */
-export function computeMetadataManifestHash(metadataInputs: Iterable<MetadataManifestInput>): string {
-  return computeManifestHash(
-    mapIterable(metadataInputs, (input) => ({
-      manifestId: input.manifestId,
-      surfaceHash: computeMetadataSurfaceHash(input),
-    })),
-  );
 }
 
 /** Produces a manifest hash that is stable across ordering changes in input iteration. */
@@ -239,19 +216,6 @@ function canonicalizeObject(record: { [key: string]: CanonicalFrontmatterValue }
     .sort(([leftKey], [rightKey]) => compareUtf8Lexicographically(leftKey, rightKey));
 
   return `{${entries.map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(',')}}`;
-}
-
-function mapIterable<TInput, TOutput>(
-  iterable: Iterable<TInput>,
-  mapper: (value: TInput) => TOutput,
-): Iterable<TOutput> {
-  return {
-    *[Symbol.iterator]() {
-      for (const value of iterable) {
-        yield mapper(value);
-      }
-    },
-  };
 }
 
 function sha256Hex(input: Uint8Array | string): string {

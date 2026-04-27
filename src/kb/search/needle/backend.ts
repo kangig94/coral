@@ -21,7 +21,6 @@ import { loadKbNote, loadKbSource } from '../../read.js';
 import { chunkEntry, type ChunkSeed } from '../chunking.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../embedding/vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
-import { readNeedleBackedOptions } from './backed-config.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,
@@ -754,7 +753,6 @@ export async function createNeedleBacked(
 ): Promise<Backed<BoundVectorRetrieval>> {
   const backend = new NeedleBackend(kbRuntime, {
     addonPath: runtime.paths.coral.expansion.addonPath('needle'),
-    ...(readNeedleBackedOptions(kbRuntime) ?? {}),
     embedder: resolveBoundNeedleEmbedder(embedder),
   });
   const retrieval: BoundVectorRetrieval = {

@@ -198,17 +198,6 @@ export function createWorkflowExecutionError(
   });
 }
 
-export function failureMetadataForAtom(atom: Pick<LaunchedAtom, 'stepIndex' | 'agent' | 'jobId' | 'slotId'>): WaitFailure {
-  return {
-    aborted: false,
-    message: '',
-    failedStep: atom.stepIndex,
-    failedAtom: atom.agent,
-    failedJobId: atom.jobId,
-    failedSlotId: atom.slotId,
-  };
-}
-
 export function failureMetadata(metadata: Partial<WaitFailure>): Partial<WaitFailure> | undefined {
   if (
     metadata.failedStep === undefined

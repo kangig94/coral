@@ -13,7 +13,6 @@ export {
   type WaitFailure,
   type WaitInternalState,
   type WorkflowExecutionPort,
-  type WorkflowSessionHandle,
 } from './execution-contract.js';
 
 export function describeTerminalFailure(
