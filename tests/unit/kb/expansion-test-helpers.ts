@@ -1,13 +1,16 @@
-import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
+import { loadExpansions } from '#src/expansion/loader.js';
 import type { Backed, EmbeddingService, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import type { Consumer, ConsumerHandle, ConsumerRegistrationKind } from '#src/store/consumer-contract.js';
+import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistrationKind } from '#src/store/consumer-contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
+import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 export type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
 
 const vectorScopes = new WeakMap<KbRuntime, Disposable>();
-const embeddingScopes = new WeakMap<KbRuntime, Disposable>();
+const embedderScopes = new WeakMap<KbRuntime, readonly Disposable[]>();
+const embedderKeys = new WeakMap<KbRuntime, string>();
+let nextEmbedderId = 0;
 
 function createScope(): Disposable {
   return {
@@ -15,20 +18,39 @@ function createScope(): Disposable {
   };
 }
 
-function rebind<T>(map: WeakMap<KbRuntime, Disposable>, runtime: KbRuntime, bindingScope: Disposable): void {
-  map.get(runtime)?.[Symbol.dispose]();
-  map.set(runtime, bindingScope);
+function registry(): Map<string, EmbeddingService> {
+  const globalState = globalThis as typeof globalThis & {
+    __coralTestEmbedderRegistry__?: Map<string, EmbeddingService>;
+  };
+  if (!globalState.__coralTestEmbedderRegistry__) {
+    globalState.__coralTestEmbedderRegistry__ = new Map<string, EmbeddingService>();
+  }
+  return globalState.__coralTestEmbedderRegistry__;
+}
+
+function disposeScopes(scopes: readonly Disposable[]): void {
+  for (const scope of [...scopes].reverse()) {
+    scope[Symbol.dispose]();
+  }
+}
+
+function rebind<T>(map: WeakMap<KbRuntime, T>, runtime: KbRuntime, next: T, disposePrevious: (value: T) => void): void {
+  const previous = map.get(runtime);
+  if (previous !== undefined) {
+    disposePrevious(previous);
+  }
+  map.set(runtime, next);
 }
 
 function createCorpusConsumer(
   id: string,
   registrationKind: ConsumerRegistrationKind,
-  apply: Consumer['apply'] = async () => {},
-): Consumer {
+  apply: (() => Promise<void>) | (() => void) = async () => {},
+) {
   return {
     id,
-    authority: 'corpus',
-    corpusInterest: 'content',
+    authority: 'corpus' as const,
+    corpusInterest: 'content' as const,
     registrationKind,
     apply,
   };
@@ -36,7 +58,7 @@ function createCorpusConsumer(
 
 function createVectorBacked(
   retrieval: TaggedVectorRetrieval,
-  consumer: Consumer,
+  consumer: ReturnType<typeof createCorpusConsumer>,
 ): Backed<BoundVectorRetrieval> {
   const vector: BoundVectorRetrieval = {
     read(embedding, topK, scope) {
@@ -49,24 +71,58 @@ function createVectorBacked(
   };
 }
 
-export function bindEmbedding(
+export async function bindEmbedding(
   runtime: KbRuntime,
   embedding: EmbeddingService,
   options: {
     id?: string;
     registrationKind?: ConsumerRegistrationKind;
   } = {},
-): void {
-  const scope = createScope();
-  rebind(embeddingScopes, runtime, scope);
-  runtime.embedding.bind(
-    {
-      read: () => embedding,
-      consumer: createCorpusConsumer(options.id ?? 'mock-embedder', options.registrationKind ?? 'expansion'),
+): Promise<void> {
+  const previousScopes = embedderScopes.get(runtime);
+  if (previousScopes) {
+    disposeScopes(previousScopes);
+  }
+  const previousKey = embedderKeys.get(runtime);
+  if (previousKey) {
+    registry().delete(previousKey);
+  }
+
+  const key = `embedder-${nextEmbedderId += 1}`;
+  const id = options.id ?? 'test-embedder';
+  registry().set(key, embedding);
+  embedderKeys.set(runtime, key);
+
+  const source = `
+    export default (host) => {
+      const service = globalThis.__coralTestEmbedderRegistry__?.get(${JSON.stringify(key)});
+      if (!service) {
+        throw new Error('Missing test embedder service: ' + ${JSON.stringify(key)});
+      }
+      const provider = {
+        read: () => service,
+        consumer: {
+          id: ${JSON.stringify(id)},
+          authority: 'journal',
+          registrationKind: ${JSON.stringify(options.registrationKind ?? 'stateless')},
+        },
+      };
+      host.registerConsumer(provider.consumer, host.scope);
+      host.bind(host.kb.embedding, provider);
+    };
+  `;
+  const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
+  const { makeHost } = createTestRuntime({ kb: runtime });
+  const scopes = await loadExpansions(makeHost, [{
+    id,
+    version: '0.0.0',
+    specifier,
+    metadata: {
+      description: 'test embedder',
+      slot: 'kb.embedding',
     },
-    scope,
-    options.id ?? 'mock-embedder',
-  );
+  }]);
+  rebind(embedderScopes, runtime, scopes, disposeScopes);
 }
 
 export function createCorpusHandle(
@@ -97,9 +153,9 @@ export function createCorpusHandle(
   };
 }
 
-export function equipVectorSlot(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
+export function bindVectorBacked(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
   const scope = createScope();
-  rebind(vectorScopes, runtime, scope);
+  rebind(vectorScopes, runtime, scope, (previous) => previous[Symbol.dispose]());
   runtime.vector.bind(
     createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
     scope,

@@ -66,7 +66,7 @@ describe('store schema idempotency', () => {
       expect(objects).toContain('meta');
       expect(objects).toContain('projection_sessions');
       expect(objects).toContain('kb_corpus_state');
-      expect(objects).toContain('equipment_cursors');
+      expect(objects).toContain('consumer_cursors');
       expect(objects).toContain('kb_curate_scheduler');
 
       const meta = (
@@ -98,7 +98,7 @@ describe('store schema idempotency', () => {
         metadata_manifest_hash: null,
       });
 
-      expect(tableColumns(db, 'equipment_cursors')).toEqual([
+      expect(tableColumns(db, 'consumer_cursors')).toEqual([
         'consumer_id',
         'authority',
         'lane',
@@ -109,16 +109,14 @@ describe('store schema idempotency', () => {
         'metadata_seq',
         'content_manifest_hash',
         'metadata_manifest_hash',
-        'equipped_at',
+        'registered_at',
         'registration_kind',
       ]);
 
-      expect(tableColumns(db, 'equipment_state')).toEqual([
-        'name',
-        'state',
+      expect(tableColumns(db, 'expansion_state')).toEqual([
+        'id',
+        'version',
         'installed_at',
-        'last_error_code',
-        'last_error_message',
       ]);
 
       expect(tableColumns(db, 'kb_curate_scheduler')).toEqual([

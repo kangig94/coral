@@ -11,7 +11,7 @@ import type { IdleTimer } from './live/idle.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
-import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
+import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
@@ -102,7 +102,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
-  equipmentLifecycleService?: EquipmentLifecycleService | null;
+  expansionLifecycleService?: ExpansionLifecycleService | null;
   terminateAllFn: () => void;
   progressStore: ProgressStore;
   pluginRoot: string;
@@ -128,7 +128,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
-  equipmentLifecycleService,
+  expansionLifecycleService,
   terminateAllFn,
   progressStore,
   pluginRoot,
@@ -183,8 +183,8 @@ export async function runShutdownSequence({
   if (curateSchedulerStop && kbStopBudgetMs >= 500) {
     await Promise.race([curateSchedulerStop(), runtime.time.sleep(kbStopBudgetMs)]);
   }
-  await equipmentLifecycleService?.shutdownActiveEquipment().catch((error: unknown) => {
-    backendLog.warn(`equipment shutdown failed: ${errorMessage(error)}`);
+  await expansionLifecycleService?.shutdownActiveExpansions().catch((error: unknown) => {
+    backendLog.warn(`expansion shutdown failed: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);
   for (const store of discussStores.values()) {

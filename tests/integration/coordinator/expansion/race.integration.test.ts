@@ -120,7 +120,7 @@ async function waitForFirstCompletion(
   ]);
 }
 
-describe.skipIf(process.platform === 'win32')('equipment multi-process race integration', () => {
+describe.skipIf(process.platform === 'win32')('expansion multi-process race integration', () => {
   let invocationTempDir = '';
   let invocationCjsPath = '';
 
@@ -143,7 +143,7 @@ describe.skipIf(process.platform === 'win32')('equipment multi-process race inte
     }
   });
 
-  it('lets exactly one worker install needle and leaves the shared state intact', async () => {
+  it('lets exactly one worker install needle and leaves the shared expansion state intact', async () => {
     const testHome = mkdtempSync(path.join(os.tmpdir(), 'coral-test-'));
     const binDir = path.join(testHome, 'bin');
     const archivePath = path.join(testHome, 'coral-needle-prebuild.tar.gz');

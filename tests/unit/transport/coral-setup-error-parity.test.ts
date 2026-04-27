@@ -218,7 +218,7 @@ async function requestHttpErrorPayload(
   token: string,
   expected: SerializedCoralSetupError,
 ): Promise<SerializedCoralSetupError> {
-  const response = await fetch(`${baseUrl}/coordinator/equipment`, {
+  const response = await fetch(`${baseUrl}/coordinator/expansion`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

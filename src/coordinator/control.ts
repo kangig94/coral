@@ -30,7 +30,7 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import type { EquipmentLifecycleService } from './equipment/lifecycle.js';
+import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 
 export {
   HANDOFF_DRAIN_TIMEOUT_MS,
@@ -304,7 +304,7 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
-  readonly equipmentLifecycleService?: EquipmentLifecycleService | null;
+  readonly expansionLifecycleService?: ExpansionLifecycleService | null;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
@@ -591,7 +591,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         namespace,
         markJobsAsErrorFn,
         providerHostManager,
-        equipmentLifecycleService: deps.equipmentLifecycleService,
+        expansionLifecycleService: deps.expansionLifecycleService,
         terminateAllFn,
         progressStore,
         pluginRoot,

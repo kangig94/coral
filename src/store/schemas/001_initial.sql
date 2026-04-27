@@ -86,11 +86,11 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
   last_mutation          TEXT    NOT NULL    -- ISO 8601
 );
 
--- Equipment projection cursors (async push model; see §2.6)
+-- Consumer cursor table — tracks every registered consumer (default and expansion-owned) per authority.
 -- Cursor interpretation depends on the consumer's authority:
 -- - Journal consumers: cursor is events.seq
 -- - Corpus consumers: snapshot_id + seq/hash fields reflect the last applied snapshot
-CREATE TABLE IF NOT EXISTS equipment_cursors (
+CREATE TABLE IF NOT EXISTS consumer_cursors (
   consumer_id            TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
   authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
   lane                   TEXT,                  -- lane hint; NULL for journal and 'both' corpus consumers
@@ -101,16 +101,14 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
   metadata_seq           INTEGER,               -- corpus only
   content_manifest_hash  TEXT,                  -- corpus only
   metadata_manifest_hash TEXT,                  -- corpus only
-  equipped_at            TEXT    NOT NULL,      -- ISO 8601 of most recent equip
+  registered_at          TEXT    NOT NULL,      -- ISO 8601 of most recent registration
   registration_kind      TEXT    NOT NULL DEFAULT 'base'
 );
 
-CREATE TABLE IF NOT EXISTS equipment_state (
-  name               TEXT PRIMARY KEY,
-  state              TEXT NOT NULL,
-  installed_at       TEXT,
-  last_error_code    TEXT,
-  last_error_message TEXT
+CREATE TABLE IF NOT EXISTS expansion_state (
+  id           TEXT PRIMARY KEY,
+  version      TEXT NOT NULL,
+  installed_at TEXT NOT NULL
 );
 
 -- Curate scheduler bookkeeping.

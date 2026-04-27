@@ -27,7 +27,7 @@ function createDb(): InstanceType<typeof Database> {
 
 function readJournalCursor(db: InstanceType<typeof Database>, consumerId: string): number {
   const row = db
-    .prepare('SELECT cursor FROM equipment_cursors WHERE consumer_id = ?')
+    .prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?')
     .get(consumerId) as { cursor: number } | undefined;
 
   return row?.cursor ?? 0;
@@ -35,7 +35,7 @@ function readJournalCursor(db: InstanceType<typeof Database>, consumerId: string
 
 function readCursorCount(db: InstanceType<typeof Database>, consumerId: string): number {
   return (
-    db.prepare('SELECT COUNT(*) AS count FROM equipment_cursors WHERE consumer_id = ?').get(consumerId) as {
+    db.prepare('SELECT COUNT(*) AS count FROM consumer_cursors WHERE consumer_id = ?').get(consumerId) as {
       count: number;
     }
   ).count;

@@ -9,9 +9,9 @@ import type { EntityGraph } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
   createCorpusHandle,
-  equipVectorSlot,
+  bindVectorBacked,
   seedNeedleRouteState,
-} from '#tests/unit/kb/equipment-test-helpers.js';
+} from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
@@ -162,7 +162,7 @@ describe('kb search AC8 mode branching', () => {
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
-    bindEmbedding(kb, { embedDocuments, embedQuery });
+    await bindEmbedding(kb, { embedDocuments, embedQuery });
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-note', {
       title: 'Vector Note',
@@ -170,7 +170,7 @@ describe('kb search AC8 mode branching', () => {
     });
 
     await reindex(kb);
-    equipVectorSlot(
+    bindVectorBacked(
       kb,
       {
         backendKind: 'needle',
@@ -224,7 +224,7 @@ describe('kb search AC8 mode branching', () => {
     await reindex(kb);
 
     mockState.createRouter = asUnknownHandler(createRouterSpy);
-    equipVectorSlot(
+    bindVectorBacked(
       kb,
       {
         backendKind: 'needle',

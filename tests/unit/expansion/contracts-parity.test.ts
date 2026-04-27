@@ -41,6 +41,7 @@ describe('expansion contracts parity (AC2)', () => {
     expect(statuses).toEqual(
       sort([
         'inactive',
+        'installed-not-active',
         'unavailable',
         'disabled_pending_reinstall',
         'installing',

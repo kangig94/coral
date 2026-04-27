@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 
 import { documentedCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 import { isRecord } from '../infra/json.js';
+import { BUNDLED_EXPANSIONS } from './bundled.js';
 import { installErrorSchema, type InstallError } from './contracts.js';
 
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
@@ -78,6 +79,34 @@ function finalizeInstallError(error: InstallError): InstallError {
   return installErrorSchema.parse(error);
 }
 
+function bindingRequiredInstallError(
+  structured: NonNullable<ReturnType<typeof serializeCoralSetupError>>,
+): InstallError | null {
+  if (structured.code !== 'binding-required') {
+    return null;
+  }
+
+  const binding = typeof structured.context?.binding === 'string' ? structured.context.binding : 'unknown-binding';
+  const requiredBy = typeof structured.context?.requiredBy === 'string' ? structured.context.requiredBy : 'this expansion';
+  if (binding !== 'kb.embedding') {
+    return null;
+  }
+
+  const peers = BUNDLED_EXPANSIONS
+    .filter((entry) => entry.metadata.slot === 'kb.embedding')
+    .map((entry) => entry.id);
+  const availablePeers = peers.length > 0 ? peers.join(', ') : 'none';
+
+  return finalizeInstallError({
+    status: 'error',
+    code: structured.code,
+    userMessage: `Cannot equip '${requiredBy}' — it requires '${binding}' to be bound. Available embedder Expansions: ${availablePeers}.`,
+    remediation: "Run 'coral-cli expansion equip <embedder>' first, then retry.",
+    ...(structured.context === undefined ? {} : { context: structured.context }),
+    ...(peers.length === 0 ? {} : { suggestions: peers }),
+  });
+}
+
 function isUserInputError(error: unknown): error is Error & { cause: ZodError } {
   return error instanceof Error && error.name === 'UserInputError' && error.cause instanceof ZodError;
 }
@@ -85,6 +114,11 @@ function isUserInputError(error: unknown): error is Error & { cause: ZodError } 
 export function encodeInstallError(err: unknown): InstallError {
   const structured = findStructuredSetupError(err);
   if (structured !== null) {
+    const bindingRequired = bindingRequiredInstallError(structured);
+    if (bindingRequired !== null) {
+      return bindingRequired;
+    }
+
     return finalizeInstallError({
       status: 'error',
       code: structured.code,

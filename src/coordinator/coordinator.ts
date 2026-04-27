@@ -36,10 +36,11 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama/index.js';
-import type { Backed, KbRuntime, VectorRetrieval } from '../kb/contract.js';
-import { removeInstallArtifacts } from '../expansion/install.js';
-import { EquipmentLifecycleService } from './equipment/lifecycle.js';
-import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
+import type { KbRuntime } from '../kb/contract.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
+import { createHostFactory } from './expansion/host-factory.js';
+import { ExpansionLifecycleService } from './expansion/lifecycle.js';
+import { ExpansionStateStore } from './expansion/state.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
@@ -105,7 +106,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const readCtx = { schemas: reducers.schemas, upcasters };
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
-  const equipmentSlots = createSlotRegistry();
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
@@ -136,13 +136,22 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return consumerDriver;
   };
   let currentKbRuntime: KbRuntime | null = null;
-  const equipmentLifecycleService = new EquipmentLifecycleService({
-    db: getStoreDb(),
-    runtime,
-    consumerDriver: getConsumerDriver(),
+  const expansionLifecycleService = new ExpansionLifecycleService({
+    makeHost: (id, scope) => {
+      const kbRuntime = currentKbRuntime;
+      if (kbRuntime === null) {
+        throw documentedCoralSetupError('equipment_runtime_unavailable', { name: id });
+      }
+
+      return createHostFactory({
+        runtime,
+        kbRuntime,
+        consumerDriver: getConsumerDriver(),
+      })(id, scope);
+    },
+    state: new ExpansionStateStore(getStoreDb()),
+    now: () => nowDate(runtime.time).toISOString(),
     resolveKbRuntime: () => currentKbRuntime,
-    removeInstallArtifacts: (name) => removeInstallArtifacts(runtime, name),
-    now: () => nowDate(runtime.time),
   });
 
   const getCurrentJournalSeq = () =>
@@ -168,7 +177,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const core = createBackendCore({
     ...coreOptions,
     runtime,
-    equipmentLifecycleService,
+    expansionLifecycleService,
     createKbSubsystemFn: async (ctx) => {
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
@@ -194,11 +203,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         },
       });
       currentKbRuntime = kbSubsystem.kb;
-      const vectorSlot = createEquipmentSlot<Backed<VectorRetrieval>>({
-        id: 'kb.vector',
-        defaultOwner: () => kbSubsystem.kb.vector.read(),
-      });
-      equipmentSlots.declare(vectorSlot);
       if (kbSubsystem.curateScheduler) {
         kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
           scheduler: kbSubsystem.curateScheduler,
@@ -212,6 +216,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await kbSubsystem.kb.ensureCorpusFreshness();
       const driver = getConsumerDriver();
       driver.register(kbSubsystem.kb.vector.read().consumer);
+      // Boot step 3: replay only rows already recorded in expansion_state.
+      await expansionLifecycleService.recoverOnBoot();
       // Boot step 3: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);

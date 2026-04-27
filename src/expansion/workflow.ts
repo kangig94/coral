@@ -104,6 +104,8 @@ function equipmentStatusDescription(
       return 'Registered and replaying the corpus.';
     case 'inactive':
       return `Installed locally but not registered. Run ${equipCommand(entry.id)} to reactivate.`;
+    case 'installed-not-active':
+      return `Installed, but recovery could not reactivate it. Run ${equipCommand(entry.id)} to retry.`;
     case 'unavailable':
       return `Binary missing. Run ${equipCommand(entry.id)} to reinstall.`;
     case 'disabled_pending_reinstall':
@@ -261,6 +263,7 @@ function buildEquipmentEntry(
   let status: Extract<
     CatalogEntry['status'],
     | 'inactive'
+    | 'installed-not-active'
     | 'unavailable'
     | 'disabled_pending_reinstall'
     | 'installing'
@@ -271,7 +274,10 @@ function buildEquipmentEntry(
   let statusDescription: string | undefined;
   if (passive !== null) {
     status = passive.status;
-    statusDescription = equipmentStatusDescription(binding.entry, passive.status);
+    statusDescription =
+      passive.status === 'installed-not-active' && passive.lastError
+        ? `${equipmentStatusDescription(binding.entry, passive.status)} Last error: ${passive.lastError}`
+        : equipmentStatusDescription(binding.entry, passive.status);
   } else if (installLocked) {
     status = 'installing';
     statusDescription = equipmentStatusDescription(binding.entry, status);
@@ -292,6 +298,7 @@ function buildEquipmentEntry(
     ...binding.entry,
     status,
     statusDescription,
+    ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
     addonPath: ctx.runtime.paths.coral.equipment.addonPath(binding.entry.id),
     ...(version === undefined ? {} : { version }),
     ...(onboarding === undefined ? {} : { onboarding }),
@@ -436,7 +443,7 @@ export async function unequip(name: string, opts: WorkflowOptions = {}): Promise
     if (binding.entry.activation === 'equipment') {
       const passive = await readEquipmentStatusWithDeps(name, opts.activation);
       const currentStatus = passive.status === 'available' ? passive.equipment[0]?.status : undefined;
-      if (currentStatus === 'equipped' || currentStatus === 'catching_up') {
+      if (currentStatus === 'equipped' || currentStatus === 'catching_up' || currentStatus === 'installed-not-active') {
         await deactivateExpansionWithDeps(name, opts.activation);
       }
     }

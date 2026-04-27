@@ -10,9 +10,9 @@ import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
   createCorpusHandle,
-  equipVectorSlot,
+  bindVectorBacked,
   seedNeedleRouteState,
-} from '#tests/unit/kb/equipment-test-helpers.js';
+} from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
@@ -342,7 +342,7 @@ function aggregateMockNeedleHits(
     }));
 }
 
-function installMockHybridSearch(
+async function installMockHybridSearch(
   kb: KbRuntime & {
     readIndex: () => { entries: Record<string, any> } | null;
   },
@@ -355,11 +355,11 @@ function installMockHybridSearch(
     embedQuery?: (query: string) => Promise<Float32Array>;
   },
 ) {
-  bindEmbedding(kb, {
+  await bindEmbedding(kb, {
     embedDocuments: vi.fn(async () => []),
     embedQuery,
   });
-  equipVectorSlot(
+  bindVectorBacked(
     kb,
     {
       backendKind: 'needle',
@@ -776,7 +776,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'beta:0', entryId: 'note:beta-archive', score: 0.99 },
         { chunkId: 'gamma:0', entryId: 'source:gamma-reference', score: 0.98 },
@@ -845,7 +845,7 @@ describe('kb search', () => {
     ]);
     kb.persistOramaSnapshot(db);
     kb.invalidateKbCache();
-    bindEmbedding(kb, {
+    await bindEmbedding(kb, {
       embedDocuments: vi.fn(async () => []),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([1, 0])),
     });
@@ -872,7 +872,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'needle:0', entryId: 'note:needle-beta', score: 0.99 },
         { chunkId: 'needle:1', entryId: 'note:needle-alpha', score: 0.97 },
@@ -919,7 +919,7 @@ describe('kb search', () => {
       ];
     });
 
-    installMockHybridSearch(kb, routeState, { searchVector });
+    await installMockHybridSearch(kb, routeState, { searchVector });
 
     const response = await searchKb(kb, 'semantic', 2);
 
@@ -950,7 +950,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-note', score: 0.99 }]),
     });
 
@@ -982,7 +982,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'note:0', entryId: 'note:vector-note', score: 0.99 },
         { chunkId: 'source:0', entryId: 'source:vector-source', score: 0.97 },
@@ -1018,7 +1018,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
     });
 
@@ -1047,7 +1047,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    const { embedQuery } = installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    const { embedQuery } = await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([]),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     });
@@ -1083,7 +1083,7 @@ describe('kb search', () => {
       },
     );
 
-    installMockHybridSearch(kb, routeState, {
+    await installMockHybridSearch(kb, routeState, {
       searchVector: vi
         .fn()
         .mockResolvedValue([{ chunkId: 'hybrid:0', entryId: 'note:hybrid-metadata-note', score: 0.99 }]),
@@ -1121,7 +1121,7 @@ describe('kb search', () => {
       },
     );
 
-    installMockHybridSearch(kb, routeState, {
+    await installMockHybridSearch(kb, routeState, {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'stale:0', entryId: 'note:stale-vector-note', score: 0.99 }]),
     });
 
@@ -1142,7 +1142,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi
         .fn()
         .mockResolvedValue([{ chunkId: 'rendering:0', entryId: 'note:rendering-guides', score: 0.99 }]),

@@ -45,28 +45,48 @@ function createHandle(reg: ConsumerRegistration): ConsumerHandle {
   };
 }
 
+export interface CreateTestRuntimeOptions {
+  runtime?: Runtime;
+  kb?: KbRuntime;
+  registerConsumer?: (reg: ConsumerRegistration) => ConsumerHandle;
+}
+
 export function createTestRuntime(): {
+  runtime: Runtime;
+  kb: KbRuntime;
+  registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
+  makeHost: (id: string, scope: Disposable) => ExpansionHost;
+};
+export function createTestRuntime(options: CreateTestRuntimeOptions): {
+  runtime: Runtime;
+  kb: KbRuntime;
+  registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
+  makeHost: (id: string, scope: Disposable) => ExpansionHost;
+};
+export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
   makeHost: (id: string, scope: Disposable) => ExpansionHost;
 } {
   const root = mkdtempSync(join(tmpdir(), 'coral-expansion-test-'));
-  const runtime = new SimulationRuntime({ roots: { coralRoot: root } });
-  const db = openStoreDatabase({
-    path: ':memory:',
-    storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
-  });
-  const kb = createKbRuntime({
-    markdownRoot: runtime.paths.coral.corpus.kbRoot,
-    runtimeDir: join(root, 'kb-runtime'),
-    db,
-    time: runtime.time,
-    ids: runtime.ids,
-    env: runtime.env,
-  });
-  const registerConsumer = (reg: ConsumerRegistration): ConsumerHandle => createHandle(reg);
+  const runtime = options.runtime ?? new SimulationRuntime({ roots: { coralRoot: root } });
+  const kb = options.kb ?? (() => {
+    const db = openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      schemasDir: ensureStoreSchemasDir(runtime.storage),
+    });
+    return createKbRuntime({
+      markdownRoot: runtime.paths.coral.corpus.kbRoot,
+      runtimeDir: join(root, 'kb-runtime'),
+      db,
+      time: runtime.time,
+      ids: runtime.ids,
+      env: runtime.env,
+    });
+  })();
+  const registerConsumer = options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));
   const consumerDriver = { register: registerConsumer } as Pick<ConsumerDriver, 'register'> as ConsumerDriver;
 
   // Tests model fake backends as Expansions and load them through the same

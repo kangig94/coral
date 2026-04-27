@@ -87,9 +87,9 @@ async function waitFor(assertion: () => void | Promise<void>, timeoutMs = 3000):
 function readCursor(db: InstanceType<typeof Database>, consumerId: string): CorpusStateSnapshot {
   const row = db
     .prepare(
-      `
+        `
         SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
-          FROM equipment_cursors
+          FROM consumer_cursors
          WHERE consumer_id = ?
       `,
     )

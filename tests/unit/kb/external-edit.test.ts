@@ -22,7 +22,7 @@ import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-type
 import { nowDate } from '#src/infra/time.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import { bindEmbedding } from '#tests/unit/kb/equipment-test-helpers.js';
+import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 type StoredOramaDocument = {
@@ -62,14 +62,14 @@ function allocateRoot(): string {
   return root;
 }
 
-function createRegisteredRuntime(root: string): KbRuntime {
+async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
   const kb = createKbRuntime({
     markdownRoot: root,
     runtimeDir: root,
     db: createKbTestDb(root),
   });
   openDatabases.push(kb.db);
-  bindEmbedding(kb, {
+  await bindEmbedding(kb, {
     embedDocuments: async (texts) => texts.map(embedText),
     embedQuery: async (text) => embedText(text),
   });
@@ -281,7 +281,7 @@ async function bootstrapSeededCorpus(
   snapshot: ReturnType<typeof readCorpusState>;
   docs: Map<string, StoredOramaDocument>;
 }> {
-  const kb = createRegisteredRuntime(root);
+  const kb = await createRegisteredRuntime(root);
   const paths = seedCorpus(kb);
   seedExtra?.(kb);
   await bootLikeCoordinator(kb);
@@ -338,7 +338,7 @@ describe('external edit absorption (AC28)', () => {
     );
     touchFileAfter(initial.notePath, initialIndexMtime);
 
-    const restarted = createRegisteredRuntime(root);
+    const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
     const afterSnapshot = readCorpusState(restarted.db);
@@ -373,7 +373,7 @@ describe('external edit absorption (AC28)', () => {
     );
     touchFileAfter(initial.sourcePath, initialIndexMtime);
 
-    const restarted = createRegisteredRuntime(root);
+    const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
     const afterSnapshot = readCorpusState(restarted.db);
@@ -409,7 +409,7 @@ describe('external edit absorption (AC28)', () => {
     );
     touchFileAfter(initial.sourcePath, initialIndexMtime);
 
-    const restarted = createRegisteredRuntime(root);
+    const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
     const afterSnapshot = readCorpusState(restarted.db);

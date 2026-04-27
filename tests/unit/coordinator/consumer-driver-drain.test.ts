@@ -18,7 +18,7 @@ interface CursorRow {
   authority: string;
   lane: string | null;
   cursor: number;
-  equipped_at: string;
+  registered_at: string;
 }
 
 function createDb(): InstanceType<typeof Database> {
@@ -40,12 +40,12 @@ function createRegistration(
 
 function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): CursorRow {
   return db
-    .prepare('SELECT consumer_id, authority, lane, cursor, equipped_at FROM equipment_cursors WHERE consumer_id = ?')
+    .prepare('SELECT consumer_id, authority, lane, cursor, registered_at FROM consumer_cursors WHERE consumer_id = ?')
     .get(consumerId) as CursorRow;
 }
 
 describe('ConsumerDriver notify + drain + cursor', () => {
-  it('register() populates equipment_cursors and re-registering journal is idempotent', () => {
+  it('register() populates consumer_cursors and re-registering journal is idempotent', () => {
     const db = createDb();
     const now = new Date('2026-04-18T10:11:12.345Z');
     const driver = new ConsumerDriver({ db, now: () => now });
@@ -60,11 +60,11 @@ describe('ConsumerDriver notify + drain + cursor', () => {
         authority: 'journal',
         lane: null,
         cursor: 0,
-        equipped_at: now.toISOString(),
+        registered_at: now.toISOString(),
       });
       expect(
         (
-          db.prepare('SELECT COUNT(*) AS count FROM equipment_cursors WHERE consumer_id = ?').get(reg.id) as {
+          db.prepare('SELECT COUNT(*) AS count FROM consumer_cursors WHERE consumer_id = ?').get(reg.id) as {
             count: number;
           }
         ).count,
@@ -96,7 +96,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
         authority: 'journal',
         lane: null,
         cursor: 5,
-        equipped_at: now.toISOString(),
+        registered_at: now.toISOString(),
       });
 
       driver.notify('journal', 5);
@@ -108,7 +108,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
         authority: 'journal',
         lane: null,
         cursor: 5,
-        equipped_at: now.toISOString(),
+        registered_at: now.toISOString(),
       });
     } finally {
       await driver.shutdown();
@@ -161,8 +161,8 @@ describe('ConsumerDriver notify + drain + cursor', () => {
     try {
       driver.register(reg);
 
-      db.prepare('DELETE FROM equipment_cursors WHERE consumer_id = ?').run(reg.id);
-      db.prepare('INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)')
+      db.prepare('DELETE FROM consumer_cursors WHERE consumer_id = ?').run(reg.id);
+      db.prepare('INSERT INTO consumer_cursors (consumer_id, authority, lane, cursor, registered_at) VALUES (?, ?, ?, 0, ?)')
         .run(reg.id, 'corpus', 'content', '2026-04-18T00:00:00.000Z');
 
       let thrown: unknown;

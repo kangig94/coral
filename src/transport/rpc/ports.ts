@@ -1,14 +1,5 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
-import type {
-  EquipExpansionRequest,
-  EquipExpansionResult,
-  ListExpansionRequest,
-  ListExpansionResult,
-  ReadBindingRequest,
-  ReadBindingResult,
-  UnequipExpansionRequest,
-  UnequipExpansionResult,
-} from '../../coordinator/expansion/rpc.js';
+import type { ExpansionRequestPort } from '../../coordinator/expansion/rpc.js';
 import type {
   JobForkRequest,
   JobLaunchRequest,
@@ -117,13 +108,6 @@ export interface DiscussRequestPort {
   bid(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   speech(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   abort(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
-}
-
-export interface ExpansionRequestPort {
-  equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
-  unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
-  listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
-  readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
 }
 
 export interface RpcPorts {

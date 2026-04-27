@@ -36,6 +36,7 @@ Install and configure Coral companion tooling for Claude Code.
 |------------------------------|-----------------------------------------------------------------|
 | `equipped`                   | Active in the coordinator                                       |
 | `catching_up`                | Registered and replaying the corpus                             |
+| `installed-not-active`       | Installed, but boot recovery failed. Check the last error and satisfy missing dependencies before retrying `/equip <name>` |
 | `inactive`                   | Installed but not registered. Run `/equip needle` to reactivate |
 | `unavailable`                | Binary missing or coordinator unreachable. Run `/equip needle` to reinstall |
 | `disabled_pending_reinstall` | Load failed. Run `/equip needle` to reinstall                   |
@@ -47,7 +48,7 @@ Install and configure Coral companion tooling for Claude Code.
 5. When rendering `activation`, translate internally:
    - `activation: 'equipment'` -> `Active in Coordinator`
    - `activation: 'none'` -> `Install-only (use directly via the installed path)`
-6. After coordinator restart, equipment is shown as `inactive` until you run `/equip <name>` again. Cursor state is preserved; re-equipping does not replay from scratch.
+6. Bundled expansions only auto-load after restart when an `expansion_state` row already exists for them. First-time bootstrap loads nothing automatically; once equipped successfully, restart recovery replays that recorded row.
 7. Ask the user which package to install.
 
 ### `<package>` (e.g. `needle`, `cgc`)

@@ -473,7 +473,7 @@ export class NeedleBackend implements NeedleBackendContract {
       .prepare(
         `
           SELECT snapshot_id, content_seq, content_manifest_hash
-            FROM equipment_cursors
+            FROM consumer_cursors
            WHERE consumer_id = ?
         `,
       )

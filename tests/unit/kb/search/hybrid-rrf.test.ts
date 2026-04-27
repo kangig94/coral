@@ -10,10 +10,10 @@ import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from
 import {
   bindEmbedding,
   createCorpusHandle,
-  equipVectorSlot,
+  bindVectorBacked,
   seedNeedleRouteState,
   type TaggedVectorRetrieval,
-} from '#tests/unit/kb/equipment-test-helpers.js';
+} from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
@@ -91,18 +91,18 @@ ${body}
   );
 }
 
-function installMockHybridSearch(
+async function installMockHybridSearch(
   kb: KbRuntime & {
     readIndex: () => { entries: Record<string, any> } | null;
   },
   routeState: ReturnType<typeof seedNeedleRouteState>,
   searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>,
 ) {
-  bindEmbedding(kb, {
+  await bindEmbedding(kb, {
     embedDocuments: vi.fn(async () => []),
     embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
   });
-  equipVectorSlot(
+  bindVectorBacked(
     kb,
     {
       backendKind: 'needle',
@@ -323,7 +323,7 @@ describe('hybrid reciprocal rank fusion', () => {
     } satisfies EntityGraph);
 
     await reindex(kb);
-    installMockHybridSearch(
+    await installMockHybridSearch(
       kb,
       seedNeedleRouteState(kb, kb.captureCorpusSnapshot()),
       vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 }]),

@@ -66,7 +66,7 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './world.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { createExpansionRpc, createUnavailableExpansionRpc } from '../equipment/rpc.js';
+import { createExpansionRpc, createUnavailableExpansionRpc } from '../expansion/rpc.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 import { KbReindexService } from '../services/kb-reindex-service.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
@@ -360,9 +360,9 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
     expansion:
-      options.equipmentLifecycleService === undefined
+      options.expansionLifecycleService === undefined
         ? createUnavailableExpansionRpc()
-        : createExpansionRpc(options.equipmentLifecycleService),
+        : createExpansionRpc(options.expansionLifecycleService),
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {
@@ -490,7 +490,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
-    equipmentLifecycleService: options.equipmentLifecycleService ?? null,
+    expansionLifecycleService: options.expansionLifecycleService ?? null,
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
@@ -523,7 +523,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    equipmentLifecycleService: options.equipmentLifecycleService ?? null,
+    expansionLifecycleService: options.expansionLifecycleService ?? null,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

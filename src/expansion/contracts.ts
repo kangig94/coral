@@ -4,6 +4,7 @@ import { equipmentViewSchema } from './equipment-contract.js';
 
 const equipmentCatalogStatusLiterals = [
   'inactive',
+  'installed-not-active',
   'unavailable',
   'disabled_pending_reinstall',
   'installing',
@@ -74,6 +75,7 @@ const equipmentEntrySchema = z
     activation: z.literal('equipment'),
     status: z.enum(equipmentCatalogStatusLiterals),
     addonPath: z.string().min(1).optional(),
+    lastError: z.string().min(1).optional(),
     onboarding: onboardingSchema.optional(),
   })
   .strict();
@@ -146,6 +148,7 @@ const alreadyEquippedResultSchema = z
 /** Enumerates every catalog/info entry status literal across equipment and install-only activations. */
 export const catalogEntryStatusSchema = z.union([
   z.literal('inactive'),
+  z.literal('installed-not-active'),
   z.literal('unavailable'),
   z.literal('disabled_pending_reinstall'),
   z.literal('installing'),

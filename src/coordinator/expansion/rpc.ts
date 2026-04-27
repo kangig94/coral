@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
+import { documentedCoralSetupError } from '../../runtime/errors.js';
+import type { ExpansionLifecycleService } from './lifecycle.js';
+
 const expansionCatalogStatusLiterals = [
   'inactive',
+  'installed-not-active',
   'unavailable',
   'disabled_pending_reinstall',
   'installing',
@@ -71,6 +75,7 @@ const equipmentEntrySchema = z
     activation: z.literal('equipment'),
     status: z.enum(expansionCatalogStatusLiterals),
     addonPath: z.string().min(1).optional(),
+    lastError: z.string().min(1).optional(),
     onboarding: onboardingSchema.optional(),
   })
   .strict();
@@ -86,6 +91,7 @@ const installOnlyEntrySchema = z
 
 export const catalogEntryStatusSchema = z.union([
   z.literal('inactive'),
+  z.literal('installed-not-active'),
   z.literal('unavailable'),
   z.literal('disabled_pending_reinstall'),
   z.literal('installing'),
@@ -118,6 +124,7 @@ export const expansionStatusSchema = z.enum([
   'equipped',
   'catching_up',
   'inactive',
+  'installed-not-active',
   'unavailable',
   'disabled_pending_reinstall',
   'installing',
@@ -129,6 +136,7 @@ export const expansionViewSchema = z
   .object({
     name: z.string().min(1),
     status: expansionStatusSchema,
+    lastError: z.string().min(1).optional(),
   })
   .strict();
 export type ExpansionView = z.infer<typeof expansionViewSchema>;
@@ -195,6 +203,13 @@ export const readBindingResultSchema = z
   })
   .strict();
 export type ReadBindingResult = z.infer<typeof readBindingResultSchema>;
+
+export interface ExpansionRequestPort {
+  equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
+  unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
+  listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
+  readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
+}
 
 const installedResultSchema = z
   .object({
@@ -277,3 +292,55 @@ export type InstallError = z.infer<typeof installErrorSchema>;
 
 export const installResponseSchema = z.union([installResultSchema, installErrorSchema]);
 export type InstallResponse = z.infer<typeof installResponseSchema>;
+
+function toExpansionView(
+  view: ReturnType<ExpansionLifecycleService['info']>,
+): ExpansionView {
+  return {
+    name: view.id,
+    status: view.status === 'active' ? 'equipped' : view.status,
+    ...(view.lastError === undefined ? {} : { lastError: view.lastError }),
+  };
+}
+
+export function createExpansionRpc(lifecycleService: ExpansionLifecycleService): ExpansionRequestPort {
+  return {
+    equipExpansion: async (request) => {
+      if (lifecycleService.isActive(request.name)) {
+        return {
+          status: 'already_equipped',
+          equipment: toExpansionView(lifecycleService.info(request.name)),
+        };
+      }
+
+      await lifecycleService.equip(request.name);
+      return {
+        status: 'equipped',
+        equipment: toExpansionView(lifecycleService.info(request.name)),
+      };
+    },
+    unequipExpansion: async (request) => {
+      if (!lifecycleService.has(request.name)) {
+        return { status: 'not_equipped' };
+      }
+
+      await lifecycleService.unequip(request.name);
+      return { status: 'uninstalled' };
+    },
+    listExpansion: async (_request) => ({
+      equipment: lifecycleService.list().map(toExpansionView),
+    }),
+    readBinding: async (request) => lifecycleService.readBinding(request.binding),
+  };
+}
+
+export function createUnavailableExpansionRpc(): ExpansionRequestPort {
+  return {
+    equipExpansion: async (request) => {
+      throw documentedCoralSetupError('equipment_runtime_unavailable', { name: request.name });
+    },
+    unequipExpansion: async (_request) => ({ status: 'not_equipped' }),
+    listExpansion: async (_request) => ({ equipment: [] }),
+    readBinding: async (_request) => ({ bound: false }),
+  };
+}

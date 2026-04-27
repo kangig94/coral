@@ -30,13 +30,12 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
   'src/coordinator/coordinator.ts',
-  'src/coordinator/equipment/lifecycle.ts',
-  'src/coordinator/equipment/rpc.ts',
-  'src/coordinator/equipment/slots.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/expansion/host-factory.ts',
+  'src/coordinator/expansion/lifecycle.ts',
   'src/coordinator/expansion/rpc.ts',
+  'src/coordinator/expansion/state.ts',
   'src/coordinator/invocation-scope.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
@@ -96,7 +95,6 @@ const COORDINATOR_GLUE_SOURCES = new Set([
 
 const BROAD_IMPORT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/equipment/',
   'src/coordinator/expansion/',
   'src/coordinator/services/',
 ] as const;

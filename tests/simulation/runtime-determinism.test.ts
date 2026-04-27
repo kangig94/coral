@@ -129,7 +129,7 @@ function captureSnapshot(db: Database.Database): Snapshot {
     )
     .all();
   const cursors = db
-    .prepare('SELECT consumer_id, authority, cursor, equipped_at FROM equipment_cursors ORDER BY consumer_id')
+    .prepare('SELECT consumer_id, authority, cursor, registered_at FROM consumer_cursors ORDER BY consumer_id')
     .all();
   const serialized = JSON.stringify({ counters, events, cursors });
 
@@ -251,7 +251,7 @@ describe('SimulationRuntime determinism', () => {
         consumer_id: CONSUMER_ID,
         authority: 'journal',
         cursor: EVENT_COUNT,
-        equipped_at: new Date(SIM_EPOCH_MS).toISOString(),
+        registered_at: new Date(SIM_EPOCH_MS).toISOString(),
       },
     ]);
   });

@@ -109,7 +109,7 @@ export const rpcCatalog = [
     responseKind: 'json',
     authClass: 'authenticated',
     portKey: 'expansion',
-    http: { method: 'POST', path: '/coordinator/equipment' },
+    http: { method: 'POST', path: '/coordinator/expansion' },
   },
   {
     name: 'coordinator.unequipExpansion',
@@ -118,7 +118,7 @@ export const rpcCatalog = [
     responseKind: 'json',
     authClass: 'authenticated',
     portKey: 'expansion',
-    http: { method: 'DELETE', path: '/coordinator/equipment/:name' },
+    http: { method: 'DELETE', path: '/coordinator/expansion/:name' },
   },
   {
     name: 'coordinator.listExpansion',
@@ -127,7 +127,7 @@ export const rpcCatalog = [
     responseKind: 'json',
     authClass: 'authenticated',
     portKey: 'expansion',
-    http: { method: 'GET', path: '/coordinator/equipment' },
+    http: { method: 'GET', path: '/coordinator/expansion' },
   },
   {
     name: 'coordinator.readBinding',

@@ -59,7 +59,6 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/equipment/',
   'src/coordinator/expansion/',
   'src/coordinator/services/',
 ] as const;

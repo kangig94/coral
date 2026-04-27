@@ -26,7 +26,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ExecutionServiceDeps } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
-import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
+import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb-source-import-service.js';
 
 export type BackendBootSnapshot = {
@@ -82,7 +82,7 @@ export type BackendCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  equipmentLifecycleService?: EquipmentLifecycleService;
+  expansionLifecycleService?: ExpansionLifecycleService;
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
@@ -102,7 +102,7 @@ export type BackendCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
-  equipmentLifecycleService: EquipmentLifecycleService | null;
+  expansionLifecycleService: ExpansionLifecycleService | null;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];

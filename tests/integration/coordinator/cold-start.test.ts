@@ -83,7 +83,7 @@ describe('coordinator cold-start integration', () => {
         ),
       );
       expect(tableNames.has('events')).toBe(true);
-      expect(tableNames.has('equipment_cursors')).toBe(true);
+      expect(tableNames.has('consumer_cursors')).toBe(true);
       expect(tableNames.has('projection_jobs')).toBe(true);
     } finally {
       db.close();

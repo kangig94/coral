@@ -8,6 +8,7 @@ export const equipmentStatusSchema = z
     'equipped',
     'catching_up',
     'inactive',
+    'installed-not-active',
     'unavailable',
     'disabled_pending_reinstall',
     'installing',
@@ -22,6 +23,7 @@ export const equipmentViewSchema = z
     slot: z.string().min(1),
     name: equipmentNameSchema,
     status: equipmentStatusSchema,
+    lastError: z.string().min(1).optional(),
   })
   .strict();
 /** Keeps equipment inventory reads aligned with the coordinator-owned slot model. */

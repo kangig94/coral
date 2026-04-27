@@ -25,7 +25,7 @@ interface CursorRow {
   metadata_seq: number | null;
   content_manifest_hash: string | null;
   metadata_manifest_hash: string | null;
-  equipped_at: string;
+  registered_at: string;
 }
 
 function buildSnapshot(overrides: Partial<CorpusSnapshot> = {}): CorpusSnapshot {
@@ -59,8 +59,8 @@ function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): C
           metadata_seq,
           content_manifest_hash,
           metadata_manifest_hash,
-          equipped_at
-          FROM equipment_cursors
+          registered_at
+          FROM consumer_cursors
          WHERE consumer_id = ?
       `,
     )
@@ -216,7 +216,7 @@ describe('ConsumerDriver corpus registrations', () => {
     const driver = new ConsumerDriver({ db });
     db.prepare(
       `
-        INSERT INTO equipment_cursors (
+        INSERT INTO consumer_cursors (
           consumer_id,
           authority,
           lane,
@@ -227,7 +227,7 @@ describe('ConsumerDriver corpus registrations', () => {
           metadata_seq,
           content_manifest_hash,
           metadata_manifest_hash,
-          equipped_at
+          registered_at
         ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?)
       `,
     ).run('corpus-proj', 'corpus', 'metadata', 'metadata', '2026-04-19T00:00:00.000Z');

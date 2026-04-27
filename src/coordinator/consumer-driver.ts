@@ -147,15 +147,15 @@ export class ConsumerDriver {
     this.now = opts.now ?? (() => nowDate());
     this.timers = opts.time ?? SYSTEM_CONSUMER_DRIVER_TIMERS;
     this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
-      'SELECT authority, lane, corpus_interest, registration_kind FROM equipment_cursors WHERE consumer_id = ?',
+      'SELECT authority, lane, corpus_interest, registration_kind FROM consumer_cursors WHERE consumer_id = ?',
     );
     this.insertJournalCursorRowStmt = this.db.prepare<[string, Authority, string, ConsumerRegistrationKind]>(
       `
-        INSERT INTO equipment_cursors (
+        INSERT INTO consumer_cursors (
           consumer_id,
           authority,
           cursor,
-          equipped_at,
+          registered_at,
           registration_kind
         ) VALUES (?, ?, 0, ?, ?)
       `,
@@ -164,7 +164,7 @@ export class ConsumerDriver {
       [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
     >(
       `
-        INSERT INTO equipment_cursors (
+        INSERT INTO consumer_cursors (
           consumer_id,
           authority,
           lane,
@@ -175,33 +175,33 @@ export class ConsumerDriver {
           metadata_seq,
           content_manifest_hash,
           metadata_manifest_hash,
-          equipped_at,
+          registered_at,
           registration_kind
         ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?, ?)
       `,
     );
     this.updateRegistrationKindStmt = this.db.prepare<[ConsumerRegistrationKind, string]>(
-      'UPDATE equipment_cursors SET registration_kind = ? WHERE consumer_id = ?',
+      'UPDATE consumer_cursors SET registration_kind = ? WHERE consumer_id = ?',
     );
-    this.deleteCursorRowStmt = this.db.prepare<[string]>('DELETE FROM equipment_cursors WHERE consumer_id = ?');
+    this.deleteCursorRowStmt = this.db.prepare<[string]>('DELETE FROM consumer_cursors WHERE consumer_id = ?');
     this.readJournalCursorStmt = this.db.prepare<[string], JournalCursorRow>(
-      'SELECT cursor FROM equipment_cursors WHERE consumer_id = ?',
+      'SELECT cursor FROM consumer_cursors WHERE consumer_id = ?',
     );
     this.readCorpusCursorStmt = this.db.prepare<[string], CorpusCursorRow>(
       `
         SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
-          FROM equipment_cursors
+          FROM consumer_cursors
          WHERE consumer_id = ?
       `,
     );
     this.advanceJournalCursorStmt = this.db.prepare<[number, string, number]>(
-      'UPDATE equipment_cursors SET cursor = ? WHERE consumer_id = ? AND cursor < ?',
+      'UPDATE consumer_cursors SET cursor = ? WHERE consumer_id = ? AND cursor < ?',
     );
     this.advanceContentCursorStmt = this.db.prepare<
       [string, number, number, string, string, string, number, number, string]
     >(
       `
-        UPDATE equipment_cursors
+        UPDATE consumer_cursors
            SET snapshot_id = ?,
                content_seq = ?,
                metadata_seq = ?,
@@ -215,7 +215,7 @@ export class ConsumerDriver {
       [string, number, number, string, string, string, number, number, string]
     >(
       `
-        UPDATE equipment_cursors
+        UPDATE consumer_cursors
            SET snapshot_id = ?,
                content_seq = ?,
                metadata_seq = ?,
@@ -229,7 +229,7 @@ export class ConsumerDriver {
       [string, number, number, string, string, string, number, number, string]
     >(
       `
-        UPDATE equipment_cursors
+        UPDATE consumer_cursors
            SET snapshot_id = ?,
                content_seq = ?,
                metadata_seq = ?,
