@@ -34,6 +34,9 @@ function noteScan(slug: string, content: string) {
   });
 }
 
+// canonical incident ID is not an input to drift detection — drift compares
+// entryId set membership and observed content hash, not incident type.
+// YAML_PARSE_ERROR is used as a fixed sentinel.
 function pendingRepair(slug: string, content: string): PendingRepair {
   return {
     entryId: noteEntryId(slug),
@@ -195,18 +198,8 @@ describe('detectEntityGraphDrift', () => {
     expect(detectEntityGraphDrift(malformed, { entityMeta: {}, relationships: [] })).toBeNull();
   });
 
-  it('emits the same MutationLane kind as a markdown-content edit (unified emitter)', () => {
-    // Pre-Phase-9: a markdown-directory mtime change emitted "metadata" via one branch
-    // and an entity-graph mtime change emitted "metadata" via a separate branch. Phase 9
-    // folds both into one emitter — assert the lane kind matches what markdown drift produces.
-    const markdownLane = 'metadata' as const;
-    const entityGraphLane = detectEntityGraphDrift(
-      entityGraphScan({
-        entityMeta: { coral: { type: 'technology', description: 'Edited externally.' } },
-        relationships: [],
-      }),
-      indexedGraph,
-    );
-    expect(entityGraphLane).toBe(markdownLane);
-  });
+  // Unified-emitter parity (markdown drift + entity-graph drift both yield 'metadata')
+  // is asserted at the integration entry point — see rebuild-pipeline-integration.test.ts
+  // 'detectRescanInfo unified MutationLane emitter'. Asserting it here in isolation
+  // collapses to a tautology because detectStructuredTextDrift is not exported.
 });

@@ -5,9 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KbRuntime } from '#src/kb/contract.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { REPAIR_INCIDENT_ID, type DetectedIncident } from '#src/kb/corpus/rescan/incidents/catalog.js';
+import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
+import { REPAIR_INCIDENT_ID, repairIncidentLocus, type DetectedIncident } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
+import { detectRescanInfo } from '#src/kb/corpus/rescan/drift.js';
+import { buildCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
+import { noteEntryId } from '#src/kb/entry-types.js';
+import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -200,6 +204,7 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
       signals: { matches: [{ line: 13, marker: '<<<<<<<', text: '<<<<<<< HEAD' }] },
     };
 
+    // timing-sensitive: 500ms accommodates slow CI; deadlock is detected as 'timeout' return.
     const completed = await Promise.race([
       kb.withMutationLock(async (mutation) => {
         const gitSync = createGitSyncController({
@@ -212,7 +217,7 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
         await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, [incident]);
         return 'done' as const;
       }),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 2000)),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
     ]);
 
     expect(completed).toBe('done');
@@ -247,8 +252,28 @@ describe('performRescan failure semantics', () => {
     // First rescan succeeds — establishes the prior on-disk state we will compare against.
     await reindex(kb);
     const indexBefore = kb.readIndex();
-    const queueBefore = readCurateRetryQueue(kb);
     expect(indexBefore?.entries['note:rescan-baseline']).toBeDefined();
+
+    // Seed a synthetic stale retry-queue row so queueBefore is non-empty: a queueBefore
+    // of [] would also satisfy the post-failure assertion if the queue logic was never
+    // reached. With a real row in place, we additionally prove the failed rescan does
+    // not delete or overwrite pre-existing rows.
+    const syntheticPriorRow: PendingRepair = {
+      entryId: noteEntryId('synthetic-prior'),
+      entrySeq: null,
+      detectedAt: '2026-04-01T00:00:00.000Z',
+      observedContentHash: 'a'.repeat(64),
+      reason: REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR,
+      locus: repairIncidentLocus(REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR),
+      canonicalIncident: REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR,
+      signalsJson: '{}',
+      retryNotBefore: '2026-04-01T00:00:00.000Z',
+      retryCount: 0,
+    };
+    syncCurateRetryQueue(kb.db, [syntheticPriorRow]);
+    const queueBefore = readCurateRetryQueue(kb);
+    expect(queueBefore).toHaveLength(1);
+    expect(queueBefore[0].entryId).toBe('note:synthetic-prior');
 
     // Add a malformed note that would normally enqueue an incident on the second rescan.
     writeFileSync(
@@ -267,6 +292,71 @@ describe('performRescan failure semantics', () => {
     writeIndexSpy.mockRestore();
 
     expect(kb.readIndex()).toEqual(indexBefore);
-    expect(readCurateRetryQueue(kb)).toEqual(queueBefore);
+    // Synthetic prior row still present; no new row from the malformed entry was added.
+    const queueAfter = readCurateRetryQueue(kb);
+    expect(queueAfter).toEqual(queueBefore);
+    expect(queueAfter.find((entry) => entry.entryId === 'note:rescan-malformed')).toBeUndefined();
+  });
+});
+
+describe('detectRescanInfo unified MutationLane emitter', () => {
+  // Parity claim: a markdown frontmatter-only edit and an entity-graph-only edit both
+  // emit MutationLane='metadata'. Each scenario lives in its own seeded runtime so the
+  // assertion isolates one drift source — community-topology refresh side-effects from
+  // earlier scenarios cannot bleed in via the retry queue.
+  it('emits "metadata" for a markdown frontmatter-only edit', async () => {
+    const { kb, root } = createSeededKbRuntime();
+    const noteFrontmatter = (tags: string): string =>
+      [
+        '---',
+        `tags: [${tags}]`,
+        'principles: []',
+        'source:',
+        '  - kangig94/coral',
+        'createdAt: 2026-04-01T00:00:00.000Z',
+        'updatedAt: 2026-04-01T00:00:00.000Z',
+        'entrySeq: 91',
+        '---',
+        '# Parity Note',
+        '',
+        'body',
+        '',
+      ].join('\n');
+    writeFileSync(join(root, 'notes', 'parity-note.md'), noteFrontmatter('alpha'), 'utf-8');
+    await reindex(kb);
+
+    writeFileSync(join(root, 'notes', 'parity-note.md'), noteFrontmatter('beta'), 'utf-8');
+    expect(detectRescanInfo(kb, buildCorpusScanView(kb)).externalMutation).toBe('metadata');
+  });
+
+  it('emits "metadata" for an entity-graph-only edit', async () => {
+    const { kb } = createSeededKbRuntime();
+    writeFileSync(
+      kb.entityGraphPath(),
+      `${JSON.stringify(
+        {
+          entityMeta: { coral: { type: 'technology', description: 'baseline' } },
+          relationships: [],
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    );
+    await reindex(kb);
+
+    writeFileSync(
+      kb.entityGraphPath(),
+      `${JSON.stringify(
+        {
+          entityMeta: { coral: { type: 'technology', description: 'edited' } },
+          relationships: [],
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    );
+    expect(detectRescanInfo(kb, buildCorpusScanView(kb)).externalMutation).toBe('metadata');
   });
 });
