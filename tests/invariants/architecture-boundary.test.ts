@@ -637,7 +637,7 @@ describe('architecture boundary guard', () => {
     expect(providerShimExists).toBe(false);
     assertNoViolations(violations);
   });
-  it('clean-slate rewrite residue must stay out of production sources', () => {
+  it('removed-vocabulary residue must stay out of production sources', () => {
     expect(collectProductionStringResidue([RETIRED_STATUS_SCHEMA_FAULT, RETIRED_TEXT_ARTIFACT_LOCK_METHOD])).toEqual(
       [],
     );
@@ -663,7 +663,7 @@ describe('architecture boundary guard', () => {
     expect(sharedFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, SHARED_ROOT))).toBe(false);
   });
-  it('the retired pre-rewrite runtime boundary stays absent', () => {
+  it('the removed src/execution runtime boundary stays absent', () => {
     const executionFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, EXECUTION_ROOT));
     expect(executionFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, EXECUTION_ROOT))).toBe(false);
@@ -963,7 +963,7 @@ describe('architecture boundary guard', () => {
     }
   });
   it('expansion implementation files keep the single-function contract shape', () => {
-    const legacyMembers = new Set(['install', 'uninstall', 'activate', 'deactivate', 'slots', 'priority', 'requires']);
+    const forbiddenMembers = new Set(['install', 'uninstall', 'activate', 'deactivate', 'slots', 'priority', 'requires']);
     const expansionFiles = listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('/expansion.ts'))
       .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
       .filter((filePath) => {
@@ -974,8 +974,9 @@ describe('architecture boundary guard', () => {
         return /from ['"][^'"]*\/expansion\/contract\.js['"]/u.test(source) && /\bExpansion\b/u.test(source);
       })
       .sort();
-    // Threshold guard: an empty match would silently pass the per-file loop below.
-    // Phase 7 lands at least three first-party expansions (gemini, onnx, needle).
+    // Threshold guard: an empty match would silently pass the per-file loop
+    // below. The catalog ships at least three first-party expansions
+    // (gemini, onnx, needle) — if any are missing, the filter is broken.
     expect(expansionFiles.length).toBeGreaterThanOrEqual(3);
     const violations: string[] = [];
 
@@ -1058,9 +1059,9 @@ describe('architecture boundary guard', () => {
         if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
           continue;
         }
-        const hits = exportedMemberNames(statement).filter((name) => legacyMembers.has(name));
+        const hits = exportedMemberNames(statement).filter((name) => forbiddenMembers.has(name));
         if (hits.length >= 2) {
-          violations.push(`${filePath}: exported shape reintroduces legacy members (${hits.sort().join(', ')})`);
+          violations.push(`${filePath}: exported shape reintroduces removed members (${hits.sort().join(', ')})`);
         }
       }
     }
@@ -1283,8 +1284,8 @@ describe('architecture boundary guard', () => {
 
     expect(violations).toEqual([]);
   });
-  it('retired equipment vocabulary stays purged from src and legacy expansion files remain deleted', () => {
-    const legacyPaths = [
+  it('removed equipment vocabulary stays purged from src and removed expansion files remain deleted', () => {
+    const removedPaths = [
       'src/expansion/contracts.ts',
       'src/expansion/equipment-contract.ts',
       'src/expansion/catalog.ts',
@@ -1351,7 +1352,7 @@ describe('architecture boundary guard', () => {
       );
     });
 
-    expect(legacyPaths.filter((filePath) => existsSync(resolve(REPO_ROOT, filePath)))).toEqual([]);
+    expect(removedPaths.filter((filePath) => existsSync(resolve(REPO_ROOT, filePath)))).toEqual([]);
     expect(violations).toEqual([]);
 
     const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');

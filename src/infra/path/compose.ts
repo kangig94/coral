@@ -2,8 +2,7 @@
 // sibling files (root/store/coordinator/expansion) stay subdir-internal so the
 // runtime port (`runtime.paths.coral`) is the single access path. The retired
 // `src/infra/paths.ts` magnet must not return — see
-// tests/invariants/architecture-boundary.test.ts and
-// .claude/rules/design-philosophy.md Principle #7 (No Ambiguity).
+// tests/invariants/architecture-boundary.test.ts.
 
 import { join } from 'node:path';
 
@@ -57,8 +56,8 @@ export interface CorpusPathOptions extends FamilyPathOptions {
 // `corpusPaths` and `exportsPaths` live inside the composer file rather than
 // in their own siblings: corpus piggybacks on `kbVaultRoot` (already in
 // root.ts) and exports has a single field. Splitting either into its own
-// file would be premature per §10.4. They stay exported for path-layout
-// tests that assert each family in isolation.
+// file would be premature. They stay exported for path-layout tests that
+// assert each family in isolation.
 export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
   const kbRootDir = kbVaultRoot(flavor, {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),

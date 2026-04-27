@@ -143,7 +143,7 @@ async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
   throw new Error('Curate runtime did not settle.');
 }
 
-describe('curate AC6/AC8', () => {
+describe('curate related-resolution and budget guards', () => {
   let tempDir: string;
   let runtime: KbRuntime;
   let scheduler: CurateHandle;

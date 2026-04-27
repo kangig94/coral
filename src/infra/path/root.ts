@@ -27,8 +27,8 @@ export interface KbVaultRootOptions {
 /**
  * Resolves the KB markdown vault root. Pure: callers pass the resolved
  * `CORAL_KB_PATH` value via `opts.customRoot` rather than this function
- * reading ambient `process.env`. Per design-philosophy.md Principle #4,
- * path resolvers do not read ambient state.
+ * reading ambient `process.env`. Path resolvers must not read ambient state —
+ * everything they need flows through their arguments.
  */
 export function kbVaultRoot(flavor: BuildFlavor, opts?: KbVaultRootOptions): string {
   if (opts?.baseDir !== undefined) {

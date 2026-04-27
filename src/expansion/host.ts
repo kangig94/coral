@@ -8,7 +8,8 @@ import { decorateDispose } from './scope.js';
 
 // Narrow port over the coordinator's ConsumerDriver. The host receives only
 // the registration entrypoint, not the full coordinator class — keeps
-// `src/expansion/` from importing `coordinator/` (Design Philosophy §10.2).
+// `src/expansion/` from importing `coordinator/` (a lower layer must not
+// reach into a higher one).
 export interface ConsumerDriverPort {
   register(reg: ConsumerRegistration): ConsumerHandle;
 }

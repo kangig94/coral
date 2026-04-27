@@ -57,7 +57,7 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
 
     db.close();
     throw new Error(
-      `Store schema at ${options.path} is not readable by this rewrite build. Reset local Coral store data and rebuild.`,
+      `Store schema at ${options.path} is not readable by this Coral build. Reset local Coral store data and rebuild.`,
       { cause: error },
     );
   }

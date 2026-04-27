@@ -10,7 +10,7 @@ function sort(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
-describe('expansion contracts parity (AC2)', () => {
+describe('expansion contracts parity', () => {
   it('keeps every install result status routed in skills/equip/SKILL.md', () => {
     const statuses = sort(installResultSchema.options.map((option) => option.shape.status.value));
 

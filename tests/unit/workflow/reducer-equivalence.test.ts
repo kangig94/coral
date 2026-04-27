@@ -28,7 +28,7 @@ const storageAdapter = {
 };
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-describe('workflow reducer equivalence (AC4)', () => {
+describe('workflow reducer equivalence', () => {
   it('rebuilds projection_workflows.plan rows byte-identically from workflow domain events', () => {
     const db = new Database(':memory:');
     try {

@@ -149,7 +149,7 @@ afterEach(() => {
   rmSync(tempRoot, { recursive: true, force: true });
 });
 
-describe('runtime hot-path perf regressions (AC2/AC6)', () => {
+describe('runtime hot-path perf regressions', () => {
   it('single-note metadata edit avoids unrelated corpus reads and directory walks', async () => {
     const { runtime, metadataCommit, principles, reindex } = await loadPerfModules();
     void principles;

@@ -179,7 +179,7 @@ afterEach(() => {
   }
 });
 
-describe('manifest authority drift checks (AC2)', () => {
+describe('manifest authority drift checks', () => {
   it.each([
     {
       name: 'runInboundSync',

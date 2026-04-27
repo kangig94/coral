@@ -393,9 +393,9 @@ describe('coordinator continuity lifecycle integration', () => {
     );
 
     // Recovery continuity flows to session state; terminal bodies never
-    // carry conversationRef / resumable per arch §8.3 invariant #5.
-    // The session assertion below is the load-bearing check that recovered
-    // continuity is projected from journal-owned session state.
+    // carry conversationRef / resumable. The session assertion below is the
+    // load-bearing check that recovered continuity is projected from
+    // journal-owned session state.
     expect(sessionManager.get('recovery', explicitSession.sessionId)).toMatchObject({
       conversationRef: 'thread-recovered',
       state: 'ready',

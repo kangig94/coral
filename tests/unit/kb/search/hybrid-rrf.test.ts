@@ -271,7 +271,7 @@ describe('hybrid reciprocal rank fusion', () => {
     vi.resetModules();
   });
 
-  it('reorders the top-3 exactly per the AC7 text-plus-vector RRF fixture', () => {
+  it('reorders the top-3 exactly for the text-plus-vector RRF fixture', () => {
     const hybrid = createHybridFusion();
     const fused = hybrid.fuse(
       {

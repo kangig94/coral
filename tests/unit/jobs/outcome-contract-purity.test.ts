@@ -36,7 +36,7 @@ function reachableProductionFiles(start: string): Set<string> {
   return visited;
 }
 
-describe('jobs outcome contract purity (AC1)', () => {
+describe('jobs outcome contract purity', () => {
   it('keeps the reachable import graph free of store, database, and filesystem dependencies', () => {
     const reachable = reachableProductionFiles(START);
     const bannedPathPrefixes = ['src/store/', 'src/runtime/', 'src/execution/'];

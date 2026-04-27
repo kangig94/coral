@@ -111,7 +111,7 @@ function collectViolations(sourceFile: ts.SourceFile): string[] {
   return violations;
 }
 
-describe('upcast routing invariant (AC12)', () => {
+describe('upcast routing invariant', () => {
   it('forbids raw read-side decode/parse bypasses outside the store codec allowlist', () => {
     const violations = FILES.flatMap((filePath) => {
       const canonical = toCanonicalSrcPath(ROOT, filePath);

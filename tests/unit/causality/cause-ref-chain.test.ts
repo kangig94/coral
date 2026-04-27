@@ -54,7 +54,7 @@ function insertEvent(
   );
 }
 
-describe('describeCauseRef (AC8)', () => {
+describe('describeCauseRef', () => {
   it('walks a four-link jobs -> session -> jobs -> workflow chain', () => {
     const { db, store } = createStore();
     try {

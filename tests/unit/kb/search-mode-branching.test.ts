@@ -119,9 +119,9 @@ function resultNotes(results: { note: string }[]): string[] {
   return results.map((result) => result.note);
 }
 
-describe('kb search AC8 mode branching', () => {
+describe('kb search mode branching', () => {
   beforeEach(() => {
-    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-search-ac8-'));
+    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-search-mode-'));
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
   });
 

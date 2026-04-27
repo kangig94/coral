@@ -21,7 +21,7 @@ describe('flavor path separation', () => {
   const prod = composeCoralPaths(prodFlavor);
   const dev = composeCoralPaths(devFlavor);
 
-  it('AC8 field set matches exactly', () => {
+  it('flavor-bound path bundle exposes exactly the declared families', () => {
     expect(Object.keys(prod).sort()).toEqual([...FAMILIES].sort());
     expect(Object.keys(dev).sort()).toEqual([...FAMILIES].sort());
   });

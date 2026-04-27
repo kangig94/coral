@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS events (
   seq            INTEGER PRIMARY KEY AUTOINCREMENT,  -- global total order
   ts             TEXT    NOT NULL,                   -- ISO 8601
   type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
-  stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (four Journal kinds only; see §5)
+  stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (the four Journal stream kinds)
   stream_id      TEXT    NOT NULL,
   namespace      TEXT,
   project        TEXT,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS projection_discuss (
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
   plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
-                                   -- labels are derived at render time from `slot.agent` (§12 invariant);
+                                   -- labels are derived at render time from `slot.agent`;
                                    -- workflowId is event.stream.id, not stored in body.
   last_seq    INTEGER NOT NULL
 );
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 -- Rows: schema_version, journal_version, coordinator_id, created_ts
 
--- Corpus version state (KB authority - see §6.4)
+-- Corpus version state (owned by KB authority).
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
 CREATE TABLE IF NOT EXISTS kb_corpus_state (
   id                     INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row

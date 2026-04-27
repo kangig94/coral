@@ -8,7 +8,7 @@ const ALLOWED_VALUE_EXPORTS = new Set([
   'journalEventEnvelopeSchema',
 ]);
 
-describe('src/store public surface (AC11)', () => {
+describe('src/store public surface', () => {
   // Note: Object.keys only enumerates value exports; `export type` entries are erased at runtime.
   // A drift-guard on *type* exports would require an AST walker; the allow-list is a value-only invariant.
   it('exports exactly the allow-listed value names (no more, no less)', () => {

@@ -93,8 +93,8 @@ function collectViolations(predicate: (source: string, target: string) => boolea
   return IMPORT_EDGES.filter(({ source, target }) => predicate(source, target)).map(({ source, target }) => `${source} -> ${target}`);
 }
 
-describe('architecture layering invariants (architecture §16, #27-#31)', () => {
-  it('#27: runtime and infra import nothing from domains, transport, coordinator, or cli', () => {
+describe('architecture layering invariants', () => {
+  it('runtime and infra import nothing from domains, transport, coordinator, or cli', () => {
     const violations = collectViolations(
       (source, target) =>
         (source.startsWith('src/runtime/') || source.startsWith('src/infra/')) &&
@@ -104,7 +104,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#28: transport imports only transport-local helpers and named domain public contracts', () => {
+  it('transport imports only transport-local helpers and named domain public contracts', () => {
     const violations = collectViolations((source, target) => {
       if (!source.startsWith('src/transport/')) {
         return false;
@@ -128,7 +128,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#29: only coordinator glue and extracted coordinator implementation leafs may bypass coordinator contract entrypoints', () => {
+  it('only coordinator glue and extracted coordinator implementation leafs may bypass coordinator contract entrypoints', () => {
     const violations = collectViolations((source, target) => {
       if (
         !source.startsWith('src/coordinator/') ||
@@ -157,7 +157,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#30: production files never import test helpers', () => {
+  it('production files never import test helpers', () => {
     const violations = collectViolations(
       (_source, target) =>
         target.startsWith('tests/') || target.startsWith('src/testing/') || target.startsWith('tools/testing/'),
@@ -185,7 +185,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#31: domain roots do not contain generic filenames', () => {
+  it('domain roots do not contain generic filenames', () => {
     const banned = DOMAIN_ROOT_DIRS.flatMap((root) =>
       GENERIC_FILENAMES.map((name) => `${root}/${name}`).filter((filePath) => PRODUCTION_FILES.has(filePath)),
     );

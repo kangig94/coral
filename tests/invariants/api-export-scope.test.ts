@@ -72,7 +72,7 @@ function collectExportNames(sourceFile: ts.SourceFile): string[] {
   return names;
 }
 
-describe('coordinator api export scope invariant (AC12)', () => {
+describe('coordinator api export scope invariant', () => {
   it('keeps coordinator/contracts.ts free of transport, live, and service implementation imports', () => {
     const sourceFile = ts.createSourceFile(
       CONTRACTS_PATH,

@@ -108,7 +108,7 @@ function buildPlannedEvent(runtime: SimulationRuntime, index: number, streamIds:
     type: 'test.counter.ticked',
     stream: { kind: 'job', id: streamIds[index % streamIds.length] ?? streamIds[0] },
     namespace: 'simulation',
-    project: 'rewrite',
+    project: 'simulation',
     correlationId: runtime.ids.sha256(`correlation-${index % 2}`),
     bodyVersion: 1,
     body: {

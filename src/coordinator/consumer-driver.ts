@@ -30,8 +30,8 @@ import {
 } from './consumer-driver-support.js';
 
 // Consumer-related contract types live at their canonical home in
-// `src/store/consumer-contract.ts` (single-home per design-philosophy §7).
-// Importers should reach there directly — no re-export shim from this file.
+// `src/store/consumer-contract.ts`. Importers should reach there directly —
+// no re-export shim from this file.
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {

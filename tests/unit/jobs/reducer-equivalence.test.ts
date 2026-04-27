@@ -18,7 +18,7 @@ const storageAdapter = {
 };
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-describe('jobs reducer equivalence (AC1)', () => {
+describe('jobs reducer equivalence', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
     const db = new Database(':memory:');
     try {

@@ -29,7 +29,7 @@ function loadFixtureEvents(): DiscussDomainEvent[] {
     .map((line) => JSON.parse(line) as DiscussDomainEvent);
 }
 
-describe('discuss session-store golden master (AC3)', () => {
+describe('discuss session-store golden master', () => {
   it('replays the normalized fixture through projection_discuss byte-identically', () => {
     const expectedState = fs.readFileSync(FIXTURE_JSON, 'utf8');
     const events = loadFixtureEvents();

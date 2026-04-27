@@ -303,7 +303,7 @@ afterEach(() => {
   }
 });
 
-describe('external edit absorption (AC28)', () => {
+describe('external edit absorption', () => {
   it('bumps only metadata_seq for a note frontmatter-only edit after restart', async () => {
     const root = allocateRoot();
     const initial = await bootstrapSeededCorpus(root);

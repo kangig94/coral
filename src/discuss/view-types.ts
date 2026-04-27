@@ -1,7 +1,7 @@
 // Discuss transcript DTO types — exists to break a `read-contract.ts ↔
 // projections.ts` cycle (read-contract builds the DTO, projections types it).
-// Per Principle #7, this split is documented because a cycle physically
-// forces it; otherwise the types would live in read-contract.ts.
+// The split is documented because a cycle physically forces it; otherwise
+// the types would live in read-contract.ts.
 import type { TranscriptEntry } from './session-types.js';
 
 type DiscussBidTranscriptEntry = Extract<TranscriptEntry, { type: 'bids' }>;

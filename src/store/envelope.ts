@@ -6,7 +6,7 @@ import type { EventsRow } from './schema.js';
 export { UpcasterRegistry, createEmptyRegistry } from './upcaster-registry.js';
 
 /**
- * Cross-authority reference shape (GOD doc §2.4).
+ * Cross-authority reference shape.
  * - `entryId` alone: late-bound — resolves to current Corpus content.
  * - `entryId + contentHash`: point-in-time — preserves historical meaning
  *   even if the Corpus entry is later edited.

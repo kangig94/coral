@@ -92,7 +92,7 @@ function renderRootEventDescription(input: {
   }
 }
 
-describe('cause-ref session rendering (AC2)', () => {
+describe('cause-ref session rendering', () => {
   it.each(CONTINUITY_CASES)('renders the %s continuity fragment', (continuity, fragment) => {
     expect(
       renderRootEventDescription({

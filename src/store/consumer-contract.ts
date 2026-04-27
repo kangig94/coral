@@ -50,7 +50,7 @@ export interface JournalConsumerRegistration {
   readonly registrationKind?: ConsumerRegistrationKind;
   readonly onApplyFailure?: (err: ConsumerApplyError) => void;
   /**
-   * Idempotent apply. Architecture §16 invariant #44:
+   * Idempotent apply. Contract:
    * - ConsumerDriver does NOT wrap apply() in a transaction.
    * - apply() owns its own write atomicity.
    * - Cursor advances only on clean return; crash between apply commit and

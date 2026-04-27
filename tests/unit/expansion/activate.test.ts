@@ -49,7 +49,7 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
   };
 }
 
-describe('expansion activation (AC6)', () => {
+describe('expansion activation', () => {
   const originalFlavor = process.env.CORAL_FLAVOR;
 
   beforeEach(() => {

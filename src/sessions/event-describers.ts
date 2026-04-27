@@ -15,7 +15,7 @@ import {
 } from './event-bodies.js';
 import { continuitySentenceFragment, type SessionContinuityState } from './fault.js';
 
-// AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch +
+// sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of
 // widening the type.
 function safeContinuitySentenceFragment(value: SessionContinuityState): string {

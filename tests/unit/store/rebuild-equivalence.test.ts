@@ -19,7 +19,7 @@ const storageAdapter = {
   readFileSync: (p: string, enc: 'utf-8') => fs.readFileSync(p, enc),
 };
 
-describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
+describe('rebuildProjections replay identity', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
     const db = new Database(':memory:');
     try {

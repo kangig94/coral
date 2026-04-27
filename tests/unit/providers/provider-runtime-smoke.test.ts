@@ -114,7 +114,7 @@ function makeRequest(
 ): ProviderRequest {
   return {
     action: 'exec',
-    sessionId: `job-${provider}-phase6-smoke`,
+    sessionId: `job-${provider}-runtime-smoke`,
     name: provider,
     prompt: `Run ${provider} smoke coverage.`,
     cwd: '/workspace',
@@ -170,7 +170,7 @@ function expectValidContinuitySnapshots(events: ProviderEventBody[]): ProviderCo
   return continuityEvents;
 }
 
-describe('phase6 provider smoke', () => {
+describe('provider runtime smoke', () => {
   it.each(REGISTERED_PROVIDER_NAMES)(
     'runs %s through the production-composed stack with one terminal last and valid continuity snapshots',
     async (providerName) => {

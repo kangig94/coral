@@ -179,7 +179,7 @@ async function invokeBackend(
   };
 }
 
-describe('AC7 runtime-sealed discuss behavior', () => {
+describe('runtime-sealed discuss behavior', () => {
   it('starts, appends, loads, lists, replays watch history, and reads events through SimulationRuntime storage', async () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const harness = createHarness();
@@ -505,7 +505,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
   });
 });
 
-describe('AC7 import audits', () => {
+describe('discuss shell import audits', () => {
   const sourceRoot = resolve(process.cwd(), 'src/discuss/shell');
 
   function readSource(relativePath: string): string {

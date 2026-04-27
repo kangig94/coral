@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
-describe('hook stubs no-op (AC10)', () => {
+describe('hook stubs no-op', () => {
   it('post-compact.mjs exits 0 on synthetic JSON stdin', () => {
     const result = spawnSync('node', ['hooks/post-compact.mjs'], {
       input: JSON.stringify({}),

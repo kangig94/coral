@@ -79,7 +79,7 @@ function createExecutionService(): WorkflowExecutionPort & {
   };
 }
 
-describe('workflow cascade equivalence golden master (AC4)', () => {
+describe('workflow cascade equivalence golden master', () => {
   it('produces the byte-identical cascade prompts and result for the decomposed executor', async () => {
     const executionSvc = createExecutionService();
     const prompts: string[] = [];

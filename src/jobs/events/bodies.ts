@@ -3,8 +3,8 @@
 // from launch/outcome/result which carry substantive helpers in their own
 // files). Exists as a cycle-break sibling: keeping these inline in events.ts
 // would force projections.ts to either type-only-import them (creating the
-// runtime↔type cycle) or redeclare structural duplicates. Per Principle #7
-// (No Ambiguity) cycle-break clause, mirroring `kb/corpus/manifest-types.ts`.
+// runtime↔type cycle) or redeclare structural duplicates. A cycle-break split
+// like this mirrors `kb/corpus/manifest-types.ts`.
 
 import { z } from 'zod';
 

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 const EXEC_PATTERNS = ['appendOutput', 'scheduleKill', 'finish', 'clearTimers'];
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
-describe('exec factory no-duplication invariant (AC11a)', () => {
+describe('exec factory no-duplication invariant', () => {
   it.each(EXEC_PATTERNS)('pattern "%s" appears only in src/runtime/exec-builder.ts', (pattern) => {
     const builder = readFileSync(join(ROOT, 'src/runtime/exec-builder.ts'), 'utf-8');
     const real = readFileSync(join(ROOT, 'src/runtime/real.ts'), 'utf-8');

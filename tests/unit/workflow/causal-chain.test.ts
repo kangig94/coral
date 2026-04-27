@@ -1,35 +1,18 @@
-// Pinning regression test for the GOD architecture document
-// (.claude/analysis/2026-04-18-final-unified-architecture.md), §13 — the
-// canonical worked example "[A] | [B, C] where C fails".
-//
-// The §13 chain is the single concrete demonstration that the causal-graph
-// fault model (§7) replaces wrapped fault unions: a child job exits non-zero,
+// Pinning regression test for the canonical worked example
+// "[A] | [B, C] where C fails" — the demonstration that the causal-graph
+// fault model replaces wrapped fault unions: a child job exits non-zero,
 // the workflow stream records a `workflow.completed { outcome: 'failed',
 // causeRef }`, and the workflow job's terminal in turn carries
 // `failed { causeRef }` pointing at that workflow event. Every event lives
 // once on its originating stream; outer terminals point inward instead of
 // duplicating payload.
 //
-// This test reproduces the spec's five-transaction sequence, then verifies
-// (a) projection state at the final seq matches §13.2 and (b) the cause-ref
-// renderer walks the chain to the originating provider exit per §13.3.
-//
-// If this test breaks, you have changed something §13 explicitly claims.
-// Update the document FIRST (or the change), then this test.
-//
-// Notes on doc/code drift surfaced while writing this test:
-//   - §6.5/§13 declare `WorkflowPlan.labels: Record<slotId, string>`. The
-//     production type carries no `labels` field; labels are derived at render
-//     time from `slot.agent` (or a truncated instruction). The test uses the
-//     production shape; doc should follow.
-//   - §13 uses spec-shaped slot ids `sl-0-0`, `sl-1-0`, `sl-1-1`. Production
-//     `buildWorkflowPlan` formats slot ids as `${workflowId}:${stepIndex}:
-//     ${atomIndex}`. The test uses the production format.
-//   - §13.3 shows a fully-formatted CLI block ("✓ A sl-0-0 completed", etc.).
-//     That presentation belongs to a higher CLI layer (`cli/follow.ts` +
-//     `cli/format.ts`), not the cause-ref renderer. This test pins the chain
-//     primitive (`describeCauseRef`) plus `WorkflowView.slotOutcomes`, which
-//     together are the inputs that CLI presentation composes from.
+// The test reproduces the five-transaction sequence, then verifies
+// (a) projection state at the final seq matches the worked example and
+// (b) the cause-ref renderer walks the chain to the originating provider
+// exit. The test pins the chain primitive (`describeCauseRef`) plus
+// `WorkflowView.slotOutcomes`, which together are the inputs that CLI
+// presentation composes from.
 
 import { readFileSync, readdirSync } from 'node:fs';
 
@@ -184,7 +167,7 @@ async function runChain(
     return result.at(-1)?.seq ?? 0;
   };
 
-  // §13 Transaction 1 — workflow plan declared + workflow job launched.
+  // Transaction 1 — workflow plan declared + workflow job launched.
   append([
     {
       type: 'workflow.plan.declared',
@@ -200,7 +183,7 @@ async function runChain(
     }),
   ]);
 
-  // §13 Transaction 2 — slot A launched and completed.
+  // Transaction 2 — slot A launched and completed.
   append([
     ...transactionLaunchAndStart({
       jobId: 'a-1',
@@ -224,7 +207,7 @@ async function runChain(
     },
   ]);
 
-  // §13 Transaction 3 — slots B and C launched.
+  // Transaction 3 — slots B and C launched.
   append([
     ...transactionLaunchAndStart({
       jobId: 'b-1',
@@ -242,7 +225,7 @@ async function runChain(
     }),
   ]);
 
-  // §13 Transaction 4 — slot B completes.
+  // Transaction 4 — slot B completes.
   append([
     {
       type: 'job.terminal.recorded',
@@ -259,8 +242,8 @@ async function runChain(
     },
   ]);
 
-  // §13 Transaction 5 — C fails, workflow fails, workflow-job fails.
-  // All three events commit atomically per §3.3 (BEGIN IMMEDIATE..COMMIT).
+  // Transaction 5 — C fails, workflow fails, workflow-job fails.
+  // All three events commit atomically (BEGIN IMMEDIATE..COMMIT).
   const cTerminalSeq = (
     appendEvents(
       db,
@@ -331,8 +314,8 @@ async function runChain(
   return workflowJobTerminalSeq;
 }
 
-describe('§13 worked example — [A] | [B, C] where C fails', () => {
-  it('§13.2 — at the final seq, projection_jobs(wf-1) is failed-with-causeRef pointing at workflow.completed', async () => {
+describe('worked example — [A] | [B, C] where C fails', () => {
+  it('at the final seq, projection_jobs(wf-1) is failed-with-causeRef pointing at workflow.completed', async () => {
     const { db, driver } = setup();
     try {
       const finalSeq = await runChain(db, driver);
@@ -370,7 +353,7 @@ describe('§13 worked example — [A] | [B, C] where C fails', () => {
     }
   });
 
-  it('§13.2 — WorkflowView aggregates plan + slot outcomes with causeRef pointing at job/c-1', async () => {
+  it('WorkflowView aggregates plan + slot outcomes with causeRef pointing at job/c-1', async () => {
     const { db, driver, store } = setup();
     try {
       await runChain(db, driver);
@@ -384,7 +367,7 @@ describe('§13 worked example — [A] | [B, C] where C fails', () => {
       });
       expect(view?.plan.slots.map((slot) => slot.slotId)).toEqual([SLOT_A, SLOT_B, SLOT_C]);
 
-      // Children are derived (§9.5/§9.7), not embedded.
+      // Children are derived from the projection, not embedded in the view.
       expect(view?.slotOutcomes[SLOT_A]).toMatchObject({ jobId: 'a-1', phase: 'completed', causeRef: null });
       expect(view?.slotOutcomes[SLOT_B]).toMatchObject({ jobId: 'b-1', phase: 'completed', causeRef: null });
       // c-1 ended via provider_exit, not failed-with-causeRef, so slot causeRef is null.
@@ -395,7 +378,7 @@ describe('§13 worked example — [A] | [B, C] where C fails', () => {
     }
   });
 
-  it('§13.3 — describeCauseRef walks workflow.completed → c-1 provider_exit chain', async () => {
+  it('describeCauseRef walks workflow.completed → c-1 provider_exit chain', async () => {
     const { db, driver, store } = setup();
     try {
       await runChain(db, driver);
@@ -419,7 +402,7 @@ describe('§13 worked example — [A] | [B, C] where C fails', () => {
     }
   });
 
-  it('§7.6 — Transaction 5 commit atomicity: the three events share a contiguous seq range and replay sees all-or-nothing', async () => {
+  it('Transaction 5 commit atomicity: the three events share a contiguous seq range and replay sees all-or-nothing', async () => {
     const { db, driver } = setup();
     try {
       const finalSeq = await runChain(db, driver);

@@ -161,7 +161,7 @@ function createHarness(options: {
   return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };
 }
 
-describe('workflow recovery branch rules (AC4)', () => {
+describe('workflow recovery branch rules', () => {
   it('uses waitForAtoms only when projection_jobs.phase is running', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running', projectionLastSeq: 17 });
     try {

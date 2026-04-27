@@ -1,6 +1,7 @@
 // Backend assembly root — wires HTTP/IPC transports, domain shells, services,
-// coordinator lifecycle, and event subscriptions. Per Principle #7 (No
-// Ambiguity), this file is allowed to be large because its job is composition.
+// coordinator lifecycle, and event subscriptions. This file is allowed to be
+// large because its single job is composition; that role does not turn it into
+// a magnet for unrelated logic.
 // What it MUST NOT absorb:
 //   - Domain-specific logic (belongs in jobs/, sessions/, discuss/, kb/, ...)
 //   - Backend global state (belongs in BackendWorld via backend-world.ts)

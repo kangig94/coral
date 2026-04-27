@@ -18,7 +18,7 @@ const storageAdapter = {
   readFileSync: (p: string, enc: 'utf-8') => fs.readFileSync(p, enc),
 };
 
-describe('append/rebuild upcaster round-trip (AC9 lock)', () => {
+describe('append/rebuild upcaster round-trip', () => {
   it('append stores raw v1 bytes; rebuild upcasts to v2 for reducer', () => {
     const db = new Database(':memory:');
     try {

@@ -45,7 +45,7 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
   };
 }
 
-describe('sessions reducer equivalence (AC2)', () => {
+describe('sessions reducer equivalence', () => {
   it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
     const db = new Database(':memory:');
     try {
