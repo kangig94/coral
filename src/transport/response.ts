@@ -78,7 +78,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
     case 'scope_mismatch':
       statusCode = 403;
       break;
-    case 'coordinator_recovering':
+    case 'backend_recovering':
     case 'kb_unavailable':
       statusCode = 503;
       break;

@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as BackendDiscoveryModule from '#src/infra/coordinator-discovery.js';
+import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
-import type { CoordinatorDiscoveryRecord } from '#src/infra/coordinator-discovery.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -17,8 +17,8 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/infra/coordinator-discovery.js', async () => {
-  const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/coordinator-discovery.js');
+vi.mock('#src/infra/backend-discovery.js', async () => {
+  const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/backend-discovery.js');
   return {
     ...actual,
     readDiscoveryRecord: mockState.readDiscoveryRecord,
@@ -127,12 +127,12 @@ describe('expansion activation', () => {
     mockState.createIpcClient.mockReset();
     mockState.readDiscoveryRecord.mockReset();
     vi.resetModules();
-    vi.doUnmock('#src/infra/coordinator-discovery.js');
+    vi.doUnmock('#src/infra/backend-discovery.js');
 
     try {
       const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }, { createRealRuntime }] =
         await Promise.all([
-          import('#src/infra/coordinator-discovery.js'),
+          import('#src/infra/backend-discovery.js'),
           import('#src/cli/expansion-activation.js'),
           import('#src/runtime/real.js'),
         ]);

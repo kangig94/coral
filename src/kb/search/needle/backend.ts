@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { readCorpusState } from '../../state/corpus-state.js';
-import { coordinatorLog } from '../../../infra/coordinator-log.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { nowIsoString } from '../../../infra/time.js';
@@ -634,7 +634,7 @@ export class NeedleBackend implements NeedleBackendContract {
       this.publishActiveHandle(nextHandle);
       return nextHandle;
     } catch (error: unknown) {
-      coordinatorLog.warn(`KB needle backend could not load snapshot ${expectedSnapshotId}: ${errorMessage(error)}`);
+      backendLog.warn(`KB needle backend could not load snapshot ${expectedSnapshotId}: ${errorMessage(error)}`);
       return null;
     }
   }

@@ -1,4 +1,4 @@
-import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
+import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -12,13 +12,13 @@ export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
 
-export function isShuttingDownError(value: unknown): value is { code: 'coordinator_shutting_down' } {
-  return isRecord(value) && value.code === 'coordinator_shutting_down';
+export function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
+  return isRecord(value) && value.code === 'backend_shutting_down';
 }
 
-export async function shutdownCoordinator(pluginRoot: string): Promise<ShutdownResult> {
+export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readCoordinatorInfo({
+  const info = readBackendInfo({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,
@@ -30,7 +30,7 @@ export async function shutdownCoordinator(pluginRoot: string): Promise<ShutdownR
   try {
     const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Coordinator-Token': info.token },
+      headers: { 'X-Coral-Backend-Token': info.token },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);

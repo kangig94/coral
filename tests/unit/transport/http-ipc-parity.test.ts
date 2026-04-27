@@ -165,7 +165,7 @@ describe('http/ipc parity', () => {
     await listenIpcServer(ipcListener, socketPath);
     try {
       const httpResponse = await fetch(`${baseUrl}/discuss/sessions`, {
-        headers: { 'X-Coral-Coordinator-Token': ports.identity.token },
+        headers: { 'X-Coral-Backend-Token': ports.identity.token },
       });
       const httpBody = await httpResponse.json();
       const ipcBody = await requestIpcMethod(socketPath, 'discuss.session.list', {});

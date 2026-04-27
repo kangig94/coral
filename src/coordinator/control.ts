@@ -1,7 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../infra/error-format.js';
-import { coordinatorLog } from '../infra/coordinator-log.js';
-import { readCoordinatorInfo, type CoordinatorInfo } from '../infra/coordinator-discovery.js';
+import { backendLog } from '../infra/backend-log.js';
+import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -232,7 +232,7 @@ export async function listen(
       server.off('error', reject);
       const address = server.address();
       if (!address || typeof address === 'string') {
-        reject(new Error('Coordinator server failed to bind to a TCP port'));
+        reject(new Error('Backend server failed to bind to a TCP port'));
         return;
       }
       resolve({ port: address.port, host: resolveClientHost(bindHost, advertiseHost) });
@@ -297,7 +297,7 @@ export type LifecycleDeps = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  readonly writeBackendInfoFn: (info: CoordinatorInfo) => void;
+  readonly writeBackendInfoFn: (info: BackendInfo) => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly removeLockIfOwnerFn: (pluginRoot: string, instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
@@ -381,7 +381,7 @@ async function runLifecycleStartup({
   const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
-    throw new Error('Coordinator server already started');
+    throw new Error('Backend server already started');
   }
 
   const assertStartupStillActive = (): void => {
@@ -409,7 +409,7 @@ async function runLifecycleStartup({
       runtimeState.setKbSubsystem(kbSub);
     } catch (error: unknown) {
       const message = errorMessage(error);
-      coordinatorLog.error('KB subsystem failed to initialize — running in degraded mode', error);
+      backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
       runtimeState.setKbInitError(message);
     }
     assertStartupStillActive();
@@ -547,7 +547,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     ownershipCheckerTeardown: null,
   };
   const ownershipChecker = createReplacementBackendOwnershipChecker({
-    readCoordinatorInfo,
+    readBackendInfo,
     runtime,
     runtimeState,
     idleTimer,

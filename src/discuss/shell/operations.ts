@@ -20,7 +20,7 @@ import {
 import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { collectBids } from './bid-flow.js';
 import { makeDecisionContext } from './flow-primitives.js';
 import { persistAbortEndForShutdown } from './recovery.js';
@@ -192,7 +192,7 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
     try {
       await persistAbortEndForShutdown(ctx, sessionId, session);
     } catch (error: unknown) {
-      coordinatorLog.error(`Discuss shutdown persist failed for ${sessionId}`, error);
+      backendLog.error(`Discuss shutdown persist failed for ${sessionId}`, error);
     }
   }
 

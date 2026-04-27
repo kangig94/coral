@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
-import { coordinatorLog } from '../infra/coordinator-log.js';
+import { backendLog } from '../infra/backend-log.js';
 
 export type EventBusEvents = {
   'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };
@@ -50,11 +50,11 @@ export class TypedEventBus {
         const result = listener(payload);
         if (result instanceof Promise) {
           void result.catch((error: unknown) => {
-            coordinatorLog.error(`EventBus listener for ${String(event)} failed`, error);
+            backendLog.error(`EventBus listener for ${String(event)} failed`, error);
           });
         }
       } catch (error: unknown) {
-        coordinatorLog.error(`EventBus listener for ${String(event)} failed`, error);
+        backendLog.error(`EventBus listener for ${String(event)} failed`, error);
       }
     }
 

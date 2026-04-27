@@ -47,7 +47,7 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
       state: 'ready' as const,
       cwd: '/workspace/coral',
       projectRoot: '/workspace/coral',
-      coordinatorNamespace: 'tests',
+      backendNamespace: 'tests',
       createdAt: '2026-04-19T00:00:00.000Z',
       lastUsedAt: '2026-04-19T00:00:00.000Z',
       version: 1,

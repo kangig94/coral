@@ -1,5 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { DiscussContext, LiveDiscussSession } from './types.js';
 import { ABORT_REASON } from './errors.js';
@@ -69,7 +69,7 @@ export function buildAbortEndEventsForShutdown(
 }
 
 function logShutdownPersistFailure(scope: string, error: unknown): void {
-  coordinatorLog.error(`Discuss shutdown persist failed for ${scope}`, error);
+  backendLog.error(`Discuss shutdown persist failed for ${scope}`, error);
 }
 
 export async function persistAbortEndForShutdown(
@@ -194,7 +194,7 @@ export const runStartup: DiscussRunStartup = async (deps) => {
         )),
       );
     } catch (error: unknown) {
-      coordinatorLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(error)}`);
+      backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(error)}`);
     }
     deps.assertStartupStillActive();
   }

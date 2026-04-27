@@ -132,7 +132,7 @@ function tryResolveExplicit(
   const source = namespaceSource(ref.namespace, ctx);
   if (source === null) {
     throw new AgentNamespaceNotFoundError(
-      `Plugin namespace "${ref.namespace}" not found. If you just installed the plugin, restart the Coral coordinator (coral-cli coordinator shutdown).`,
+      `Plugin namespace "${ref.namespace}" not found. If you just installed the plugin, restart the Coral backend (coral-cli backend shutdown).`,
     );
   }
 

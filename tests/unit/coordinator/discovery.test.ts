@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { DiscoveryRuntime } from '#src/infra/coordinator-discovery.js';
+import type { DiscoveryRuntime } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',
@@ -33,7 +33,7 @@ afterEach(() => {
 
 async function importDiscovery() {
   vi.resetModules();
-  return import('#src/infra/coordinator-discovery.js');
+  return import('#src/infra/backend-discovery.js');
 }
 
 function makeHome(): string {

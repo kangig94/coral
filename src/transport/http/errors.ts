@@ -1,11 +1,11 @@
-export class CoordinatorHttpError extends Error {
+export class BackendToolHttpError extends Error {
   constructor(
     message: string,
     public readonly statusCode: number,
     public readonly body: unknown,
   ) {
     super(message);
-    this.name = 'CoordinatorHttpError';
+    this.name = 'BackendToolHttpError';
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

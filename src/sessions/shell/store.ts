@@ -269,7 +269,7 @@ export class SessionManager {
       model: options.model,
       cwd: options.cwd,
       projectRoot: options.projectRoot,
-      coordinatorNamespace: options.coordinatorNamespace,
+      backendNamespace: options.backendNamespace,
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -304,7 +304,7 @@ export class SessionManager {
               model,
               cwd: resolvedCwd,
               projectRoot: resolvedProjectRoot,
-              coordinatorNamespace: pluginRootNamespace(resolvedProjectRoot),
+              backendNamespace: pluginRootNamespace(resolvedProjectRoot),
             };
           })()
         : optionsOrProvider;

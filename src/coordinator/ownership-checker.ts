@@ -1,4 +1,4 @@
-import type { DiscoveryRuntime } from '../infra/coordinator-discovery.js';
+import type { DiscoveryRuntime } from '../infra/backend-discovery.js';
 import type { Runtime } from '../runtime/ports.js';
 
 type ReplacementBackendOwnershipCheckerInstaller = {
@@ -6,7 +6,7 @@ type ReplacementBackendOwnershipCheckerInstaller = {
 };
 
 type CreateReplacementBackendOwnershipCheckerContext = {
-  readCoordinatorInfo: (runtime: DiscoveryRuntime) => { instanceId: string } | null;
+  readBackendInfo: (runtime: DiscoveryRuntime) => { instanceId: string } | null;
   runtime: Runtime;
   runtimeState: { getLifecycle(): string };
   idleTimer: { isDraining: boolean; requestDrain(reason: string): void };
@@ -15,7 +15,7 @@ type CreateReplacementBackendOwnershipCheckerContext = {
 };
 
 export function createReplacementBackendOwnershipChecker({
-  readCoordinatorInfo,
+  readBackendInfo,
   runtime,
   runtimeState,
   idleTimer,
@@ -30,7 +30,7 @@ export function createReplacementBackendOwnershipChecker({
         }
 
         try {
-          const current = readCoordinatorInfo({
+          const current = readBackendInfo({
             storage: runtime.storage,
             env: runtime.env,
             paths: runtime.paths,

@@ -8,7 +8,7 @@ import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
-import { coordinatorLog } from '#src/infra/coordinator-log.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -214,7 +214,7 @@ describe('Corpus notify crash replay', () => {
     const applyCalls: Array<{ appliedBy: string; snapshotId: string }> = [];
     const firstApplyStarted = createDeferred<void>();
     const firstApplyGate = createDeferred<void>();
-    const errorSpy = vi.spyOn(coordinatorLog, 'error').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
     let replayDb: InstanceType<typeof Database> | null = null;
     let replayDriver: ConsumerDriver | null = null;
 

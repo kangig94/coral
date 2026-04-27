@@ -233,7 +233,7 @@ describe('cli main — backend status without daemon', () => {
     });
 
     expect(status).toBe(0);
-    expect(stdout.trim()).toBe('Coordinator not running');
+    expect(stdout.trim()).toBe('Backend not running');
   });
 });
 

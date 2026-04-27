@@ -390,21 +390,21 @@ describe('cli follow', () => {
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps retrying CoordinatorUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
+  it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
     const { launchAndFollow } = await loadFollowModule();
-    const { CoordinatorUnreachableError } = await import('#src/infra/http-errors.js');
+    const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
     mockState.ensure.mockResolvedValue(makeBackend());
     mockState.subscribe
-      .mockRejectedValueOnce(new CoordinatorUnreachableError('fetch failed'))
-      .mockRejectedValueOnce(new CoordinatorUnreachableError('fetch failed'))
-      .mockRejectedValueOnce(new CoordinatorUnreachableError('fetch failed'));
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
 
     const options = makeOptions({
       emitError: (error: unknown) => {
-        expect(error).toBeInstanceOf(CoordinatorUnreachableError);
-        process.stderr.write('fetch failed [code=coordinator_unreachable]\n');
+        expect(error).toBeInstanceOf(BackendUnreachableError);
+        process.stderr.write('fetch failed [code=backend_unreachable]\n');
         process.exitCode = 69;
       },
       backoffScheduler,
@@ -413,7 +413,7 @@ describe('cli follow', () => {
     await expect(launchAndFollow(options)).resolves.toBe(69);
 
     expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
-    expect(stderr).toBe('fetch failed [code=coordinator_unreachable]\n');
+    expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
     expect(backoffScheduler).toHaveBeenCalledTimes(2);
     expect(backoffScheduler).toHaveBeenNthCalledWith(1, 1_000);
     expect(backoffScheduler).toHaveBeenNthCalledWith(2, 1_000);

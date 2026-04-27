@@ -40,7 +40,7 @@ type ProjectedJobState = {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash: string | null;
   jobKind: 'provider' | 'workflow' | 'kb';
   parentWorkflowJobId: string | null;
@@ -151,7 +151,7 @@ function createInitialProjectionJobState(
 ): ProjectedJobState {
   if (
     patch.projectRoot === undefined
-    || patch.coordinatorNamespace === undefined
+    || patch.backendNamespace === undefined
     || patch.jobKind === undefined
     || patch.createdAt === undefined
   ) {
@@ -165,7 +165,7 @@ function createInitialProjectionJobState(
     sessionId: patch.sessionId ?? null,
     provider: patch.provider ?? null,
     projectRoot: patch.projectRoot,
-    coordinatorNamespace: patch.coordinatorNamespace,
+    backendNamespace: patch.backendNamespace,
     bundleHash: patch.bundleHash ?? null,
     jobKind: patch.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? (event.refs?.parentJobId ?? null),
@@ -178,7 +178,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
   const row = db
     .prepare(
       `SELECT phase, terminal, diagnostics,
-              session_id, provider, project_root, coordinator_namespace, bundle_hash,
+              session_id, provider, project_root, backend_namespace, bundle_hash,
               job_kind, parent_workflow_job_id, workflow_slot, created_at
          FROM projection_jobs
         WHERE job_id = ?`,
@@ -191,7 +191,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
         session_id: string | null;
         provider: string | null;
         project_root: string;
-        coordinator_namespace: string;
+        backend_namespace: string;
         bundle_hash: string | null;
         job_kind: string;
         parent_workflow_job_id: string | null;
@@ -211,7 +211,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,
-    coordinatorNamespace: row.coordinator_namespace,
+    backendNamespace: row.backend_namespace,
     bundleHash: row.bundle_hash,
     jobKind: row.job_kind as 'provider' | 'workflow' | 'kb',
     parentWorkflowJobId: row.parent_workflow_job_id,
@@ -238,7 +238,7 @@ function upsertProjectionJob(
     sessionId: patch.sessionId === undefined ? base.sessionId : patch.sessionId,
     provider: patch.provider === undefined ? base.provider : patch.provider,
     projectRoot: patch.projectRoot ?? base.projectRoot,
-    coordinatorNamespace: patch.coordinatorNamespace ?? base.coordinatorNamespace,
+    backendNamespace: patch.backendNamespace ?? base.backendNamespace,
     bundleHash: patch.bundleHash ?? base.bundleHash,
     jobKind: patch.jobKind ?? base.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? base.parentWorkflowJobId,
@@ -257,7 +257,7 @@ function upsertProjectionJob(
       session_id: next.sessionId,
       provider: next.provider,
       project_root: next.projectRoot,
-      coordinator_namespace: next.coordinatorNamespace,
+      backend_namespace: next.backendNamespace,
       bundle_hash: next.bundleHash,
       job_kind: next.jobKind,
       parent_workflow_job_id: next.parentWorkflowJobId,
@@ -276,7 +276,7 @@ export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, even
     sessionId,
     provider,
     projectRoot: event.body.projectRoot,
-    coordinatorNamespace: event.body.coordinatorNamespace,
+    backendNamespace: event.body.backendNamespace,
     bundleHash: event.body.bundleHash ?? null,
     jobKind: event.body.jobKind,
     parentWorkflowJobId: event.refs?.parentJobId ?? null,

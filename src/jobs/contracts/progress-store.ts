@@ -20,7 +20,7 @@ export type InitJobOptions = {
   sessionId: string;
   provider: string;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind?: JobStatus['jobKind'];
   initialPhase?: JobStatus['phase'];

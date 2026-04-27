@@ -141,7 +141,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const service = new ExecutionService(ctx, {
       runtime,
       progressStore,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       bundleHash: 'bundle-test',
       providerHostManager: createProviderHostManager({ runtime, spawnProviderServer }),
       launchCoordinator,
@@ -373,7 +373,7 @@ describe('coordinator continuity lifecycle integration', () => {
       sessionId: explicitSession.sessionId,
       provider: 'recovery',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
 
@@ -417,7 +417,7 @@ describe('coordinator continuity lifecycle integration', () => {
       sessionId: preservedSession.sessionId,
       provider: 'recovery',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
 

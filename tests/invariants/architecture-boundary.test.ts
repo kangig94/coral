@@ -939,7 +939,7 @@ describe('architecture boundary guard', () => {
   });
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
-      'src/infra/coordinator-discovery.ts',
+      'src/infra/backend-discovery.ts',
       'src/infra/path/compose.ts',
       'src/infra/path/root.ts',
       'src/infra/plugin-registry.ts',
@@ -1304,7 +1304,7 @@ describe('architecture boundary guard', () => {
 
     expect(violations).toEqual([]);
   });
-  it('removed equipment + Backend vocabulary stays purged from src and removed paths remain deleted', () => {
+  it('retired vocabulary stays purged from src and removed paths remain deleted', () => {
     const removedPaths = [
       'src/expansion/contracts.ts',
       'src/expansion/equipment-contract.ts',
@@ -1369,7 +1369,13 @@ describe('architecture boundary guard', () => {
       [/\bequipment_install_path_unwritable\b/u, 'equipment_install_path_unwritable'],
       [/backend:\s*['"]orama['"]\s*\|\s*['"]needle['"]/u, "backend: 'orama' | 'needle'"],
       [/paths\.coral\.equipment\b/u, 'paths.coral.equipment'],
-      // Coordinator-namespace purge — daemon vocabulary is "Coordinator", not "Backend".
+      // Coordinator-role identifiers must not regress to "Backend*". The
+      // role/coordinator distinction matters: things tied to the coordinator
+      // role (composition, identity, world, lifecycle, server controllers)
+      // stay coordinator-named. Things tied to the deployment unit (the
+      // running daemon) — BackendInfo, BackendClient, BackendStatus, the
+      // discovery file, the auth token, the user-facing CLI subcommand —
+      // legitimately use "Backend" and are NOT in this registry.
       [/\bBackendCoreOptions\b/u, 'BackendCoreOptions'],
       [/\bBackendCoreResult\b/u, 'BackendCoreResult'],
       [/\bcreateBackendCore\b/u, 'createBackendCore'],
@@ -1385,17 +1391,6 @@ describe('architecture boundary guard', () => {
       [/\bcreateBackendControl\b/u, 'createBackendControl'],
       [/\bcreateBackendWorld\b/u, 'createBackendWorld'],
       [/\bresolveBackendDefaults\b/u, 'resolveBackendDefaults'],
-      [/\bBackendInfo\b/u, 'BackendInfo'],
-      [/\breadBackendInfo\b/u, 'readBackendInfo'],
-      [/\bwriteBackendInfo\b/u, 'writeBackendInfo'],
-      [/\bremoveBackendInfoIfOwner\b/u, 'removeBackendInfoIfOwner'],
-      [/\bbackendNamespace\b/u, 'backendNamespace'],
-      [/\bbackendIdentity\b/u, 'backendIdentity'],
-      [/\bbackendLog\b/u, 'backendLog'],
-      [/\bregisterBackendCommands\b/u, 'registerBackendCommands'],
-      [/\bgetBackendStatusFull\b/u, 'getBackendStatusFull'],
-      [/\bshutdownBackend\b/u, 'shutdownBackend'],
-      [/\bformatBackendStatus\b/u, 'formatBackendStatus'],
     ];
     const violations = PRODUCTION_FILE_PATHS.flatMap((filePath) => {
       const source = readFileSync(filePath, 'utf8');

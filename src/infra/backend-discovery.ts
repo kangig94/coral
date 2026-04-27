@@ -21,7 +21,7 @@ export interface CoordinatorDiscoveryRecord {
   processStartedAt?: number;
 }
 
-export interface CoordinatorInfo extends CoordinatorDiscoveryRecord {
+export interface BackendInfo extends CoordinatorDiscoveryRecord {
   host: string;
   version: string;
   instanceId: string;
@@ -178,11 +178,11 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscover
   return record;
 }
 
-export function writeCoordinatorInfo(info: CoordinatorInfo, runtime: DiscoveryRuntime): void {
+export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {
   writeDiscoveryRecord(info, runtime);
 }
 
-export function readCoordinatorInfo(runtime: DiscoveryRuntime): CoordinatorInfo | null {
+export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
   const record = readDiscoveryRecord(runtime);
   if (!record || record.version === undefined || record.instanceId === undefined) {
     return null;
@@ -196,7 +196,7 @@ export function readCoordinatorInfo(runtime: DiscoveryRuntime): CoordinatorInfo 
   };
 }
 
-export function removeCoordinatorInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
+export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
     return;

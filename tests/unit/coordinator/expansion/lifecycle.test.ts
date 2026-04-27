@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { coordinatorLog } from '#src/infra/coordinator-log.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/coordinator/expansion/rpc.js';
@@ -114,7 +114,7 @@ describe('ExpansionLifecycleService', () => {
   });
 
   it('deletes orphan expansion rows during boot recovery and logs a warning', async () => {
-    const warn = vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const { state, lifecycle } = createLifecycleHarness({
       rows: [{ id: 'ghost', version: '1.0.0', installed_at: FIXED_NOW }],
     });

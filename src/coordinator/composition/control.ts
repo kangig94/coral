@@ -11,7 +11,7 @@ type CreateBackendControlDeps = {
   world: CoordinatorWorld;
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   progressStore: ProgressStore;
 };
 

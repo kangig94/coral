@@ -87,7 +87,7 @@ describe('sessions shell resolve', () => {
       model: 'gpt-5',
       cwd: alpha.workDir,
       projectRoot: alpha.workDir,
-      coordinatorNamespace: 'ns-a',
+      backendNamespace: 'ns-a',
     });
     const sessionB = beta.mgr.allocate({
       provider: 'claude',
@@ -95,18 +95,18 @@ describe('sessions shell resolve', () => {
       model: 'sonnet',
       cwd: beta.workDir,
       projectRoot: beta.workDir,
-      coordinatorNamespace: 'ns-b',
+      backendNamespace: 'ns-b',
     });
 
     expect(getSessionById(sessionA.sessionId, runtime, sessionLookup)).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
-      coordinatorNamespace: 'ns-a',
+      backendNamespace: 'ns-a',
     });
     expect(getSessionById(sessionB.sessionId, runtime, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',
-      coordinatorNamespace: 'ns-b',
+      backendNamespace: 'ns-b',
     });
 
     beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
@@ -127,7 +127,7 @@ describe('sessions shell resolve', () => {
       model: 'gpt-5',
       cwd: alpha.workDir,
       projectRoot: alpha.workDir,
-      coordinatorNamespace: 'ns-a',
+      backendNamespace: 'ns-a',
     });
     const readSessionEntry = vi.fn((sessionId: string) =>
       sessionId === entry.sessionId
@@ -201,7 +201,7 @@ describe('sessions shell resolve', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: workDir,
-      coordinatorNamespace: 'ns-a',
+      backendNamespace: 'ns-a',
     });
     const scopeKey = pluginRootNamespace(workDir);
     const db = createSessionDb();

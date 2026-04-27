@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 import {
-  readCoordinatorInfo,
-  removeCoordinatorInfoIfOwner,
-  writeCoordinatorInfo,
-  type CoordinatorInfo,
-} from '../../../src/infra/coordinator-discovery.js';
+  readBackendInfo,
+  removeBackendInfoIfOwner,
+  writeBackendInfo,
+  type BackendInfo,
+} from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import type {
   JobTerminal,
@@ -171,7 +171,7 @@ function jsonResponse(body: unknown, status: number): Response {
 function createSimulationHealthFetch(runtime: SimulationRuntime, _pluginRoot: string): FetchFn {
   return async (url, init) => {
     const parsed = new URL(url);
-    const info = readCoordinatorInfo({
+    const info = readBackendInfo({
       storage: runtime.storage,
       env: runtime.env,
       paths: runtime.paths,
@@ -182,7 +182,7 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, _pluginRoot: st
       return jsonResponse({ code: 'not_found', message: 'Not found' }, 404);
     }
 
-    if (headerValue(init?.headers, 'X-Coral-Coordinator-Token') !== info.token) {
+    if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
       return jsonResponse({ code: 'unauthorized', message: 'Unauthorized' }, 401);
     }
 
@@ -373,7 +373,7 @@ export type SimulationHookLog = {
     bundleHash: string;
     flavor: 'prod' | 'dev';
   }>;
-  writeBackendInfoCalls: Array<{ pluginRoot: string; info: CoordinatorInfo }>;
+  writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
   removeLockCalls: Array<{ pluginRoot: string; instanceId: string }>;
   createKbSubsystemCalls: Array<{
@@ -477,7 +477,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const core = createCoordinatorCore({
     runtime,
     pluginRoot,
-    coordinatorNamespace: namespace,
+    backendNamespace: namespace,
     progressStore,
     launchCoordinator,
     eventBus,
@@ -521,7 +521,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     writeBackendInfoFn: (info) => {
       hooks.writeBackendInfoCalls.push({ pluginRoot, info });
       runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
-      writeCoordinatorInfo(info, {
+      writeBackendInfo(info, {
         storage: runtime.storage,
         env: runtime.env,
         paths: runtime.paths,
@@ -529,7 +529,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     removeBackendInfoIfOwnerFn: (instanceId) => {
       hooks.removeBackendInfoCalls.push({ pluginRoot, instanceId });
-      removeCoordinatorInfoIfOwner(instanceId, {
+      removeBackendInfoIfOwner(instanceId, {
         storage: runtime.storage,
         env: runtime.env,
         paths: runtime.paths,
@@ -621,7 +621,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     try {
       await core.handleRequest(req, res);
     } catch (error: unknown) {
-      core.identity.log(`Coordinator request error: ${formatError(error)}\n`);
+      core.identity.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
         sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
         return;

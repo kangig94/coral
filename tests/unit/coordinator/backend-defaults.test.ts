@@ -4,7 +4,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { writeCoordinatorInfo, type CoordinatorInfo } from '#src/infra/coordinator-discovery.js';
+import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
 import type { LockRecord } from '#src/coordinator/lock.js';
@@ -25,7 +25,7 @@ vi.mock('node:os', async () => {
 });
 
 type HarnessOptions = {
-  infoOverrides?: Partial<CoordinatorInfo>;
+  infoOverrides?: Partial<BackendInfo>;
   recordOverrides?: Partial<LockRecord>;
   skipPrime?: boolean;
 };
@@ -61,7 +61,7 @@ function createHarness(options: HarnessOptions = {}) {
     runtime,
   );
   const expectedNamespace = pluginRootNamespace(pluginRoot);
-  const info: CoordinatorInfo = {
+  const info: BackendInfo = {
     pid: process.pid,
     port: 4312,
     socketPath: '/tmp/coral-backend-defaults.sock',
@@ -86,7 +86,7 @@ function createHarness(options: HarnessOptions = {}) {
   };
 
   if (!options.skipPrime) {
-    writeCoordinatorInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+    writeBackendInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   }
 
   return {
@@ -137,7 +137,7 @@ describe('resolveCoordinatorDefaults verifyBackendOwnershipFn', () => {
     ).resolves.toBe('healthy');
     expect(harness.fetchFn).toHaveBeenCalledWith(`http://${harness.info.host}:${harness.info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Coordinator-Token': harness.info.token },
+      headers: { 'X-Coral-Backend-Token': harness.info.token },
       signal: expect.any(AbortSignal),
     });
   });

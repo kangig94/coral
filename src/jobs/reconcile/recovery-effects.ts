@@ -19,11 +19,11 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
     const status = progressStore.readStatus(jobId);
     if (!status || !isLivePhase(status.phase)) continue;
 
-    const coordinatorNamespace =
-      typeof status.coordinatorNamespace === 'string' && status.coordinatorNamespace.length > 0
-        ? status.coordinatorNamespace
+    const backendNamespace =
+      typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
+        ? status.backendNamespace
         : null;
-    if (coordinatorNamespace === namespace) {
+    if (backendNamespace === namespace) {
       results.push(status);
     }
   }
@@ -62,7 +62,7 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
     sessionId: status.sessionId,
     provider: status.provider,
     projectRoot: status.projectRoot,
-    coordinatorNamespace: status.coordinatorNamespace,
+    backendNamespace: status.backendNamespace,
     ...(status.bundleHash === undefined ? {} : { bundleHash: status.bundleHash }),
     jobKind: status.jobKind,
     pool: 'default',

@@ -1,6 +1,6 @@
 /**
- * Two-coordinator isolation test (architect recommendation R1).
- * Verifies that shutting down one coordinator does not affect the other's
+ * Two-backend isolation test (architect recommendation R1).
+ * Verifies that shutting down one backend does not affect the other's
  * children, discuss sessions, event delivery, or provider registry.
  */
 import { describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ import type { JobTerminal } from '#src/jobs/records.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, outcome: { kind: 'completed' } };
 
-describe('coordinator isolation', () => {
+describe('backend isolation', () => {
   it('two coordinators track children independently', () => {
     const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const coordB = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
@@ -111,7 +111,7 @@ describe('coordinator isolation', () => {
     expect(regB.get('codex')).toBeUndefined();
   });
 
-  it('shutdown of coordinator A does not interfere with coordinator B event delivery', () => {
+  it('shutdown of backend A does not interfere with backend B event delivery', () => {
     const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const busA = new TypedEventBus();
     const regA = createDiscussContextRegistry();
@@ -120,7 +120,7 @@ describe('coordinator isolation', () => {
     const busB = new TypedEventBus();
     const regB = createDiscussContextRegistry();
 
-    // Both coordinators active
+    // Both backends active
     coordA.requestLaunch('job-a', 'codex');
     coordB.requestLaunch('job-b', 'codex');
 
@@ -130,13 +130,13 @@ describe('coordinator isolation', () => {
     regA.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
 
-    // Simulate full shutdown of coordinator A
+    // Simulate full shutdown of backend A
     coordA.terminateAll();
     coordA.releaseLaunch('job-a');
     busA.removeAllListeners();
     regA.contexts.clear();
 
-    // Coordinator B is fully unaffected
+    // Backend B is fully unaffected
     expect(coordB.getActiveJobIds()).toEqual(['job-b']);
     expect(regB.contexts.has('proj')).toBe(true);
 

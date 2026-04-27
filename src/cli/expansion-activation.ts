@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import type { BundledExpansion } from '../expansion/contract.js';
 import { BUNDLED_EXPANSIONS } from '../expansion/bundled.js';
-import { readDiscoveryRecord } from '../infra/coordinator-discovery.js';
+import { readDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';

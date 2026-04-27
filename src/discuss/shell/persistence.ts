@@ -3,7 +3,7 @@ import { DiscussWatchReadError } from '../watch.js';
 import { buildDiscussWatchState } from '../watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { Result } from '../session-types.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import { type DiscussContext, type WatchState } from './types.js';
 import { ABORT_REASON, DiscussManagerError } from './errors.js';
@@ -162,7 +162,7 @@ export async function appendRuntimeEvents(
         syncLiveSnapshot(ctx, sessionId);
         const seqAfter = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
         if (seqBefore !== undefined && seqAfter === seqBefore) {
-          coordinatorLog.warn(`appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`);
+          backendLog.warn(`appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`);
           return null;
         }
         continue;
@@ -171,7 +171,7 @@ export async function appendRuntimeEvents(
     }
   }
 
-  coordinatorLog.warn(`appendRuntimeEvents: exhausted ${MAX_STALE_RETRIES} retries for ${sessionId}`);
+  backendLog.warn(`appendRuntimeEvents: exhausted ${MAX_STALE_RETRIES} retries for ${sessionId}`);
   return null;
 }
 

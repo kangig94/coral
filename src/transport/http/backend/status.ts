@@ -1,4 +1,4 @@
-import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
+import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -6,7 +6,7 @@ import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
 } from '../sse.js';
-import { isCoordinatorHealth } from './health.js';
+import { isBackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus = {
@@ -22,13 +22,13 @@ export type BackendStatus = {
   status: 'shutting_down';
 };
 
-export type CoordinatorStatusFull =
+export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
 
-export async function getCoordinatorStatusFull(pluginRoot: string): Promise<CoordinatorStatusFull> {
+export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readCoordinatorInfo({
+  const info = readBackendInfo({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,
@@ -38,12 +38,12 @@ export async function getCoordinatorStatusFull(pluginRoot: string): Promise<Coor
   try {
     const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Coordinator-Token': info.token },
+      headers: { 'X-Coral-Backend-Token': info.token },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);
     if (response.status === 200) {
-      if (!isCoordinatorHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
         return { status: 'not_running' };
       }
 

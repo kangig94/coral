@@ -9,7 +9,7 @@ function makeLaunchRecord(overrides: Partial<JobLaunch> = {}): JobLaunch {
     sessionId: 'sess-1',
     provider: 'codex',
     projectRoot: '/tmp/test',
-    coordinatorNamespace: 'ns1',
+    backendNamespace: 'ns1',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 1,

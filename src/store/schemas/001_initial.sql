@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   session_id              TEXT,
   provider                TEXT,
   project_root            TEXT NOT NULL,
-  coordinator_namespace       TEXT NOT NULL,
+  backend_namespace       TEXT NOT NULL,
   bundle_hash             TEXT,
   job_kind                TEXT NOT NULL,
   parent_workflow_job_id  TEXT,             -- workflow-slot parent (jobs launched by a workflow plan)
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   created_at              TEXT NOT NULL,
   last_seq                INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, coordinator_namespace);
+CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
 CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
 CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
 

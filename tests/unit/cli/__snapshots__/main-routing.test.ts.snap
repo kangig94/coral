@@ -1,5 +1,20 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`cli main routing > preserves help output for 'backend' via snapshot 1`] = `
+"Usage: coral-cli backend [options] [command]
+
+Backend daemon control
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  status          Show backend daemon status
+  shutdown        Gracefully shut down backend daemon
+  help [command]  display help for command
+"
+`;
+
 exports[`cli main routing > preserves help output for 'codex' via snapshot 1`] = `
 "Usage: coral-cli codex [options] [agent]
 
@@ -19,21 +34,6 @@ Options:
   -b, --bypass-permissions       Bypass permission checks
   -d, --detach                   Return launch decision without waiting
   -h, --help                     display help for command
-"
-`;
-
-exports[`cli main routing > preserves help output for 'coordinator' via snapshot 1`] = `
-"Usage: coral-cli coordinator [options] [command]
-
-Coordinator daemon control
-
-Options:
-  -h, --help      display help for command
-
-Commands:
-  status          Show coordinator daemon status
-  shutdown        Gracefully shut down coordinator daemon
-  help [command]  display help for command
 "
 `;
 
@@ -172,7 +172,7 @@ Commands:
   wait [options]            Stream job progress (text output)
   abort [options]           Abort running jobs
   workflow [options]        Execute a workflow pipeline
-  coordinator               Coordinator daemon control
+  backend                   Backend daemon control
   discuss                   Discussion operations
   kb [options]              Knowledge base operations
   expansion                 Manage expansion packages

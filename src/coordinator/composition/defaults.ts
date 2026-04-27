@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { readCoordinatorInfo, removeCoordinatorInfoIfOwner, writeCoordinatorInfo } from '../../infra/coordinator-discovery.js';
+import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
@@ -79,7 +79,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
   const expectedNamespace = pluginRootNamespace(pluginRoot);
-  const info = readCoordinatorInfo({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+  const info = readBackendInfo({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   if (!info) {
     return 'stale';
   }
@@ -102,7 +102,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   try {
     const response = await fetchFn(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Coordinator-Token': info.token },
+      headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -163,9 +163,9 @@ export function resolveCoordinatorDefaults(
     });
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
   const writeBackendInfoFn =
-    options.writeBackendInfoFn ?? ((info) => writeCoordinatorInfo(info, discoveryRuntime));
+    options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
   const removeBackendInfoIfOwnerFn =
-    options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeCoordinatorInfoIfOwner(instanceId, discoveryRuntime));
+    options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
   const removeLockIfOwnerFn =
     options.removeLockIfOwnerFn ??
     ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage, paths: runtime.paths }));
@@ -205,7 +205,7 @@ export function resolveCoordinatorDefaults(
     eager,
     finalizeWithWorld(bindings) {
       if (finalized) {
-        throw new Error('Coordinator defaults plan already finalized');
+        throw new Error('Backend defaults plan already finalized');
       }
       finalized = true;
 

@@ -4,7 +4,7 @@ import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { ProviderRegistry } from '../../providers/registry.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import type { CoordinatorIdentity } from '../control.js';
 import { TypedEventBus } from '../event-bus.js';
@@ -55,12 +55,12 @@ export function createCoordinatorWorld(
 ): CoordinatorWorld {
   const bootSnapshot = options.bootSnapshot ?? {};
   const pluginRoot = defaultsPlan.eager.resolvedPluginRoot;
-  const namespace = options.coordinatorNamespace ?? pluginRootNamespace(pluginRoot);
+  const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
   const resolveProjectSource =
     options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(pluginRoot);
-  coordinatorLog.init({ version, bundleHash });
+  backendLog.init({ version, bundleHash });
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
@@ -72,10 +72,10 @@ export function createCoordinatorWorld(
   const log =
     bootSnapshot.log ??
     ((message: string) => {
-      coordinatorLog.raw(message);
+      backendLog.raw(message);
     });
 
-  // coordinatorLog.init must complete before constructing singletons; do not move it below this point.
+  // backendLog.init must complete before constructing singletons; do not move it below this point.
   const idleTimer = defaultsPlan.eager.createIdleTimer();
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const progressStoreEventBus = options.progressStore?.getEventBus();

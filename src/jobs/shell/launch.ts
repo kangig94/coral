@@ -9,7 +9,7 @@ import type {
 } from '../../providers/contract.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
@@ -69,7 +69,7 @@ export interface LaunchOrchestratorDeps {
   launchAdmission: JobAdmissionPort;
   durableSpawner: ProviderDurableSpawner;
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
   appendEvents: AppendEventsFn;
@@ -95,7 +95,7 @@ export class LaunchOrchestrator {
     const launch = this.deps.progressStore.readLaunchProjection(jobId);
     const status = this.deps.progressStore.readStatus(jobId);
     return {
-      namespace: launch?.coordinatorNamespace ?? status?.coordinatorNamespace ?? this.deps.coordinatorNamespace,
+      namespace: launch?.backendNamespace ?? status?.backendNamespace ?? this.deps.backendNamespace,
       project: launch?.projectRoot ?? status?.projectRoot ?? projectRoot,
       correlationId: undefined,
     };
@@ -216,7 +216,7 @@ export class LaunchOrchestrator {
         const waitForPermit = admission.waitForPermit();
         admission.cancel();
         void waitForPermit.catch((cleanupError: unknown) => {
-          coordinatorLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(cleanupError)}`);
+          backendLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(cleanupError)}`);
         });
       } else {
         launchAdmission.releaseLaunch(jobId, pool);
@@ -240,7 +240,7 @@ export class LaunchOrchestrator {
     admission: AcceptedAdmission,
     opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string } = {},
   ): LaunchDecision {
-    const { abortRegistry, coordinatorNamespace, bundleHash, progressStore } = this.deps;
+    const { abortRegistry, backendNamespace, bundleHash, progressStore } = this.deps;
     const pool = opts.pool ?? 'default';
     const projectRoot = opts.projectRoot ?? request.cwd ?? '';
     const enqueueSequence = progressStore.nextEnqueueSequence();
@@ -261,7 +261,7 @@ export class LaunchOrchestrator {
       provider: provider.name,
       providerAction: request.action,
       projectRoot,
-      coordinatorNamespace,
+      backendNamespace,
       bundleHash,
       jobKind: 'provider',
       pool,
@@ -333,14 +333,14 @@ export class LaunchOrchestrator {
         await this.executeJob(provider, request, jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
-          coordinatorLog.error(error.message, error.cause);
+          backendLog.error(error.message, error.cause);
           return;
         }
         try {
           this.handleProviderJobError(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
-            coordinatorLog.error(finalizeError.message, finalizeError.cause);
+            backendLog.error(finalizeError.message, finalizeError.cause);
             return;
           }
           throw finalizeError;
@@ -386,14 +386,14 @@ export class LaunchOrchestrator {
         await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
-          coordinatorLog.error(error.message, error.cause);
+          backendLog.error(error.message, error.cause);
           return;
         }
         try {
           this.handleProviderJobError(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
-            coordinatorLog.error(finalizeError.message, finalizeError.cause);
+            backendLog.error(finalizeError.message, finalizeError.cause);
             return;
           }
           throw finalizeError;
@@ -486,7 +486,7 @@ export class LaunchOrchestrator {
     try {
       writeResultArtifact(this.deps.runtime.storage, jobId, content);
     } catch (error: unknown) {
-      coordinatorLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
+      backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
     } finally {
       abortRegistry.remove(jobId);
       jobPools.delete(jobId);
@@ -496,7 +496,7 @@ export class LaunchOrchestrator {
         expectedVersion: this.readClaimVersion(providerName, sessionId, jobId),
       });
       if (!released) {
-        coordinatorLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
+        backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
       }
     }
   }

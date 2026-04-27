@@ -1,6 +1,6 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage, formatError } from '../infra/error-format.js';
-import { coordinatorLog } from '../infra/coordinator-log.js';
+import { backendLog } from '../infra/backend-log.js';
 import { listLiveJobs } from '../jobs/reconcile/recovery-effects.js';
 import { isAppServerRuntime } from '../jobs/records.js';
 import type { ProgressStore } from '../jobs/job-store.js';
@@ -140,7 +140,7 @@ export async function runShutdownSequence({
   const mode = shutdownModeFromReason(reason);
   const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
-  log(`Coral coordinator shutting down (${reason}, mode=${mode})...\n`);
+  log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
 
@@ -163,7 +163,7 @@ export async function runShutdownSequence({
   state.ownershipCheckerTeardown = null;
 
   if (mode === 'hard') {
-    markJobsAsErrorFn(namespace, 'Coordinator shutting down');
+    markJobsAsErrorFn(namespace, 'Backend shutting down');
     await providerHostManager.shutdown();
     terminateAllFn();
   } else {
@@ -184,7 +184,7 @@ export async function runShutdownSequence({
     await Promise.race([curateSchedulerStop(), runtime.time.sleep(kbStopBudgetMs)]);
   }
   await expansionLifecycleService?.shutdownActiveExpansions().catch((error: unknown) => {
-    coordinatorLog.warn(`expansion shutdown failed: ${errorMessage(error)}`);
+    backendLog.warn(`expansion shutdown failed: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);
   for (const store of discussStores.values()) {

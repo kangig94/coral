@@ -65,11 +65,11 @@ export const commandClassMap = {
   'discuss abort': 'mutate',
 } as const satisfies Readonly<Record<StaticCommandPath, CommandClass>>;
 
-export const commandContainerPaths = new Set<string>(['coordinator', 'discuss', 'expansion', 'kb', 'kb source', 'kb memo']);
+export const commandContainerPaths = new Set<string>(['backend', 'discuss', 'expansion', 'kb', 'kb source', 'kb memo']);
 
 export const commandClassExemptions = {
-  'coordinator status': 'local operational health probe',
-  'coordinator shutdown': 'local operational drain request',
+  'backend status': 'local operational health probe',
+  'backend shutdown': 'local operational drain request',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();

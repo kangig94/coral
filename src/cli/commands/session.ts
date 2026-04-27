@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { z, ZodError } from 'zod';
 
-import { CoordinatorHttpError } from '../../transport/http/errors.js';
+import { BackendToolHttpError } from '../../transport/http/errors.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/records.js';
@@ -194,7 +194,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const client = makeClient(projectRoot, waitCommand);
         const parsedCursor = parseSerializedWaitCursor(opts.cursor);
         if (opts.cursor && !parsedCursor) {
-          throw new CoordinatorHttpError('Invalid Last-Event-ID cursor', 400, {
+          throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
             code: 'invalid_request',
             message: 'Invalid Last-Event-ID cursor',
           });

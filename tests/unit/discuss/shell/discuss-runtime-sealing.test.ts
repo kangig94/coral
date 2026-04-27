@@ -396,7 +396,7 @@ describe('runtime-sealed discuss behavior', () => {
       sessionId: 'execution-session-1',
       provider: 'codex',
       projectRoot: harness.projectRoot,
-      coordinatorNamespace: 'runtime-only',
+      backendNamespace: 'runtime-only',
       initialPhase: 'running',
     });
     harness.progressStore.appendLaunchRequested(jobId, {
@@ -404,7 +404,7 @@ describe('runtime-sealed discuss behavior', () => {
       sessionId: 'execution-session-1',
       provider: 'codex',
       projectRoot: harness.projectRoot,
-      coordinatorNamespace: 'runtime-only',
+      backendNamespace: 'runtime-only',
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,

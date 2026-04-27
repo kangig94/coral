@@ -34,7 +34,7 @@ async function readLiveBackendFlavor(info) {
   try {
     const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Coordinator-Token': info.token },
+      headers: { 'X-Coral-Backend-Token': info.token },
       signal: AbortSignal.timeout(BACKEND_HOOK_TIMEOUT_MS),
     });
     if (!response.ok) return null;
@@ -54,7 +54,7 @@ async function requestBackendShutdown(info) {
   try {
     await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Coordinator-Token': info.token },
+      headers: { 'X-Coral-Backend-Token': info.token },
       signal: AbortSignal.timeout(BACKEND_HOOK_TIMEOUT_MS),
     });
   } catch {}

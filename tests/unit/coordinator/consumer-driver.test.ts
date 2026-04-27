@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { coordinatorLog } from '#src/infra/coordinator-log.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type {
   ConsumerApplyError,
@@ -49,7 +49,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
   it('logs apply failures, invokes onApplyFailure, and isolates healthy consumers on the same journal notify', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    const errorSpy = vi.spyOn(coordinatorLog, 'error').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
     const healthyCalls: Array<{ fromSeq: number; upToSeq: number }> = [];
     const onApplyFailure = vi.fn((_err: ConsumerApplyError) => {
       throw new Error('callback exploded');

@@ -54,7 +54,7 @@ export interface ProviderJobLaunchRequestBody {
   provider: string;
   providerAction: ProviderAction;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind: 'provider' | 'workflow';
   pool: string;
@@ -76,7 +76,7 @@ export interface ProviderJobLaunchRequestBody {
 
 export interface KbSourceImportJobLaunchRequestBody {
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind: 'kb';
   pool: string;
@@ -88,7 +88,7 @@ export interface KbSourceImportJobLaunchRequestBody {
 
 export interface KbReindexJobLaunchRequestBody {
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind: 'kb';
   pool: string;
@@ -122,7 +122,7 @@ export const providerJobLaunchRequestBodySchema = z
     provider: z.string(),
     providerAction: z.enum(['exec', 'resume', 'fork']),
     projectRoot: z.string(),
-    coordinatorNamespace: z.string(),
+    backendNamespace: z.string(),
     bundleHash: z.string().optional(),
     jobKind: z.enum(['provider', 'workflow']),
     pool: z.string(),
@@ -148,7 +148,7 @@ export const providerJobLaunchRequestBodySchema = z
 const kbJobLaunchBaseSchema = z
   .object({
     projectRoot: z.string(),
-    coordinatorNamespace: z.string(),
+    backendNamespace: z.string(),
     bundleHash: z.string().optional(),
     jobKind: z.literal('kb'),
     pool: z.string(),

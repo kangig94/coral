@@ -39,7 +39,7 @@ describe('jobs reducer equivalence', () => {
               provider: 'codex',
               providerAction: 'exec',
               projectRoot: '/workspace/coral',
-              coordinatorNamespace: 'namespace-1',
+              backendNamespace: 'namespace-1',
               bundleHash: 'bundle-1',
               jobKind: 'provider',
               pool: 'default',
@@ -113,7 +113,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -135,7 +135,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-1',
         provider: 'codex',
         project_root: '/workspace/coral',
-        coordinator_namespace: 'namespace-1',
+        backend_namespace: 'namespace-1',
         bundle_hash: 'bundle-1',
         job_kind: 'provider',
         created_at: NOW.toISOString(),
@@ -154,7 +154,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -188,7 +188,7 @@ describe('jobs reducer equivalence', () => {
               provider: 'codex',
               providerAction: 'exec',
               projectRoot: '/workspace/coral',
-              coordinatorNamespace: 'namespace-1',
+              backendNamespace: 'namespace-1',
               jobKind: 'workflow',
               pool: 'default',
               enqueueSequence: 1,
@@ -221,7 +221,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -237,7 +237,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-rejected',
         provider: 'codex',
         project_root: '/workspace/coral',
-        coordinator_namespace: 'namespace-1',
+        backend_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'workflow',
         created_at: NOW.toISOString(),
@@ -256,7 +256,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -290,7 +290,7 @@ describe('jobs reducer equivalence', () => {
               provider: 'codex',
               providerAction: 'exec',
               projectRoot: '/workspace/coral',
-              coordinatorNamespace: 'namespace-1',
+              backendNamespace: 'namespace-1',
               jobKind: 'provider',
               pool: 'default',
               enqueueSequence: 2,
@@ -328,7 +328,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -344,7 +344,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-aborted',
         provider: 'codex',
         project_root: '/workspace/coral',
-        coordinator_namespace: 'namespace-1',
+        backend_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'provider',
         created_at: NOW.toISOString(),
@@ -363,7 +363,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?

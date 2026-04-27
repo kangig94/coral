@@ -18,8 +18,8 @@ const INVALID_JSON_RESPONSE = {
   message: 'Invalid JSON body',
 };
 const BACKEND_SHUTTING_DOWN_RESPONSE = {
-  code: 'coordinator_shutting_down',
-  message: 'Coordinator shutting down',
+  code: 'backend_shutting_down',
+  message: 'Backend shutting down',
 };
 
 export type IpcListener = {

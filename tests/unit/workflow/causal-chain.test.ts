@@ -80,7 +80,7 @@ function providerLaunchBody(args: {
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: PROJECT_ROOT,
-    coordinatorNamespace: NAMESPACE,
+    backendNamespace: NAMESPACE,
     bundleHash: BUNDLE_HASH,
     jobKind: args.jobKind,
     pool: 'default',

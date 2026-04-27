@@ -11,7 +11,7 @@ import type {
 } from '../store/consumer-contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { TimerHandle, TimePort } from '../runtime/ports.js';
-import { coordinatorLog } from '../infra/coordinator-log.js';
+import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
 import {
@@ -626,7 +626,7 @@ export class ConsumerDriver {
       const applyError = toConsumerApplyError(err, this.now().toISOString());
       state.lastApplyError = applyError;
       this.invokeApplyFailureCallback(state, applyError);
-      coordinatorLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
+      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
       return false;
     }
   }
@@ -654,7 +654,7 @@ export class ConsumerDriver {
       const applyError = toConsumerApplyError(err, this.now().toISOString());
       state.lastApplyError = applyError;
       this.invokeApplyFailureCallback(state, applyError);
-      coordinatorLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
+      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
       return false;
     }
   }
@@ -667,7 +667,7 @@ export class ConsumerDriver {
     try {
       state.reg.onApplyFailure(applyError);
     } catch (callbackErr) {
-      coordinatorLog.error(`ConsumerDriver onApplyFailure failed (${state.reg.id})`, callbackErr);
+      backendLog.error(`ConsumerDriver onApplyFailure failed (${state.reg.id})`, callbackErr);
     }
   }
 

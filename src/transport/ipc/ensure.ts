@@ -11,7 +11,7 @@ import type { CoordinatorPaths } from '../../infra/path/compose.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
-import { CoordinatorUnreachableError } from '../../infra/http-errors.js';
+import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -43,7 +43,7 @@ type RawCoordinatorHealth = {
   namespace: string;
 };
 
-type CoordinatorInfo = {
+type BackendInfo = {
   pid: number;
   port: number;
   socketPath: string;
@@ -60,7 +60,7 @@ type CoordinatorInfo = {
 
 type DiscoverySnapshot = {
   raw: string;
-  info: CoordinatorInfo | null;
+  info: BackendInfo | null;
 };
 
 type LockSnapshot = {
@@ -93,14 +93,14 @@ export type DaemonObservation =
       pid: number;
       ownership: VerifiedOwnership | UnverifiedOwnership;
     }
-  | { observedAt: number; type: 'healthyCompatible'; info: CoordinatorInfo }
-  | { observedAt: number; type: 'healthyIncompatible'; info: CoordinatorInfo }
+  | { observedAt: number; type: 'healthyCompatible'; info: BackendInfo }
+  | { observedAt: number; type: 'healthyIncompatible'; info: BackendInfo }
   | { observedAt: number; type: 'staleLock'; pid: number; snapshot: LockSnapshot }
   | { observedAt: number; type: 'corruptLock' };
 
 export type DaemonAction =
   | { type: 'wait' }
-  | { type: 'requestShutdown'; info: CoordinatorInfo }
+  | { type: 'requestShutdown'; info: BackendInfo }
   | { type: 'ensureReplacement'; replacedInstanceId: string | null }
   | { type: 'clearStaleLock'; pid: number; snapshot: LockSnapshot }
   | {
@@ -110,7 +110,7 @@ export type DaemonAction =
     }
   | { type: 'failUnsafeReplacement'; pid: number; reason: string }
   | { type: 'quarantineCorruptLock' }
-  | { type: 'converged'; info: CoordinatorInfo };
+  | { type: 'converged'; info: BackendInfo };
 
 export type ControllerState = {
   sickSince: number | null;
@@ -140,7 +140,7 @@ export type EnsuredIpcClient = IpcClient & {
   readonly version: string;
 };
 
-function summarizeBackend(info: CoordinatorInfo): EnsuredIpcClient {
+function summarizeBackend(info: BackendInfo): EnsuredIpcClient {
   return Object.assign(createIpcClient(info.socketPath), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
@@ -210,7 +210,7 @@ function isLockRecord(value: unknown): value is LockRecord {
   );
 }
 
-function isObservedBackendInfo(value: unknown): value is CoordinatorInfo {
+function isObservedBackendInfo(value: unknown): value is BackendInfo {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return (
@@ -239,7 +239,7 @@ function isObservedBackendInfo(value: unknown): value is CoordinatorInfo {
   );
 }
 
-async function readRawCoordinatorHealth(info: CoordinatorInfo): Promise<RawCoordinatorHealth | null> {
+async function readRawCoordinatorHealth(info: BackendInfo): Promise<RawCoordinatorHealth | null> {
   try {
     const health = await createIpcClient(info.socketPath).health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
     return isRawCoordinatorHealth(health) ? health : null;
@@ -278,7 +278,7 @@ function readLockSnapshot(paths: CoordinatorFilePaths): LockSnapshot | 'corrupt'
   }
 }
 
-function mergeDiscoveryWithHealth(info: CoordinatorInfo, health: RawCoordinatorHealth): CoordinatorInfo {
+function mergeDiscoveryWithHealth(info: BackendInfo, health: RawCoordinatorHealth): BackendInfo {
   return {
     ...info,
     version: health.version,
@@ -543,7 +543,7 @@ export function reconcile(
   }
 }
 
-async function requestCoordinatorShutdown(info: CoordinatorInfo): Promise<void> {
+async function requestBackendShutdown(info: BackendInfo): Promise<void> {
   try {
     await createIpcClient(info.socketPath).shutdown({ timeoutMs: HEALTH_TIMEOUT_MS });
   } catch {
@@ -661,7 +661,7 @@ async function waitForReplacementCoordinator(
   desired: DesiredCoordinator,
   oldInstanceId: string | null,
   deadline: number,
-): Promise<CoordinatorInfo> {
+): Promise<BackendInfo> {
   while (Date.now() < deadline) {
     const observation = await observe(paths, desired);
     if (
@@ -673,8 +673,8 @@ async function waitForReplacementCoordinator(
     await delay(STARTUP_POLL_MS);
   }
 
-  throw new CoordinatorUnreachableError(
-    'Timed out waiting for Coral coordinator startup. Run `coral-cli coordinator status` to check coordinator health.',
+  throw new BackendUnreachableError(
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
   );
 }
 
@@ -684,7 +684,7 @@ async function ensureReplacement(
   backendBin: string,
   replacedInstanceId: string | null,
   deadline: number,
-): Promise<CoordinatorInfo | null> {
+): Promise<BackendInfo | null> {
   const replacementLock = tryAcquireReplacementLock(paths, desired.version, desired.bundleHash, desired.flavor);
   if (!replacementLock) {
     await delay(STARTUP_POLL_MS);
@@ -719,7 +719,7 @@ async function forceReplaceCoordinator(
   }
 
   if (isProcessAlive(pid)) {
-    throw new CoordinatorUnreachableError(`Failed to terminate sick Coral coordinator pid ${pid}.`);
+    throw new BackendUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
   }
 
   removeFileIfSnapshotMatches(coordinatorLockPath(paths), ownership.cleanupSnapshot.lockRaw);
@@ -734,14 +734,14 @@ async function applyAction(
   backendBin: string,
   deadline: number,
   action: DaemonAction,
-): Promise<CoordinatorInfo | null> {
+): Promise<BackendInfo | null> {
   switch (action.type) {
     case 'wait':
       await delay(STARTUP_POLL_MS);
       return null;
 
     case 'requestShutdown':
-      await requestCoordinatorShutdown(action.info);
+      await requestBackendShutdown(action.info);
       return null;
 
     case 'ensureReplacement':
@@ -756,8 +756,8 @@ async function applyAction(
       return null;
 
     case 'failUnsafeReplacement':
-      throw new CoordinatorUnreachableError(
-        `Refusing unsafe replacement for sick Coral coordinator pid ${action.pid}: ${action.reason}. Run 'coral-cli coordinator status' and restart if the problem persists.`,
+      throw new BackendUnreachableError(
+        `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}. Run 'coral-cli backend status' and restart if the problem persists.`,
       );
 
     case 'quarantineCorruptLock':
@@ -813,7 +813,7 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
     if (info) return summarizeBackend(info);
   }
 
-  throw new CoordinatorUnreachableError(
-    'Timed out waiting for Coral coordinator startup. Run `coral-cli coordinator status` to check coordinator health.',
+  throw new BackendUnreachableError(
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
   );
 }

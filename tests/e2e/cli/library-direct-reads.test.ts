@@ -211,7 +211,7 @@ function seedStore(fixture: Fixture): void {
          session_id,
          provider,
          project_root,
-         coordinator_namespace,
+         backend_namespace,
          bundle_hash,
          job_kind,
          parent_workflow_job_id,

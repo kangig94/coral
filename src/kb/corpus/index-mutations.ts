@@ -1,5 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { KbIndexState, KbRuntime } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import { cloneKbIndex } from './index-records.js';
@@ -37,6 +37,6 @@ export function markTextIndexStale(invalidate: (reason: string) => KbIndexState,
   try {
     invalidate(reason);
   } catch (error: unknown) {
-    coordinatorLog.warn(`markTextIndexStale: ${errorMessage(error)}`);
+    backendLog.warn(`markTextIndexStale: ${errorMessage(error)}`);
   }
 }

@@ -588,7 +588,7 @@ describe('ipc ensure', () => {
     await vi.advanceTimersByTimeAsync(10_300);
 
     await expect(ensuredPromise).rejects.toThrow('missing-processStartedAt');
-    await expect(ensuredPromise).rejects.toThrow("Run 'coral-cli coordinator status' and restart if the problem persists.");
+    await expect(ensuredPromise).rejects.toThrow("Run 'coral-cli backend status' and restart if the problem persists.");
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 

@@ -10,7 +10,7 @@ type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
   runtime: Runtime;
   bundleHash: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
@@ -24,7 +24,7 @@ export function createExecutionServices({
   world,
   runtime,
   bundleHash,
-  coordinatorNamespace,
+  backendNamespace,
   createExecutionService,
 }: CreateExecutionServicesDeps): {
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
@@ -41,7 +41,7 @@ export function createExecutionServices({
       runtime,
       progressStore: world.progressStore,
       bundleHash,
-      coordinatorNamespace,
+      backendNamespace,
       providerHostManager: world.providerHostManager,
       launchCoordinator: world.launchCoordinator,
       eventBus: world.eventBus,

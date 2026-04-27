@@ -89,7 +89,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     world,
     runtime,
     bundleHash: world.identity.bundleHash,
-    coordinatorNamespace: world.namespace,
+    backendNamespace: world.namespace,
     createExecutionService: defaults.createExecutionService,
   });
 
@@ -104,27 +104,27 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
-    coordinatorNamespace: world.namespace,
+    backendNamespace: world.namespace,
     progressStore: world.progressStore,
   });
   const kbSourceImportService = new KbSourceImportService({
     runtime,
     progressStore: world.progressStore,
-    coordinatorNamespace: world.namespace,
+    backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
   });
   const kbReindexService = new KbReindexService({
     runtime,
     progressStore: world.progressStore,
-    coordinatorNamespace: world.namespace,
+    backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
   });
   const kbJobRecorder = new KbJobRecorder({
     runtime,
     progressStore: world.progressStore,
-    coordinatorNamespace: world.namespace,
+    backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
   });
 
@@ -136,7 +136,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const kbUnavailableResult = {
     ok: false as const,
     code: 'kb_unavailable',
-    message: 'Knowledge base is not available. Check coordinator health for details.',
+    message: 'Knowledge base is not available. Check backend health for details.',
   };
   const withKb = <T>(
     run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
@@ -204,7 +204,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       jobId,
       sessionId,
       projectRoot: status.projectRoot,
-      namespace: status.coordinatorNamespace,
+      namespace: status.backendNamespace,
       operation,
       code: result.code,
       message: result.message,
@@ -454,7 +454,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const server = defaults.createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {
-      world.log(`Coordinator request error: ${formatError(error)}\n`);
+      world.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
         sendJson(res, 500, buildTransportErrorResponse(error).body);
         return;

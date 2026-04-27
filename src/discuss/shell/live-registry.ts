@@ -1,5 +1,5 @@
 import type { DiscussSessionStore } from './session-store.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type {
   DiscussContext,
   DiscussJobStatusReader,
@@ -151,7 +151,7 @@ export async function clearAllDiscuss(
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {
           const detail = error instanceof Error ? error.message : String(error);
-          coordinatorLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
+          backendLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
         }
       }
       if (!session.controller.signal.aborted) {

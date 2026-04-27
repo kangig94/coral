@@ -177,7 +177,7 @@ function stubLaunchRecord(
     sessionId: string;
     provider: string;
     projectRoot: string;
-    coordinatorNamespace: string;
+    backendNamespace: string;
     enqueueSequence?: number;
     pool?: string;
     jobKind?: 'provider' | 'workflow';
@@ -188,7 +188,7 @@ function stubLaunchRecord(
     sessionId: overrides.sessionId,
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
-    coordinatorNamespace: overrides.coordinatorNamespace,
+    backendNamespace: overrides.backendNamespace,
     jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: overrides.enqueueSequence ?? 0,
@@ -208,14 +208,14 @@ function appendQueuedEvent(
   progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
   jobId: string,
   sessionId: string,
-  coordinatorNamespace: string,
+  backendNamespace: string,
   projectRoot: string,
   queuePosition = 1,
 ): void {
   progressStore.appendEvent({
     type: 'job.queue.queued',
     stream: { kind: 'job', id: jobId },
-    namespace: coordinatorNamespace,
+    namespace: backendNamespace,
     project: projectRoot,
     refs: { jobId, sessionId },
     bodyVersion: 1,
@@ -266,7 +266,7 @@ function appendSessionOpenedEvent(
   overrides: {
     sessionId: string;
     provider: string;
-    coordinatorNamespace: string;
+    backendNamespace: string;
     projectRoot: string;
     scopeKey: string;
   },
@@ -277,7 +277,7 @@ function appendSessionOpenedEvent(
       {
         type: 'session.opened',
         stream: { kind: 'session', id: overrides.sessionId },
-        namespace: overrides.coordinatorNamespace,
+        namespace: overrides.backendNamespace,
         project: overrides.projectRoot,
         refs: { sessionId: overrides.sessionId },
         bodyVersion: 1,
@@ -289,7 +289,7 @@ function appendSessionOpenedEvent(
             state: 'pending',
             cwd: overrides.projectRoot,
             projectRoot: overrides.projectRoot,
-            coordinatorNamespace: overrides.coordinatorNamespace,
+            backendNamespace: overrides.backendNamespace,
             createdAt: new Date(runtime.time.now()).toISOString(),
             lastUsedAt: new Date(runtime.time.now()).toISOString(),
             version: 1,
@@ -313,7 +313,7 @@ function appendTerminalEvent(
   overrides: {
     jobId: string;
     sessionId: string;
-    coordinatorNamespace: string;
+    backendNamespace: string;
     projectRoot: string;
     outcome: Record<string, unknown>;
     content?: string;
@@ -322,7 +322,7 @@ function appendTerminalEvent(
   progressStore.appendEvent({
     type: 'job.terminal.recorded',
     stream: { kind: 'job', id: overrides.jobId },
-    namespace: overrides.coordinatorNamespace,
+    namespace: overrides.backendNamespace,
     project: overrides.projectRoot,
     refs: { jobId: overrides.jobId, sessionId: overrides.sessionId },
     bodyVersion: 1,
@@ -473,7 +473,7 @@ function createActualRecoveryService(
       runtime,
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
-      coordinatorNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
+      backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
       providerHostManager: createFakeProviderHostManager() as never,
       launchCoordinator: options.launchCoordinator,
       eventBus: options.eventBus,
@@ -557,7 +557,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-high',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -565,7 +565,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-high',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       enqueueSequence: 20,
     });
     appendQueuedEvent(progressStore, 'queued-high', 'session-high', namespace, projectRoot, 2);
@@ -575,7 +575,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-low',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -583,7 +583,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-low',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       enqueueSequence: 10,
     });
     appendQueuedEvent(progressStore, 'queued-low', 'session-low', namespace, projectRoot, 1);
@@ -636,7 +636,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-running-live',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -644,7 +644,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'session-running-live',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
       jobId: 'running-live',
@@ -701,7 +701,7 @@ describe('lifecycle recovery', () => {
       sessionId: `session-${phase}`,
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -751,7 +751,7 @@ describe('lifecycle recovery', () => {
       sessionId: `${jobId}-session`,
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: foreignNamespace,
+      backendNamespace: foreignNamespace,
     });
     if (phase === 'queued') {
       appendQueuedEvent(progressStore, jobId, `${jobId}-session`, foreignNamespace, projectRoot, 1);
@@ -776,7 +776,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(progressStore.readStatus(jobId)).toMatchObject({
-        coordinatorNamespace: foreignNamespace,
+        backendNamespace: foreignNamespace,
         phase: 'error',
         result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
       });
@@ -807,7 +807,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'local-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -815,7 +815,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'local-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       enqueueSequence: 1,
     });
     appendQueuedEvent(progressStore, 'local-queued', 'local-queued-session', namespace, projectRoot, 1);
@@ -829,7 +829,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(progressStore.readStatus('local-queued')).toMatchObject({ coordinatorNamespace: namespace, phase: 'queued' });
+      expect(progressStore.readStatus('local-queued')).toMatchObject({ backendNamespace: namespace, phase: 'queued' });
       expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'local-queued' }));
     } finally {
       await stopLifecycleController(controller);
@@ -865,7 +865,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'dead-running-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -873,7 +873,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'dead-running-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
       jobId: 'dead-running',
@@ -925,7 +925,7 @@ describe('lifecycle recovery', () => {
       sessionId: session.sessionId,
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -933,19 +933,19 @@ describe('lifecycle recovery', () => {
       sessionId: session.sessionId,
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
     appendSessionOpenedEvent(progressStore, {
       sessionId: session.sessionId,
       provider: 'fakeprovider',
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       projectRoot,
       scopeKey,
     });
     appendTerminalEvent(progressStore, {
       jobId: 'terminal-job',
       sessionId: session.sessionId,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       projectRoot,
       outcome: { kind: 'completed' },
     });
@@ -988,7 +988,7 @@ describe('lifecycle recovery', () => {
     appendSessionOpenedEvent(progressStore, {
       sessionId: session.sessionId,
       provider: 'fakeprovider',
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       projectRoot,
       scopeKey,
     });
@@ -1028,7 +1028,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'app-server-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1036,7 +1036,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'app-server-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
     // Inline runtime-record write (vs. the shared stubAppServerRuntime helper) is required
     // here because the helper does not accept providerContinuity payload; this test verifies
@@ -1108,7 +1108,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'still-running-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1116,7 +1116,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'still-running-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
       jobId: 'still-running',
@@ -1159,7 +1159,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-terminal-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: currentNamespace,
+      backendNamespace: currentNamespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1167,12 +1167,12 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-terminal-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: 'foreign-terminal-namespace',
+      backendNamespace: 'foreign-terminal-namespace',
     });
     appendTerminalEvent(progressStore, {
       jobId: 'foreign-terminal',
       sessionId: 'foreign-terminal-session',
-      coordinatorNamespace: 'foreign-terminal-namespace',
+      backendNamespace: 'foreign-terminal-namespace',
       projectRoot,
       outcome: { kind: 'completed' },
     });
@@ -1187,7 +1187,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(progressStore.readStatus('foreign-terminal')).toMatchObject({
-        coordinatorNamespace: 'foreign-terminal-namespace',
+        backendNamespace: 'foreign-terminal-namespace',
         phase: 'completed',
       });
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
@@ -1216,7 +1216,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-history-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: 'foreign-history-namespace',
+      backendNamespace: 'foreign-history-namespace',
     });
     stubRuntimeRecord(progressStore, {
       jobId: 'foreign-history',
@@ -1261,7 +1261,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-preserved-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: currentNamespace,
+      backendNamespace: currentNamespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -1269,7 +1269,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-preserved-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: 'foreign-preserved-namespace',
+      backendNamespace: 'foreign-preserved-namespace',
     });
     appendQueuedEvent(progressStore, 'foreign-preserved', 'foreign-preserved-session', 'foreign-preserved-namespace', projectRoot, 1);
 
@@ -1282,7 +1282,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(progressStore.readStatus('foreign-preserved')?.coordinatorNamespace).toBe('foreign-preserved-namespace');
+      expect(progressStore.readStatus('foreign-preserved')?.backendNamespace).toBe('foreign-preserved-namespace');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1307,7 +1307,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'queued-stays-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -1315,7 +1315,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'queued-stays-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       enqueueSequence: 1,
     });
     appendQueuedEvent(progressStore, 'queued-stays-queued', 'queued-stays-queued-session', namespace, projectRoot, 1);
@@ -1354,7 +1354,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'ghost-no-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1362,7 +1362,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'ghost-no-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -1399,7 +1399,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-no-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: currentNamespace,
+      backendNamespace: currentNamespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -1407,7 +1407,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-no-queued-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: 'foreign-no-queued-namespace',
+      backendNamespace: 'foreign-no-queued-namespace',
     });
     appendQueuedEvent(progressStore, 'foreign-no-queued', 'foreign-no-queued-session', 'foreign-no-queued-namespace', projectRoot, 1);
 
@@ -1445,7 +1445,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-no-adopt-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: currentNamespace,
+      backendNamespace: currentNamespace,
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1453,7 +1453,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'foreign-no-adopt-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: 'foreign-no-adopt-namespace',
+      backendNamespace: 'foreign-no-adopt-namespace',
     });
     stubRuntimeRecord(progressStore, {
       jobId: 'foreign-no-adopt',
@@ -1494,7 +1494,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'fence-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       initialPhase: 'queued',
     });
     stubLaunchRecord(progressStore, {
@@ -1502,7 +1502,7 @@ describe('lifecycle recovery', () => {
       sessionId: 'fence-session',
       provider: 'fakeprovider',
       projectRoot,
-      coordinatorNamespace: namespace,
+      backendNamespace: namespace,
       enqueueSequence: 1,
     });
     appendQueuedEvent(progressStore, 'fence-job', 'fence-session', namespace, projectRoot, 1);

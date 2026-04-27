@@ -1,4 +1,4 @@
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { formatError } from '../../infra/error-format.js';
 import type { Database } from 'better-sqlite3';
 import type { Runtime } from '../../runtime/ports.js';
@@ -181,7 +181,7 @@ export function createDiscussRuntime({
         try {
           discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.invocationCtx);
         } catch (error: unknown) {
-          coordinatorLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${formatError(error)}`);
+          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${formatError(error)}`);
         }
       }
     },

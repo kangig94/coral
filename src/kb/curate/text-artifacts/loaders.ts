@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage } from '../../../infra/error-format.js';
-import { coordinatorLog } from '../../../infra/coordinator-log.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { readMalformedEntryRepair, type PendingRepair } from '../state/index.js';
 import {
   deriveNoteIdentity,
@@ -57,7 +57,7 @@ export function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<Kb
       if (repair !== null) {
         pendingRepair.push(repair);
       }
-      coordinatorLog.warn(`Skipping malformed KB note ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB note ${entry}: ${errorMessage(error)}`);
     }
   }
 
@@ -86,7 +86,7 @@ export function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<
       if (repair !== null) {
         pendingRepair.push(repair);
       }
-      coordinatorLog.warn(`Skipping malformed KB source ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB source ${entry}: ${errorMessage(error)}`);
     }
   }
 
@@ -124,7 +124,7 @@ export function loadCommunities(kb: KbRuntime): KbReindexCommunityRecord[] {
         ...loadCommunityDocument(join(communitiesPath, entry)),
       });
     } catch (error: unknown) {
-      coordinatorLog.warn(`Skipping malformed KB community ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB community ${entry}: ${errorMessage(error)}`);
     }
   }
 
@@ -141,7 +141,7 @@ export function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
       const content = readFileSync(join(principlesPath, entry), 'utf-8');
       principles.push([name, extractPrincipleStatement(content)]);
     } catch (error: unknown) {
-      coordinatorLog.warn(`Skipping malformed KB principle ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB principle ${entry}: ${errorMessage(error)}`);
     }
   }
 

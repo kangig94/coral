@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { consumeJobStream } from '#src/jobs/shell/continuity-consumer.js';
-import { coordinatorLog } from '#src/infra/coordinator-log.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 describe('consumeJobStream', () => {
   afterEach(() => {
@@ -139,7 +139,7 @@ describe('consumeJobStream', () => {
   it('warns on stale checkpoints, drains the terminal, and preserves the last successful continuity', async () => {
     const appendProgress = vi.fn();
     const appendTerminal = vi.fn();
-    const warn = vi.spyOn(coordinatorLog, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const checkpointJobContinuityAtomic = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, nextVersion: 11 })

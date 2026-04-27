@@ -241,7 +241,7 @@ describe('server discuss API', () => {
 
     const controlResponse = await fetch(
       `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
-      { headers: { 'X-Coral-Coordinator-Token': backend.token } },
+      { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const controlBody = (await controlResponse.json()) as DiscussDetailResponse;
 
@@ -262,7 +262,7 @@ describe('server discuss API', () => {
 
     const auditResponse = await fetch(
       `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}&view=audit`,
-      { headers: { 'X-Coral-Coordinator-Token': backend.token } },
+      { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const auditBody = (await auditResponse.json()) as DiscussDetailResponse;
 
@@ -277,7 +277,7 @@ describe('server discuss API', () => {
 
     const liveAuditResponse = await fetch(
       `${backend.baseUrl}/discuss/sessions/live-session?projectRoot=${encodeURIComponent(harness.projectRoot)}&view=audit`,
-      { headers: { 'X-Coral-Coordinator-Token': backend.token } },
+      { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
 
     expect(liveAuditResponse.status).toBe(409);
@@ -304,7 +304,7 @@ describe('server discuss API', () => {
 
     const response = await fetch(
       `${backend.baseUrl}/discuss/sessions/shared-session?projectRoot=${encodeURIComponent(secondHarness.projectRoot)}`,
-      { headers: { 'X-Coral-Coordinator-Token': backend.token } },
+      { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const body = (await response.json()) as DiscussDetailResponse;
 
@@ -346,7 +346,7 @@ describe('server discuss API', () => {
     registry.contexts.set(firstHarness.projectRoot, firstHarness.context);
 
     const response = await fetch(`${backend.baseUrl}/discuss/sessions`, {
-      headers: { 'X-Coral-Coordinator-Token': backend.token },
+      headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as { sessions: DiscussSummaryDto[] };
     const sharedSessions = body.sessions.filter((s) => s.sessionId === 'shared-session');
@@ -396,7 +396,7 @@ describe('server discuss API', () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
     const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
-      'X-Coral-Coordinator-Token': backend.token,
+      'X-Coral-Backend-Token': backend.token,
     });
 
     try {
@@ -415,7 +415,7 @@ describe('server discuss API', () => {
 
       const detailResponse = await fetch(
         `${backend.baseUrl}/discuss/sessions/manual-live-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
-        { headers: { 'X-Coral-Coordinator-Token': backend.token } },
+        { headers: { 'X-Coral-Backend-Token': backend.token } },
       );
       const detailBody = (await detailResponse.json()) as DiscussDetailResponse;
 

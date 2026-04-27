@@ -1,5 +1,5 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { CoordinatorInfo } from '../../infra/coordinator-discovery.js';
+import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../control.js';
@@ -51,7 +51,7 @@ export type CoordinatorCoreOptions = {
   bootSnapshot?: CoordinatorBootSnapshot;
   progressStore?: ProgressStore;
   pluginRoot?: string;
-  coordinatorNamespace?: string;
+  backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
   createServerFn?: CreateServerFn;
   fetchFn?: FetchFn;
@@ -67,7 +67,7 @@ export type CoordinatorCoreOptions = {
     bundleHash: string,
     flavor: 'prod' | 'dev',
   ) => Promise<void>;
-  writeBackendInfoFn?: (info: CoordinatorInfo) => void;
+  writeBackendInfoFn?: (info: BackendInfo) => void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
   removeLockIfOwnerFn?: RemoveLockIfOwnerFn;
   closeServerFn?: (server: Server) => Promise<void>;

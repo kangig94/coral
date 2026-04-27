@@ -7,7 +7,7 @@ import type { TimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
@@ -180,7 +180,7 @@ export class WaitCoordinator {
     try {
       return this.deps.ensureResultArtifact(jobId);
     } catch (error: unknown) {
-      coordinatorLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
+      backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
       return defaultResultPathFor(jobId);
     }
   }

@@ -122,7 +122,7 @@ function makeStatus(
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
-    coordinatorNamespace: CURRENT_NAMESPACE,
+    backendNamespace: CURRENT_NAMESPACE,
     jobKind: 'provider',
     phase,
     updatedAt: NOW,
@@ -145,7 +145,7 @@ function makeLaunch(
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
-    coordinatorNamespace: CURRENT_NAMESPACE,
+    backendNamespace: CURRENT_NAMESPACE,
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
@@ -217,7 +217,7 @@ function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
     state: overrides.state ?? 'ready',
     cwd: overrides.cwd ?? '/workspace',
     projectRoot: overrides.projectRoot ?? '/workspace',
-    coordinatorNamespace: overrides.coordinatorNamespace ?? 'test-ns',
+    backendNamespace: overrides.backendNamespace ?? 'test-ns',
     createdAt: overrides.createdAt ?? NOW,
     lastUsedAt: overrides.lastUsedAt ?? NOW,
     version: overrides.version ?? 1,
@@ -435,8 +435,8 @@ describe('planRecovery', () => {
   it('returns no action for foreign-namespace jobs', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'foreign-job',
-      status: makeStatus('foreign-job', 'running', { coordinatorNamespace: FOREIGN_NAMESPACE }),
-      launch: makeLaunch('foreign-job', { coordinatorNamespace: FOREIGN_NAMESPACE }),
+      status: makeStatus('foreign-job', 'running', { backendNamespace: FOREIGN_NAMESPACE }),
+      launch: makeLaunch('foreign-job', { backendNamespace: FOREIGN_NAMESPACE }),
       runtime: makeRuntime('foreign-job'),
       hasLaunchRequest: true,
       hasRuntimeStart: true,
@@ -517,7 +517,7 @@ describe('planRecovery', () => {
     const snapshot = new InMemoryRecoverySnapshot()
       .addJob({
         jobId: 'foreign-terminal-job',
-        status: makeStatus('foreign-terminal-job', 'completed', { coordinatorNamespace: FOREIGN_NAMESPACE }),
+        status: makeStatus('foreign-terminal-job', 'completed', { backendNamespace: FOREIGN_NAMESPACE }),
       })
       .addSession({
         scopeKey: '/sessions/foreign',

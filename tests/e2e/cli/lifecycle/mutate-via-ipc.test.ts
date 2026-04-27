@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '#src/infra/coordinator-discovery.js';
+import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
@@ -188,7 +188,7 @@ async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promi
   throw new Error(`Timed out waiting for condition after ${timeoutMs}ms`);
 }
 
-async function shutdownCoordinator(record: CoordinatorDiscoveryRecord | null): Promise<void> {
+async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promise<void> {
   if (!record || !isProcessAlive(record.pid)) {
     return;
   }
@@ -308,7 +308,7 @@ describe('mutating commands via IPC', () => {
         db.close();
       }
     } finally {
-      await shutdownCoordinator(discoveryRecord ?? readDiscoveryRecord(fixture.home, fixture.flavor));
+      await shutdownBackend(discoveryRecord ?? readDiscoveryRecord(fixture.home, fixture.flavor));
     }
   }, 120_000);
 });

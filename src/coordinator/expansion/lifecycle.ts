@@ -1,4 +1,4 @@
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { BundledExpansion, BundledExpansionSlot, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
 import { registeredConsumerHandles } from '../../expansion/host.js';
@@ -109,7 +109,7 @@ export class ExpansionLifecycleService {
       if (!entry) {
         this.options.state.delete(row.id);
         this.failedRecovery.delete(row.id);
-        coordinatorLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in BUNDLED_EXPANSIONS`);
+        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in BUNDLED_EXPANSIONS`);
         continue;
       }
 

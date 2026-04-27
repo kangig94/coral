@@ -39,7 +39,7 @@ export interface SessionEntry {
   model?: string;
   cwd: string;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   agentName?: string;
   instruction?: ProviderInstruction;
   bypassPermissions?: boolean;
@@ -63,7 +63,7 @@ export const sessionEntrySchema = z
     model: z.string().optional(),
     cwd: z.string(),
     projectRoot: z.string(),
-    coordinatorNamespace: z.string(),
+    backendNamespace: z.string(),
     agentName: z.string().optional(),
     instruction: providerInstructionSchema.optional(),
     bypassPermissions: z.boolean().optional(),

@@ -132,7 +132,7 @@ function createService(
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
-    coordinatorNamespace?: string;
+    backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
@@ -181,7 +181,7 @@ function createService(
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
-    coordinatorNamespace: options.coordinatorNamespace ?? TEST_BACKEND_NAMESPACE,
+    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
@@ -560,7 +560,7 @@ function _createClaimedJob(
     sessionId: session.sessionId,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
   expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
@@ -609,7 +609,7 @@ function _makeStatusRecord(
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
-    coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
     phase,
     updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
@@ -802,7 +802,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
     progressStore.appendLaunchRequested(jobId1, {
@@ -810,7 +810,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
@@ -828,7 +828,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-2',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
     progressStore.appendLaunchRequested(jobId2, {
@@ -836,7 +836,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-2',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
@@ -941,7 +941,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'claude',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
     progressStore.appendLaunchRequested(jobId1, {
@@ -949,7 +949,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'claude',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
@@ -967,7 +967,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-2',
       provider: 'claude',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
     progressStore.appendLaunchRequested(jobId2, {
@@ -975,7 +975,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-2',
       provider: 'claude',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
@@ -1051,7 +1051,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
     progressStore.appendLaunchRequested(jobId, {
@@ -1059,7 +1059,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
@@ -1122,7 +1122,7 @@ describe('ExecutionService launch', () => {
       sessionId: 'session-1',
       provider: 'claude',
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: TEST_BACKEND_NAMESPACE,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
       jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,

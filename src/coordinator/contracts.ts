@@ -87,7 +87,7 @@ export type ExecutionServiceDeps = {
   runtime: Runtime;
   progressStore: JobProgressStore;
   bundleHash?: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   providerHostManager: ExecutionProviderHostManager;
   launchCoordinator: CoordinatorLaunchCoordinator;
   eventBus: TypedEventBus;

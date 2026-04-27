@@ -40,7 +40,7 @@ describe('backend-warm-start.mjs', () => {
 
     let shutdownCount = 0;
     const server = createServer((req, res) => {
-      if (req.headers['x-coral-coordinator-token'] !== token) {
+      if (req.headers['x-coral-backend-token'] !== token) {
         res.statusCode = 401;
         res.end();
         return;

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { CoordinatorHttpError } from '../transport/http/errors.js';
+import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../transport/http/client.js';
 import { createCauseRefRenderer } from '../causality/render.js';
 import { defaultEventDescribers } from '../read-model/event-describers.js';
@@ -157,8 +157,8 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
       return 403;
     case 'jobs_not_found':
       return 404;
-    case 'coordinator_recovering':
-    case 'coordinator_shutting_down':
+    case 'backend_recovering':
+    case 'backend_shutting_down':
       return 503;
     default:
       return 400;
@@ -170,11 +170,11 @@ function mapWaitSubscriptionError(error: unknown): unknown {
     return error;
   }
 
-  if (error.cause.code === 'coordinator_recovering' || error.cause.code === 'coordinator_shutting_down') {
+  if (error.cause.code === 'backend_recovering' || error.cause.code === 'backend_shutting_down') {
     return new TransientHttpError(503, error.cause.message);
   }
 
-  return new CoordinatorHttpError(
+  return new BackendToolHttpError(
     error.cause.message,
     waitSubscriptionStatusCode(error.cause),
     error.cause,
@@ -243,7 +243,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         let reconnect = false;
         const inputCursor = parseSerializedWaitCursor(cursorRef.serializedCursor);
         if (cursorRef.serializedCursor && !inputCursor) {
-          throw new CoordinatorHttpError('Invalid Last-Event-ID cursor', 400, {
+          throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
             code: 'invalid_request',
             message: 'Invalid Last-Event-ID cursor',
           });

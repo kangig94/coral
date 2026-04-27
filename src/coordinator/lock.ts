@@ -1,8 +1,8 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Runtime, StoragePort } from '../runtime/ports.js';
-import { probeCoordinator } from '../infra/coordinator-discovery.js';
+import { probeCoordinator } from '../infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
-import { coordinatorLog } from '../infra/coordinator-log.js';
+import { backendLog } from '../infra/backend-log.js';
 import type { LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 
@@ -21,7 +21,7 @@ export type VerifyBackendOwnershipFn = (options: {
 
 export class BackendAlreadyRunningError extends Error {
   constructor() {
-    super('Coral coordinator already running');
+    super('Coral backend already running');
     this.name = 'BackendAlreadyRunningError';
   }
 }
@@ -211,7 +211,7 @@ async function readHealth(
   try {
     const response = await fetch(`http://${discovery.host ?? DEFAULT_HOST}:${discovery.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Coordinator-Token': discovery.token },
+      headers: { 'X-Coral-Backend-Token': discovery.token },
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -243,7 +243,7 @@ async function requestHandoff(runtime: CoordinatorLockRuntime): Promise<void> {
   try {
     await fetch(`http://${discovery.host ?? DEFAULT_HOST}:${discovery.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Coordinator-Token': discovery.token },
+      headers: { 'X-Coral-Backend-Token': discovery.token },
       signal: controller.signal,
     });
   } catch {
@@ -321,7 +321,7 @@ export async function acquireLock(
 
   while (true) {
     if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      coordinatorLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
+      backendLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
       throw new Error('Coordinator lock acquisition timed out');
     }
 

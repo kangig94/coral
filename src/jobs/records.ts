@@ -8,9 +8,9 @@ import type { SourceImportReadiness } from './launch.js';
 
 export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
   return (
-    typeof status.coordinatorNamespace === 'string' &&
-    status.coordinatorNamespace.length > 0 &&
-    status.coordinatorNamespace === namespace
+    typeof status.backendNamespace === 'string' &&
+    status.backendNamespace.length > 0 &&
+    status.backendNamespace === namespace
   );
 }
 
@@ -27,7 +27,7 @@ export interface JobStatus {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind: JobKind;
   phase: JobPhase;
@@ -42,7 +42,7 @@ export interface JobLaunch {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash?: string;
   jobKind: JobKind;
   pool: string;

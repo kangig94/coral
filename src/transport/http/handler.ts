@@ -595,7 +595,7 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
       return;
     }
 
-    const authHeader = req.headers['x-coral-coordinator-token'];
+    const authHeader = req.headers['x-coral-backend-token'];
     if (typeof authHeader !== 'string' || authHeader !== identity.token) {
       req.resume();
       sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
@@ -603,7 +603,7 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
     }
 
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Coordinator-Token, Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 
     if (!req.url) {
@@ -622,7 +622,7 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
 
     if (!deps.admin.isLifecycleRunning() || deps.admin.isDrainRequested()) {
       req.resume();
-      sendJson(res, 503, { code: 'coordinator_shutting_down', message: 'Coordinator shutting down' });
+      sendJson(res, 503, { code: 'backend_shutting_down', message: 'Backend shutting down' });
       return;
     }
 

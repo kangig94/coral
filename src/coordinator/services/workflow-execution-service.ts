@@ -1,4 +1,4 @@
-import { coordinatorLog } from '../../infra/coordinator-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -44,7 +44,7 @@ export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
   sessionManager: SessionWorkflowPort;
   abortRegistry: JobAbortRegistryPort;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
   providerRegistry: ProviderCatalog;
@@ -74,7 +74,7 @@ export class WorkflowExecutionService {
       model: 'workflow',
       cwd: ctx.projectRoot,
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: this.deps.coordinatorNamespace,
+      backendNamespace: this.deps.backendNamespace,
       ...(controllerProfile !== undefined ? { controllerProfile } : {}),
     });
     const jobId = this.deps.abortRegistry.register();
@@ -107,7 +107,7 @@ export class WorkflowExecutionService {
       sessionId: session.sessionId,
       provider: providerName,
       projectRoot: ctx.projectRoot,
-      coordinatorNamespace: this.deps.coordinatorNamespace,
+      backendNamespace: this.deps.backendNamespace,
       bundleHash: this.deps.bundleHash,
       jobKind: 'workflow',
       pool: 'default',
@@ -124,7 +124,7 @@ export class WorkflowExecutionService {
     this.deps.progressStore.appendEvent({
       type: 'job.runtime.started',
       stream: { kind: 'job', id: jobId },
-      namespace: this.deps.coordinatorNamespace,
+      namespace: this.deps.backendNamespace,
       project: ctx.projectRoot,
       refs: { jobId, sessionId: session.sessionId },
       bodyVersion: 1,
@@ -144,7 +144,7 @@ export class WorkflowExecutionService {
         this.deps.sessionManager.get(providerName, sessionId)?.conversationRef,
       get: (providerName) => this.deps.providerRegistry.get(providerName),
       cleanupRuntime: toArtifactCleanupRuntime(this.deps.runtime),
-      onError: (message) => coordinatorLog.warn(message),
+      onError: (message) => backendLog.warn(message),
     });
   }
 
@@ -160,7 +160,7 @@ export class WorkflowExecutionService {
     try {
       writeResultArtifact(this.deps.runtime.storage, jobId, markdown);
     } catch (error: unknown) {
-      coordinatorLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
+      backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }
     this.deps.sessionManager.setNonResumable(sessionId);
     this.deps.abortRegistry.remove(jobId);
@@ -236,9 +236,9 @@ export class WorkflowExecutionService {
 
   private handleWorkflowFinalizationError(jobId: string, error: unknown): void {
     if (error instanceof TerminalWriteError) {
-      coordinatorLog.error(error.message, error.cause);
+      backendLog.error(error.message, error.cause);
       return;
     }
-    coordinatorLog.error(`Failed to finalize workflow job ${jobId}: ${errorMessage(error)}`, error);
+    backendLog.error(`Failed to finalize workflow job ${jobId}: ${errorMessage(error)}`, error);
   }
 }

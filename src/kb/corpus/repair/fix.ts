@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { coordinatorLog } from '../../../infra/coordinator-log.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { KbMutationEffects, KbRuntime } from '../../contract.js';
@@ -175,7 +175,7 @@ export async function applyDetectedIncidentFixes(
         result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
       }
     } catch (error: unknown) {
-      coordinatorLog.warn(
+      backendLog.warn(
         `kb_repair_error ${JSON.stringify({
           locus: incident.locus,
           canonical: incident.canonical,
@@ -207,11 +207,11 @@ function createRepairResult(incident: DetectedIncident, action: RepairAction, ti
 function logRepairResult(result: RepairResult): void {
   const message = JSON.stringify(result);
   if (result.action === 'skipped') {
-    coordinatorLog.warn(message);
+    backendLog.warn(message);
     return;
   }
 
-  coordinatorLog.info(message);
+  backendLog.info(message);
 }
 
 function resolveRepairClassification(incident: DetectedIncident): IncidentClassification {

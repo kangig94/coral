@@ -14,7 +14,7 @@ export type KbFailureDetail = { message: string; stack?: string };
 export interface KbJobRecorderDeps {
   runtime: Pick<Runtime, 'ids' | 'time'>;
   progressStore: JobProgressStore;
-  coordinatorNamespace: string;
+  backendNamespace: string;
   bundleHash: string;
 }
 
@@ -68,7 +68,7 @@ export class KbJobRecorder {
       sessionId: null,
       provider: null,
       projectRoot: params.projectRoot,
-      coordinatorNamespace: this.deps.coordinatorNamespace,
+      backendNamespace: this.deps.backendNamespace,
       bundleHash: this.deps.bundleHash,
       jobKind: 'kb',
       pool: 'default',
@@ -90,7 +90,7 @@ export class KbJobRecorder {
     this.deps.progressStore.appendEvent({
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
-      namespace: this.deps.coordinatorNamespace,
+      namespace: this.deps.backendNamespace,
       project: projectRoot,
       refs: { jobId },
       bodyVersion: 1,
@@ -113,7 +113,7 @@ export class KbJobRecorder {
       {
         type: 'job.progress.emitted',
         stream: { kind: 'job', id: params.jobId },
-        namespace: this.deps.coordinatorNamespace,
+        namespace: this.deps.backendNamespace,
         project: params.projectRoot,
         refs: { jobId: params.jobId },
         bodyVersion: 1,

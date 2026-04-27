@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import type { CoordinatorClient } from '../../transport/http/client.js';
+import type { BackendClient } from '../../transport/http/client.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 import {
   makeClient,
@@ -46,7 +46,7 @@ export function registerDiscussCommands(program: Command): void {
         };
         discussSeedSchema.parse(args);
         const client = makeClient(process.cwd(), discussSeedCommand);
-        const result = await client.discussSeed(args as Parameters<CoordinatorClient['discussSeed']>[0]);
+        const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
         process.stdout.write(formatPersonaSeed(result) + '\n');
       } catch (error) {
         emitError(error);
@@ -73,7 +73,7 @@ export function registerDiscussCommands(program: Command): void {
         };
         discussStartSchema.parse(args);
         const client = makeClient(process.cwd(), discussStartCommand);
-        const result = await client.discussStart(args as Parameters<CoordinatorClient['discussStart']>[0]);
+        const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
         process.stdout.write(formatDiscussStart(result) + '\n');
       } catch (error) {
         emitError(error);
@@ -124,8 +124,8 @@ export function registerDiscussCommands(program: Command): void {
         }
         const client = makeClient(process.cwd(), discussParticipateCommand);
         const result = isSpeech
-          ? await client.discussSpeech(args as Parameters<CoordinatorClient['discussSpeech']>[0])
-          : await client.discussBid(args as Parameters<CoordinatorClient['discussBid']>[0]);
+          ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
+          : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
         process.stdout.write(formatDiscussParticipate(result) + '\n');
       } catch (error) {
         emitError(error);
