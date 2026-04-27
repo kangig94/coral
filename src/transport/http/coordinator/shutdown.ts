@@ -12,8 +12,8 @@ export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
 
-export function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
-  return isRecord(value) && value.code === 'backend_shutting_down';
+export function isShuttingDownError(value: unknown): value is { code: 'coordinator_shutting_down' } {
+  return isRecord(value) && value.code === 'coordinator_shutting_down';
 }
 
 export async function shutdownCoordinator(pluginRoot: string): Promise<ShutdownResult> {
@@ -30,7 +30,7 @@ export async function shutdownCoordinator(pluginRoot: string): Promise<ShutdownR
   try {
     const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': info.token },
+      headers: { 'X-Coral-Coordinator-Token': info.token },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);

@@ -40,9 +40,9 @@ export function parseSseBlock(block: string): SseEventBlock | null {
 }
 
 export function describeHttpError(status: number, statusText: string): string {
-  if (status === 503) return 'Backend shutting down, retry';
-  if (status === 401) return 'Backend auth failure - stale token';
-  return `Backend request failed: ${status} ${statusText}`;
+  if (status === 503) return 'Coordinator shutting down, retry';
+  if (status === 401) return 'Coordinator auth failure - stale token';
+  return `Coordinator request failed: ${status} ${statusText}`;
 }
 
 export async function parseJsonResponse(response: Response): Promise<unknown> {

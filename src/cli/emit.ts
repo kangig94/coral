@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
 import {
-  BackendToolHttpError,
+  CoordinatorHttpError,
   type AcceptedLaunchResponse,
 } from '../transport/http/client.js';
 import { buildErrorEnvelope } from './errors.js';
@@ -31,7 +31,7 @@ export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?
 export function emitError(error: unknown): void {
   clearPendingReadStoreNote();
   const { envelope, exitCode } = buildErrorEnvelope(error);
-  const statusCode = error instanceof BackendToolHttpError ? error.statusCode : undefined;
+  const statusCode = error instanceof CoordinatorHttpError ? error.statusCode : undefined;
   process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
   process.exitCode = exitCode;
 }

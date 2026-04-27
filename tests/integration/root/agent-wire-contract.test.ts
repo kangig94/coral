@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { BackendClient, BackendToolHttpError } from '#src/transport/http/client.js';
+import { CoordinatorClient, CoordinatorHttpError } from '#src/transport/http/client.js';
 import * as AgentResolution from '#src/jobs/agent-resolution.js';
 import type { MutableRuntimeState } from '#src/coordinator/control.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
@@ -40,7 +40,7 @@ beforeAll(() => {
   for (const [name, value] of Object.entries(ProviderRequestPolicy)) {
     assertNotMocked(`ProviderRequestPolicy.${name}`, value);
   }
-  assertNotMocked('BackendClient.prototype.createSession', BackendClient.prototype.createSession);
+  assertNotMocked('CoordinatorClient.prototype.createSession', CoordinatorClient.prototype.createSession);
 });
 
 type RecordedLaunchRequest = ProviderRequest & {
@@ -189,7 +189,7 @@ describe('agent wire contract', () => {
   let coralPluginRoot = '';
   let registryPath = '';
   let server: Server | null = null;
-  let client: BackendClient;
+  let client: CoordinatorClient;
   let previousHome: string | undefined;
   let previousCoralPluginRegistry: string | undefined;
 
@@ -373,7 +373,7 @@ describe('agent wire contract', () => {
 
     const started = await startHttpHandlerServer(deps);
     server = started.server;
-    client = new BackendClient({
+    client = new CoordinatorClient({
       ensureBackend: async () => ({
         host: started.host,
         port: started.port,
@@ -450,9 +450,9 @@ describe('agent wire contract', () => {
       caught = error;
     }
 
-    expect(caught).toBeInstanceOf(BackendToolHttpError);
-    expect((caught as BackendToolHttpError).statusCode).toBe(400);
-    expect((caught as BackendToolHttpError).body).toEqual(
+    expect(caught).toBeInstanceOf(CoordinatorHttpError);
+    expect((caught as CoordinatorHttpError).statusCode).toBe(400);
+    expect((caught as CoordinatorHttpError).body).toEqual(
       expect.objectContaining({
         code: 'invalid_request',
       }),

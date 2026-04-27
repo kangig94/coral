@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { BackendToolHttpError } from '#src/transport/http/errors.js';
-import type { BackendStatusFull } from '#src/transport/http/coordinator/status.js';
+import { CoordinatorHttpError } from '#src/transport/http/errors.js';
+import type { CoordinatorStatusFull } from '#src/transport/http/coordinator/status.js';
 import type { ShutdownResult } from '#src/transport/http/coordinator/shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/transport/http/client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
@@ -9,7 +9,7 @@ import type { WatchState } from '#src/discuss/watch.js';
 import type { KbReadResult } from '#src/kb/entry-types.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
-import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
+import { CoordinatorUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   formatAbortResult,
@@ -270,8 +270,8 @@ describe('cli format', () => {
     });
   });
 
-  describe('backend formatters', () => {
-    it('formats an ok backend status', () => {
+  describe('coordinator formatters', () => {
+    it('formats an ok coordinator status', () => {
       const status = {
         status: 'ok',
         health: {
@@ -284,28 +284,28 @@ describe('cli format', () => {
           activeJobs: 1,
           inflightRequests: 0,
         },
-      } satisfies BackendStatusFull;
+      } satisfies CoordinatorStatusFull;
 
       expect(formatCoordinatorStatus(status)).toBe(
-        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
+        'Coordinator ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
       );
     });
 
-    it('formats a not-running backend status', () => {
-      expect(formatCoordinatorStatus({ status: 'not_running' })).toBe('Backend not running');
+    it('formats a not-running coordinator status', () => {
+      expect(formatCoordinatorStatus({ status: 'not_running' })).toBe('Coordinator not running');
     });
 
-    it('formats a shutting-down backend status', () => {
-      expect(formatCoordinatorStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
+    it('formats a shutting-down coordinator status', () => {
+      expect(formatCoordinatorStatus({ status: 'shutting_down' })).toBe('Coordinator shutting down');
     });
 
-    it('formats an unauthorized backend status', () => {
-      expect(formatCoordinatorStatus({ status: 'unauthorized' })).toBe('Backend unauthorized');
+    it('formats an unauthorized coordinator status', () => {
+      expect(formatCoordinatorStatus({ status: 'unauthorized' })).toBe('Coordinator unauthorized');
     });
 
     it('formats a successful shutdown result', () => {
       const result = { ok: true } satisfies ShutdownResult;
-      expect(formatShutdown(result)).toBe('Backend shutdown initiated');
+      expect(formatShutdown(result)).toBe('Coordinator shutdown initiated');
     });
 
     it('formats a failed shutdown result', () => {
@@ -501,7 +501,7 @@ describe('cli format', () => {
   });
 
   describe('formatError', () => {
-    it('formats a BackendToolHttpError-shaped value', () => {
+    it('formats a CoordinatorHttpError-shaped value', () => {
       expect(
         formatError({
           statusCode: 403,
@@ -533,22 +533,22 @@ describe('cli format', () => {
       expect(formatErrorEnvelope(envelope)).toBe('input is required (-i, --input) [code=invalid_usage]');
     });
 
-    it('formats BackendToolHttpError envelopes with detail on a second line', () => {
-      const error = new BackendToolHttpError('HTTP 503', 503, {
-        code: 'backend_recovering',
+    it('formats CoordinatorHttpError envelopes with detail on a second line', () => {
+      const error = new CoordinatorHttpError('HTTP 503', 503, {
+        code: 'coordinator_recovering',
         message: 'recovering — retry after 500ms',
         detail: { retryAfterMs: 500 },
       });
       const { envelope } = buildErrorEnvelope(error);
 
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
-        'recovering — retry after 500ms [code=backend_recovering, http=503]\n' +
+        'recovering — retry after 500ms [code=coordinator_recovering, http=503]\n' +
           'Detail: {"retryAfterMs":500}',
       );
     });
 
-    it('formats BackendToolHttpError envelopes without detail on a single line', () => {
-      const error = new BackendToolHttpError('HTTP 404', 404, {
+    it('formats CoordinatorHttpError envelopes without detail on a single line', () => {
+      const error = new CoordinatorHttpError('HTTP 404', 404, {
         code: 'not_found',
         message: 'Job not found',
       });
@@ -557,8 +557,8 @@ describe('cli format', () => {
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe('Job not found [code=not_found, http=404]');
     });
 
-    it('formats BackendToolHttpError detail: null literally', () => {
-      const error = new BackendToolHttpError('HTTP 400', 400, {
+    it('formats CoordinatorHttpError detail: null literally', () => {
+      const error = new CoordinatorHttpError('HTTP 400', 400, {
         code: 'bad_request',
         message: 'Missing prompt',
         detail: null,
@@ -588,22 +588,22 @@ describe('cli format', () => {
       ]);
     });
 
-    it('formats BackendUnreachableError envelopes on a single line with recovery guidance', () => {
-      const { envelope } = buildErrorEnvelope(new BackendUnreachableError('fetch failed'));
+    it('formats CoordinatorUnreachableError envelopes on a single line with recovery guidance', () => {
+      const { envelope } = buildErrorEnvelope(new CoordinatorUnreachableError('fetch failed'));
 
       expect(formatErrorEnvelope(envelope)).toBe(
-        "fetch failed Run 'coral-cli backend status' to diagnose. [code=backend_unreachable]",
+        "fetch failed Run 'coral-cli coordinator status' to diagnose. [code=coordinator_unreachable]",
       );
     });
 
-    it('does not duplicate the backend status hint when it is already present', () => {
+    it('does not duplicate the coordinator status hint when it is already present', () => {
       expect(
         formatErrorEnvelope({
           error: true,
-          code: 'backend_unreachable',
-          message: 'fetch failed. Run coral-cli backend status for more detail.',
+          code: 'coordinator_unreachable',
+          message: 'fetch failed. Run coral-cli coordinator status for more detail.',
         }),
-      ).toBe('fetch failed. Run coral-cli backend status for more detail. [code=backend_unreachable]');
+      ).toBe('fetch failed. Run coral-cli coordinator status for more detail. [code=coordinator_unreachable]');
     });
 
     it('formats TransientHttpError envelopes on a single line', () => {
@@ -639,7 +639,7 @@ describe('cli format', () => {
       const { envelope } =
         error instanceof Error
           ? buildErrorEnvelope(error)
-          : buildErrorEnvelope(new BackendToolHttpError(error.message, error.statusCode, error.body));
+          : buildErrorEnvelope(new CoordinatorHttpError(error.message, error.statusCode, error.body));
       const statusCode = error instanceof Error ? undefined : error.statusCode;
 
       expect(formatError(error)).toBe(expectedText);

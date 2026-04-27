@@ -100,7 +100,7 @@ function createHarness(options: {
   if (options.projectionPhase !== null) {
     db.prepare(
       `INSERT INTO projection_jobs (
-         job_id, phase, session_id, provider, project_root, backend_namespace,
+         job_id, phase, session_id, provider, project_root, coordinator_namespace,
          job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
 	       )
 	       VALUES (?, ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
@@ -109,7 +109,7 @@ function createHarness(options: {
 	         session_id = excluded.session_id,
 	         provider = excluded.provider,
 	         project_root = excluded.project_root,
-	         backend_namespace = excluded.backend_namespace,
+	         coordinator_namespace = excluded.coordinator_namespace,
 	         job_kind = excluded.job_kind,
 	         parent_workflow_job_id = excluded.parent_workflow_job_id,
 	         workflow_slot = excluded.workflow_slot,

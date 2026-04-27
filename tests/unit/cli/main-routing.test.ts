@@ -62,7 +62,7 @@ const mockState = vi.hoisted(() => ({
 }));
 
 const mockHttpErrors = vi.hoisted(() => {
-  class BackendToolHttpError extends Error {
+  class CoordinatorHttpError extends Error {
     statusCode: number;
     body: unknown;
 
@@ -70,18 +70,18 @@ const mockHttpErrors = vi.hoisted(() => {
       super(message);
       this.statusCode = statusCode;
       this.body = body;
-      this.name = 'BackendToolHttpError';
+      this.name = 'CoordinatorHttpError';
       Object.setPrototypeOf(this, new.target.prototype);
     }
   }
 
-  return { BackendToolHttpError };
+  return { CoordinatorHttpError };
 });
 
 vi.mock('#src/transport/http/errors.js', () => mockHttpErrors);
 
 vi.mock('#src/transport/http/client.js', () => ({
-  BackendToolHttpError: mockHttpErrors.BackendToolHttpError,
+  CoordinatorHttpError: mockHttpErrors.CoordinatorHttpError,
 }));
 
 vi.mock('#src/transport/http/coordinator/status.js', () => ({
@@ -1112,9 +1112,9 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    const { BackendToolHttpError } = await import('#src/transport/http/client.js');
+    const { CoordinatorHttpError } = await import('#src/transport/http/client.js');
     mockState.createSession.mockRejectedValueOnce(
-      new BackendToolHttpError('HTTP 400', 400, {
+      new CoordinatorHttpError('HTTP 400', 400, {
         code: 'bad_request',
         message: 'Missing prompt',
         detail: { field: 'prompt', reason: 'required' },
@@ -1375,16 +1375,16 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('treats discuss backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
+  it('treats discuss coordinator_recovering results as command errors without relying on thrown HTTP errors', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const errorBody = {
-      code: 'backend_recovering',
+      code: 'coordinator_recovering',
       message: 'recovering — retry after 500ms',
     };
 
-    const { BackendToolHttpError } = await import('#src/transport/http/client.js');
-    mockState.discussStart.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
+    const { CoordinatorHttpError } = await import('#src/transport/http/client.js');
+    mockState.discussStart.mockRejectedValueOnce(new CoordinatorHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync([
       'node',
@@ -1408,7 +1408,7 @@ describe('cli main routing', () => {
     });
     expect(stdout).toBe('');
     expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'backend_recovering', message: 'recovering — retry after 500ms' }, 503)}\n`,
+      `${formatErrorEnvelope({ error: true, code: 'coordinator_recovering', message: 'recovering — retry after 500ms' }, 503)}\n`,
     );
     expect(process.exitCode).toBe(75);
   });
@@ -1541,23 +1541,23 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('treats KB backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
+  it('treats KB coordinator_recovering results as command errors without relying on thrown HTTP errors', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const errorBody = {
-      code: 'backend_recovering',
+      code: 'coordinator_recovering',
       message: 'recovering — retry after 500ms',
     };
 
-    const { BackendToolHttpError } = await import('#src/transport/http/client.js');
-    mockState.kbSearch.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
+    const { CoordinatorHttpError } = await import('#src/transport/http/client.js');
+    mockState.kbSearch.mockRejectedValueOnce(new CoordinatorHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--output-format', 'json']);
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
     expect(stdout).toBe('');
     expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'backend_recovering', message: 'recovering — retry after 500ms' }, 503)}\n`,
+      `${formatErrorEnvelope({ error: true, code: 'coordinator_recovering', message: 'recovering — retry after 500ms' }, 503)}\n`,
     );
     expect(process.exitCode).toBe(75);
   });

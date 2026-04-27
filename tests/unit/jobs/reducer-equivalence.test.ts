@@ -113,7 +113,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -135,7 +135,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-1',
         provider: 'codex',
         project_root: '/workspace/coral',
-        backend_namespace: 'namespace-1',
+        coordinator_namespace: 'namespace-1',
         bundle_hash: 'bundle-1',
         job_kind: 'provider',
         created_at: NOW.toISOString(),
@@ -154,7 +154,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -221,7 +221,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -237,7 +237,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-rejected',
         provider: 'codex',
         project_root: '/workspace/coral',
-        backend_namespace: 'namespace-1',
+        coordinator_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'workflow',
         created_at: NOW.toISOString(),
@@ -256,7 +256,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -328,7 +328,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
@@ -344,7 +344,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-aborted',
         provider: 'codex',
         project_root: '/workspace/coral',
-        backend_namespace: 'namespace-1',
+        coordinator_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'provider',
         created_at: NOW.toISOString(),
@@ -363,7 +363,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, coordinator_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?

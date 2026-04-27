@@ -6,7 +6,7 @@ import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
 } from '../sse.js';
-import { isBackendHealth } from './health.js';
+import { isCoordinatorHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus = {
@@ -22,11 +22,11 @@ export type BackendStatus = {
   status: 'shutting_down';
 };
 
-export type BackendStatusFull =
+export type CoordinatorStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
 
-export async function getCoordinatorStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+export async function getCoordinatorStatusFull(pluginRoot: string): Promise<CoordinatorStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const info = readCoordinatorInfo({
     storage: runtime.storage,
@@ -38,12 +38,12 @@ export async function getCoordinatorStatusFull(pluginRoot: string): Promise<Back
   try {
     const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
+      headers: { 'X-Coral-Coordinator-Token': info.token },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);
     if (response.status === 200) {
-      if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      if (!isCoordinatorHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
         return { status: 'not_running' };
       }
 

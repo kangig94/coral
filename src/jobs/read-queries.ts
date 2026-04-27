@@ -117,7 +117,7 @@ type ProjectionRow = {
   session_id: string | null;
   provider: string | null;
   project_root: string;
-  backend_namespace: string;
+  coordinator_namespace: string;
   bundle_hash: string | null;
   job_kind: 'provider' | 'workflow' | 'kb';
   parent_workflow_job_id: string | null;
@@ -196,7 +196,7 @@ function readProjectionRow(
   const row = prepareCached<[string], ProjectionRow | undefined>(
     db,
     `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
+            session_id, provider, project_root, coordinator_namespace, bundle_hash,
             job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
        FROM projection_jobs
       WHERE job_id = ?`,
@@ -216,7 +216,7 @@ function readProjectionRows(
   const rows = prepareCached<unknown[], ProjectionRow>(
     db,
     `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
+            session_id, provider, project_root, coordinator_namespace, bundle_hash,
             job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
        FROM projection_jobs
       WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
@@ -233,7 +233,7 @@ function readOrderedProjectionRows(
   const params: unknown[] = [];
 
   if (filters?.namespace !== undefined) {
-    clauses.push('backend_namespace = ?');
+    clauses.push('coordinator_namespace = ?');
     params.push(filters.namespace);
   }
   if (filters && filters.all !== true) {
@@ -257,7 +257,7 @@ function readOrderedProjectionRows(
   return prepareCached<unknown[], ProjectionRow>(
     db,
     `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
+            session_id, provider, project_root, coordinator_namespace, bundle_hash,
             job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
        FROM projection_jobs
       ${whereClause}
@@ -530,7 +530,7 @@ function projectionRowToStatus(
     sessionId: projection.session_id,
     provider: projection.provider,
     projectRoot: projection.project_root,
-    coordinatorNamespace: projection.backend_namespace,
+    coordinatorNamespace: projection.coordinator_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
     phase: projection.phase as JobPhase,

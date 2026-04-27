@@ -3,11 +3,11 @@ import { describeTerminalOutcome } from '../jobs/outcome.js';
 import type { JobsListResponse } from '../transport/http/client.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
-import type { BackendStatusFull } from '../transport/http/coordinator/status.js';
+import type { CoordinatorStatusFull } from '../transport/http/coordinator/status.js';
 import type { ShutdownResult } from '../transport/http/coordinator/shutdown.js';
 import type {
   AcceptedLaunchResponse,
-  BackendToolHttpError,
+  CoordinatorHttpError,
   DiscussStartResponse,
   KbDeleteResponse,
   KbMemoResponse,
@@ -189,7 +189,7 @@ function toKbReadDisplayResult(data: KbReadResult): KbReadDisplayResult {
   };
 }
 
-function isBackendToolHttpError(value: unknown): value is BackendToolHttpError {
+function isCoordinatorHttpError(value: unknown): value is CoordinatorHttpError {
   return (
     isRecord(value) && typeof value.statusCode === 'number' && 'body' in value && typeof value.message === 'string'
   );
@@ -522,29 +522,29 @@ export function formatKbReindex(data: ReindexResult, cliPrefix = 'coral-cli'): s
   ]);
 }
 
-export function formatCoordinatorStatus(result: BackendStatusFull): string {
+export function formatCoordinatorStatus(result: CoordinatorStatusFull): string {
   switch (result.status) {
     case 'ok':
       return joinLines([
-        'Backend ok',
+        'Coordinator ok',
         `Version: ${result.health.version}`,
         `Uptime: ${result.health.uptimeMs}ms`,
         `Active: ${result.health.active}`,
         `Active jobs: ${result.health.activeJobs}`,
       ]);
     case 'not_running':
-      return 'Backend not running';
+      return 'Coordinator not running';
     case 'shutting_down':
-      return 'Backend shutting down';
+      return 'Coordinator shutting down';
     case 'unauthorized':
-      return 'Backend unauthorized';
+      return 'Coordinator unauthorized';
     default:
       return assertNever(result);
   }
 }
 
 export function formatShutdown(result: ShutdownResult): string {
-  return result.ok ? 'Backend shutdown initiated' : `Shutdown failed: ${result.reason}`;
+  return result.ok ? 'Coordinator shutdown initiated' : `Shutdown failed: ${result.reason}`;
 }
 
 export function formatErrorEnvelope(
@@ -554,10 +554,10 @@ export function formatErrorEnvelope(
   const tags = [`code=${envelope.code}`];
   if (statusCode !== undefined) tags.push(`http=${statusCode}`);
   const needsBackendStatusHint =
-    envelope.code === 'backend_unreachable'
-    && !envelope.message.includes('backend status');
+    envelope.code === 'coordinator_unreachable'
+    && !envelope.message.includes('coordinator status');
   const message = needsBackendStatusHint
-    ? `${envelope.message} Run 'coral-cli backend status' to diagnose.`
+    ? `${envelope.message} Run 'coral-cli coordinator status' to diagnose.`
     : envelope.message;
   const head = `${message} [${tags.join(', ')}]`;
   if (envelope.detail === undefined) return head;
@@ -565,7 +565,7 @@ export function formatErrorEnvelope(
 }
 
 export function formatError(error: unknown): string {
-  if (isBackendToolHttpError(error)) {
+  if (isCoordinatorHttpError(error)) {
     const detail = error.body === null || error.body === undefined ? error.message : formatUnknown(error.body);
     return `HTTP ${error.statusCode}: ${detail}`;
   }

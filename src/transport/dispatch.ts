@@ -88,7 +88,7 @@ function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: nu
   if (!rpcPorts.admin.isLaunchFenceActive()) {
     return null;
   }
-  return domainResultToHttp(domainError('backend_recovering', BACKEND_RECOVERING_MESSAGE));
+  return domainResultToHttp(domainError('coordinator_recovering', BACKEND_RECOVERING_MESSAGE));
 }
 
 function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal): T {

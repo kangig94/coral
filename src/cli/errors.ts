@@ -1,7 +1,7 @@
 import { CommanderError } from 'commander';
 
-import { BackendToolHttpError } from '../transport/http/errors.js';
-import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
+import { CoordinatorHttpError } from '../transport/http/errors.js';
+import { CoordinatorUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 
@@ -30,10 +30,10 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
   }
-  if (code === 'transient' || code === 'backend_shutting_down' || httpStatus === 503) {
+  if (code === 'transient' || code === 'coordinator_shutting_down' || httpStatus === 503) {
     return 75;
   }
-  if (code === 'backend_unreachable') {
+  if (code === 'coordinator_unreachable') {
     return 69;
   }
   if (code === 'internal' || code === 'internal_error' || httpStatus === 500) {
@@ -43,9 +43,9 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
 }
 
 export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope; exitCode: number } {
-  if (error instanceof BackendToolHttpError) {
+  if (error instanceof CoordinatorHttpError) {
     const body = isRecord(error.body) ? error.body : null;
-    const code = body && typeof body.code === 'string' ? body.code : 'backend_error';
+    const code = body && typeof body.code === 'string' ? body.code : 'coordinator_error';
     const message = body && typeof body.message === 'string' ? body.message : error.message;
     const detail = body && 'detail' in body ? body.detail : undefined;
     return withExitCode(
@@ -74,8 +74,8 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
     return withExitCode({ error: true, code: 'transient', message: error.message }, 75);
   }
 
-  if (error instanceof BackendUnreachableError) {
-    return withExitCode({ error: true, code: 'backend_unreachable', message: error.message }, 69);
+  if (error instanceof CoordinatorUnreachableError) {
+    return withExitCode({ error: true, code: 'coordinator_unreachable', message: error.message }, 69);
   }
 
   if (error instanceof Error) {

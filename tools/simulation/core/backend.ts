@@ -182,7 +182,7 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, _pluginRoot: st
       return jsonResponse({ code: 'not_found', message: 'Not found' }, 404);
     }
 
-    if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
+    if (headerValue(init?.headers, 'X-Coral-Coordinator-Token') !== info.token) {
       return jsonResponse({ code: 'unauthorized', message: 'Unauthorized' }, 401);
     }
 

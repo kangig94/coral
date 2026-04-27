@@ -275,7 +275,7 @@ describe('subscription carriage', () => {
         headers: {
           'Content-Type': 'application/json',
           'Last-Event-ID': serializeWaitCursor(expectedCursor),
-          'X-Coral-Backend-Token': ports.identity.token,
+          'X-Coral-Coordinator-Token': ports.identity.token,
         },
         body: JSON.stringify({
           jobIds: ['job-1'],

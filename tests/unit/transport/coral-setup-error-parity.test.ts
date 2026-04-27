@@ -222,7 +222,7 @@ async function requestHttpErrorPayload(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Coral-Backend-Token': token,
+      'X-Coral-Coordinator-Token': token,
     },
     body: JSON.stringify({ name: 'needle' }),
   });

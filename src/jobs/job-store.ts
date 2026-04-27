@@ -656,7 +656,7 @@ export class JobStore implements JobProgressStore {
   private countProjectedLiveJobsByNamespace(namespace: string): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
     const phasePlaceholders = ['queued', 'launching', 'running'];
-    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`, `backend_namespace = ?`];
+    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`, `coordinator_namespace = ?`];
     const params: unknown[] = [...phasePlaceholders, namespace];
 
     if (excludedJobIds.length > 0) {

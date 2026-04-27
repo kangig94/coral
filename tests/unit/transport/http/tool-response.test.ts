@@ -220,7 +220,7 @@ describe('domainResultToHttp', () => {
     ['session_not_found', 404],
     ['unknown_tool', 404],
     ['scope_mismatch', 403],
-    ['backend_recovering', 503],
+    ['coordinator_recovering', 503],
     ['kb_unavailable', 503],
     ['start_failed', 500],
     ['kb_error', 500],

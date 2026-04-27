@@ -14,7 +14,7 @@ export class ScenarioHttpRequest extends EventEmitter {
     this.url = url;
     this.bodyText = body === undefined ? null : JSON.stringify(body);
     this.headers = {
-      'x-coral-backend-token': token,
+      'x-coral-coordinator-token': token,
       ...(this.bodyText !== null ? { 'content-type': 'application/json' } : {}),
     };
   }

@@ -123,7 +123,7 @@ function seedJobProjection(
          session_id,
          provider,
          project_root,
-         backend_namespace,
+         coordinator_namespace,
          bundle_hash,
          job_kind,
          parent_workflow_job_id,

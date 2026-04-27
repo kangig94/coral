@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BackendHandle } from '#src/transport/http/coordinator/handle.js';
+import type { CoordinatorHandle } from '#src/transport/http/coordinator/handle.js';
 import {
-  BackendClient,
-  BackendToolHttpError,
+  CoordinatorClient,
+  CoordinatorHttpError,
   type InvocationContext,
   type SessionCreateResponse,
   type WorkflowLaunchResponse,
 } from '#src/transport/http/client.js';
 
-const backendHandle: BackendHandle = {
+const backendHandle: CoordinatorHandle = {
   port: 4100,
   host: '127.0.0.1',
   token: 'backend-token',
@@ -64,7 +64,7 @@ describe('transport/http http-client', () => {
   });
 
   it('routes createSession through POST /sessions with a direct body and normalized controller fields', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -92,7 +92,7 @@ describe('transport/http http-client', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': 'backend-token',
+          'X-Coral-Coordinator-Token': 'backend-token',
         },
         body: JSON.stringify({
           provider: 'codex',
@@ -112,7 +112,7 @@ describe('transport/http http-client', () => {
   });
 
   it('routes sendMessage and forkSession through the new session resource endpoints', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -193,7 +193,7 @@ describe('transport/http http-client', () => {
   });
 
   it('includes provider in sendMessage requests when provided', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -239,7 +239,7 @@ describe('transport/http http-client', () => {
   });
 
   it('omits provider from sendMessage requests when not provided', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -283,7 +283,7 @@ describe('transport/http http-client', () => {
   });
 
   it('includes provider in forkSession requests when provided', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -329,7 +329,7 @@ describe('transport/http http-client', () => {
   });
 
   it('routes workflow through POST /workflow with the camelCase request shape', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -372,7 +372,7 @@ describe('transport/http http-client', () => {
   });
 
   it('routes discuss resource methods through the new endpoints and verbs', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -452,7 +452,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/discuss/sessions/discuss-1/events?projectRoot=%2Ftmp%2Fproject&cursor=3',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -491,7 +491,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/discuss/sessions/discuss-1?projectRoot=%2Ftmp%2Fproject',
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -499,7 +499,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/discuss/sessions',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -507,13 +507,13 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/discuss/sessions/discuss-1?projectRoot=%2Ftmp%2Fproject&view=audit',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
   });
 
   it('routes KB resource methods through the new endpoints and verbs', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -622,7 +622,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/notes/contracts%2Foverview',
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -646,7 +646,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/sources/bridge-removal-plan',
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -680,7 +680,7 @@ describe('transport/http http-client', () => {
   });
 
   it('routes KB GET and DELETE resource methods with query params and owner fallback', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -720,7 +720,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/entries?q=contracts&scope=notes&top_k=5',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -728,7 +728,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/sources',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -736,7 +736,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/principles?q=contract&top_k=5&verbose=true',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -744,7 +744,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&owner=team-a',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -752,7 +752,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&pattern=*routing*&owner=team-a',
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -760,13 +760,13 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&all=true&owner=override-owner',
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
   });
 
   it('dispatches kbRead explicit selectors directly to the matching resource route', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
     });
     const responseBody = {
@@ -785,13 +785,13 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/kb/sources/bridge-removal-plan',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
   });
 
   it('preserves memo precedence for timestamp-shaped bare kbRead slugs', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -813,13 +813,13 @@ describe('transport/http http-client', () => {
       `http://127.0.0.1:4100/kb/memos/${slug}?projectRoot=%2Ftmp%2Fproject`,
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
   });
 
   it('falls through kbRead bare probes only on 404 responses', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -856,7 +856,7 @@ describe('transport/http http-client', () => {
   });
 
   it('surfaces non-404 kbRead probe failures immediately', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -866,7 +866,7 @@ describe('transport/http http-client', () => {
     );
 
     await expect(client.kbRead({ note: 'bridge-removal-plan' })).rejects.toMatchObject({
-      name: 'BackendToolHttpError',
+      name: 'CoordinatorHttpError',
       statusCode: 503,
       body: { code: 'kb_unavailable', message: 'Knowledge base is not available.' },
     });
@@ -876,34 +876,34 @@ describe('transport/http http-client', () => {
   it.each([
     {
       name: 'discussWatch',
-      invoke: (client: BackendClient) => client.discussWatch('discuss-1'),
+      invoke: (client: CoordinatorClient) => client.discussWatch('discuss-1'),
     },
     {
       name: 'discussAbort',
-      invoke: (client: BackendClient) => client.discussAbort('discuss-1'),
+      invoke: (client: CoordinatorClient) => client.discussAbort('discuss-1'),
     },
     {
       name: 'getDiscussSession',
-      invoke: (client: BackendClient) => client.getDiscussSession('discuss-1'),
+      invoke: (client: CoordinatorClient) => client.getDiscussSession('discuss-1'),
     },
     {
       name: 'kbMemoList',
-      invoke: (client: BackendClient) => client.kbMemoList({}),
+      invoke: (client: CoordinatorClient) => client.kbMemoList({}),
     },
     {
       name: 'kbMemoDelete',
-      invoke: (client: BackendClient) => client.kbMemoDelete({ pattern: '*' }),
+      invoke: (client: CoordinatorClient) => client.kbMemoDelete({ pattern: '*' }),
     },
     {
       name: 'kbMemoPurge',
-      invoke: (client: BackendClient) => client.kbMemoPurge({}),
+      invoke: (client: CoordinatorClient) => client.kbMemoPurge({}),
     },
     {
       name: 'kbRead bare',
-      invoke: (client: BackendClient) => client.kbRead({ note: 'bridge-removal-plan' }),
+      invoke: (client: CoordinatorClient) => client.kbRead({ note: 'bridge-removal-plan' }),
     },
   ])('requires InvocationContext for scoped route handling in $name', async ({ invoke }) => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
     });
 
@@ -912,7 +912,7 @@ describe('transport/http http-client', () => {
   });
 
   it('uses the new job read routes', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -958,7 +958,7 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/jobs?projectRoot=%2Ftmp%2Fproject&phase=running',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -966,13 +966,13 @@ describe('transport/http http-client', () => {
       'http://127.0.0.1:4100/jobs/job-1',
       expect.objectContaining({
         method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Coordinator-Token': 'backend-token' },
       }),
     );
   });
 
   it('posts abortJobs to /jobs/abort and returns AbortResult directly', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -999,7 +999,7 @@ describe('transport/http http-client', () => {
   });
 
   it('posts waitJobs to /jobs/wait and parses SSE events into a typed stream', async () => {
-    const client = new BackendClient({
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
@@ -1054,34 +1054,34 @@ describe('transport/http http-client', () => {
     );
   });
 
-  it('throws BackendToolHttpError for non-2xx responses instead of returning success-path domain errors', async () => {
-    const client = new BackendClient({
+  it('throws CoordinatorHttpError for non-2xx responses instead of returning success-path domain errors', async () => {
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
     const errorBody = {
-      code: 'backend_recovering',
+      code: 'coordinator_recovering',
       message: 'recovering - retry later',
     };
 
     fetchMock.mockResolvedValueOnce(jsonResponse(errorBody, 503, 'Service Unavailable'));
 
     await expect(client.createSession('codex', 'hello')).rejects.toMatchObject({
-      name: 'BackendToolHttpError',
+      name: 'CoordinatorHttpError',
       message: 'recovering - retry later',
       statusCode: 503,
       body: errorBody,
     });
   });
 
-  it('still reserves BackendToolHttpError for transport and server failures', async () => {
-    const client = new BackendClient({
+  it('still reserves CoordinatorHttpError for transport and server failures', async () => {
+    const client = new CoordinatorClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
 
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ code: 'backend_shutting_down', message: 'Backend shutting down' }, 503, 'Service Unavailable'),
+      jsonResponse({ code: 'coordinator_shutting_down', message: 'Backend shutting down' }, 503, 'Service Unavailable'),
     );
 
     let caught: unknown;
@@ -1091,11 +1091,11 @@ describe('transport/http http-client', () => {
       caught = error;
     }
 
-    expect(caught).toBeInstanceOf(BackendToolHttpError);
-    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down');
-    expect((caught as BackendToolHttpError).statusCode).toBe(503);
-    expect((caught as BackendToolHttpError).body).toEqual({
-      code: 'backend_shutting_down',
+    expect(caught).toBeInstanceOf(CoordinatorHttpError);
+    expect((caught as CoordinatorHttpError).message).toBe('Backend shutting down');
+    expect((caught as CoordinatorHttpError).statusCode).toBe(503);
+    expect((caught as CoordinatorHttpError).body).toEqual({
+      code: 'coordinator_shutting_down',
       message: 'Backend shutting down',
     });
   });

@@ -3,7 +3,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BackendHealth } from '#src/transport/http/coordinator/health.js';
+import type { CoordinatorHealth } from '#src/transport/http/coordinator/health.js';
 import { readCoordinatorInfo, type CoordinatorInfo } from '#src/infra/coordinator-discovery.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from "#src/jobs/paths.js";
@@ -192,7 +192,7 @@ async function requireBackendInfo(pluginRoot: string): Promise<CoordinatorInfo> 
 
 async function fetchJson<T>(info: CoordinatorInfo, path: string, expectedStatus = 200): Promise<T> {
   const response = await fetch(`http://${info.host}:${info.port}${path}`, {
-    headers: { 'X-Coral-Backend-Token': info.token },
+    headers: { 'X-Coral-Coordinator-Token': info.token },
   });
   expect(response.status).toBe(expectedStatus);
   return (await response.json()) as T;
@@ -279,8 +279,8 @@ describe('flavor coexistence integration', () => {
     expect(prodInfo.pid).not.toBe(devInfo.pid);
     expect(prodInfo.port).not.toBe(devInfo.port);
 
-    const prodHealth = await fetchJson<BackendHealth>(prodInfo, '/health');
-    const devHealth = await fetchJson<BackendHealth>(devInfo, '/health');
+    const prodHealth = await fetchJson<CoordinatorHealth>(prodInfo, '/health');
+    const devHealth = await fetchJson<CoordinatorHealth>(devInfo, '/health');
     expect(prodHealth.flavor).toBe('prod');
     expect(devHealth.flavor).toBe('dev');
     expect(prodHealth.namespace).toBe(prodNamespace);

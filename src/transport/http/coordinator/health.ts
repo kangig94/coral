@@ -3,7 +3,7 @@ import { isRecord } from '../../../infra/json.js';
 /**
  * Health metadata exposed by the Coral backend over HTTP.
  */
-export interface BackendHealth {
+export interface CoordinatorHealth {
   status: 'ok';
   version: string;
   bundleHash: string;
@@ -17,7 +17,7 @@ export interface BackendHealth {
   queueDepth: number;
 }
 
-export function isBackendHealth(value: unknown): value is BackendHealth {
+export function isCoordinatorHealth(value: unknown): value is CoordinatorHealth {
   return (
     isRecord(value) &&
     value.status === 'ok' &&

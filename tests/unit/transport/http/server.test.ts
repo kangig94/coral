@@ -676,7 +676,7 @@ describe('execution backend server', () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -707,7 +707,7 @@ describe('execution backend server', () => {
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -729,7 +729,7 @@ describe('execution backend server', () => {
 
     try {
       const response = await fetch(`${backend.baseUrl}/health`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+        headers: { 'X-Coral-Coordinator-Token': backend.token },
       });
       const body = (await response.json()) as Record<string, unknown>;
 
@@ -839,7 +839,7 @@ describe('execution backend server', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
+          'X-Coral-Coordinator-Token': backend.token,
         },
         body: JSON.stringify({
           jobIds: [jobId],
@@ -932,7 +932,7 @@ describe('execution backend server', () => {
     stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -1143,7 +1143,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {
       headers: {
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
     });
 
@@ -1238,7 +1238,7 @@ describe('execution backend server', () => {
 
     const listResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}`, {
       headers: {
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
     });
 
@@ -1256,7 +1256,7 @@ describe('execution backend server', () => {
       {
         method: 'DELETE',
         headers: {
-          'X-Coral-Backend-Token': backend.token,
+          'X-Coral-Coordinator-Token': backend.token,
         },
       },
     );
@@ -1273,7 +1273,7 @@ describe('execution backend server', () => {
       {
         method: 'DELETE',
         headers: {
-          'X-Coral-Backend-Token': backend.token,
+          'X-Coral-Coordinator-Token': backend.token,
         },
       },
     );
@@ -1732,7 +1732,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify(args),
         });
@@ -1817,7 +1817,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               ...args,
@@ -1862,7 +1862,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/discuss/sessions`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -1882,7 +1882,7 @@ describe('execution backend server', () => {
         const response = await fetch(
           `${started.baseUrl}/discuss/sessions/session-1?projectRoot=${encodeURIComponent(projectRoot)}`,
           {
-            headers: { 'X-Coral-Backend-Token': 'test-token' },
+            headers: { 'X-Coral-Coordinator-Token': 'test-token' },
           },
         );
 
@@ -1903,7 +1903,7 @@ describe('execution backend server', () => {
           const response = await fetch(
             `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent('/tmp/project')}&cursor=3`,
             {
-              headers: { 'X-Coral-Backend-Token': 'test-token' },
+              headers: { 'X-Coral-Coordinator-Token': 'test-token' },
             },
           );
 
@@ -1941,7 +1941,7 @@ describe('execution backend server', () => {
             `${started.baseUrl}/discuss/sessions/session-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
             {
               method: 'DELETE',
-              headers: { 'X-Coral-Backend-Token': 'test-token' },
+              headers: { 'X-Coral-Coordinator-Token': 'test-token' },
             },
           );
 
@@ -1976,7 +1976,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&scope=notes&top_k=5`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2008,7 +2008,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&mode=vector`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2032,7 +2032,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/diagnose`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2053,7 +2053,7 @@ describe('execution backend server', () => {
 
         try {
           const response = await fetch(`${started.baseUrl}/kb/notes/contracts%2Foverview`, {
-            headers: { 'X-Coral-Backend-Token': 'test-token' },
+            headers: { 'X-Coral-Coordinator-Token': 'test-token' },
           });
 
           expect(response.status).toBe(200);
@@ -2102,7 +2102,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2123,7 +2123,7 @@ describe('execution backend server', () => {
           const response = await fetch(
             `${started.baseUrl}/kb/memos/memo-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
             {
-              headers: { 'X-Coral-Backend-Token': 'test-token' },
+              headers: { 'X-Coral-Coordinator-Token': 'test-token' },
             },
           );
 
@@ -2165,7 +2165,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(404);
@@ -2184,7 +2184,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/sources`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2205,7 +2205,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/principles?q=contract&top_k=5&verbose=true`, {
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2231,7 +2231,7 @@ describe('execution backend server', () => {
           const response = await fetch(
             `${started.baseUrl}/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&owner=owner-a`,
             {
-              headers: { 'X-Coral-Backend-Token': 'test-token' },
+              headers: { 'X-Coral-Coordinator-Token': 'test-token' },
             },
           );
 
@@ -2316,7 +2316,7 @@ describe('execution backend server', () => {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'X-Coral-Backend-Token': 'test-token',
+                'X-Coral-Coordinator-Token': 'test-token',
               },
               body: JSON.stringify({
                 ...args,
@@ -2365,7 +2365,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               topic: 'routing',
@@ -2411,7 +2411,7 @@ describe('execution backend server', () => {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             title: 'Updated',
@@ -2452,7 +2452,7 @@ describe('execution backend server', () => {
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
           method: 'DELETE',
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(200);
@@ -2483,7 +2483,7 @@ describe('execution backend server', () => {
         try {
           const response = await fetch(`${started.baseUrl}/kb/memos?${query}`, {
             method: 'DELETE',
-            headers: { 'X-Coral-Backend-Token': 'test-token' },
+            headers: { 'X-Coral-Coordinator-Token': 'test-token' },
           });
 
           expect(response.status).toBe(200);
@@ -2519,7 +2519,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: '{',
         });
@@ -2549,7 +2549,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({ query: 'contracts' }),
           });
@@ -2600,7 +2600,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             ...args,
@@ -2610,7 +2610,7 @@ describe('execution backend server', () => {
 
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
-          code: 'backend_recovering',
+          code: 'coordinator_recovering',
           message: 'recovering — retry after 500ms',
         });
         expect(started.discussTools[handlerName as keyof typeof started.discussTools]).not.toHaveBeenCalled();
@@ -2627,7 +2627,7 @@ describe('execution backend server', () => {
           `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent('/tmp/project')}`,
           {
             headers: {
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
           },
         );
@@ -2650,7 +2650,7 @@ describe('execution backend server', () => {
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts`, {
           headers: {
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
         });
 
@@ -2678,7 +2678,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify(args),
         });
@@ -2740,10 +2740,10 @@ describe('execution backend server', () => {
           method,
           headers:
             body === undefined
-              ? { 'X-Coral-Backend-Token': 'test-token' }
+              ? { 'X-Coral-Coordinator-Token': 'test-token' }
               : {
                   'Content-Type': 'application/json',
-                  'X-Coral-Backend-Token': 'test-token',
+                  'X-Coral-Coordinator-Token': 'test-token',
                 },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
@@ -2767,7 +2767,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({ projectRoot: '/tmp/project' }),
           }),
@@ -2775,7 +2775,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({ projectRoot: '/tmp/project' }),
           }),
@@ -2828,7 +2828,7 @@ describe('execution backend server', () => {
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
           method,
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
+          headers: { 'X-Coral-Coordinator-Token': 'test-token' },
         });
 
         expect(response.status).toBe(400);
@@ -2859,7 +2859,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               provider: 'codex',
@@ -2923,7 +2923,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               provider: 'codex',
@@ -2966,7 +2966,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               provider: 'codex',
@@ -3005,7 +3005,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               provider: 'codex',
@@ -3038,7 +3038,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             prompt: 'continue',
@@ -3095,7 +3095,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             prompt: 'continue',
@@ -3145,7 +3145,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             prompt: 'branch',
@@ -3202,7 +3202,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             prompt: 'branch',
@@ -3253,7 +3253,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               expression: 'architect',
@@ -3318,7 +3318,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               expression: 'architect',
@@ -3366,7 +3366,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             expression: 'architect',
@@ -3408,7 +3408,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             expression: 'architect',
@@ -3444,7 +3444,7 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify({
             jobs: ['job-1', 'job-2'],
@@ -3495,7 +3495,7 @@ describe('execution backend server', () => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
+              'X-Coral-Coordinator-Token': 'test-token',
             },
             body: JSON.stringify({
               jobs: ['missing-job'],
@@ -3532,7 +3532,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-1', 'missing-job'],
@@ -3593,7 +3593,7 @@ describe('execution backend server', () => {
       headers: {
         'Content-Type': 'application/json',
         'Last-Event-ID': encodedCursor,
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-1'],
@@ -3623,7 +3623,7 @@ describe('execution backend server', () => {
     });
 
     const stream = await openHttpStream(`${backend.baseUrl}/events/stream?filter=job:job-1`, {
-      'X-Coral-Backend-Token': backend.token,
+      'X-Coral-Coordinator-Token': backend.token,
     });
 
     expect(stream.response.statusCode).toBe(200);
@@ -3702,7 +3702,7 @@ describe('execution backend server', () => {
     stubRuntimeRecord(progressStore, { jobId: 'job-2' });
 
     const jobsResponse = await fetch(`${backend.baseUrl}/jobs?all=1`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const jobsBody = (await jobsResponse.json()) as {
       jobs: Array<{ jobId: string; status: Record<string, unknown> }>;
@@ -3733,7 +3733,7 @@ describe('execution backend server', () => {
     );
 
     const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-1`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const detailBody = (await detailResponse.json()) as {
       status: Record<string, unknown>;
@@ -3759,7 +3759,7 @@ describe('execution backend server', () => {
     });
 
     const missingResponse = await fetch(`${backend.baseUrl}/jobs/missing-job`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
 
     expect(missingResponse.status).toBe(404);
@@ -3851,7 +3851,7 @@ describe('execution backend server', () => {
       stubRuntimeRecord(progressStore, { jobId: 'job-foreign-project' });
 
       const allResponse = await fetch(`${backend.baseUrl}/jobs`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+        headers: { 'X-Coral-Coordinator-Token': backend.token },
       });
       const allBody = (await allResponse.json()) as {
         jobs: Array<{ jobId: string; status: { phase: string } }>;
@@ -3867,7 +3867,7 @@ describe('execution backend server', () => {
       const projectScopedResponse = await fetch(
         `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}`,
         {
-          headers: { 'X-Coral-Backend-Token': backend.token },
+          headers: { 'X-Coral-Coordinator-Token': backend.token },
         },
       );
       const projectScopedBody = (await projectScopedResponse.json()) as {
@@ -3878,7 +3878,7 @@ describe('execution backend server', () => {
       expect(projectScopedBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-running']);
 
       const runningResponse = await fetch(`${backend.baseUrl}/jobs?phase=running`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+        headers: { 'X-Coral-Coordinator-Token': backend.token },
       });
       const runningBody = (await runningResponse.json()) as {
         jobs: Array<{ jobId: string; status: { phase: string } }>;
@@ -3905,7 +3905,7 @@ describe('execution backend server', () => {
       const allProjectsResponse = await fetch(
         `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}&all=1`,
         {
-          headers: { 'X-Coral-Backend-Token': backend.token },
+          headers: { 'X-Coral-Coordinator-Token': backend.token },
         },
       );
       const allProjectsBody = (await allProjectsResponse.json()) as {
@@ -3916,7 +3916,7 @@ describe('execution backend server', () => {
       expect(allProjectsBody.jobs.map((job) => job.jobId)).toEqual(['job-completed', 'job-queued', 'job-running']);
 
       const providerResponse = await fetch(`${backend.baseUrl}/jobs?provider=codex&all=1`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+        headers: { 'X-Coral-Coordinator-Token': backend.token },
       });
       const providerBody = (await providerResponse.json()) as {
         jobs: Array<{ jobId: string; status: { phase: string } }>;
@@ -3941,7 +3941,7 @@ describe('execution backend server', () => {
       ]);
 
       const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-completed`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+        headers: { 'X-Coral-Coordinator-Token': backend.token },
       });
       const detailBody = (await detailResponse.json()) as {
         status: Record<string, unknown>;
@@ -3989,7 +3989,7 @@ describe('execution backend server', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
+          'X-Coral-Coordinator-Token': backend.token,
         },
         body: JSON.stringify({
           prompt: 'continue',
@@ -4000,7 +4000,7 @@ describe('execution backend server', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
+          'X-Coral-Coordinator-Token': backend.token,
         },
         body: JSON.stringify({
           prompt: 'continue',
@@ -4023,7 +4023,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-1'],
@@ -4035,7 +4035,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-1'],
@@ -4060,7 +4060,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-1'],
@@ -4096,7 +4096,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['job-foreign'],
@@ -4124,7 +4124,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: ['missing-job'],
@@ -4244,7 +4244,7 @@ describe('execution backend server', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
+        'X-Coral-Coordinator-Token': backend.token,
       },
       body: JSON.stringify({
         jobIds: [jobId],
@@ -4286,7 +4286,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
 
     expect(response.status).toBe(200);
@@ -4336,7 +4336,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
 
     expect(response.status).toBe(200);
@@ -4370,11 +4370,11 @@ describe('execution backend server', () => {
 
     await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -4392,14 +4392,14 @@ describe('execution backend server', () => {
 
     const first = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     expect(first.status).toBe(200);
     expect(((await first.json()) as Record<string, unknown>).status).toBe('draining');
 
     const second = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Coordinator-Token': backend.token },
     });
     expect(second.status).toBe(200);
     expect(((await second.json()) as Record<string, unknown>).status).toBe('draining');
@@ -4896,14 +4896,14 @@ describe('execution backend server', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
+            'X-Coral-Coordinator-Token': 'test-token',
           },
           body: JSON.stringify(body),
         });
 
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
-          code: 'backend_recovering',
+          code: 'coordinator_recovering',
           message: 'recovering — retry after 500ms',
         });
       } finally {

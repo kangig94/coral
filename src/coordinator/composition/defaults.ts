@@ -102,7 +102,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   try {
     const response = await fetchFn(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
+      headers: { 'X-Coral-Coordinator-Token': info.token },
       signal: controller.signal,
     });
     if (!response.ok) {

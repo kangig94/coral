@@ -1,5 +1,5 @@
 import { errorMessage } from '../../../infra/error-format.js';
-import { BackendUnreachableError } from '../../../infra/http-errors.js';
+import { CoordinatorUnreachableError } from '../../../infra/http-errors.js';
 
 function isBackendUnreachableCause(error: unknown): boolean {
   let current: unknown = error;
@@ -17,9 +17,9 @@ function isBackendUnreachableCause(error: unknown): boolean {
   return false;
 }
 
-export function throwBackendCommunicationError(error: unknown): never {
+export function throwCoordinatorCommunicationError(error: unknown): never {
   if (isBackendUnreachableCause(error)) {
-    throw new BackendUnreachableError(errorMessage(error));
+    throw new CoordinatorUnreachableError(errorMessage(error));
   }
   if (error instanceof Error) throw error;
   throw new Error(`Backend communication error: ${String(error)}`, { cause: error });

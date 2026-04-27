@@ -12,10 +12,10 @@ export class TransientHttpError extends Error {
   }
 }
 
-export class BackendUnreachableError extends Error {
+export class CoordinatorUnreachableError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'BackendUnreachableError';
+    this.name = 'CoordinatorUnreachableError';
   }
 }
 
@@ -26,7 +26,7 @@ export function isTransientStreamError(error: unknown): boolean {
   if (error.message === 'terminated') {
     return true;
   }
-  if (error instanceof TransientHttpError || error instanceof BackendUnreachableError) {
+  if (error instanceof TransientHttpError || error instanceof CoordinatorUnreachableError) {
     return true;
   }
   const code = 'code' in error && typeof error.code === 'string' ? error.code : null;

@@ -11,7 +11,7 @@ import type { CoordinatorPaths } from '../../infra/path/compose.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
-import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { CoordinatorUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -607,7 +607,7 @@ function spawnCoordinator(backendBin: string, runDir: string): void {
   let stderr: 'ignore' | number = 'ignore';
   try {
     mkdirSync(runDir, { recursive: true });
-    stderr = openSync(join(runDir, 'backend.log'), 'a');
+    stderr = openSync(join(runDir, 'coordinator.log'), 'a');
   } catch {
     // fail-open: spawn without log if dir creation fails
   }
@@ -673,8 +673,8 @@ async function waitForReplacementCoordinator(
     await delay(STARTUP_POLL_MS);
   }
 
-  throw new BackendUnreachableError(
-    'Timed out waiting for Coral backend startup. Run `coral-cli backend status` to check backend health.',
+  throw new CoordinatorUnreachableError(
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli coordinator status` to check coordinator health.',
   );
 }
 
@@ -719,7 +719,7 @@ async function forceReplaceCoordinator(
   }
 
   if (isProcessAlive(pid)) {
-    throw new BackendUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
+    throw new CoordinatorUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
   }
 
   removeFileIfSnapshotMatches(coordinatorLockPath(paths), ownership.cleanupSnapshot.lockRaw);
@@ -756,7 +756,7 @@ async function applyAction(
       return null;
 
     case 'failUnsafeReplacement':
-      throw new BackendUnreachableError(
+      throw new CoordinatorUnreachableError(
         `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}. Run 'coral-cli backend status' and restart if the problem persists.`,
       );
 
@@ -813,7 +813,7 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
     if (info) return summarizeBackend(info);
   }
 
-  throw new BackendUnreachableError(
-    'Timed out waiting for Coral backend startup. Run `coral-cli backend status` to check backend health.',
+  throw new CoordinatorUnreachableError(
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli coordinator status` to check coordinator health.',
   );
 }

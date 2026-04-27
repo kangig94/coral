@@ -211,7 +211,7 @@ async function readHealth(
   try {
     const response = await fetch(`http://${discovery.host ?? DEFAULT_HOST}:${discovery.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Backend-Token': discovery.token },
+      headers: { 'X-Coral-Coordinator-Token': discovery.token },
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -243,7 +243,7 @@ async function requestHandoff(runtime: CoordinatorLockRuntime): Promise<void> {
   try {
     await fetch(`http://${discovery.host ?? DEFAULT_HOST}:${discovery.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': discovery.token },
+      headers: { 'X-Coral-Coordinator-Token': discovery.token },
       signal: controller.signal,
     });
   } catch {

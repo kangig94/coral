@@ -277,7 +277,7 @@ describe('jobs queries', () => {
       .map(([sql]) => sql)
       .find((sql) => sql.includes('FROM projection_jobs'));
 
-    expect(projectionQuery).toContain('backend_namespace = ?');
+    expect(projectionQuery).toContain('coordinator_namespace = ?');
     expect(projectionQuery).toContain('phase IN (?, ?, ?)');
     expect(projectionQuery).toContain('project_root = ?');
     expect(projectionQuery).toContain('phase = ?');

@@ -1,8 +1,8 @@
-import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './coordinator/handle.js';
-import type { BackendHealth } from './coordinator/health.js';
-import { isBackendHealth } from './coordinator/health.js';
-import { throwBackendCommunicationError } from './coordinator/communication.js';
-import { BackendToolHttpError } from './errors.js';
+import { resolveDiscoveredCoordinator as defaultEnsureCoordinator, withAbortTimeout, type CoordinatorHandle } from './coordinator/handle.js';
+import type { CoordinatorHealth } from './coordinator/health.js';
+import { isCoordinatorHealth } from './coordinator/health.js';
+import { throwCoordinatorCommunicationError } from './coordinator/communication.js';
+import { CoordinatorHttpError } from './errors.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
@@ -158,19 +158,19 @@ type WorkflowOptions = {
   claudeModelCap?: string;
 };
 
-export { isBackendHealth };
-export type { BackendHealth };
-export { BackendToolHttpError } from './errors.js';
+export { isCoordinatorHealth };
+export type { CoordinatorHealth };
+export { CoordinatorHttpError } from './errors.js';
 export type { InvocationContext } from '../../runtime/invocation-context.js';
 
-export class BackendClient {
-  private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
+export class CoordinatorClient {
+  private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<CoordinatorHandle>;
   private readonly defaultContext?: InvocationContext;
   private readonly defaultPluginRoot?: string;
 
   constructor(
     options: {
-      ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
+      ensureBackend?: (pluginRoot?: string) => Promise<CoordinatorHandle>;
       defaultContext?: InvocationContext;
     } = {},
   ) {
@@ -183,7 +183,7 @@ export class BackendClient {
       : undefined;
     this.defaultPluginRoot = this.defaultContext?.pluginRoot;
     this.ensureBackendHandle =
-      options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultPluginRoot));
+      options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureCoordinator(pluginRoot ?? this.defaultPluginRoot));
   }
 
   async createSession(
@@ -251,14 +251,14 @@ export class BackendClient {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': token,
+          'X-Coral-Coordinator-Token': token,
         },
         body,
       });
       const responseBody = response.ok ? undefined : await parseJsonResponse(response);
 
       if (!response.ok) {
-        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+        throw new CoordinatorHttpError(this.describeError(response, responseBody), response.status, responseBody);
       }
 
       if (!response.body) {
@@ -267,7 +267,7 @@ export class BackendClient {
 
       return this.createWaitStream(response.body);
     } catch (error) {
-      throwBackendCommunicationError(error);
+      throwCoordinatorCommunicationError(error);
     }
   }
 
@@ -464,7 +464,7 @@ export class BackendClient {
     }
 
     const ctx = this.resolveContext(context, 'bare KB reads');
-    let lastNotFound: BackendToolHttpError | null = null;
+    let lastNotFound: CoordinatorHttpError | null = null;
 
     for (const kind of KB_BARE_READ_ORDER) {
       if (kind === 'memo' && !isKbMemoCandidateSlug(selector.slug)) {
@@ -474,7 +474,7 @@ export class BackendClient {
       try {
         return await this.kbReadByKind(kind, selector.slug, ctx);
       } catch (error) {
-        if (error instanceof BackendToolHttpError && error.statusCode === 404) {
+        if (error instanceof CoordinatorHttpError && error.statusCode === 404) {
           lastNotFound = error;
           continue;
         }
@@ -569,14 +569,14 @@ export class BackendClient {
     return this.postRoute('/kb/index', this.addHostedJobContext({}, ctx), ctx);
   }
 
-  async health(): Promise<BackendHealth | null> {
+  async health(): Promise<CoordinatorHealth | null> {
     const { port, host, token } = await this.resolveBackendHandle();
 
     try {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) =>
         fetch(`http://${host}:${port}/health`, {
           method: 'GET',
-          headers: { 'X-Coral-Backend-Token': token },
+          headers: { 'X-Coral-Coordinator-Token': token },
           signal,
         }),
       );
@@ -586,7 +586,7 @@ export class BackendClient {
       }
 
       const body = await parseJsonResponse(response);
-      return isBackendHealth(body) ? body : null;
+      return isCoordinatorHealth(body) ? body : null;
     } catch {
       return null;
     }
@@ -599,7 +599,7 @@ export class BackendClient {
       const response = await withAbortTimeout(HEALTH_TIMEOUT_MS, (signal) =>
         fetch(`http://${host}:${port}/admin/shutdown`, {
           method: 'POST',
-          headers: { 'X-Coral-Backend-Token': token },
+          headers: { 'X-Coral-Coordinator-Token': token },
           signal,
         }),
       );
@@ -616,7 +616,7 @@ export class BackendClient {
     throw new Error(`InvocationContext is required for ${operation}`);
   }
 
-  private resolveBackendHandle(context?: InvocationContext): Promise<BackendHandle> {
+  private resolveBackendHandle(context?: InvocationContext): Promise<CoordinatorHandle> {
     const pluginRoot = context?.pluginRoot ?? this.defaultPluginRoot;
     return this.ensureBackendHandle(pluginRoot);
   }
@@ -708,12 +708,12 @@ export class BackendClient {
   private async requestRoute<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
-    handle: BackendHandle,
+    handle: CoordinatorHandle,
     body?: string,
   ): Promise<T> {
     const { port, host, token } = handle;
     const headers: Record<string, string> = {
-      'X-Coral-Backend-Token': token,
+      'X-Coral-Coordinator-Token': token,
     };
 
     if (body !== undefined) {
@@ -739,10 +739,10 @@ export class BackendClient {
           return responseBody as T;
         }
 
-        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+        throw new CoordinatorHttpError(this.describeError(response, responseBody), response.status, responseBody);
       });
     } catch (error) {
-      throwBackendCommunicationError(error);
+      throwCoordinatorCommunicationError(error);
     }
   }
 

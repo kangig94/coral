@@ -137,7 +137,7 @@ describe('resolveCoordinatorDefaults verifyBackendOwnershipFn', () => {
     ).resolves.toBe('healthy');
     expect(harness.fetchFn).toHaveBeenCalledWith(`http://${harness.info.host}:${harness.info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Backend-Token': harness.info.token },
+      headers: { 'X-Coral-Coordinator-Token': harness.info.token },
       signal: expect.any(AbortSignal),
     });
   });

@@ -2,11 +2,11 @@ declare const __PLUGIN_ROOT__: string;
 
 import { readCoordinatorInfo } from '../../../infra/coordinator-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
-import { BackendUnreachableError } from '../../../infra/http-errors.js';
+import { CoordinatorUnreachableError } from '../../../infra/http-errors.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 
-export type BackendHandle = {
+export type CoordinatorHandle = {
   port: number;
   host: string;
   token: string;
@@ -38,7 +38,7 @@ export async function withAbortTimeout<T>(timeoutMs: number, run: (signal: Abort
   }
 }
 
-export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<BackendHandle> {
+export async function resolveDiscoveredCoordinator(pluginRoot?: string): Promise<CoordinatorHandle> {
   const root = resolvePluginRoot(pluginRoot);
   const runtime = createRealRuntime(readBuildFlavor(root));
   const info = readCoordinatorInfo({
@@ -47,7 +47,7 @@ export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<Bac
     paths: runtime.paths,
   });
   if (!info || !isProcessAlive(info.pid)) {
-    throw new BackendUnreachableError('Coral backend is not running.');
+    throw new CoordinatorUnreachableError('Coral backend is not running.');
   }
 
   return {
