@@ -70,7 +70,6 @@ import {
 } from './corpus/inbound-sync.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
 import { buildCorpusScanView } from './corpus/repair/corpus-scan.js';
-import { pendingRepairNeedsRetry } from './corpus/repair/pending-retry.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
 
 type MutationLockContext = KbMutationLockContext<
@@ -633,7 +632,7 @@ class KbRuntimeImpl implements KbRuntime {
 
   private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
     const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild() || pendingRepairNeedsRetry(this);
+    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild();
   }
 
 }

@@ -8,7 +8,7 @@ import type * as MainMod from '#src/cli/program.js';
 
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openBackendStoreDb, openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 
@@ -35,14 +35,13 @@ async function seedKbSearchSnapshot(): Promise<void> {
     import('#tests/fixtures/test-runtime.js'),
   ]);
   const realRuntime = createRealRuntime('prod');
+  // Production threads the backend store db into createKbSubsystem (coordinator/index.ts:180).
+  // Mirror that here so the seeded retry queue is visible to the read-only query runtime that
+  // opens the same backend store via defaultRegistry.getDb in createDefaultKbQueryRuntime.
   const kb = createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbPaths.kbRuntimeDir('prod'),
-    db: openStoreDatabase({
-      path: join(kbPaths.kbRuntimeDir('prod'), 'store.db'),
-      storage: realRuntime.storage,
-      schemasDir: ensureStoreSchemasDir(realRuntime.storage),
-    }),
+    db: openBackendStoreDb(realRuntime),
     runtime: realRuntime,
   });
 
