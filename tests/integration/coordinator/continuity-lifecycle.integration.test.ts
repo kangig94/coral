@@ -29,7 +29,7 @@ import { getSession } from '#src/discuss/shell/registry.js';
 import { startDiscussSession } from '#src/discuss/shell/operations.js';
 import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
-import type { AgentConfig } from '#src/discuss/shell/context.js';
+import type { AgentConfig } from '#src/discuss/shell/types.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 

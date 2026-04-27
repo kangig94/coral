@@ -5,15 +5,9 @@ import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js'
 import type { Result } from '../session-types.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
-import {
-  ABORT_REASON,
-  DiscussManagerError,
-  compactLiveWatchBuffer,
-  getSubscriberCursorMap,
-  type DiscussContext,
-  type WatchState,
-  watchBufferCursor,
-} from './context.js';
+import { type DiscussContext, type WatchState } from './types.js';
+import { ABORT_REASON, DiscussManagerError } from './errors.js';
+import { compactLiveWatchBuffer, getSubscriberCursorMap, watchBufferCursor } from './live-registry.js';
 
 function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
   const latest = ctx.store.load(sessionId);

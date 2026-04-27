@@ -1,12 +1,12 @@
-import { defineDomainEvent, type DomainEventRegistry } from '../../store/reducers.js';
-import { jobLaunchRequestBodySchema, type JobLaunchRequestBody } from '../launch.js';
+import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
+import { jobLaunchRequestBodySchema, type JobLaunchRequestBody } from './launch.js';
 import {
   jobAbortedBodySchema,
   jobLaunchRejectedSchema,
   type JobAbortedBody,
   type JobLaunchRejected,
-} from '../outcome.js';
-import { jobTerminalRecordedBodySchema, type JobTerminaledBody } from '../terminal/result.js';
+} from './outcome.js';
+import { jobTerminalRecordedBodySchema, type JobTerminaledBody } from './terminal/result.js';
 import {
   jobProgressBodySchema,
   jobQueueAdmittedBodySchema,
@@ -16,7 +16,7 @@ import {
   type JobQueueAdmittedBody,
   type JobQueueQueuedBody,
   type JobRuntimeStartedBody,
-} from './bodies.js';
+} from './event-bodies.js';
 import {
   reduceJobAborted,
   reduceJobLaunchRejected,
@@ -27,7 +27,7 @@ import {
   reduceJobRuntimeStarted,
   reduceJobTerminal,
   validateJobTerminalOrder,
-} from '../projections.js';
+} from './projections.js';
 
 export type JobEventBody =
   | JobLaunchRequestBody

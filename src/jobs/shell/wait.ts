@@ -4,7 +4,7 @@ import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEven
 import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { TimePort } from '../../runtime/ports.js';
-import type { SessionJobReadPort } from '../../sessions/job-claim-contract.js';
+import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';

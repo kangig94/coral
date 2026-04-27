@@ -5,7 +5,15 @@ import { domainError, domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
 import type { RpcMethodSpec } from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
-import { buildInvocationContext, buildInvocationContextFromQuery, decodePathSegment } from './invocation-context.js';
+import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
+
+function decodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
 
 export type CatalogRequestExecution =
   | { kind: 'unary'; body: unknown; statusCode?: number }

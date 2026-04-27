@@ -7,7 +7,7 @@ import { resolveAgentName, type DecisionContext } from '../state-machine.js';
 import type { DiscussState, TranscriptEntry } from '../session-types.js';
 import { renderEntries, renderHeader } from '../transcript.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { DiscussContext } from './context.js';
+import type { DiscussContext } from './types.js';
 
 export const BID_ATTEMPT_TIMEOUT_MS = 3 * 60 * 1000;
 export const SPEECH_TIMEOUT_MS = 5 * 60 * 1000;

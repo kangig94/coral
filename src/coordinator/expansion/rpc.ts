@@ -130,7 +130,6 @@ export const expansionStatusSchema = z.enum([
   'installing',
   'not_equipped',
 ]);
-export type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
 
 export const expansionViewSchema = z
   .object({

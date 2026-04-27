@@ -41,7 +41,7 @@ import {
   isKbMemoCandidateSlug,
   parseKbSelector,
   type KbReadKind,
-} from '../../kb/read-contract.js';
+} from '../../kb/selector.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,

@@ -1,14 +1,6 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
 
-export function decodePathSegment(segment: string): string | null {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return null;
-  }
-}
-
 export function buildControllerEnv(
   body: Record<string, unknown>,
   coralEnvSnapshot: Readonly<Record<string, string>>,

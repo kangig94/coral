@@ -5,7 +5,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
-import type { SessionWorkflowPort } from '../../sessions/execution-contract.js';
+import type { SessionWorkflowPort } from '../../sessions/contracts.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import {
   type WorkflowCommand,

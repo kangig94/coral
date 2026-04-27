@@ -28,7 +28,7 @@ import type {
 } from '../contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../contracts/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
+import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';

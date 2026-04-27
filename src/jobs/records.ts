@@ -110,9 +110,4 @@ export type {
   JobTerminalDiagnostics,
   JobTerminalInput,
 } from './terminal/result.js';
-export {
-  cloneJobTerminal,
-  jobDiagnosticsSchema,
-  jobTerminalSchema,
-  normalizeJobTerminal,
-} from './terminal/result.js';
+export { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';

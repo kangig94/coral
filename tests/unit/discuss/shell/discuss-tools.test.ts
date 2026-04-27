@@ -9,7 +9,7 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
 } from '#src/discuss/shell/live-registry.js';
-import type { DiscussContext } from '#src/discuss/shell/context.js';
+import type { DiscussContext } from '#src/discuss/shell/types.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,

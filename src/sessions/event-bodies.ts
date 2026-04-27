@@ -2,7 +2,7 @@
 // the DomainEventRegistry (which requires reducers from projections.ts), and
 // projections.ts needs the body types — keeping schemas/types here lets both
 // import without the events.ts ↔ projections.ts cycle. Same precedent as
-// `kb/corpus/manifest-types.ts` and `jobs/events/bodies.ts`.
+// `kb/corpus/manifest-types.ts` and `jobs/event-bodies.ts`.
 
 import { z } from 'zod';
 

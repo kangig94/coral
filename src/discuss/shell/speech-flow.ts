@@ -11,7 +11,8 @@ import {
   normalizeModel,
   recordJobFinished,
 } from './runtime-build.js';
-import { DiscussManagerError, type DiscussContext } from './context.js';
+import { type DiscussContext } from './types.js';
+import { DiscussManagerError } from './errors.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './flow-primitives.js';
 

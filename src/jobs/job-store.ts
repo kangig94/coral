@@ -13,7 +13,7 @@ import { ensureResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
-import { jobsRegistry } from './events/index.js';
+import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './contracts/progress-store.js';

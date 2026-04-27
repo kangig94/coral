@@ -1,13 +1,12 @@
 import {
-  DiscussManagerError,
-  createWatchBuffer,
   type DiscussContext,
   type LiveDiscussSession,
   type WatchBuffer,
   type WatchState,
   type WatchSubscriber,
-  watchBufferCursor,
-} from './context.js';
+} from './types.js';
+import { DiscussManagerError } from './errors.js';
+import { createWatchBuffer, watchBufferCursor } from './live-registry.js';
 import { buildPersistedWatchState } from './persistence.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
 
@@ -85,4 +84,4 @@ export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: n
   };
 }
 
-export { compactLiveWatchBuffer as compactWatchBuffer } from './context.js';
+export { compactLiveWatchBuffer as compactWatchBuffer } from './live-registry.js';

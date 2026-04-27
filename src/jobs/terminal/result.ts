@@ -66,14 +66,6 @@ export function normalizeJobTerminal(input: JobTerminalInput): JobTerminal {
   };
 }
 
-export function cloneJobTerminal(input: JobTerminal): JobTerminal {
-  return {
-    content: input.content,
-    outcome: input.outcome,
-    ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
-  };
-}
-
 export const jobTerminalRecordedBodySchema = z
   .object({
     terminal: jobTerminalSchema,

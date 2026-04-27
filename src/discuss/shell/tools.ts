@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../command-schemas.js';
-import { DiscussManagerError, type DiscussContext } from './context.js';
+import { type DiscussContext } from './types.js';
+import { DiscussManagerError } from './errors.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../persona-seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -48,8 +49,6 @@ const discussWatchSchema = z.object({
   cursor: z.number().int().min(0).optional(),
 });
 
-const discussParticipateSchema = z.union([discussBidSchema, discussSpeechSchema]);
-
 type DiscussToolHelpers = {
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
 };
@@ -60,11 +59,6 @@ type DiscussSessionArgs = z.infer<typeof discussSessionSchema>;
 type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
 type DiscussBidArgs = z.infer<typeof discussBidSchema>;
 type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
-type DiscussParticipateArgs = z.infer<typeof discussParticipateSchema>;
-
-function isDiscussSpeechArgs(args: DiscussParticipateArgs): args is DiscussSpeechArgs {
-  return typeof args.content === 'string';
-}
 
 function discussManagerError(error: DiscussManagerError): ToolDomainResult {
   return domainError(error.code, deriveErrorMessage(error.code, error.detail), error.detail);
@@ -253,19 +247,3 @@ export async function handleDiscussSpeech(
   return executeDiscussSpeech(parsed.data, context, helpers);
 }
 
-export async function handleDiscussParticipate(
-  args: unknown,
-  context: InvocationContext,
-  helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
-  const parsed = discussParticipateSchema.safeParse(args);
-  if (!parsed.success) {
-    return toolValidationError(parsed.error);
-  }
-
-  if (isDiscussSpeechArgs(parsed.data)) {
-    return executeDiscussSpeech(parsed.data, context, helpers);
-  }
-
-  return executeDiscussBid(parsed.data, context, helpers);
-}

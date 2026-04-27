@@ -39,7 +39,7 @@ import { SessionManager } from '#src/sessions/shell/store.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
-import { jobsRegistry } from '#src/jobs/events/index.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';

@@ -1,8 +1,8 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { DiscussContext, LiveDiscussSession } from './context.js';
-import { ABORT_REASON } from './context.js';
+import type { DiscussContext, LiveDiscussSession } from './types.js';
+import { ABORT_REASON } from './errors.js';
 import type { DiscussSessionStore } from './session-store.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { buildWatchEvents } from '../watch.js';

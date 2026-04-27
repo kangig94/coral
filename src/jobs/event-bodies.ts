@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 
-import { externalErrorSchema, jobDomainProgressSchema } from '../outcome.js';
+import { externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({

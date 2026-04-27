@@ -25,7 +25,7 @@ import type {
 } from '../../contracts.js';
 import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/progress-store.js';
-import type { SessionRecoveryPort } from '../../../sessions/execution-contract.js';
+import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';

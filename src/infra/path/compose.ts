@@ -35,14 +35,12 @@ export type CoralPaths = {
   readonly expansion: ExpansionPaths;
 };
 
-// Re-export per-family types and the addon-filename registry so external
-// callers (transport, expansion, test fixtures) see a single public surface.
-// The runtime functions stay subdir-internal — types and constants alone
-// don't construct paths.
+// Re-export per-family types so external callers (transport, expansion,
+// test fixtures) see a single public surface for path-shape vocabulary.
+// Runtime path-construction functions stay subdir-internal.
 export type { CoordinatorPaths } from './coordinator.js';
 export type { ExpansionPaths } from './expansion.js';
 export type { StorePaths } from './store.js';
-export { EXPANSION_ADDON_FILENAMES } from './expansion.js';
 
 export interface FamilyPathOptions {
   readonly baseDir?: string;

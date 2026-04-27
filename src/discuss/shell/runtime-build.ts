@@ -12,7 +12,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
-import type { AgentConfig, DiscussContext } from './context.js';
+import type { AgentConfig, DiscussContext } from './types.js';
 
 export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set<DiscussAgentJobOutcome>([

@@ -24,7 +24,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
-import { jobsRegistry } from '#src/jobs/events/index.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { appendEvents } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';

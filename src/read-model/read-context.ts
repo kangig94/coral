@@ -1,5 +1,5 @@
 import { discussRegistry } from '../discuss/event-registry.js';
-import { jobsRegistry } from '../jobs/events/index.js';
+import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { workflowRegistry } from '../workflow/events.js';
 import type { StoreReadContext } from '../store/body-codec.js';

@@ -1,7 +1,48 @@
-import type { ProviderContinuityBlob } from './continuity.js';
+import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
-import type { SessionAllocateOptions } from './allocation-contract.js';
-import type { SessionEntry } from './entry.js';
+import type { ProviderInstruction } from '../providers/contract.js';
+import type { SessionControllerProfile, SessionEntry } from './entry.js';
+
+export type SessionAllocateOptions = {
+  provider: string;
+  name: string;
+  model?: string;
+  cwd: string;
+  projectRoot: string;
+  coordinatorNamespace: string;
+  agentName?: string;
+  instruction?: ProviderInstruction;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+  controllerProfile?: SessionControllerProfile;
+};
+
+export type SessionJobContinuityCheckpointResult =
+  | { ok: true; nextVersion: number }
+  | { ok: false };
+
+export interface SessionJobReadPort {
+  get(provider: string, sessionId: string): SessionEntry | null;
+}
+
+export interface SessionJobClaimPort extends SessionJobReadPort {
+  releaseJob(sessionId: string, jobId: string): void;
+  checkpointJobContinuityAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+      snapshot: ContinuitySnapshot;
+    },
+  ): Promise<SessionJobContinuityCheckpointResult>;
+  releaseJobClaimAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+    },
+  ): Promise<boolean>;
+}
 
 export interface SessionClaimAtomicPort {
   claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean>;

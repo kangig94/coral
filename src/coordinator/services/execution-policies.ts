@@ -19,8 +19,8 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
-import type { SessionAllocateOptions } from '../../sessions/allocation-contract.js';
-import type { SessionClaimAtomicPort } from '../../sessions/execution-contract.js';
+import type { SessionAllocateOptions } from '../../sessions/contracts.js';
+import type { SessionClaimAtomicPort } from '../../sessions/contracts.js';
 import {
   describeSessionInterrupted,
   type SessionInterruptedFault,

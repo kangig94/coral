@@ -1,7 +1,72 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';
-import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, DiscussService, LiveDiscussSession } from './context.js';
+import type {
+  DiscussContext,
+  DiscussJobStatusReader,
+  DiscussRuntimePorts,
+  DiscussService,
+  LiveDiscussSession,
+  WatchBuffer,
+  WatchEvent,
+  WatchSubscriber,
+} from './types.js';
 import { isWithinLiveSessionBoundary } from '../events.js';
+
+const WATCH_BUFFER_CAP = 500;
+const subscriberCursors = new WeakMap<LiveDiscussSession, Map<WatchSubscriber, number>>();
+
+export function createWatchBuffer(events: WatchEvent[] = []): WatchBuffer {
+  return {
+    baseCursor: 0,
+    events: events.slice(),
+  };
+}
+
+export function watchBufferCursor(buffer: WatchBuffer): number {
+  return buffer.baseCursor + buffer.events.length;
+}
+
+export function getSubscriberCursorMap(session: LiveDiscussSession): Map<WatchSubscriber, number> {
+  const cursors = subscriberCursors.get(session);
+  if (cursors) return cursors;
+
+  const created = new Map<WatchSubscriber, number>();
+  subscriberCursors.set(session, created);
+  return created;
+}
+
+export function compactLiveWatchBuffer(session: LiveDiscussSession): void {
+  const subscriberCursorMap = getSubscriberCursorMap(session);
+
+  if (subscriberCursorMap.size === 0) {
+    // No subscribers — trim to cap so buffer doesn't grow unbounded
+    if (session.watchBuffer.events.length > WATCH_BUFFER_CAP) {
+      const excess = session.watchBuffer.events.length - WATCH_BUFFER_CAP;
+      session.watchBuffer = {
+        baseCursor: session.watchBuffer.baseCursor + excess,
+        events: session.watchBuffer.events.slice(excess),
+      };
+    }
+    return;
+  }
+
+  let minCursor = Number.POSITIVE_INFINITY;
+  for (const cursor of subscriberCursorMap.values()) {
+    if (cursor < minCursor) {
+      minCursor = cursor;
+    }
+  }
+
+  const dropCount = minCursor - session.watchBuffer.baseCursor;
+  if (dropCount <= 0) {
+    return;
+  }
+
+  session.watchBuffer = {
+    baseCursor: session.watchBuffer.baseCursor + dropCount,
+    events: session.watchBuffer.events.slice(dropCount),
+  };
+}
 
 export type AttachedDiscussSession = {
   projectRoot: string;

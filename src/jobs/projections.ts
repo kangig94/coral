@@ -31,7 +31,7 @@ import type {
   JobQueueAdmittedBody,
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
-} from './events/bodies.js';
+} from './event-bodies.js';
 
 type ProjectedJobState = {
   phase: JobPhase;

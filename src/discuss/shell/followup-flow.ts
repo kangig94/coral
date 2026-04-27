@@ -13,7 +13,8 @@ import {
   recordJobFinished,
   runFacilitatorTurn,
 } from './runtime-build.js';
-import { DiscussManagerError, type DiscussContext, unwrapResult } from './context.js';
+import { type DiscussContext } from './types.js';
+import { DiscussManagerError, unwrapResult } from './errors.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import {
   type EpochEvaluation,

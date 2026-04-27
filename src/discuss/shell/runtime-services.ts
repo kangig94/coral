@@ -4,7 +4,7 @@ import type { Database } from 'better-sqlite3';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobStatus } from '../../jobs/records.js';
-import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './context.js';
+import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussLoop from './loop.js';
 import * as discussRecovery from './recovery.js';

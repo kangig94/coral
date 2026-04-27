@@ -41,7 +41,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/kb/entry-types.ts',
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
-  'src/kb/read-contract.ts',
+  'src/kb/selector.ts',
   'src/expansion/contract.ts',
   'src/providers/request-policy.ts',
 ]);

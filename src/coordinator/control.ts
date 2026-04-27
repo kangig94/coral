@@ -6,7 +6,7 @@ import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { DiscussContext } from '../discuss/shell/context.js';
+import type { DiscussContext } from '../discuss/shell/types.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';

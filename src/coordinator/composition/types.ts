@@ -5,7 +5,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../control.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
-import type { DiscussContext } from '../../discuss/shell/context.js';
+import type { DiscussContext } from '../../discuss/shell/types.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { TypedEventBus } from '../event-bus.js';

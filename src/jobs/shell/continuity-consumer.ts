@@ -3,7 +3,7 @@ import type {
   ProviderEventBody,
   ProviderTerminalEventBody,
 } from '../../providers/contract.js';
-import type { SessionJobClaimPort } from '../../sessions/job-claim-contract.js';
+import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';
 
 export async function consumeJobStream(options: {

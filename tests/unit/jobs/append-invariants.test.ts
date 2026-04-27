@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { jobsRegistry } from '#src/jobs/events/index.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { appendEvents } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';

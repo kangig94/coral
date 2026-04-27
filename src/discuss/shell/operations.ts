@@ -11,15 +11,13 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { buildAgentExecutionConfig } from './runtime-build.js';
 import * as discussLoop from './loop.js';
 import {
-  ABORT_REASON,
-  DiscussManagerError,
   type AgentConfig,
   type DiscussConfig,
   type DiscussContext,
   type LiveDiscussSession,
   type WatchState,
-  unwrapResult,
-} from './context.js';
+} from './types.js';
+import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';
 import { coordinatorLog } from '../../infra/coordinator-log.js';

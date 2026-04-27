@@ -10,7 +10,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
-import { jobsRegistry } from '#src/jobs/events/index.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';

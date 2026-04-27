@@ -20,7 +20,7 @@ import { deleteSource, listSources } from './ops/source-store.js';
 import { update as kbUpdate } from './ops/update.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
-import { type KbReadKind } from './read-contract.js';
+import { type KbReadKind } from './selector.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';

@@ -4,7 +4,7 @@ import { resolveEffort } from '../../providers/request-policy.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { SessionExecutionPort } from '../../sessions/execution-contract.js';
+import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import { getSessionById } from '../../sessions/resolve.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import { rejectLaunch } from '../../jobs/launch.js';

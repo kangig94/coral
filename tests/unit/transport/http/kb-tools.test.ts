@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as MemoMod from '#src/kb/ops/memo.js';
 import { memoDir, notePathFromName } from '#src/kb/paths.js';
 import type * as SearchMod from '#src/kb/ops/search.js';
-import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/read-contract.js';
+import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/selector.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import {
   handleKbCommunityRead,

@@ -13,8 +13,3 @@ export interface EventsRow {
   body_version: number;
   body: Uint8Array;
 }
-
-export interface MetaRow {
-  key: string;
-  value: string;
-}

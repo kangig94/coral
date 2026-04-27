@@ -17,7 +17,7 @@ import {
   sessionEntrySchema,
   type SessionEntry,
 } from '../entry.js';
-import type { SessionAllocateOptions } from '../allocation-contract.js';
+import type { SessionAllocateOptions } from '../contracts.js';
 import { sessionsRegistry } from '../events.js';
 import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';

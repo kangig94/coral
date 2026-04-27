@@ -25,7 +25,7 @@ import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
-import { jobsRegistry } from '#src/jobs/events/index.js';
+import { jobsRegistry } from '#src/jobs/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import type { StoragePort } from '#src/runtime/ports.js';

@@ -52,15 +52,6 @@ function formatTimestamp(ts: string): string {
   return `[${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}]`;
 }
 
-export function generateOneLiner(content: string): string {
-  const flat = content.replace(/\n/g, ' ').trim();
-  const sentenceEnd = flat.search(/[.!?]\s/u);
-  if (sentenceEnd !== -1 && sentenceEnd < 120) return flat.slice(0, sentenceEnd + 1);
-  if (flat.length <= 100) return flat;
-  const cut = flat.lastIndexOf(' ', 100);
-  return cut > 0 ? flat.slice(0, cut) + '…' : flat.slice(0, 100) + '…';
-}
-
 function renderBidRows(
   bids: Record<string, number>,
   agents: Record<string, AgentState>,

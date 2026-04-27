@@ -12,13 +12,6 @@ import {
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
-export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
-  return {
-    ...status,
-    coordinatorNamespace: namespace,
-  } as JobStatus;
-}
-
 export function listLiveJobs(progressStore: ProgressStore, namespace: string): JobStatus[] {
   const results: JobStatus[] = [];
 

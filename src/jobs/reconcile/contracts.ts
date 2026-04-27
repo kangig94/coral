@@ -20,7 +20,3 @@ export interface RecoveryCapableService {
     options?: TerminalWriteOptions,
   ): void;
 }
-
-export interface LaunchFenceState {
-  setLaunchFenceActive(active: boolean): void;
-}
