@@ -18,7 +18,7 @@ import {
   formatDiscussStart,
   formatDiscussWatch,
   formatPersonaSeed,
-} from '../format.js';
+} from '../format/discuss.js';
 import { parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from '../parse.js';
 
 export function registerDiscussCommands(program: Command): void {

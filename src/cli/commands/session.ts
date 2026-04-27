@@ -17,17 +17,15 @@ import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError } from '../errors.js';
+import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
 import {
-  formatAbortResult,
-  formatJobsList,
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
   formatWaitWaiting,
-  renderJobsList,
   renderWaitLine,
   type WaitRenderContext,
-} from '../format.js';
+} from '../format/wait.js';
 
 type JobsOptions = {
   phase?: string;

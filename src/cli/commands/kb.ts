@@ -21,8 +21,8 @@ import {
 import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
 import {
-  formatKbDiagnose,
   formatKbDelete,
+  formatKbDiagnose,
   formatKbMemo,
   formatKbMemoDelete,
   formatKbMemoList,
@@ -36,7 +36,7 @@ import {
   formatKbSourceImport,
   formatKbSourceList,
   formatKbUpdate,
-} from '../format.js';
+} from '../format/kb.js';
 
 function registerKbSourceCommands(kb: Command): void {
   const kbSourceCommand = kb.command('source').description('Manage KB sources');

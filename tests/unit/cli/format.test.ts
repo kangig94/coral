@@ -11,35 +11,36 @@ import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { CoordinatorUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
+import { formatCoordinatorStatus, formatShutdown } from '#src/cli/format/coordinator.js';
 import {
-  formatAbortResult,
-  formatCoordinatorStatus,
   formatDiscussAbort,
   formatDiscussParticipate,
   formatDiscussStart,
   formatDiscussWatch,
-  formatError,
-  formatErrorEnvelope,
+  formatPersonaSeed,
+} from '#src/cli/format/discuss.js';
+import { formatError, formatErrorEnvelope } from '#src/cli/format/error.js';
+import { formatAbortResult, formatLaunch } from '#src/cli/format/jobs.js';
+import {
   formatKbDelete,
-  formatKbPrinciples,
   formatKbMemo,
   formatKbMemoDelete,
   formatKbMemoList,
   formatKbMemoPurge,
+  formatKbPrinciples,
   formatKbPromote,
   formatKbRead,
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
-  formatLaunch,
-  formatPersonaSeed,
-  formatShutdown,
+} from '#src/cli/format/kb.js';
+import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
   formatWaitWaiting,
   renderWaitLine,
-} from '#src/cli/format.js';
+} from '#src/cli/format/wait.js';
 
 const runningDecision = {
   launchState: 'running',

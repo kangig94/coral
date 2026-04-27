@@ -24,15 +24,14 @@ import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
+import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
 import {
-  formatJobsList,
   formatKbMemoList,
   formatKbPrinciples,
   formatKbRead,
   formatKbSearch,
   formatKbSourceList,
-  renderJobsList,
-} from '#src/cli/format.js';
+} from '#src/cli/format/kb.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'build', 'coral-cli.cjs');

@@ -5,7 +5,8 @@ import {
   type AcceptedLaunchResponse,
 } from '../transport/http/client.js';
 import { buildErrorEnvelope } from './errors.js';
-import { formatErrorEnvelope, formatLaunch } from './format.js';
+import { formatErrorEnvelope } from './format/error.js';
+import { formatLaunch } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';

@@ -4,7 +4,7 @@ import { getCoordinatorStatusFull } from '../../transport/http/coordinator/statu
 import { shutdownCoordinator } from '../../transport/http/coordinator/shutdown.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
-import { formatCoordinatorStatus, formatShutdown } from '../format.js';
+import { formatCoordinatorStatus, formatShutdown } from '../format/coordinator.js';
 
 export function registerCoordinatorCommands(program: Command): void {
   const coordinator = program.command('coordinator').description('Coordinator daemon control');

@@ -10,18 +10,10 @@ import type * as MainMod from '#src/cli/program.js';
 import { installErrorSchema, installResultSchema } from '#src/cli/expansion/contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobStatus } from '#src/jobs/records.js';
-import {
-  formatAbortResult,
-  formatDiscussAbort,
-  formatDiscussParticipate,
-  formatDiscussWatch,
-  formatErrorEnvelope,
-  formatJobsList,
-  formatLaunch,
-  formatWaitProgress,
-  formatWaitTerminal,
-  renderJobsList,
-} from '#src/cli/format.js';
+import { formatErrorEnvelope } from '#src/cli/format/error.js';
+import { formatAbortResult, formatJobsList, formatLaunch, renderJobsList } from '#src/cli/format/jobs.js';
+import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
+import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
 
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
