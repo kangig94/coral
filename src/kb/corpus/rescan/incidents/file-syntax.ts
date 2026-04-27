@@ -1,5 +1,5 @@
-import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../corpus-scan.js';
-import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import type { CorpusMarkdownFileScan } from '../scan.js';
+import { REPAIR_INCIDENT_ID, type DetectedIncident, type Detector } from './catalog.js';
 
 const CONFLICT_MARKER_CANONICAL = REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS;
 const MALFORMED_MARKDOWN_CANONICAL = REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN;

@@ -1,13 +1,9 @@
-import { readCurateState, writeCurateState } from '../state/index.js';
-import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
-import { projectIncidents } from '../../corpus/repair/project-incidents.js';
-import { applyDetectedIncidentFixesLocked } from '../../corpus/repair/fix.js';
-import { createGitSyncController } from '../git-sync.js';
-import { deleteCurateRetryEntry, readCurateRetryQueue } from '../retry.js';
-import { applyLaneMutation, detectTextArtifactRebuildInfo } from './drift.js';
-import {
-  prepareCommunityTopologyRefresh,
-} from './community.js';
+import { readCurateState, writeCurateState } from '../../curate/state/index.js';
+import { prepareCommunityTopologyRefresh } from '../../curate/community/topology-refresh.js';
+import { createGitSyncController } from '../../curate/git-sync.js';
+import { deleteCurateRetryEntry, readCurateRetryQueue } from '../../curate/retry.js';
+import { applyDetectedIncidentFixesLocked } from './auto-fix.js';
+import { applyLaneMutation, detectRescanInfo } from './drift.js';
 import {
   buildCounts,
   buildKbIndex,
@@ -15,7 +11,9 @@ import {
   loadNotes,
   loadPrinciples,
   loadSources,
-} from './loaders.js';
+  projectIncidents,
+} from './projections.js';
+import { buildCorpusScanView } from './scan.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import type {
   KbReindexCommunityRecord,
@@ -24,29 +22,30 @@ import type {
   ReindexResult,
 } from '../../entry-types.js';
 
-export { areCommunityDocumentsFresh } from './community.js';
-export { detectTextArtifactRebuildInfo } from './drift.js';
-export { loadCommunities } from './loaders.js';
-
 type ReindexCounts = Pick<
   ReindexResult,
   'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
 >;
 
-export class TextSnapshotRebuildError extends Error {
+export class RescanError extends Error {
   readonly counts: ReindexCounts;
 
   constructor(message: string, counts: ReindexCounts) {
     super(message);
-    this.name = 'TextSnapshotRebuildError';
+    this.name = 'RescanError';
     this.counts = counts;
   }
 }
 
 /**
  * @precondition Caller already holds `kb.withMutationLock()`.
+ *
+ * Rebuilds the JSON text artifact, refreshes community topology, and runs the typed
+ * detector pipeline against the corpus. Auto-fix dispatches inline; manual cases enqueue
+ * typed rows on `kb_curate_retry_queue`. Retrieval projections are owned by CorpusConsumers
+ * after the Corpus state commits.
  */
-export async function rebuildTextArtifacts(
+export async function performRescan(
   kb: KbRuntime,
   mutation: KbMutationEffects,
   startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
@@ -61,7 +60,7 @@ export async function rebuildTextArtifacts(
   const notes = loadNotes(scan);
   const sources = loadSources(scan);
   const principles = loadPrinciples(scan);
-  const rebuildInfo = detectTextArtifactRebuildInfo(kb, scan);
+  const rebuildInfo = detectRescanInfo(kb, scan);
   const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   // Topology refresh may delete/regenerate community files on disk; re-scan the corpus to capture them.
@@ -80,7 +79,7 @@ export async function rebuildTextArtifacts(
     const reason = 'KB text index freshness changed during rebuild.';
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts);
+    throw new RescanError(reason, counts);
   }
 
   if (topologyRefresh.shouldPersistState) {
@@ -93,6 +92,8 @@ export async function rebuildTextArtifacts(
     });
   }
 
+  await runTypedRepairPipelineLocked(kb, mutation);
+
   return {
     notes,
     sources,
@@ -100,26 +101,6 @@ export async function rebuildTextArtifacts(
     principles,
     counts,
   };
-}
-
-/**
- * @precondition Caller already holds `kb.withMutationLock()`.
- *
- * This rebuild path refreshes curate repair state and the JSON text artifact only.
- * Retrieval projections are owned by CorpusConsumers after the Corpus state commits.
- *
- * After the rebuild succeeds, runs the typed-detector pipeline against a fresh corpus
- * scan and dispatches each incident through `applyDetectedIncidentFixesLocked` (auto-fix
- * runs inline; manual cases enqueue typed rows on `kb_curate_retry_queue`).
- */
-export async function rebuildTextArtifactsAndPersistRepairState(
-  kb: KbRuntime,
-  mutation: KbMutationEffects,
-  startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
-): Promise<Awaited<ReturnType<typeof rebuildTextArtifacts>>> {
-  const result = await rebuildTextArtifacts(kb, mutation, startState);
-  await runTypedRepairPipelineLocked(kb, mutation);
-  return result;
 }
 
 async function runTypedRepairPipelineLocked(

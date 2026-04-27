@@ -9,9 +9,9 @@ import { stripMdExt } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import type { KbIndexState, KbRuntime } from '../../contract.js';
 import { nowIsoString } from '../../../infra/time.js';
-import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
-import { projectIncidents } from '../../corpus/repair/project-incidents.js';
-import { applyDetectedIncidentFixesLocked } from '../../corpus/repair/fix.js';
+import { buildCorpusScanView } from '../../corpus/rescan/scan.js';
+import { projectIncidents } from '../../corpus/rescan/projections.js';
+import { applyDetectedIncidentFixesLocked } from '../../corpus/rescan/auto-fix.js';
 import { createGitSyncController } from '../git-sync.js';
 import { deleteCurateRetryEntry, readCurateRetryQueue } from '../retry.js';
 import {

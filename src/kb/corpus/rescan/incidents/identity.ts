@@ -1,5 +1,5 @@
-import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../corpus-scan.js';
-import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import type { CorpusMarkdownFileScan } from '../scan.js';
+import { REPAIR_INCIDENT_ID, type DetectedIncident, type Detector } from './catalog.js';
 
 const ENTRYSEQ_COLLISION_CANONICAL = REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION;
 const ENTRYSEQ_FORMAT_CANONICAL = REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT;

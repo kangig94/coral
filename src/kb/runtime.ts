@@ -31,7 +31,8 @@ import {
 } from './corpus/manifest-authority.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
-import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts/index.js';
+import { detectRescanInfo } from './corpus/rescan/drift.js';
+import { performRescan } from './corpus/rescan/index.js';
 import {
   type EntityGraph,
   type KbIndex,
@@ -69,7 +70,7 @@ import {
   type InboundSyncMutationDiff,
 } from './corpus/inbound-sync.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
-import { buildCorpusScanView } from './corpus/repair/corpus-scan.js';
+import { buildCorpusScanView } from './corpus/rescan/scan.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
 
 type MutationLockContext = KbMutationLockContext<
@@ -368,7 +369,7 @@ class KbRuntimeImpl implements KbRuntime {
           return;
         }
 
-        await rebuildTextArtifactsAndPersistRepairState(this, mutation, captureIndexStateSnapshot(state));
+        await performRescan(this, mutation, captureIndexStateSnapshot(state));
         rebuilt = true;
       });
       if (rebuilt) {
@@ -627,7 +628,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private indexNeedsRebuild(): boolean {
-    return detectTextArtifactRebuildInfo(this, buildCorpusScanView(this)).needsRebuild;
+    return detectRescanInfo(this, buildCorpusScanView(this)).needsRebuild;
   }
 
   private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {

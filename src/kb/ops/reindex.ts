@@ -1,5 +1,5 @@
 import type { KbRuntime } from '../contract.js';
-import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts/index.js';
+import { RescanError, performRescan } from '../corpus/rescan/index.js';
 import type { ReindexResult } from '../entry-types.js';
 
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
@@ -7,10 +7,10 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
 
   const textResult = await kb.withMutationLock(async (mutation) => {
     const startState = kb.readIndexState();
-    let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
+    let rebuildResult: Awaited<ReturnType<typeof performRescan>>;
 
     try {
-      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(
+      rebuildResult = await performRescan(
         kb,
         mutation,
         {
@@ -19,7 +19,7 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
         },
       );
     } catch (error: unknown) {
-      if (error instanceof TextSnapshotRebuildError) {
+      if (error instanceof RescanError) {
         return {
           ...error.counts,
           duration_ms: kb.time.now() - startedAt,

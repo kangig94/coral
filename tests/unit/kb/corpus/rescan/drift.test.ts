@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest';
 import {
   createCorpusMarkdownFileScan,
   createCorpusScanView,
+} from '#src/kb/corpus/rescan/scan.js';
+import { detectIncidentRetryDrift } from '#src/kb/corpus/rescan/drift.js';
+import {
+  REPAIR_INCIDENT_ID,
+  repairIncidentLocus,
   type DetectedIncident,
-} from '#src/kb/corpus/repair/corpus-scan.js';
-import { detectIncidentRetryDrift } from '#src/kb/curate/text-artifacts/drift.js';
-import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '#src/kb/corpus/repair/incident-ids.js';
+} from '#src/kb/corpus/rescan/incidents/catalog.js';
 import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 

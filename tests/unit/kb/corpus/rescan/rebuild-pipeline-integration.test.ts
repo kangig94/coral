@@ -6,11 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/repair/incident-ids.js';
-import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/repair/fix.js';
+import { REPAIR_INCIDENT_ID, type DetectedIncident } from '#src/kb/corpus/rescan/incidents/catalog.js';
+import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { DetectedIncident } from '#src/kb/corpus/repair/corpus-scan.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 

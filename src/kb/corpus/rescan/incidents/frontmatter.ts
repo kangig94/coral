@@ -1,6 +1,6 @@
 import { errorMessage } from '../../../../infra/error-format.js';
-import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../corpus-scan.js';
-import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import type { CorpusMarkdownFileScan } from '../scan.js';
+import { REPAIR_INCIDENT_ID, type DetectedIncident, type Detector } from './catalog.js';
 
 const UNTERMINATED_YAML_CANONICAL = REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML;
 const YAML_PARSE_ERROR_CANONICAL = REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR;

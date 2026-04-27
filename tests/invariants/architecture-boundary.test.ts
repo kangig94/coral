@@ -72,6 +72,15 @@ const RETIRED_TRANSPORT_SHARED_CONTEXT = ['src', 'transport', 'shared-context.ts
 const RETIRED_COORDINATOR_CALLER_CONTEXT = ['src', 'coordinator', 'caller-context.ts'].join('/');
 const RETIRED_STORE_CORPUS_CONSUMER = ['src', 'store', 'corpus-consumer.ts'].join('/');
 const RETIRED_KB_CORPUS_REPAIR_TYPES = ['src', 'kb', 'corpus', 'repair', 'types.ts'].join('/');
+const RETIRED_TEXT_ARTIFACTS_DIR = ['src', 'kb', 'curate', 'text-artifacts'].join('/');
+const RETIRED_CORPUS_REPAIR_DIR = ['src', 'kb', 'corpus', 'repair'].join('/');
+const RETIRED_TEXT_ARTIFACTS_ENTRY_POINTS = [
+  'readMalformedEntryRepair',
+  'pendingRepairNeedsRetry',
+  'rebuildTextArtifactsAndPersistRepairState',
+  'TextSnapshotRebuildError',
+  'detectTextArtifactRebuildInfo',
+] as const;
 const RETIRED_SIMULATION_WORLD = ['src', 'simulation', 'world.ts'].join('/');
 const RETIRED_SIMULATION_SCHEMA = ['src', 'simulation', 'schema.ts'].join('/');
 const RETIRED_SIMULATION_NORMALIZE = ['src', 'simulation', 'normalize.ts'].join('/');
@@ -641,9 +650,9 @@ describe('architecture boundary guard', () => {
       [],
     );
   });
-  it('kb corpus repair does not construct real runtime ports', () => {
+  it('kb corpus rescan does not construct real runtime ports', () => {
     const violations = PARSED_IMPORT_EDGES.filter(
-      (edge) => isWithinPath(edge.source, 'src/kb/corpus/repair') && edge.target === 'src/runtime/real.ts',
+      (edge) => isWithinPath(edge.source, 'src/kb/corpus/rescan') && edge.target === 'src/runtime/real.ts',
     );
     expect(violations.map((edge) => `${edge.source} -> ${edge.target}`)).toEqual([]);
   });
@@ -860,6 +869,26 @@ describe('architecture boundary guard', () => {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
       expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
     }
+  });
+  it('the retired text-artifacts and corpus/repair directories must remain deleted', () => {
+    for (const retiredDir of [RETIRED_TEXT_ARTIFACTS_DIR, RETIRED_CORPUS_REPAIR_DIR]) {
+      expect(existsSync(resolve(REPO_ROOT, retiredDir))).toBe(false);
+      const filesUnderRetiredDir = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, retiredDir));
+      expect(filesUnderRetiredDir).toEqual([]);
+    }
+  });
+  it('the retired text-artifacts entry-point identifiers must not appear anywhere in src/', () => {
+    const violations: string[] = [];
+    for (const filePath of PRODUCTION_FILE_PATHS) {
+      const source = readFileSync(filePath, 'utf8');
+      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
+      for (const identifier of RETIRED_TEXT_ARTIFACTS_ENTRY_POINTS) {
+        if (new RegExp(`\\b${identifier}\\b`).test(source)) {
+          violations.push(`${canonical}: contains retired identifier ${identifier}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
   });
   it('production types.ts files remain declaration-only', () => {
     expect(collectRuntimeDeclarationsInTypesFiles()).toEqual([]);
@@ -1453,7 +1482,7 @@ describe('architecture boundary guard', () => {
       [/['"][^'"]*kb\/corpus\/mutation-lock['"]/u, 'kb/corpus/mutation-lock (Corpus write lock)'],
       [/['"][^'"]*kb\/corpus\/inbound-sync['"]/u, 'kb/corpus/inbound-sync (Corpus mutation)'],
       [/['"][^'"]*kb\/corpus\/publication['"]/u, 'kb/corpus/publication (Corpus mutation)'],
-      [/['"][^'"]*kb\/corpus\/repair\/fix['"]/u, 'kb/corpus/repair/fix (Corpus mutation)'],
+      [/['"][^'"]*kb\/corpus\/rescan\/auto-fix['"]/u, 'kb/corpus/rescan/auto-fix (Corpus mutation)'],
     ];
     const violations = expansionFiles.flatMap((filePath) => {
       const source = readFileSync(filePath, 'utf8');

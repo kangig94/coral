@@ -14,7 +14,7 @@ import {
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
 } from '../../corpus/snapshot.js';
-import { areCommunityDocumentsFresh } from '../../curate/text-artifacts/index.js';
+import { areCommunityDocumentsFresh } from '../../corpus/rescan/projections.js';
 import type { CommunityDocument } from '../../curate/community/detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../../corpus/frontmatter.js';
 import { cloneKbIndex } from '../../corpus/index-records.js';

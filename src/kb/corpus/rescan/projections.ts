@@ -6,16 +6,15 @@ import {
   extractPrincipleStatement,
   parseMembersFromBody,
   parseSummaryFromBody,
-} from '../../corpus/frontmatter.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
-import type {
-  CorpusMarkdownFileScan,
-  CorpusScanView,
-} from '../../corpus/repair/corpus-scan.js';
+} from '../frontmatter.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { assertCommunitySlug, assertSourceSlug } from '../../validation.js';
+import { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint } from '../../curate/community/detection.js';
+import { readCurateState, type CurateState } from '../../curate/state/index.js';
 import type { KbRuntime } from '../../contract.js';
 import {
   communityEntryId,
+  isCommunityEntry,
   noteEntryId,
   sourceEntryId,
   type CommunityFrontmatter,
@@ -27,6 +26,28 @@ import {
   type KbSourceFrontmatter,
   type ReindexResult,
 } from '../../entry-types.js';
+import { fileSyntaxDetector } from './incidents/file-syntax.js';
+import { frontmatterShapeDetector } from './incidents/frontmatter.js';
+import { identitySequenceDetector } from './incidents/identity.js';
+import { referenceIntegrityDetector } from './incidents/references.js';
+import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
+import type { DetectedIncident, Detector } from './incidents/catalog.js';
+
+const ALL_DETECTORS: readonly Detector[] = [
+  fileSyntaxDetector,
+  frontmatterShapeDetector,
+  identitySequenceDetector,
+  referenceIntegrityDetector,
+];
+
+/**
+ * Aggregates detected incidents across every typed detector. Pure projection over
+ * `CorpusScanView`; does not touch storage. Callers feed the result to
+ * `applyDetectedIncidentFixesLocked` (under the mutation lock).
+ */
+export function projectIncidents(scan: CorpusScanView): DetectedIncident[] {
+  return ALL_DETECTORS.flatMap((detector) => detector.detect(scan));
+}
 
 export function loadNotes(scan: CorpusScanView): KbReindexNoteRecord[] {
   const notes: KbReindexNoteRecord[] = [];
@@ -231,4 +252,66 @@ export function buildCounts(
     relationships: index.relationships?.length ?? 0,
     entityCoverage: uniqueTags.size === 0 ? 1 : coveredTags / uniqueTags.size,
   };
+}
+
+export function areCommunityDocumentsFresh(
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+  state?: CurateState,
+): boolean {
+  // Avoid touching curate state when there are no community entries.
+  const hasCommunityEntries = Object.values(index.entries).some(isCommunityEntry);
+  if (!hasCommunityEntries) {
+    return true;
+  }
+  return isCommunityStateFreshForIndex(state ?? readCurateState(kb), kb, index);
+}
+
+function isCommunityStateFreshForIndex(
+  state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+): boolean {
+  const communityEntries = Object.values(index.entries).filter(isCommunityEntry);
+  if (communityEntries.length === 0) {
+    return true;
+  }
+
+  const topologyHash = computeCommunityTopologyFingerprint(index);
+  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
+    return false;
+  }
+
+  try {
+    const communities = communityEntries.map((community) => ({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.children === undefined ? {} : { children: community.children }),
+      ...(community.summary === undefined ? {} : { summary: community.summary }),
+    }));
+    const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, kb, index);
+    return isCommunitySummaryFresh(currentFingerprints, state.communitySummaryInputFingerprints);
+  } catch {
+    return false;
+  }
+}
+
+function isCommunitySummaryFresh(
+  currentFingerprints: Readonly<Record<string, string>>,
+  storedFingerprints: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
+  const storedEntries = Object.entries(storedFingerprints ?? {})
+    .filter(([slug]) => slug in currentFingerprints)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return (
+    currentEntries.length === storedEntries.length &&
+    currentEntries.every(
+      ([slug, fingerprint], index) =>
+        storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
+    )
+  );
 }

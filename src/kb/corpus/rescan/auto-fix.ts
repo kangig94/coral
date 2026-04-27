@@ -45,9 +45,13 @@ import {
   parseSourceFrontmatter,
   parseSummaryFromBody,
 } from '../frontmatter.js';
-import { classifyIncident, type IncidentClassification } from './classify.js';
-import { REPAIR_INCIDENT_ID, type RepairIncidentId } from './incident-ids.js';
-import type { DetectedIncident } from './corpus-scan.js';
+import {
+  classifyIncident,
+  REPAIR_INCIDENT_ID,
+  type DetectedIncident,
+  type IncidentClassification,
+  type RepairIncidentId,
+} from './incidents/catalog.js';
 
 const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
   /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
@@ -436,8 +440,8 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
 
   const target = resolveMarkdownRepairTarget(kb, incident.entryId);
   const content = target?.content ?? null;
-  // observedContentHash lets pendingRepairNeedsRetry skip re-detection until the file content changes;
-  // typed-incident enqueues now record it so a re-running rebuild does not re-fire the same incident.
+  // observedContentHash lets the rescan drift gate skip re-detection until the file content changes;
+  // typed-incident enqueues record it so a re-running rebuild does not re-fire the same incident.
   const observedContentHash = content === null ? undefined : createHash('sha256').update(content, 'utf8').digest('hex');
 
   const now = nowIsoString(kb.time);

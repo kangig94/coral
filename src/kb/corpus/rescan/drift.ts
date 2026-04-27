@@ -2,15 +2,13 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord } from '../../../infra/json.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
-import { extractBody, parseSourceFrontmatter } from '../../corpus/frontmatter.js';
-import type { CorpusMarkdownFileScan, CorpusScanView, DetectedIncident } from '../../corpus/repair/corpus-scan.js';
-import { projectIncidents } from '../../corpus/repair/project-incidents.js';
-import { computeContentSurfaceHash } from '../../corpus/snapshot.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
+import { extractBody, parseSourceFrontmatter } from '../frontmatter.js';
+import { computeContentSurfaceHash } from '../snapshot.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
-import { readCurateRetryQueue } from '../retry.js';
-import type { PendingRepair } from '../state/model.js';
+import { readCurateRetryQueue } from '../../curate/retry.js';
+import type { PendingRepair } from '../../curate/state/model.js';
 import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contract.js';
 import {
   isNoteEntry,
@@ -19,6 +17,9 @@ import {
   sourceEntryId,
   type KbIndex,
 } from '../../entry-types.js';
+import { projectIncidents } from './projections.js';
+import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
+import type { DetectedIncident } from './incidents/catalog.js';
 
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
@@ -261,7 +262,7 @@ function detectStructuredTextDrift(
  * Pure projection: returns a `MutationLane` when the incident retry queue and the
  * current scan disagree (a row whose entryId no longer matches a current incident,
  * a current incident with no row, or a content-hash drift on a matched row). Folds
- * what was previously `pendingRepairNeedsRetry` into the corpus-scan freshness gate.
+ * what was previously a separate retry-queue freshness gate into the corpus-scan freshness gate.
  */
 export function detectIncidentRetryDrift(
   retryQueue: ReadonlyArray<PendingRepair>,
@@ -312,7 +313,7 @@ export function detectIncidentRetryDrift(
   return null;
 }
 
-export function detectTextArtifactRebuildInfo(
+export function detectRescanInfo(
   kb: Pick<
     KbRuntime,
     | 'runtimeDir'

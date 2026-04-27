@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote, loadKbSource } from '#src/kb/read.js';
-import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/repair/incident-ids.js';
-import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/repair/helpers.js';
+import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/rescan/incidents/catalog.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/rescan/helpers.js';
 
 describe('repair fixtures: frontmatter shape', () => {
   it(`covers ${REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML} end to end`, async () => {

@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote } from '#src/kb/read.js';
-import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/repair/incident-ids.js';
-import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/repair/helpers.js';
+import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/rescan/incidents/catalog.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/rescan/helpers.js';
 
 describe('repair fixtures: reference integrity', () => {
   it(`covers ${REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS} end to end`, async () => {

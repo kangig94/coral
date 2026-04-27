@@ -21,22 +21,6 @@ import {
 import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
-import type { RepairIncidentId, RepairIncidentLocus } from './incident-ids.js';
-
-export type { RepairIncidentId } from './incident-ids.js';
-
-export type DetectedIncident = {
-  [IncidentId in RepairIncidentId]: {
-    locus: RepairIncidentLocus<IncidentId>;
-    canonical: IncidentId;
-    entryId: string;
-    signals: Record<string, unknown>;
-  };
-}[RepairIncidentId];
-
-export interface Detector {
-  detect(corpus: CorpusScanView): DetectedIncident[];
-}
 
 export type CorpusMarkdownKind = 'note' | 'source' | 'community' | 'principle';
 export type PrincipleEntryId = `principle:${string}`;

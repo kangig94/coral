@@ -10,20 +10,24 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import { sortedMarkdownEntries } from '#src/kb/corpus/markdown-entries.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { classifyIncident, type IncidentClassification } from '#src/kb/corpus/repair/classify.js';
-import { fileSyntaxDetector } from '#src/kb/corpus/repair/detect/file-syntax.js';
-import { frontmatterShapeDetector } from '#src/kb/corpus/repair/detect/frontmatter-shape.js';
-import { identitySequenceDetector } from '#src/kb/corpus/repair/detect/identity-sequence.js';
-import { referenceIntegrityDetector } from '#src/kb/corpus/repair/detect/reference-integrity.js';
-import { REPAIR_HINTS, applyDetectedIncidentFixesLocked } from '#src/kb/corpus/repair/fix.js';
-import { repairIncidentLocus, type RepairIncidentId } from '#src/kb/corpus/repair/incident-ids.js';
+import {
+  classifyIncident,
+  repairIncidentLocus,
+  type DetectedIncident,
+  type IncidentClassification,
+  type RepairIncidentId,
+} from '#src/kb/corpus/rescan/incidents/catalog.js';
+import { fileSyntaxDetector } from '#src/kb/corpus/rescan/incidents/file-syntax.js';
+import { frontmatterShapeDetector } from '#src/kb/corpus/rescan/incidents/frontmatter.js';
+import { identitySequenceDetector } from '#src/kb/corpus/rescan/incidents/identity.js';
+import { referenceIntegrityDetector } from '#src/kb/corpus/rescan/incidents/references.js';
+import { REPAIR_HINTS, applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import {
   createCorpusEntityGraphScan,
   createCorpusMarkdownFileScan,
   createCorpusScanView,
   type CorpusMarkdownKind,
-  type DetectedIncident,
-} from '#src/kb/corpus/repair/corpus-scan.js';
+} from '#src/kb/corpus/rescan/scan.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
