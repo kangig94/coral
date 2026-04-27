@@ -66,14 +66,16 @@ export async function rebuildTextArtifacts(
   pendingRepair: PendingRepair[] | null;
 }> {
   const detectedAt = nowIsoString(kb.time);
-  const { entries: notes, pendingRepair: malformedNotes } = loadNotes(kb, detectedAt);
-  const { entries: sources, pendingRepair: malformedSources } = loadSources(kb, detectedAt);
-  const principles = loadPrinciples(kb);
+  const scan = buildCorpusScanView(kb);
+  const { entries: notes, pendingRepair: malformedNotes } = loadNotes(scan, detectedAt);
+  const { entries: sources, pendingRepair: malformedSources } = loadSources(scan, detectedAt);
+  const principles = loadPrinciples(scan);
   const pendingRepair = [...malformedNotes, ...malformedSources];
-  const rebuildInfo = detectTextArtifactRebuildInfo(kb, buildCorpusScanView(kb));
+  const rebuildInfo = detectTextArtifactRebuildInfo(kb, scan);
   const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
-  const communities = loadCommunities(kb);
+  // Topology refresh may delete/regenerate community files on disk; re-scan the corpus to capture them.
+  const communities = loadCommunities(buildCorpusScanView(kb));
   const index = buildKbIndex(kb, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
   const pendingRepairState = pendingRepair.length === 0 ? null : pendingRepair;

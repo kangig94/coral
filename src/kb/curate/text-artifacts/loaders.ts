@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { errorMessage } from '../../../infra/error-format.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { readMalformedEntryRepair, type PendingRepair } from '../state/index.js';
@@ -7,26 +5,27 @@ import {
   deriveNoteIdentity,
   extractBody,
   extractPrincipleStatement,
-  extractTitle,
-  parseCommunityFrontmatter,
   parseMembersFromBody,
-  parseSourceFrontmatter,
   parseSummaryFromBody,
 } from '../../corpus/frontmatter.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
-import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
-import { stripMdExt } from '../../paths.js';
-import { loadKbNote } from '../../read.js';
+import type {
+  CorpusMarkdownFileScan,
+  CorpusScanView,
+} from '../../corpus/repair/corpus-scan.js';
 import { assertCommunitySlug, assertSourceSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 import {
   communityEntryId,
   noteEntryId,
   sourceEntryId,
+  type CommunityFrontmatter,
   type KbIndex,
+  type KbNoteFrontmatter,
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
+  type KbSourceFrontmatter,
   type ReindexResult,
 } from '../../entry-types.js';
 
@@ -35,29 +34,30 @@ type LoadedArtifacts<T> = {
   pendingRepair: PendingRepair[];
 };
 
-export function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindexNoteRecord> {
-  const notesPath = kb.notesDir();
+export function loadNotes(scan: CorpusScanView, detectedAt: string): LoadedArtifacts<KbReindexNoteRecord> {
   const notes: KbReindexNoteRecord[] = [];
   const pendingRepair: PendingRepair[] = [];
 
-  for (const entry of sortedMarkdownEntries(notesPath)) {
+  for (const file of filesOfKind(scan, 'note')) {
+    const filename = `${file.slug}.md`;
     try {
-      const { frontmatter, title, body } = loadKbNote(join(notesPath, entry));
-      const identity = deriveNoteIdentity(entry);
+      const frontmatter = requireTypedFrontmatter<KbNoteFrontmatter>(file);
+      const title = requireTitle(file);
+      const identity = deriveNoteIdentity(filename);
       notes.push({
         note: identity.note,
-        path: `notes/${entry}`,
+        path: `notes/${filename}`,
         domain: identity.domain,
         title,
-        body,
+        body: extractBody(file.content),
         ...frontmatter,
       });
     } catch (error: unknown) {
-      const repair = readMalformedEntryRepair(join(notesPath, entry), 'note', stripMdExt(entry), detectedAt);
+      const repair = readMalformedEntryRepair(file.path, 'note', file.slug, detectedAt);
       if (repair !== null) {
         pendingRepair.push(repair);
       }
-      backendLog.warn(`Skipping malformed KB note ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB note ${filename}: ${errorMessage(error)}`);
     }
   }
 
@@ -67,26 +67,26 @@ export function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<Kb
   };
 }
 
-export function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindexSourceRecord> {
-  const sourcesPath = kb.sourcesDir();
+export function loadSources(scan: CorpusScanView, detectedAt: string): LoadedArtifacts<KbReindexSourceRecord> {
   const sources: KbReindexSourceRecord[] = [];
   const pendingRepair: PendingRepair[] = [];
 
-  for (const entry of sortedMarkdownEntries(sourcesPath)) {
+  for (const file of filesOfKind(scan, 'source')) {
+    const filename = `${file.slug}.md`;
     try {
-      const raw = readFileSync(join(sourcesPath, entry), 'utf-8');
+      const frontmatter = requireTypedFrontmatter<KbSourceFrontmatter>(file);
       sources.push({
-        slug: assertSourceSlug(stripMdExt(entry), 'KB source name'),
-        path: `sources/${entry}`,
-        body: extractBody(raw),
-        ...parseSourceFrontmatter(raw),
+        slug: assertSourceSlug(file.slug, 'KB source name'),
+        path: `sources/${filename}`,
+        body: extractBody(file.content),
+        ...frontmatter,
       });
     } catch (error: unknown) {
-      const repair = readMalformedEntryRepair(join(sourcesPath, entry), 'source', stripMdExt(entry), detectedAt);
+      const repair = readMalformedEntryRepair(file.path, 'source', file.slug, detectedAt);
       if (repair !== null) {
         pendingRepair.push(repair);
       }
-      backendLog.warn(`Skipping malformed KB source ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB source ${filename}: ${errorMessage(error)}`);
     }
   }
 
@@ -96,56 +96,74 @@ export function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<
   };
 }
 
-function loadCommunityDocument(communityPath: string): Omit<KbReindexCommunityRecord, 'path' | 'slug'> {
-  const raw = readFileSync(communityPath, 'utf-8');
-  const frontmatter = parseCommunityFrontmatter(raw);
-  const body = extractBody(raw);
-  return {
-    ...frontmatter,
-    title: extractTitle(raw),
-    body,
-    level: frontmatter.level,
-    members: parseMembersFromBody(body),
-    ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
-    ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
-    summary: parseSummaryFromBody(body),
-  };
-}
-
-export function loadCommunities(kb: KbRuntime): KbReindexCommunityRecord[] {
-  const communitiesPath = kb.communitiesDir();
+export function loadCommunities(scan: CorpusScanView): KbReindexCommunityRecord[] {
   const communities: KbReindexCommunityRecord[] = [];
 
-  for (const entry of sortedMarkdownEntries(communitiesPath)) {
+  for (const file of filesOfKind(scan, 'community')) {
+    const filename = `${file.slug}.md`;
     try {
+      const frontmatter = requireTypedFrontmatter<CommunityFrontmatter>(file);
+      const title = requireTitle(file);
+      const body = extractBody(file.content);
       communities.push({
-        slug: assertCommunitySlug(stripMdExt(entry), 'KB community name'),
-        path: `communities/${entry}`,
-        ...loadCommunityDocument(join(communitiesPath, entry)),
+        slug: assertCommunitySlug(file.slug, 'KB community name'),
+        path: `communities/${filename}`,
+        ...frontmatter,
+        title,
+        body,
+        level: frontmatter.level,
+        members: parseMembersFromBody(body),
+        ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
+        ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
+        summary: parseSummaryFromBody(body),
       });
     } catch (error: unknown) {
-      backendLog.warn(`Skipping malformed KB community ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB community ${filename}: ${errorMessage(error)}`);
     }
   }
 
   return communities;
 }
 
-export function loadPrinciples(kb: KbRuntime): Array<[string, string]> {
-  const principlesPath = kb.principlesDir();
+export function loadPrinciples(scan: CorpusScanView): Array<[string, string]> {
   const principles: Array<[string, string]> = [];
 
-  for (const entry of sortedMarkdownEntries(principlesPath)) {
+  for (const file of filesOfKind(scan, 'principle')) {
     try {
-      const name = stripMdExt(entry);
-      const content = readFileSync(join(principlesPath, entry), 'utf-8');
-      principles.push([name, extractPrincipleStatement(content)]);
+      principles.push([file.slug, extractPrincipleStatement(file.content)]);
     } catch (error: unknown) {
-      backendLog.warn(`Skipping malformed KB principle ${entry}: ${errorMessage(error)}`);
+      backendLog.warn(`Skipping malformed KB principle ${file.slug}.md: ${errorMessage(error)}`);
     }
   }
 
   return principles;
+}
+
+function filesOfKind(scan: CorpusScanView, kind: CorpusMarkdownFileScan['kind']): CorpusMarkdownFileScan[] {
+  return scan.markdownFiles.filter((file) => file.kind === kind);
+}
+
+function requireTypedFrontmatter<T>(file: CorpusMarkdownFileScan): T {
+  if (file.frontmatter.typed !== null) {
+    return file.frontmatter.typed as T;
+  }
+  if (file.frontmatter.typedError !== null) {
+    throw file.frontmatter.typedError;
+  }
+  if (file.frontmatter.error !== null) {
+    throw file.frontmatter.error;
+  }
+  throw new Error(`Frontmatter unavailable (status: ${file.frontmatter.status})`);
+}
+
+function requireTitle(file: CorpusMarkdownFileScan): string {
+  if (file.titleError !== null) {
+    throw file.titleError;
+  }
+  if (file.title === null) {
+    throw new Error('Title unavailable');
+  }
+  return file.title;
 }
 
 export function buildKbIndex(
