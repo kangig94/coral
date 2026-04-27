@@ -26,24 +26,22 @@ export function toCanonicalSrcPath(repoRoot: string, filePath: string): string {
 }
 
 export function listProductionSourceFiles(dirPath: string): string[] {
+  // Test files and test directories are forbidden inside src; the
+  // architecture-boundary invariant 'test code and test support must stay
+  // out of src' is the canonical guard. This helper is therefore allowed
+  // to assume it walks production sources only — it does not need to skip
+  // any directory by name.
   const files: string[] = [];
 
   for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
     const entryPath = join(dirPath, entry.name);
 
     if (entry.isDirectory()) {
-      if (entry.name === '__tests__') {
-        continue;
-      }
       files.push(...listProductionSourceFiles(entryPath));
       continue;
     }
 
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) {
+    if (!entry.isFile() || !entry.name.endsWith('.ts')) {
       continue;
     }
 

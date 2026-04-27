@@ -10,7 +10,7 @@ const alias = {
 export default defineConfig({
   resolve: { alias },
   test: {
-    include: ['tests/unit/**/*.test.ts', 'tests/invariants/**/*.test.ts', 'src/**/__tests__/*.test.ts'],
+    include: ['tests/unit/**/*.test.ts', 'tests/invariants/**/*.test.ts'],
     exclude: ['ref/**', 'node_modules/**'],
     setupFiles: ['vitest.setup.ts'],
   },

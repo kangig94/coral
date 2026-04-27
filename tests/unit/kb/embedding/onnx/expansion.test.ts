@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadExpansions } from '#src/expansion/loader.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
-import { __setOnnxExpansionTestHooks } from '../expansion.js';
+import { __setOnnxExpansionTestHooks } from '#src/kb/embedding/onnx/expansion.js';
 
 const ONNX_ENTRY = {
   id: 'onnx',

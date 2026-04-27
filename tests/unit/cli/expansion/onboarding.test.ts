@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { BundledExpansion } from '#src/expansion/contract.js';
-import { needleOnboarding } from '../onboarding.js';
+import { needleOnboarding } from '#src/cli/expansion/onboarding.js';
 
 const GEMINI_ENTRY: BundledExpansion = {
   id: 'gemini',

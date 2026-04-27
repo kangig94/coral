@@ -6,7 +6,7 @@ Known non-goals: computed import(variableName) and relative require('...') are i
 */
 
 // Shared scanning helpers stay extracted because the reused resolver and AST import scanner exceed the inline duplication threshold.
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -685,10 +685,35 @@ describe('architecture boundary guard', () => {
     expect(existsSync(resolve(REPO_ROOT, DEBUG_SIMULATION_SCENARIOS_ROOT))).toBe(true);
   });
   it('test code and test support must stay out of src', () => {
-    const srcTestArtifacts = PRODUCTION_SOURCE_FILES.filter(
-      (file) => file.endsWith('.test.ts') || file.includes('/__tests__/') || file.startsWith('src/testing/'),
-    );
-    expect(srcTestArtifacts).toEqual([]);
+    // Raw scan that does NOT use `listProductionSourceFiles` (which deliberately
+    // hides `__tests__/`). The invariant must catch the very pattern that
+    // helper hides: every test file and test directory belongs in `tests/`.
+    const violations: string[] = [];
+
+    function scan(dirPath: string): void {
+      for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+        const entryPath = join(dirPath, entry.name);
+        const canonical = toCanonicalSrcPath(REPO_ROOT, entryPath);
+        if (entry.isDirectory()) {
+          if (entry.name === '__tests__' || entry.name === '__snapshots__') {
+            violations.push(`${canonical}/ (test directory inside src)`);
+            continue;
+          }
+          scan(entryPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.spec.ts') || entry.name.endsWith('.test.tsx')) {
+          violations.push(`${canonical} (test file inside src)`);
+        }
+      }
+    }
+
+    scan(SRC_ROOT);
+
+    expect(violations).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, 'src/testing'))).toBe(false);
   });
   it('human prose docs must stay out of src', () => {
