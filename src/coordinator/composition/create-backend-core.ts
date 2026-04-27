@@ -66,7 +66,7 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './world.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
+import { createExpansionRpc, createUnavailableExpansionRpc } from '../equipment/rpc.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 import { KbReindexService } from '../services/kb-reindex-service.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
@@ -359,10 +359,10 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
-    equipment:
+    expansion:
       options.equipmentLifecycleService === undefined
-        ? createUnavailableEquipmentRpc()
-        : createEquipmentRpc(options.equipmentLifecycleService),
+        ? createUnavailableExpansionRpc()
+        : createExpansionRpc(options.equipmentLifecycleService),
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {

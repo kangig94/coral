@@ -1,27 +1,38 @@
 import type {
-  ListEquipmentRequest,
-  ListEquipmentResult,
-  RegisterEquipmentRequest,
-  RegisterEquipmentResult,
-  UnregisterEquipmentRequest,
-  UnregisterResult,
-} from '../../expansion/equipment-contract.js';
+  EquipExpansionRequest,
+  EquipExpansionResult,
+  ListExpansionRequest,
+  ListExpansionResult,
+  ExpansionView,
+  ReadBindingRequest,
+  ReadBindingResult,
+  UnequipExpansionRequest,
+  UnequipExpansionResult,
+} from '../expansion/rpc.js';
 import type { EquipmentLifecycleService } from './lifecycle.js';
-import type { EquipmentRequestPort } from '../../transport/rpc/ports.js';
+import type { ExpansionRequestPort } from '../../transport/rpc/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 
-/** Wraps lifecycle mutations with the per-slot guard so equipment RPC stays serialized by slot. */
-export function createEquipmentRpc(lifecycleService: EquipmentLifecycleService): EquipmentRequestPort {
+function toExpansionView(view: { name: string; status: ExpansionView['status'] }): ExpansionView {
   return {
-    registerEquipment: async (request) => {
+    name: view.name,
+    status: view.status,
+  };
+}
+
+/** Wraps lifecycle mutations with the per-slot guard so equipment RPC stays serialized by slot. */
+export function createExpansionRpc(lifecycleService: EquipmentLifecycleService): ExpansionRequestPort {
+  return {
+    equipExpansion: async (request) => {
       const release = await lifecycleService.acquireSlotGuard(request.name);
       try {
-        return await lifecycleService.equip(request.name);
+        const result = await lifecycleService.equip(request.name);
+        return 'equipment' in result ? { ...result, equipment: toExpansionView(result.equipment) } : result;
       } finally {
         release();
       }
     },
-    unregisterEquipment: async (request) => {
+    unequipExpansion: async (request) => {
       const release = await lifecycleService.acquireSlotGuard(request.name);
       try {
         return await lifecycleService.uninstall(request.name);
@@ -29,23 +40,27 @@ export function createEquipmentRpc(lifecycleService: EquipmentLifecycleService):
         release();
       }
     },
-    listEquipment: async (_request) => ({
-      equipment: await lifecycleService.listEquipment(),
+    listExpansion: async (_request) => ({
+      equipment: (await lifecycleService.listEquipment()).map(toExpansionView),
     }),
+    readBinding: async (_request) => ({ bound: false }),
   };
 }
 
 /** Exposes a stable unavailable surface when the coordinator boots without equipment wiring. */
-export function createUnavailableEquipmentRpc(): EquipmentRequestPort {
+export function createUnavailableExpansionRpc(): ExpansionRequestPort {
   return {
-    registerEquipment: async (request: RegisterEquipmentRequest): Promise<RegisterEquipmentResult> => {
+    equipExpansion: async (request: EquipExpansionRequest): Promise<EquipExpansionResult> => {
       throw documentedCoralSetupError('equipment_runtime_unavailable', { name: request.name });
     },
-    unregisterEquipment: async (_request: UnregisterEquipmentRequest): Promise<UnregisterResult> => ({
+    unequipExpansion: async (_request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => ({
       status: 'not_equipped',
     }),
-    listEquipment: async (_request: ListEquipmentRequest): Promise<ListEquipmentResult> => ({
+    listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({
       equipment: [],
+    }),
+    readBinding: async (_request: ReadBindingRequest): Promise<ReadBindingResult> => ({
+      bound: false,
     }),
   };
 }

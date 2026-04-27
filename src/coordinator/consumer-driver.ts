@@ -1,7 +1,15 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contracts.js';
-import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
+import type {
+  ConsumerApplyError,
+  ConsumerHandle,
+  ConsumerHandleStatus,
+  ConsumerRegistration,
+  ConsumerRegistrationKind,
+  JournalApplyContext,
+  JournalConsumerRegistration,
+} from '../store/consumer-contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { RuntimeTimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -23,7 +31,15 @@ import {
 } from './consumer-driver-support.js';
 
 export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contracts.js';
-export type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
+export type {
+  ConsumerApplyError,
+  ConsumerHandle,
+  ConsumerHandleStatus,
+  ConsumerRegistration,
+  ConsumerRegistrationKind,
+  JournalApplyContext,
+  JournalConsumerRegistration,
+} from '../store/consumer-contract.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {
@@ -47,57 +63,6 @@ const SYSTEM_CONSUMER_DRIVER_TIMERS: ConsumerDriverTimers = {
     }
   },
 };
-
-export type ConsumerHandleStatus =
-  | {
-      authority: 'journal';
-      cursor: number;
-      pending: boolean;
-      lastApplyError: ConsumerApplyError | null;
-    }
-  | {
-      authority: 'corpus';
-      corpusInterest: CorpusInterest;
-      snapshotId: string | null;
-      contentSeq: number;
-      metadataSeq: number;
-      contentManifestHash: string | null;
-      metadataManifestHash: string | null;
-      pending: boolean;
-      lastApplyError: ConsumerApplyError | null;
-    };
-
-export interface ConsumerHandle {
-  readonly id: string;
-  readonly registrationKind: ConsumerRegistrationKind;
-  readonly lastApplyError: ConsumerApplyError | null;
-  stop(): Promise<void>;
-  unregister(): Promise<void>;
-  status(): ConsumerHandleStatus;
-}
-
-export interface JournalApplyContext {
-  readonly fromSeq: number;
-  readonly upToSeq: number;
-  readonly db: BetterSqlite3.Database;
-}
-
-export interface JournalConsumerRegistration {
-  readonly id: string;
-  readonly authority: 'journal';
-  readonly registrationKind?: ConsumerRegistrationKind;
-  readonly onApplyFailure?: (err: ConsumerApplyError) => void;
-  /**
-   * Idempotent apply. Architecture §16 invariant #44:
-   * - ConsumerDriver does NOT wrap apply() in a transaction.
-   * - apply() owns its own write atomicity.
-   * - Cursor advances only on clean return; crash between apply commit and cursor update
-   *   is tolerated because the same range re-applies on next start (upsert semantics).
-   */
-  apply(ctx: JournalApplyContext): Promise<void>;
-}
-
-type ConsumerRegistration = JournalConsumerRegistration | CorpusConsumerRegistration;
 
 interface Waiter {
   target: number | KbCorpusSnapshot;

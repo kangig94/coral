@@ -287,11 +287,11 @@ function createActivationHarness(
         }
         calls.push({
           channel: 'passive',
-          method: 'coordinator.listEquipment',
+          method: 'coordinator.listExpansion',
           params: {},
           socketPath: discovery.socketPath,
         });
-        const result = (await Promise.resolve(opts.passiveRequest?.('coordinator.listEquipment', {}) ?? { equipment: [] })) as {
+        const result = (await Promise.resolve(opts.passiveRequest?.('coordinator.listExpansion', {}) ?? { equipment: [] })) as {
           equipment: Array<{ slot: 'kb.vector'; name: string; status: 'equipped' | 'catching_up' | 'inactive' }>;
         };
         return {
@@ -300,9 +300,9 @@ function createActivationHarness(
         };
       }),
       activateExpansion: vi.fn(async (name: string) => {
-        calls.push({ channel: 'ensure', method: 'coordinator.registerEquipment', params: { name } });
+        calls.push({ channel: 'ensure', method: 'coordinator.equipExpansion', params: { name } });
         return (await Promise.resolve(
-          opts.ensureRequest?.('coordinator.registerEquipment', { name }) ?? {
+          opts.ensureRequest?.('coordinator.equipExpansion', { name }) ?? {
             status: 'equipped',
             equipment: {
               slot: 'kb.vector',
@@ -313,8 +313,8 @@ function createActivationHarness(
         )) as Awaited<ReturnType<ActivationDeps['activateExpansion']>>;
       }),
       deactivateExpansion: vi.fn(async (name: string) => {
-        calls.push({ channel: 'ensure', method: 'coordinator.unregisterEquipment', params: { name } });
-        return (await Promise.resolve(opts.ensureRequest?.('coordinator.unregisterEquipment', { name }) ?? {
+        calls.push({ channel: 'ensure', method: 'coordinator.unequipExpansion', params: { name } });
+        return (await Promise.resolve(opts.ensureRequest?.('coordinator.unequipExpansion', { name }) ?? {
           status: 'uninstalled',
         })) as Awaited<ReturnType<ActivationDeps['deactivateExpansion']>>;
       }),
@@ -419,7 +419,7 @@ describe('expansion workflow/install integration (AC24)', () => {
     expect(activation.calls).toEqual([
       {
         channel: 'ensure',
-        method: 'coordinator.registerEquipment',
+        method: 'coordinator.equipExpansion',
         params: { name: 'needle' },
       },
     ]);
@@ -559,7 +559,7 @@ describe('expansion workflow/install integration (AC24)', () => {
     writeInstalledCgc(runtime);
     const activation = createActivationHarness({
       passiveRequest: async (method) => {
-        expect(method).toBe('coordinator.listEquipment');
+        expect(method).toBe('coordinator.listExpansion');
         return {
           equipment: [
             {
@@ -595,7 +595,7 @@ describe('expansion workflow/install integration (AC24)', () => {
     expect(activation.calls).toEqual([
       {
         channel: 'passive',
-        method: 'coordinator.listEquipment',
+        method: 'coordinator.listExpansion',
         params: {},
         socketPath: '/tmp/coral-passive.sock',
       },
@@ -750,7 +750,7 @@ describe('expansion workflow/install integration (AC24)', () => {
         ],
       }),
       ensureRequest: async (method) => {
-        expect(method).toBe('coordinator.unregisterEquipment');
+        expect(method).toBe('coordinator.unequipExpansion');
         return { status: 'uninstalled' };
       },
     });
@@ -762,13 +762,13 @@ describe('expansion workflow/install integration (AC24)', () => {
     expect(activation.calls).toEqual([
       {
         channel: 'passive',
-        method: 'coordinator.listEquipment',
+        method: 'coordinator.listExpansion',
         params: {},
         socketPath: '/tmp/coral-passive.sock',
       },
       {
         channel: 'ensure',
-        method: 'coordinator.unregisterEquipment',
+        method: 'coordinator.unequipExpansion',
         params: { name: 'needle' },
       },
     ]);
@@ -794,7 +794,7 @@ describe('expansion workflow/install integration (AC24)', () => {
     expect(activation.calls).toEqual([
       {
         channel: 'passive',
-        method: 'coordinator.listEquipment',
+        method: 'coordinator.listExpansion',
         params: {},
         socketPath: '/tmp/coral-passive.sock',
       },

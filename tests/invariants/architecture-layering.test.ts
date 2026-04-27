@@ -25,6 +25,7 @@ const DOMAIN_ROOTS = [
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
+  'src/coordinator/expansion/rpc.ts',
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/launch.ts',
   'src/jobs/phase.ts',
@@ -59,6 +60,7 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
   'src/coordinator/equipment/',
+  'src/coordinator/expansion/',
   'src/coordinator/services/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([

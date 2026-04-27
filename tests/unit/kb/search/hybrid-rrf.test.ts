@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as EmbeddingModule from '#src/kb/search/embedding.js';
-import type { ConsumerHandle, ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
+import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 
 function runtimeActivationFromHandle(
   retrieval: VectorRetrieval,

@@ -9,7 +9,7 @@ import {
   type InstallError,
   type InstallResponse,
   type InstallResult,
-} from '../../expansion/contracts.js';
+} from '../expansion/contract.js';
 import { encodeInstallError } from '../../expansion/errors.js';
 import * as workflow from '../../expansion/workflow.js';
 import { createCliExpansionActivation } from '../expansion-activation.js';

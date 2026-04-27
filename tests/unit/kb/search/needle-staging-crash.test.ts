@@ -6,11 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as NeedleStoreModule from '#src/kb/search/needle/store.js';
 
-import { ConsumerDriver, type ConsumerHandle } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
   return async (publication: { snapshot: ReturnType<typeof readCorpusState>; changedLanes: readonly ('content' | 'metadata')[] }) => {

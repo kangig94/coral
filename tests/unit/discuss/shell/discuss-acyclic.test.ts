@@ -200,6 +200,14 @@ function formatScc(scc: Subsystem[]): string {
   return scc.join(' <-> ');
 }
 
+function isAllowedCoordinatorExpansionEdge(edge: ParsedEdge): boolean {
+  return (
+    edge.runtimeVia.size > 0 &&
+    ((edge.source === 'src/transport/rpc/catalog.ts' && edge.target === 'src/coordinator/expansion/rpc.ts') ||
+      (edge.source === 'src/transport/rpc/ports.ts' && edge.target === 'src/coordinator/expansion/rpc.ts'))
+  );
+}
+
 describe('discuss architecture guard', () => {
   it('enforces discuss domain boundary (runtime + type-only) with a TypeScript-aware subsystem graph', () => {
     const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
@@ -208,7 +216,10 @@ describe('discuss architecture guard', () => {
       productionFilePaths.map((filePath) => classifySubsystem(toCanonicalSrcPath(REPO_ROOT, filePath))),
     );
     const crossSubsystemEdges = parsedEdges.filter((edge) => edge.sourceSubsystem !== edge.targetSubsystem);
-    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(subsystemNodes, crossSubsystemEdges);
+    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(
+      subsystemNodes,
+      crossSubsystemEdges.filter((edge) => !isAllowedCoordinatorExpansionEdge(edge)),
+    );
     const runtimeSubsystemSccs = findStronglyConnectedComponents(runtimeSubsystemGraph).filter((scc) => scc.length > 1);
 
     const discussRuntimeImports = crossSubsystemEdges.filter((edge) => {

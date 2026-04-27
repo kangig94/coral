@@ -72,7 +72,6 @@ describe('expansion activation (AC6)', () => {
     const request = vi.fn().mockResolvedValue({
       status: 'equipped',
       equipment: {
-        slot: 'kb.vector',
         name: 'needle',
         status: 'equipped',
       },
@@ -87,17 +86,17 @@ describe('expansion activation (AC6)', () => {
         status: 'equipped',
       },
     });
-    expect(request).toHaveBeenCalledWith('coordinator.registerEquipment', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
   });
 
   it('surfaces activation failures instead of collapsing them to unavailable', async () => {
     const activation = createCliExpansionActivation();
-    const error = Object.assign(new Error('coordinator.registerEquipment failed'), { code: 'boom' });
+    const error = Object.assign(new Error('coordinator.equipExpansion failed'), { code: 'boom' });
     const request = vi.fn().mockRejectedValue(error);
     mockState.ensure.mockResolvedValue({ request });
 
     await expect(activation.activateExpansion('needle')).rejects.toBe(error);
-    expect(request).toHaveBeenCalledWith('coordinator.registerEquipment', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
   });
 
   it('deactivates equipment through ensure-backed coordinator IPC', async () => {
@@ -106,7 +105,7 @@ describe('expansion activation (AC6)', () => {
     mockState.ensure.mockResolvedValue({ request });
 
     await expect(activation.deactivateExpansion('needle')).resolves.toEqual({ status: 'uninstalled' });
-    expect(request).toHaveBeenCalledWith('coordinator.unregisterEquipment', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'needle' });
   });
 
   it('returns unavailable when passive discovery cannot be read', async () => {
@@ -155,7 +154,7 @@ describe('expansion activation (AC6)', () => {
         equipment: [],
       });
       expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-dev.sock');
-      expect(request).toHaveBeenCalledWith('coordinator.listEquipment', {});
+      expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});
     } finally {
       rmSync(home, { recursive: true, force: true });
       vi.resetModules();
@@ -172,6 +171,6 @@ describe('expansion activation (AC6)', () => {
 
     await expect(activation.readEquipmentStatus()).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock');
-    expect(request).toHaveBeenCalledWith('coordinator.listEquipment', {});
+    expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});
   });
 });

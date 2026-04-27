@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../consumer-driver.js';
+import type { ConsumerApplyError, ConsumerDriver } from '../consumer-driver.js';
 import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import {
@@ -19,6 +19,7 @@ import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '.
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { KbRuntimeActivationSnapshot } from '../../kb/contracts.js';
+import type { ConsumerHandle } from '../../store/consumer-contract.js';
 import type { SlotRegistry } from './slots.js';
 
 // Re-exports the KB-facing runtime activation shape so coordinator equipment

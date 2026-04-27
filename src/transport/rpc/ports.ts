@@ -1,12 +1,14 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type {
-  ListEquipmentRequest,
-  ListEquipmentResult,
-  RegisterEquipmentRequest,
-  RegisterEquipmentResult,
-  UnregisterEquipmentRequest,
-  UnregisterResult,
-} from '../../expansion/equipment-contract.js';
+  EquipExpansionRequest,
+  EquipExpansionResult,
+  ListExpansionRequest,
+  ListExpansionResult,
+  ReadBindingRequest,
+  ReadBindingResult,
+  UnequipExpansionRequest,
+  UnequipExpansionResult,
+} from '../../coordinator/expansion/rpc.js';
 import type {
   JobForkRequest,
   JobLaunchRequest,
@@ -117,10 +119,11 @@ export interface DiscussRequestPort {
   abort(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
 }
 
-export interface EquipmentRequestPort {
-  registerEquipment(request: RegisterEquipmentRequest): Promise<RegisterEquipmentResult>;
-  unregisterEquipment(request: UnregisterEquipmentRequest): Promise<UnregisterResult>;
-  listEquipment(request: ListEquipmentRequest): Promise<ListEquipmentResult>;
+export interface ExpansionRequestPort {
+  equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
+  unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
+  listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
+  readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
 }
 
 export interface RpcPorts {
@@ -129,5 +132,5 @@ export interface RpcPorts {
   readonly workflows: WorkflowRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
-  readonly equipment: EquipmentRequestPort;
+  readonly expansion: ExpansionRequestPort;
 }

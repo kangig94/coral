@@ -288,10 +288,11 @@ describe('agent wire contract', () => {
         },
         requestDrain: () => {},
       },
-      equipment: {
-        registerEquipment: vi.fn(),
-        unregisterEquipment: vi.fn(),
-        listEquipment: vi.fn(async () => ({ equipment: [] })),
+      expansion: {
+        equipExpansion: vi.fn(),
+        unequipExpansion: vi.fn(),
+        listExpansion: vi.fn(async () => ({ equipment: [] })),
+        readBinding: vi.fn(async () => ({ bound: false })),
       },
       health: {
         read: () => ({

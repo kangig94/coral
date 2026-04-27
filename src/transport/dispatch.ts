@@ -188,20 +188,27 @@ export async function executeCatalogRequest(
       return unaryHttp(launchToHttp(result.decision, 202));
     }
 
-    case 'coordinator.registerEquipment': {
+    case 'coordinator.equipExpansion': {
       const parsed = request as { name: string };
-      return unary(await rpcPorts.equipment.registerEquipment(parsed));
+      return unary(await rpcPorts.expansion.equipExpansion(parsed));
     }
 
-    case 'coordinator.unregisterEquipment': {
+    case 'coordinator.unequipExpansion': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
       if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid equipment name')));
-      return unary(await rpcPorts.equipment.unregisterEquipment({ name }));
+      return unary(await rpcPorts.expansion.unequipExpansion({ name }));
     }
 
-    case 'coordinator.listEquipment':
-      return unary(await rpcPorts.equipment.listEquipment({}));
+    case 'coordinator.listExpansion':
+      return unary(await rpcPorts.expansion.listExpansion({}));
+
+    case 'coordinator.readBinding': {
+      const parsed = request as { binding: string };
+      const binding = decodePathSegment(parsed.binding);
+      if (binding === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid binding name')));
+      return unary(await rpcPorts.expansion.readBinding({ binding }));
+    }
 
     case 'jobs.abort': {
       const parsed = request as { jobs: string[]; projectRoot: string };

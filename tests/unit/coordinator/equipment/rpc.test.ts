@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createEquipmentRpc } from '#src/coordinator/equipment/rpc.js';
+import { createExpansionRpc } from '#src/coordinator/equipment/rpc.js';
 import type { EquipmentLifecycleService } from '#src/coordinator/equipment/lifecycle.js';
 
-describe('createEquipmentRpc', () => {
+describe('createExpansionRpc', () => {
   it('re-activates inactive equipment instead of treating restart-cleared state as already_equipped', async () => {
     const release = vi.fn();
     const lifecycle = {
@@ -20,20 +20,20 @@ describe('createEquipmentRpc', () => {
       listEquipment: vi.fn(async () => [{ slot: 'kb.vector', name: 'needle', status: 'inactive' as const }]),
     } as unknown as EquipmentLifecycleService;
 
-    const rpc = createEquipmentRpc(lifecycle);
+    const rpc = createExpansionRpc(lifecycle);
 
-    await expect(rpc.registerEquipment({ name: 'needle' })).resolves.toEqual({
+    await expect(rpc.equipExpansion({ name: 'needle' })).resolves.toEqual({
       status: 'catching_up',
       equipment: {
-        slot: 'kb.vector',
         name: 'needle',
         status: 'catching_up',
       },
     });
-    await expect(rpc.unregisterEquipment({ name: 'needle' })).resolves.toEqual({ status: 'uninstalled' });
-    await expect(rpc.listEquipment({})).resolves.toEqual({
-      equipment: [{ slot: 'kb.vector', name: 'needle', status: 'inactive' }],
+    await expect(rpc.unequipExpansion({ name: 'needle' })).resolves.toEqual({ status: 'uninstalled' });
+    await expect(rpc.listExpansion({})).resolves.toEqual({
+      equipment: [{ name: 'needle', status: 'inactive' }],
     });
+    await expect(rpc.readBinding({ binding: 'kb.vector' })).resolves.toEqual({ bound: false });
 
     expect(lifecycle.acquireSlotGuard).toHaveBeenCalledTimes(2);
     expect(lifecycle.equip).toHaveBeenCalledWith('needle');

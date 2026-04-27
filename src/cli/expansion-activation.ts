@@ -1,12 +1,12 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
 import {
-  listEquipmentResultSchema,
-  registerEquipmentResultSchema,
-  unregisterResultSchema,
-} from '../expansion/equipment-contract.js';
-import { installResultSchema } from '../expansion/contracts.js';
-import type { ActivationDeps, EquipmentStatus } from '../expansion/activate.js';
+  equipExpansionResultSchema,
+  listExpansionResultSchema,
+  unequipExpansionResultSchema,
+} from '../coordinator/expansion/rpc.js';
+import { installResultSchema } from './expansion/contract.js';
+import type { ActivationDeps } from '../expansion/activate.js';
 import { readDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -29,25 +29,37 @@ function isIpcConnectFailed(error: unknown): boolean {
   );
 }
 
+type ExpansionStatus = Awaited<ReturnType<ActivationDeps['readEquipmentStatus']>>;
+
+function withLegacySlot<T extends { name: string; status: string }>(view: T): T & { slot: 'kb.vector' } {
+  return {
+    slot: 'kb.vector',
+    ...view,
+  };
+}
+
 export function createCliExpansionActivation(): ActivationDeps {
   return {
     async activateExpansion(name) {
       const client = await ensure(resolvePluginRoot());
-      const result = registerEquipmentResultSchema.parse(
-        await client.request('coordinator.registerEquipment', { name }),
+      const result = equipExpansionResultSchema.parse(
+        await client.request('coordinator.equipExpansion', { name }),
       );
-      return installResultSchema.parse(result);
+      return installResultSchema.parse({
+        ...result,
+        equipment: withLegacySlot(result.equipment),
+      });
     },
 
     async deactivateExpansion(name) {
       const client = await ensure(resolvePluginRoot());
-      const result = unregisterResultSchema.parse(
-        await client.request('coordinator.unregisterEquipment', { name }),
+      const result = unequipExpansionResultSchema.parse(
+        await client.request('coordinator.unequipExpansion', { name }),
       );
       return installResultSchema.parse(result);
     },
 
-    async readEquipmentStatus(name): Promise<EquipmentStatus> {
+    async readEquipmentStatus(name): Promise<ExpansionStatus> {
       const flavor = resolveBuildFlavor(process.env);
       const runtime = createRealRuntime(flavor);
       let record;
@@ -65,13 +77,14 @@ export function createCliExpansionActivation(): ActivationDeps {
       }
 
       try {
-        const result = listEquipmentResultSchema.parse(
-          await createIpcClient(record.socketPath).request('coordinator.listEquipment', {}),
+        const result = listExpansionResultSchema.parse(
+          await createIpcClient(record.socketPath).request('coordinator.listExpansion', {}),
         );
+        const equipment = result.equipment.map(withLegacySlot);
 
         return {
           status: 'available',
-          equipment: name === undefined ? result.equipment : result.equipment.filter((entry) => entry.name === name),
+          equipment: name === undefined ? equipment : equipment.filter((entry) => entry.name === name),
         };
       } catch (error: unknown) {
         if (isIpcConnectFailed(error)) {

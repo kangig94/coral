@@ -961,6 +961,102 @@ describe('architecture boundary guard', () => {
       expect(existsSync(resolve(REPO_ROOT, shimPath))).toBe(false);
     }
   });
+  it('expansion implementation files keep the single-function contract shape', () => {
+    const legacyMembers = new Set(['install', 'uninstall', 'activate', 'deactivate', 'slots', 'priority', 'requires']);
+    const expansionFiles = listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('/expansion.ts'))
+      .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
+      .filter((filePath) => filePath !== 'src/cli/commands/expansion.ts')
+      .sort();
+    const violations: string[] = [];
+
+    function exportedMemberNames(node: ts.Node): string[] {
+      if (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) {
+        return node.members.flatMap((member) => {
+          const name = member.name;
+          return name !== undefined && ts.isIdentifier(name) ? [name.text] : [];
+        });
+      }
+
+      if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+        return node.type.members.flatMap((member) => {
+          const name = member.name;
+          return name !== undefined && ts.isIdentifier(name) ? [name.text] : [];
+        });
+      }
+
+      if (ts.isVariableStatement(node)) {
+        return node.declarationList.declarations.flatMap((declaration) => {
+          if (!ts.isObjectLiteralExpression(declaration.initializer)) {
+            return [];
+          }
+          return declaration.initializer.properties.flatMap((property) => {
+            if (ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property)) {
+              return ts.isIdentifier(property.name) ? [property.name.text] : [];
+            }
+            return [];
+          });
+        });
+      }
+
+      return [];
+    }
+
+    function isFunctionValueExpression(
+      expression: ts.Expression,
+      sourceFile: ts.SourceFile,
+    ): boolean {
+      if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+        return true;
+      }
+
+      if (!ts.isIdentifier(expression)) {
+        return false;
+      }
+
+      for (const statement of sourceFile.statements) {
+        if (ts.isFunctionDeclaration(statement) && statement.name?.text === expression.text) {
+          return true;
+        }
+        if (!ts.isVariableStatement(statement)) {
+          continue;
+        }
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name) || declaration.name.text !== expression.text) {
+            continue;
+          }
+          const initializer = declaration.initializer;
+          if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    for (const filePath of expansionFiles) {
+      const absPath = resolve(REPO_ROOT, filePath);
+      const sourceText = readFileSync(absPath, 'utf8');
+      const sourceFile = ts.createSourceFile(absPath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const defaultExport = sourceFile.statements.find(ts.isExportAssignment);
+      if (!defaultExport || !isFunctionValueExpression(defaultExport.expression, sourceFile)) {
+        violations.push(`${filePath}: default export must be a function value`);
+      }
+
+      for (const statement of sourceFile.statements) {
+        const modifiers = 'modifiers' in statement ? statement.modifiers : undefined;
+        if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+          continue;
+        }
+        const hits = exportedMemberNames(statement).filter((name) => legacyMembers.has(name));
+        if (hits.length >= 2) {
+          violations.push(`${filePath}: exported shape reintroduces legacy members (${hits.sort().join(', ')})`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
   it('providers/contract.ts stays under the magnet threshold', () => {
     // The provider protocol surface is inherently broad (request/action/spec/lease/
     // event/middleware/runtime types), so a single contract file is correct. But

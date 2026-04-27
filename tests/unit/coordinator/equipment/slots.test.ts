@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ConsumerHandle } from '#src/coordinator/consumer-driver.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
+import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 
 type SlotOwner = { backendKind: 'needle' | 'orama' };
 

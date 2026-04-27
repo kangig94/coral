@@ -152,12 +152,13 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
       speech: vi.fn(),
       abort: vi.fn(),
     },
-    equipment: {
-      registerEquipment: vi.fn(async () => {
+    expansion: {
+      equipExpansion: vi.fn(async () => {
         throw failWith();
       }),
-      unregisterEquipment: vi.fn(),
-      listEquipment: vi.fn(async () => ({ equipment: [] })),
+      unequipExpansion: vi.fn(),
+      listExpansion: vi.fn(async () => ({ equipment: [] })),
+      readBinding: vi.fn(async () => ({ bound: false })),
     },
   };
 }
@@ -200,7 +201,7 @@ async function requestIpcErrorPayload(
   expected: SerializedCoralSetupError,
 ): Promise<SerializedCoralSetupError> {
   try {
-    await requestIpcMethod(socketPath, 'coordinator.registerEquipment', { name: 'needle' });
+    await requestIpcMethod(socketPath, 'coordinator.equipExpansion', { name: 'needle' });
   } catch (error: unknown) {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(expected.userMessage);

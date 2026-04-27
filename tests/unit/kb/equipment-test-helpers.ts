@@ -1,7 +1,8 @@
-import type { ConsumerHandle, ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
+import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
 import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
+import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 
 function runtimeActivationFromHandle(
   retrieval: VectorRetrieval,
