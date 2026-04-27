@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KbRuntime } from '#src/kb/contract.js';
 import { reindex } from '#src/kb/ops/reindex.js';
@@ -218,5 +218,55 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
     expect(completed).toBe('done');
     const queue = readCurateRetryQueue(kb);
     expect(queue.find((entry) => entry.entryId === 'note:reentry-target')).toBeDefined();
+  });
+});
+
+describe('performRescan failure semantics', () => {
+  it('does not leave partial KbIndex or partial retry-queue rows when rescan throws mid-flight', async () => {
+    const { kb, root } = createSeededKbRuntime();
+    writeFileSync(
+      join(root, 'notes', 'rescan-baseline.md'),
+      [
+        '---',
+        'tags: [baseline]',
+        'principles: []',
+        'source:',
+        '  - kangig94/coral',
+        'createdAt: 2026-04-01T00:00:00.000Z',
+        'updatedAt: 2026-04-01T00:00:00.000Z',
+        'entrySeq: 81',
+        '---',
+        '# Baseline',
+        '',
+        'baseline body',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    // First rescan succeeds — establishes the prior on-disk state we will compare against.
+    await reindex(kb);
+    const indexBefore = kb.readIndex();
+    const queueBefore = readCurateRetryQueue(kb);
+    expect(indexBefore?.entries['note:rescan-baseline']).toBeDefined();
+
+    // Add a malformed note that would normally enqueue an incident on the second rescan.
+    writeFileSync(
+      join(root, 'notes', 'rescan-malformed.md'),
+      ['---', 'tags: [test', 'principles: []', '---', '# Broken', '', 'body', ''].join('\n'),
+      'utf-8',
+    );
+
+    // Force writeIndex to throw: writeIndex precedes recordReindexSuccess and the
+    // typed-incident pipeline, so all subsequent rescan side-effects must skip.
+    const writeIndexSpy = vi.spyOn(kb, 'writeIndex').mockImplementation(() => {
+      throw new Error('forced writeIndex failure');
+    });
+
+    await expect(reindex(kb)).rejects.toThrow('forced writeIndex failure');
+    writeIndexSpy.mockRestore();
+
+    expect(kb.readIndex()).toEqual(indexBefore);
+    expect(readCurateRetryQueue(kb)).toEqual(queueBefore);
   });
 });
