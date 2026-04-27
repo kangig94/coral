@@ -126,7 +126,7 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 - Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
 - `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
-- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle equipment artifacts, created only when Needle is equipped
+- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle expansion artifacts, created only when the Needle expansion is equipped
 - Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
 
 ### Job state

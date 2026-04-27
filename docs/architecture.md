@@ -18,7 +18,7 @@ The product frame is coding assistance. The architecture frame is local coordina
 | Long-term coding memory | KB Corpus authority + retrieval projections |
 | Provider continuity | Sessions authority |
 | Long-running observable work | Jobs authority |
-| Optional sharper retrieval | Coordinator-owned equipment slot |
+| Optional sharper retrieval | Coordinator-owned expansion lifecycle |
 
 This frame constrains new code: first name the truth owner, then decide whether the work is direct, durable, or projection freshness, then compose cross-domain behavior only in the coordinator or CLI.
 
@@ -69,9 +69,9 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
 | `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
-| `POST /coordinator/equipment` | 200 | Register named equipment into its coordinator-owned slot |
-| `DELETE /coordinator/equipment/:name` | 200 | Unregister named equipment and release its slot |
-| `GET /coordinator/equipment` | 200 | List equipment status by slot from the coordinator-owned lifecycle seam |
+| `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
+| `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
+| `GET /coordinator/expansion` | 200 | List currently-equipped expansions via `expansion_state` |
 | `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
@@ -167,7 +167,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
 - KB markdown is the Corpus authority for notes, sources, principles, and communities. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, and memo operations stay direct commands.
-- Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer; Needle is optional equipment for the `kb.vector` slot. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling equipment status.
+- Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer (constructor-time default of the `kb.vector` and `kb.fts` `RuntimeBinding<Backed<T>>` cells); Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
 
 ## Module Map
 
@@ -175,7 +175,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
 | Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `read-model/CoralStore` read helpers for no-coordinator CLI paths. |
-| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, expansion lifecycle (`ExpansionLifecycleService` + `expansion_state`), provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning owner for job lifecycle: launch, admission, wait, abort, terminal outcomes, and startup reconciliation. |
@@ -199,10 +199,10 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
 | `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |
 | `discuss/` | Discuss events, state machine, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle |
-| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Coordinator equipment ownership |
-| `coordinator/` | Live state, startup order, equipment slots, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary |
+| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Expansion-bound backends through `KbRuntime` `RuntimeBinding<Backed<T>>` cells | Expansion lifecycle, coordinator startup |
+| `coordinator/` | Live state, startup order, expansion lifecycle, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary |
 | `transport/` | Wire parsing, validation, response mapping | Nothing authoritative | Coordinator ports and domain contracts | Business behavior |
-| `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Backend lifecycle truth |
+| `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Coordinator lifecycle truth |
 | `infra/` / `runtime/` | Low-level path, flavor, I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
 | `causality/` | Cross-stream event-reference vocabulary | Nothing authoritative | Domain event/fault models | Store/database access |
 

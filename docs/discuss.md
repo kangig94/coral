@@ -1,6 +1,6 @@
 # Discuss
 
-Backend-managed multi-agent discussion with an event-sourced core. SQLite Journal events are the canonical record; `projection_discuss` is the durable read model used for snapshots, watch hydration, discovery, and summary indexes.
+Coordinator-managed multi-agent discussion with an event-sourced core. SQLite Journal events are the canonical record; `projection_discuss` is the durable read model used for snapshots, watch hydration, discovery, and summary indexes.
 
 ## Entry Points
 
@@ -87,7 +87,7 @@ Cursor rules:
 
 Discuss storage is Journal-scoped. Events live in `events` on the `discuss/<session-id>` stream, snapshots live in `projection_discuss`, and source-scoped discovery/summary views are derived from those projections.
 
-Hydration reads the projected snapshot plus the persisted event tail. On backend startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
+Hydration reads the projected snapshot plus the persisted event tail. On coordinator startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
 
 ## Projections and Authority
 

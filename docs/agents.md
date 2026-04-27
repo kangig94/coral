@@ -66,7 +66,7 @@ Unknown agent names fail through the normal provider/domain error path.
 
 ## Discuss Agents
 
-Discuss participants are backend-managed provider sessions, not Agent Teams and not protocol clients. The normal entrypoints are:
+Discuss participants are coordinator-managed provider sessions, not Agent Teams and not protocol clients. The normal entrypoints are:
 
 - `coral-cli discuss seed`
 - `coral-cli discuss start`

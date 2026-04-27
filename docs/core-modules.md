@@ -18,7 +18,7 @@ The CLI parses commands, follows detached launches via the `jobs.wait` IPC subsc
 
 ## Backend
 
-The backend is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through explicit owner modules/contracts.
+The coordinator is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through explicit owner modules/contracts.
 
 ## Runtime
 
@@ -47,15 +47,17 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
 
-## Equipment
+## Expansion
 
-Equipment is a coordinator-owned seam for optional runtime add-ons, not a separate KB domain. The coordinator declares the slot registry and owns exclusive assignment; today `kb.vector` defaults to Orama and may be equipped to Needle. `EquipmentLifecycleService` is the sole transport-visible seam for register / unregister / list operations, and it persists durable install state in `equipment_state` while cursor freshness remains in `equipment_cursors`. Orama and Needle are CorpusConsumers: freshness is advanced by `ConsumerDriver` after applying a Corpus snapshot, not by the KB mutation lock. The KB router never imports coordinator code to discover the active vector backend; it reads the current activation through the `KbRuntime.getEquipmentView()` port and falls back to the default Orama projection until a fresh Needle consumer is equipped.
+Expansion is the installable runtime contract that lets optional backends bind to a domain's `RuntimeBinding<Backed<T>>` cells without the domain knowing whether the binding is held. An `Expansion = (host) => void | Promise<void>` is a single-function contract; bundled and (future) third-party expansions are byte-identical to the loader. The coordinator's `ExpansionLifecycleService` orchestrates equip/unequip — equip resolves the entry from `BUNDLED_EXPANSIONS`, dynamic-imports it, invokes the function under a fresh disposable scope, and persists `{id, version, installed_at}` in `expansion_state`. Unequip disposes the scope (which atomically releases every binding the expansion held) and deletes the row.
+
+Built-in defaults are NOT registered as expansions. Orama is the constructor-time value of `kb.vector` and `kb.fts` bindings on `KbRuntime`; the KB router calls `binding.read().read(...)` and gets either the default or the bound expansion's value with one indirection. `kb.embedding` carries no constructor-time default — embedders are peer Expansions (`gemini`, `onnx`) discriminated by `BundledExpansion.metadata.slot === 'kb.embedding'`. Single-occupancy is enforced inside `RuntimeBinding.bind` itself (throws `binding-occupied` if held), not by lifecycle bookkeeping. Retrieval-consumer freshness is observed through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` after the Corpus commit; readiness is a comparison (`backed.consumer.cursor ≥ corpus version`), not a method on the `Backed<T>` contract.
 
 ## Knowledge Base
 
 The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, source persistence, background curation (community detection, entity consolidation), and the project-scoped memo scratch lifecycle. Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). Explicit reindex is also coordinator-owned as an internal `kb.reindex` job: the KB op rebuilds text artifacts, and the coordinator service waits for base-search freshness. These jobs are Journal-observable process attempts, not provider/session jobs.
 
-The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional equipment CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
+The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional Expansion-bound CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
 ## Work Classes
 
@@ -75,13 +77,13 @@ Projection freshness is not authority. A Corpus commit remains durable even if a
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, expansion lifecycle, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
 
 Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
 
 ## Infrastructure
 
-Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and equipment paths without becoming a generic domain dumping ground.
+Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground.
 
 ## Ownership Matrix
 
@@ -93,7 +95,7 @@ Infrastructure helpers sit below every domain: schemas, small utilities, SSE par
 | `sessions/` | Continuity and scope | Job terminal policy |
 | `workflow/` | Plan and slot semantics | Provider/session persistence |
 | `discuss/` | Discussion state and shell loop | Coordinator lifecycle |
-| `kb/` | Corpus authority and query semantics | Equipment slot ownership |
+| `kb/` | Corpus authority and query semantics | Expansion lifecycle ownership |
 | `coordinator/` | Live state, startup order, cross-domain assembly | Domain vocabulary |
 | `transport/` | Wire parsing and response mapping | Business behavior |
 | `cli/` | User command surface and local startup glue | Backend/domain truth |
@@ -116,7 +118,7 @@ coordinator API
   -> jobs domain owner modules/contracts
   -> sessions domain owner modules/contracts
   -> provider adapters
-  -> equipment lifecycle service
+  -> expansion lifecycle service
   -> live launch / host management
   -> provider host manager
 
@@ -133,8 +135,8 @@ discuss shell
 
 KB runtime
   -> Corpus authority + publication state
-  -> read-only equipment activation port (`KbRuntime.getEquipmentView()`)
-  -> base Orama CorpusConsumer surface (`KbRuntime.getBaseRetrievalSurface()`)
+  -> RuntimeBinding cells: kb.vector, kb.embedding, kb.fts (each a `RuntimeBinding<Backed<T>>`)
+  -> Orama as constructor-time default for kb.vector and kb.fts (kb.embedding has no default — peer expansions bind it)
 
 infra / runtime / causality
   -> lowest common layer reused everywhere
@@ -148,7 +150,7 @@ These are the load-bearing boundaries that must not leak:
 - Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
-- Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
+- Expansion lifecycle is coordinator-owned: transport reaches it through `ExpansionLifecycleService`, and KB routing reads the active backend through `kbRuntime.<name>.read()` on each `RuntimeBinding<Backed<T>>` cell.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - KB source import/reindex failure facts are recorded by coordinator-owned KB job recording glue as job progress cause events; the KB domain remains Corpus authority only.
 - Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
