@@ -15,7 +15,7 @@ import {
 } from './composition/index.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
-import type { CoordinatorServerInfo, LifecycleState } from './control.js';
+import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';

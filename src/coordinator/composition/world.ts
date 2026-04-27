@@ -6,7 +6,7 @@ import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
-import type { CoordinatorIdentity } from '../control.js';
+import type { CoordinatorIdentity } from '../lifecycle.js';
 import { TypedEventBus } from '../event-bus.js';
 import type { CoordinatorCoreOptions } from './types.js';
 import {

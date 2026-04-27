@@ -19,7 +19,7 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap.ts',
-  'src/coordinator/composition/control.ts',
+  'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/types.ts',
   'src/coordinator/composition/defaults.ts',
   'src/coordinator/composition/world.ts',
@@ -28,7 +28,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/consumer-driver-support.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
-  'src/coordinator/control.ts',
+  'src/coordinator/lifecycle.ts',
   'src/coordinator/index.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
@@ -84,7 +84,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/contracts.ts',
-  'src/coordinator/control.ts',
+  'src/coordinator/lifecycle.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/workflow-cleanup.ts',

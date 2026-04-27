@@ -5,7 +5,7 @@ import type { KbCorpusPublishFailure } from '../../kb/contract.js';
 import type { CurateHandle } from '../../kb/curate/pipeline-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
-import type { MutableRuntimeState } from '../control.js';
+import type { MutableRuntimeState } from '../lifecycle.js';
 
 const HEALTH_ERROR_PREFIX = 'Corpus publication queue unhealthy';
 const DEFAULT_FAILURE_THRESHOLD = 3;

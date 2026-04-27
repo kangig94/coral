@@ -1406,4 +1406,62 @@ describe('architecture boundary guard', () => {
     expect(skillSource).toContain("activation: 'equip'");
     expect(skillSource).toContain('~/.coral/data/expansion/needle/coral-needle.node');
   });
+
+  it('forbids any built-in default backend (Orama) from being registered as an Expansion (§16 #43a)', () => {
+    // §2.8a invariant #43a: Orama is the constructor-time default value of
+    // kb.vector and kb.fts bindings. It MUST NOT be registered as an
+    // Expansion, because Expansions exist only for behaviors that may or may
+    // not be present at runtime. Treating Orama as a "priority-0 expansion"
+    // would re-introduce the binary default-vs-override smell §2.8a deletes.
+    const oramaIds = new Set(['orama', 'orama-base', 'orama-fts', 'orama-vector']);
+    const violations = BUNDLED_EXPANSIONS.flatMap((entry) => {
+      const findings: string[] = [];
+      if (oramaIds.has(entry.id)) {
+        findings.push(`BUNDLED_EXPANSIONS contains id="${entry.id}" — Orama must be a constructor-time default, not an Expansion.`);
+      }
+      if (entry.specifier.includes('/orama/')) {
+        findings.push(`BUNDLED_EXPANSIONS specifier "${entry.specifier}" points at Orama — Orama must not load via the Expansion loader.`);
+      }
+      return findings;
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('forbids Expansions from importing Journal/Corpus authority writers (§16 #32)', () => {
+    // §16 #32: An Expansion never writes to any authority. Expansions add or
+    // replace projection backends only. Authority writers (Journal append,
+    // Corpus mutation lock, manifest authority, Corpus publication) are
+    // coordinator/KB-runtime concerns. An Expansion that imports a writer
+    // module is structurally permitted to bypass the authority boundary —
+    // the import itself is the regression vector this test guards.
+    const expansionFiles = PRODUCTION_FILE_PATHS.filter((filePath) => {
+      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
+      // Includes:
+      //   - src/expansion/**         — the Expansion contract surface itself
+      //   - src/**/expansion.ts      — every Expansion entry-point module
+      // Excludes the entry-point file's siblings (e.g., needle/backend.ts) —
+      // those are projection internals, not the Expansion entry. The contract
+      // is enforced at the entry; siblings inherit transitively.
+      return canonical.startsWith('src/expansion/') || canonical.endsWith('/expansion.ts');
+    });
+    expect(expansionFiles.length).toBeGreaterThan(0);
+
+    const forbiddenSpecifiers: Array<[RegExp, string]> = [
+      [/['"][^'"]*store\/append['"]/u, 'store/append (Journal write)'],
+      [/['"][^'"]*store\/journal-write['"]/u, 'store/journal-write (Journal write)'],
+      [/['"][^'"]*kb\/corpus\/manifest-authority['"]/u, 'kb/corpus/manifest-authority (Corpus authority)'],
+      [/['"][^'"]*kb\/corpus\/mutation-lock['"]/u, 'kb/corpus/mutation-lock (Corpus write lock)'],
+      [/['"][^'"]*kb\/corpus\/inbound-sync['"]/u, 'kb/corpus/inbound-sync (Corpus mutation)'],
+      [/['"][^'"]*kb\/corpus\/publication['"]/u, 'kb/corpus/publication (Corpus mutation)'],
+      [/['"][^'"]*kb\/corpus\/repair\/fix['"]/u, 'kb/corpus/repair/fix (Corpus mutation)'],
+    ];
+    const violations = expansionFiles.flatMap((filePath) => {
+      const source = readFileSync(filePath, 'utf8');
+      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
+      return forbiddenSpecifiers.flatMap(([pattern, label]) =>
+        pattern.test(source) ? [`${canonical}: imports ${label}`] : [],
+      );
+    });
+    expect(violations).toEqual([]);
+  });
 });

@@ -2,7 +2,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../control.js';
+import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../lifecycle.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/types.js';
@@ -20,7 +20,7 @@ import type {
   RecoverPersistedDiscussFn,
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
-} from '../control.js';
+} from '../lifecycle.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { SessionManager } from '../../src/sessions/shell/store.js';
-import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/control.js';
+import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/lifecycle.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,

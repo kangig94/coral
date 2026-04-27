@@ -14,7 +14,7 @@ import {
   closeServer as defaultCloseServer,
   listen as defaultListen,
   markJobsAsError,
-} from '../control.js';
+} from '../lifecycle.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';

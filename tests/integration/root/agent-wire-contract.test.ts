@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { BackendClient, BackendToolHttpError } from '#src/transport/http/client.js';
 import * as AgentResolution from '#src/jobs/agent-resolution.js';
-import type { MutableRuntimeState } from '#src/coordinator/control.js';
+import type { MutableRuntimeState } from '#src/coordinator/lifecycle.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -23,7 +23,7 @@ import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import * as ProviderRequestPolicy from '#src/providers/request-policy.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
-import type { LifecycleState } from '#src/coordinator/control.js';
+import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 

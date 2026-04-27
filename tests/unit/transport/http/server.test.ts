@@ -12,7 +12,7 @@ import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as ServerTestDepsMod from '#tests/unit/coordinator/server-test-deps.js';
 import type * as BackendLockMod from '#src/coordinator/lock.js';
-import type * as LifecycleMod from '#src/coordinator/control.js';
+import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -35,7 +35,7 @@ import { jobsDir } from "#src/jobs/paths.js";
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
 import { projectDataDir, resolveProjectSource } from "#src/infra/project-source.js";
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
-import type { LifecycleState } from '#src/coordinator/control.js';
+import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Backed, EmbeddingService, FtsRetrieval, VectorRetrieval } from '#src/kb/contract.js';
@@ -346,7 +346,7 @@ async function loadExecutionModules(): Promise<{
     import('#src/coordinator/index.js'),
     import('#tests/unit/coordinator/server-test-deps.js').then((module) => module.backendDiscovery),
     import('#src/coordinator/lock.js'),
-    import('#src/coordinator/control.js'),
+    import('#src/coordinator/lifecycle.js'),
   ]);
   return { serverModule, backendInfo, backendLock, lifecycleModule };
 }
