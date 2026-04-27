@@ -1,4 +1,5 @@
 import { readCurateState, writeCurateState, type PendingRepair } from '../state/index.js';
+import { buildCorpusScanView } from '../../corpus/repair/corpus-scan.js';
 import { applyLaneMutation, detectTextArtifactRebuildInfo } from './drift.js';
 import {
   prepareCommunityTopologyRefresh,
@@ -69,7 +70,7 @@ export async function rebuildTextArtifacts(
   const { entries: sources, pendingRepair: malformedSources } = loadSources(kb, detectedAt);
   const principles = loadPrinciples(kb);
   const pendingRepair = [...malformedNotes, ...malformedSources];
-  const rebuildInfo = detectTextArtifactRebuildInfo(kb);
+  const rebuildInfo = detectTextArtifactRebuildInfo(kb, buildCorpusScanView(kb));
   const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   const communities = loadCommunities(kb);

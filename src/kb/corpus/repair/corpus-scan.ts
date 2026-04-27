@@ -1,4 +1,5 @@
-import { basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
 import {
@@ -7,6 +8,7 @@ import {
   parseFrontmatter,
   parseSourceFrontmatter,
 } from '../frontmatter.js';
+import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   noteEntryId,
   sourceEntryId,
@@ -18,6 +20,7 @@ import {
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
+import type { KbRuntime } from '../../contract.js';
 import type { RepairIncidentId, RepairIncidentLocus } from './incident-ids.js';
 
 export type { RepairIncidentId } from './incident-ids.js';
@@ -174,6 +177,30 @@ export function createCorpusScanView(input: {
     activeEntryIds,
     principleSlugs,
   };
+}
+
+export function buildCorpusScanView(
+  kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir'>,
+): CorpusScanView {
+  const markdownFiles = [
+    ...scanMarkdownDirectory('note', kb.notesDir()),
+    ...scanMarkdownDirectory('source', kb.sourcesDir()),
+    ...scanMarkdownDirectory('community', kb.communitiesDir()),
+    ...scanMarkdownDirectory('principle', kb.principlesDir()),
+  ];
+
+  return createCorpusScanView({ markdownFiles });
+}
+
+function scanMarkdownDirectory(kind: CorpusMarkdownKind, dirPath: string): CorpusMarkdownFileScan[] {
+  return sortedMarkdownEntries(dirPath).map((entry) => {
+    const path = join(dirPath, entry);
+    return createCorpusMarkdownFileScan({
+      kind,
+      path,
+      content: readFileSync(path, 'utf-8'),
+    });
+  });
 }
 
 const FRONTMATTER_OPEN_PATTERN = /^---\r?\n/;
