@@ -16,6 +16,7 @@ import {
 import { buildCorpusScanView } from './scan.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import type { ReindexResult } from '../../entry-types.js';
+import type { DetectedIncident } from './incidents/catalog.js';
 
 export type RescanCounts = Pick<
   ReindexResult,
@@ -89,7 +90,7 @@ export async function performRescan(
  */
 function syncRetryQueueAgainstIncidents(
   kb: KbRuntime,
-  incidents: ReturnType<typeof projectIncidents>,
+  incidents: readonly DetectedIncident[],
 ): void {
   const stillDetected = new Set(incidents.map((incident) => incident.entryId));
   for (const queued of readCurateRetryQueue(kb.db)) {

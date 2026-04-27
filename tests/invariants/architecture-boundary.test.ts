@@ -668,6 +668,24 @@ describe('architecture boundary guard', () => {
     }
     expect(violations).toEqual([]);
   });
+  it('rescan drift.ts routes filesystem reads through the runtime StoragePort (Single Runtime World)', () => {
+    const driftPath = 'src/kb/corpus/rescan/drift.ts';
+    const source = readFileSync(resolve(REPO_ROOT, driftPath), 'utf8');
+    const violations: string[] = [];
+    if (/from\s+['"]node:fs['"]/u.test(source)) {
+      violations.push(`${driftPath}: imports node:fs (must route through kb.storagePort)`);
+    }
+    expect(violations).toEqual([]);
+  });
+  it('rescan auto-fix.ts routes filesystem reads through the runtime StoragePort (Single Runtime World)', () => {
+    const autoFixPath = 'src/kb/corpus/rescan/auto-fix.ts';
+    const source = readFileSync(resolve(REPO_ROOT, autoFixPath), 'utf8');
+    const violations: string[] = [];
+    if (/from\s+['"]node:fs['"]/u.test(source)) {
+      violations.push(`${autoFixPath}: imports node:fs (must route through kb.storagePort)`);
+    }
+    expect(violations).toEqual([]);
+  });
   it('CorpusFileHandle is kb-domain vocabulary and stays out of src/infra/**', () => {
     const infraFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => isWithinPath(filePath, 'src/infra'));
     const violations = infraFiles.flatMap((filePath) => {

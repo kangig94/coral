@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { StoragePort } from '../../../runtime/ports.js';
 import { isRecord } from '../../../infra/json.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { extractBody, parseSourceFrontmatter } from '../frontmatter.js';
@@ -44,29 +44,30 @@ export function mergeMutationLane(
   return 'both';
 }
 
-function modifiedAtNs(path: string): bigint | null {
+function modifiedAtNs(storagePort: StoragePort, path: string): bigint | null {
   try {
-    return statSync(path, { bigint: true }).mtimeNs;
+    return storagePort.statSync(path, { bigint: true }).mtimeNs;
   } catch {
     return null;
   }
 }
 
 function markdownDirModifiedAfter(
+  storagePort: StoragePort,
   dir: string,
   files: readonly CorpusMarkdownFileScan[],
   threshold: bigint,
 ): boolean {
-  const dirModifiedAt = modifiedAtNs(dir);
+  const dirModifiedAt = modifiedAtNs(storagePort, dir);
   if (dirModifiedAt !== null && dirModifiedAt > threshold) {
     return true;
   }
 
-  return files.some((file) => fileModifiedAfter(file.path, threshold));
+  return files.some((file) => fileModifiedAfter(storagePort, file.path, threshold));
 }
 
-function fileModifiedAfter(filePath: string, threshold: bigint): boolean {
-  const modifiedAt = modifiedAtNs(filePath);
+function fileModifiedAfter(storagePort: StoragePort, filePath: string, threshold: bigint): boolean {
+  const modifiedAt = modifiedAtNs(storagePort, filePath);
   return modifiedAt !== null && modifiedAt > threshold;
 }
 
@@ -97,10 +98,13 @@ function collectStoredAuthorityHashes(value: unknown, hashes: Map<string, Stored
   }
 }
 
-function readStoredOramaAuthorityHashes(runtimeDir: string): Map<string, StoredAuthorityHashes> {
+function readStoredOramaAuthorityHashes(
+  storagePort: StoragePort,
+  runtimeDir: string,
+): Map<string, StoredAuthorityHashes> {
   const snapshotPath = join(runtimeDir, ORAMA_INDEX_FILE);
   try {
-    const parsed = JSON.parse(readFileSync(snapshotPath, 'utf-8')) as unknown;
+    const parsed = JSON.parse(storagePort.readFileSync(snapshotPath, 'utf-8')) as unknown;
     const hashes = new Map<string, StoredAuthorityHashes>();
     collectStoredAuthorityHashes(parsed, hashes);
     return hashes;
@@ -143,35 +147,44 @@ function classifyAuthorityDrift(
   return lane;
 }
 
-function detectStructuredTextDrift(
-  kb: Pick<KbRuntime, 'runtimeDir'>,
+type IndexEntry = KbIndex['entries'][string];
+
+interface KindDriftLoaders<E extends IndexEntry> {
+  readonly entryId: (slug: string) => string;
+  readonly loadEntry: (file: CorpusMarkdownFileScan) => {
+    next: E;
+    contentHash: string;
+  };
+  readonly isMatchingKind: (entry: IndexEntry) => entry is E;
+  readonly metadataHash: (entry: E) => string;
+}
+
+function detectKindDrift<E extends IndexEntry>(
+  storagePort: StoragePort,
+  kind: CorpusMarkdownFileScan['kind'],
   scan: CorpusScanView,
   index: KbIndex,
-  pendingRepairIds: ReadonlySet<string>,
+  storedHashes: Map<string, StoredAuthorityHashes>,
   indexMtime: bigint,
+  pendingRepairIds: ReadonlySet<string>,
+  loaders: KindDriftLoaders<E>,
 ): KbIndexMutationLane | null {
-  const storedAuthorityHashes = readStoredOramaAuthorityHashes(kb.runtimeDir);
   let lane: KbIndexMutationLane | null = null;
-  const noteSlugs = new Set<string>();
+  const seenSlugs = new Set<string>();
+
   for (const file of scan.markdownFiles) {
-    if (file.kind !== 'note') {
+    if (file.kind !== kind) {
       continue;
     }
-    const note = file.slug;
-    noteSlugs.add(note);
-    const entryId = noteEntryId(note);
+    seenSlugs.add(file.slug);
+    const entryId = loaders.entryId(file.slug);
     if (pendingRepairIds.has(entryId)) {
       continue;
     }
     try {
-      const loaded = loadKbNote(file.path);
-      const nextEntry = buildNoteIndexEntry({
-        slug: note,
-        title: loaded.title,
-        ...loaded.frontmatter,
-      });
+      const { next, contentHash } = loaders.loadEntry(file);
       const existingEntry = index.entries[entryId];
-      const existing = existingEntry !== undefined && isNoteEntry(existingEntry) ? existingEntry : undefined;
+      const existing = existingEntry !== undefined && loaders.isMatchingKind(existingEntry) ? existingEntry : undefined;
       if (existing === undefined) {
         lane = mergeMutationLane(lane, 'both');
         continue;
@@ -179,18 +192,15 @@ function detectStructuredTextDrift(
       lane = mergeMutationLane(
         lane,
         classifyAuthorityDrift(
-          storedAuthorityHashes.get(entryId),
+          storedHashes.get(entryId),
           {
-            contentHash: computeContentSurfaceHash({
-              title: loaded.title,
-              body: loaded.body,
-            }),
-            metadataHash: noteMetadataHash(nextEntry),
+            contentHash,
+            metadataHash: loaders.metadataHash(next),
           },
           {
-            contentChangedByIndex: existing.title !== nextEntry.title,
-            metadataChangedByIndex: noteMetadataHash(existing) !== noteMetadataHash(nextEntry),
-            fileModifiedAfterIndex: fileModifiedAfter(file.path, indexMtime),
+            contentChangedByIndex: existing.title !== next.title,
+            metadataChangedByIndex: loaders.metadataHash(existing) !== loaders.metadataHash(next),
+            fileModifiedAfterIndex: fileModifiedAfter(storagePort, file.path, indexMtime),
           },
         ),
       );
@@ -200,64 +210,77 @@ function detectStructuredTextDrift(
   }
 
   for (const entry of Object.values(index.entries)) {
-    if (isNoteEntry(entry) && !noteSlugs.has(entry.slug)) {
-      lane = mergeMutationLane(lane, 'both');
-    }
-  }
-
-  const sourceSlugs = new Set<string>();
-  for (const file of scan.markdownFiles) {
-    if (file.kind !== 'source') {
-      continue;
-    }
-    const slug = file.slug;
-    sourceSlugs.add(slug);
-    const entryId = sourceEntryId(slug);
-    if (pendingRepairIds.has(entryId)) {
-      continue;
-    }
-    try {
-      const raw = readFileSync(file.path, 'utf-8');
-      const nextEntry = buildSourceIndexEntry({
-        slug,
-        ...parseSourceFrontmatter(raw),
-      });
-      const existingEntry = index.entries[entryId];
-      const existing = existingEntry !== undefined && isSourceEntry(existingEntry) ? existingEntry : undefined;
-      if (existing === undefined) {
-        lane = mergeMutationLane(lane, 'both');
-        continue;
-      }
-      lane = mergeMutationLane(
-        lane,
-        classifyAuthorityDrift(
-          storedAuthorityHashes.get(entryId),
-          {
-            contentHash: computeContentSurfaceHash({
-              title: nextEntry.title,
-              body: extractBody(raw),
-            }),
-            metadataHash: sourceMetadataHash(nextEntry),
-          },
-          {
-            contentChangedByIndex: existing.title !== nextEntry.title,
-            metadataChangedByIndex: sourceMetadataHash(existing) !== sourceMetadataHash(nextEntry),
-            fileModifiedAfterIndex: fileModifiedAfter(file.path, indexMtime),
-          },
-        ),
-      );
-    } catch {
-      return 'both';
-    }
-  }
-
-  for (const entry of Object.values(index.entries)) {
-    if (isSourceEntry(entry) && !sourceSlugs.has(entry.slug)) {
+    if (loaders.isMatchingKind(entry) && !seenSlugs.has(entry.slug)) {
       lane = mergeMutationLane(lane, 'both');
     }
   }
 
   return lane;
+}
+
+function detectStructuredTextDrift(
+  kb: Pick<KbRuntime, 'runtimeDir' | 'storagePort'>,
+  scan: CorpusScanView,
+  index: KbIndex,
+  pendingRepairIds: ReadonlySet<string>,
+  indexMtime: bigint,
+): KbIndexMutationLane | null {
+  const storedAuthorityHashes = readStoredOramaAuthorityHashes(kb.storagePort, kb.runtimeDir);
+
+  const noteLane = detectKindDrift(
+    kb.storagePort,
+    'note',
+    scan,
+    index,
+    storedAuthorityHashes,
+    indexMtime,
+    pendingRepairIds,
+    {
+      entryId: noteEntryId,
+      loadEntry: (file) => {
+        const loaded = loadKbNote(file.path);
+        const next = buildNoteIndexEntry({
+          slug: file.slug,
+          title: loaded.title,
+          ...loaded.frontmatter,
+        });
+        return {
+          next,
+          contentHash: computeContentSurfaceHash({ title: loaded.title, body: loaded.body }),
+        };
+      },
+      isMatchingKind: isNoteEntry,
+      metadataHash: noteMetadataHash,
+    },
+  );
+
+  const sourceLane = detectKindDrift(
+    kb.storagePort,
+    'source',
+    scan,
+    index,
+    storedAuthorityHashes,
+    indexMtime,
+    pendingRepairIds,
+    {
+      entryId: sourceEntryId,
+      loadEntry: (file) => {
+        const raw = kb.storagePort.readFileSync(file.path, 'utf-8');
+        const next = buildSourceIndexEntry({
+          slug: file.slug,
+          ...parseSourceFrontmatter(raw),
+        });
+        return {
+          next,
+          contentHash: computeContentSurfaceHash({ title: next.title, body: extractBody(raw) }),
+        };
+      },
+      isMatchingKind: isSourceEntry,
+      metadataHash: sourceMetadataHash,
+    },
+  );
+
+  return mergeMutationLane(noteLane, sourceLane);
 }
 
 /**
@@ -319,6 +342,7 @@ export function detectRescanInfo(
   kb: Pick<
     KbRuntime,
     | 'runtimeDir'
+    | 'storagePort'
     | 'db'
     | 'readIndex'
     | 'notesDir'
@@ -332,7 +356,7 @@ export function detectRescanInfo(
   externalMutation: KbIndexMutationLane | null;
 } {
   const indexPath = join(kb.runtimeDir, INDEX_FILE);
-  if (!existsSync(indexPath)) {
+  if (!kb.storagePort.existsSync(indexPath)) {
     return {
       needsRebuild: true,
       externalMutation: null,
@@ -340,7 +364,7 @@ export function detectRescanInfo(
   }
 
   try {
-    const indexMtime = statSync(indexPath, { bigint: true }).mtimeNs;
+    const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
     const retryQueue = readCurateRetryQueue(kb.db);
     const pendingRepairIds = new Set(retryQueue.map((entry) => entry.entryId));
@@ -356,8 +380,8 @@ export function detectRescanInfo(
     const principleFiles = scan.markdownFiles.filter((file) => file.kind === 'principle');
     const communityFiles = scan.markdownFiles.filter((file) => file.kind === 'community');
     if (
-      markdownDirModifiedAfter(kb.principlesDir(), principleFiles, indexMtime) ||
-      markdownDirModifiedAfter(kb.communitiesDir(), communityFiles, indexMtime)
+      markdownDirModifiedAfter(kb.storagePort, kb.principlesDir(), principleFiles, indexMtime) ||
+      markdownDirModifiedAfter(kb.storagePort, kb.communitiesDir(), communityFiles, indexMtime)
     ) {
       externalMutation = mergeMutationLane(externalMutation, 'metadata');
     }

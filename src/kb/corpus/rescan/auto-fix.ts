@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
@@ -70,35 +69,15 @@ export interface RepairResult {
   timestamp: string;
 }
 
-type MarkdownRepairTarget =
-  | {
-      kind: 'note';
-      slug: string;
-      entryId: KbEntryId;
-      path: string;
-      content: string;
-    }
-  | {
-      kind: 'source';
-      slug: string;
-      entryId: KbEntryId;
-      path: string;
-      content: string;
-    }
-  | {
-      kind: 'community';
-      slug: string;
-      entryId: KbEntryId;
-      path: string;
-      content: string;
-    }
-  | {
-      kind: 'principle';
-      slug: string;
-      entryId: `principle:${string}`;
-      path: string;
-      content: string;
-    };
+type MarkdownRepairTargetBase = { path: string; content: string };
+
+type MarkdownRepairTarget = MarkdownRepairTargetBase &
+  (
+    | { kind: 'note'; slug: string; entryId: KbEntryId }
+    | { kind: 'source'; slug: string; entryId: KbEntryId }
+    | { kind: 'community'; slug: string; entryId: KbEntryId }
+    | { kind: 'principle'; slug: string; entryId: `principle:${string}` }
+  );
 
 type PreparedMarkdownFix = {
   content: string;
@@ -464,7 +443,7 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
 function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRepairTarget | null {
   if (entryId.startsWith('note:')) {
     const slug = entryId.slice('note:'.length);
-    return readMarkdownRepairTarget(kb.notePath(slug), {
+    return readMarkdownRepairTarget(kb, kb.notePath(slug), {
       kind: 'note',
       slug,
       entryId: noteEntryId(slug),
@@ -473,7 +452,7 @@ function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRe
 
   if (entryId.startsWith('source:')) {
     const slug = entryId.slice('source:'.length);
-    return readMarkdownRepairTarget(kb.sourcePath(slug), {
+    return readMarkdownRepairTarget(kb, kb.sourcePath(slug), {
       kind: 'source',
       slug,
       entryId: sourceEntryId(slug),
@@ -482,7 +461,7 @@ function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRe
 
   if (entryId.startsWith('community:')) {
     const slug = entryId.slice('community:'.length);
-    return readMarkdownRepairTarget(kb.communityPath(slug), {
+    return readMarkdownRepairTarget(kb, kb.communityPath(slug), {
       kind: 'community',
       slug,
       entryId: communityEntryId(slug),
@@ -491,7 +470,7 @@ function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRe
 
   if (entryId.startsWith('principle:')) {
     const slug = entryId.slice('principle:'.length);
-    return readMarkdownRepairTarget(kb.principlePath(slug), {
+    return readMarkdownRepairTarget(kb, kb.principlePath(slug), {
       kind: 'principle',
       slug,
       entryId: `principle:${slug}`,
@@ -502,14 +481,15 @@ function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRe
 }
 
 function readMarkdownRepairTarget<T extends Omit<MarkdownRepairTarget, 'path' | 'content'>>(
+  kb: Pick<KbRuntime, 'storagePort'>,
   path: string,
   target: T,
-): (T & Pick<MarkdownRepairTarget, 'path' | 'content'>) | null {
+): (T & MarkdownRepairTargetBase) | null {
   try {
     return {
       ...target,
       path,
-      content: readFileSync(path, 'utf-8'),
+      content: kb.storagePort.readFileSync(path, 'utf-8'),
     };
   } catch {
     return null;

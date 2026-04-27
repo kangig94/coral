@@ -1,5 +1,5 @@
 import { CoralSetupError } from '../../runtime/errors.js';
-import { areCommunityDocumentsFresh } from '../corpus/rescan/projections.js';
+import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
 import type { KbRuntime } from '../contract.js';
 import type { EntityGraph, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
 import {
