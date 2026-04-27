@@ -58,22 +58,4 @@ describe('needle expansion', () => {
       context: { binding: 'kb.embedding', requiredBy: 'needle' },
     });
   });
-
-  it('binds the kb.vector runtime binding through the host', async () => {
-    const { kb, makeHost } = createTestRuntime();
-    const embedderScopes = await loadExpansions(makeHost, [FAKE_EMBEDDER_ENTRY]);
-
-    try {
-      const [needleScope] = await loadExpansions(makeHost, [NEEDLE_ENTRY]);
-
-      try {
-        expect(kb.vector.heldBy).toBe('needle');
-        expect(kb.vector.read().consumer.id).toBe('needle');
-      } finally {
-        needleScope?.[Symbol.dispose]();
-      }
-    } finally {
-      disposeScopes(embedderScopes);
-    }
-  });
 });

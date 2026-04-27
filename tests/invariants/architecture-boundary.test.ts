@@ -974,6 +974,9 @@ describe('architecture boundary guard', () => {
         return /from ['"][^'"]*\/expansion\/contract\.js['"]/u.test(source) && /\bExpansion\b/u.test(source);
       })
       .sort();
+    // Threshold guard: an empty match would silently pass the per-file loop below.
+    // Phase 7 lands at least three first-party expansions (gemini, onnx, needle).
+    expect(expansionFiles.length).toBeGreaterThanOrEqual(3);
     const violations: string[] = [];
 
     function exportedMemberNames(node: ts.Node): string[] {

@@ -27,7 +27,7 @@ export const BUNDLED_EXPANSIONS: readonly BundledExpansion[] = [
     specifier: '#src/kb/embedding/gemini/expansion.js',
     metadata: {
       slot: 'kb.embedding',
-      description: 'Google Gemini embedding API',
+      description: 'Google Gemini embedding API (requires GEMINI_API_KEY; no local model)',
       onboarding: 'required',
     },
   },
@@ -37,7 +37,7 @@ export const BUNDLED_EXPANSIONS: readonly BundledExpansion[] = [
     specifier: '#src/kb/embedding/onnx/expansion.js',
     metadata: {
       slot: 'kb.embedding',
-      description: 'Local ONNX embedding model',
+      description: 'Local ONNX embedding model (~100MB one-time download; runs offline, no API key)',
       onboarding: 'required',
     },
   },

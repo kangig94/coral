@@ -4,6 +4,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/coordinator/expansion/rpc.js';
+import { decorateDispose } from '#src/expansion/scope.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
@@ -151,6 +152,83 @@ describe('ExpansionLifecycleService', () => {
 
     expect(kb.embedding.heldBy).toBeUndefined();
     expect(lifecycle.list()).toEqual([]);
+  });
+
+  it('runs the expansion-installed dispose hook before tearing down the scope on unequip', async () => {
+    const sentinel = `expansion-dispose-${Math.random().toString(36).slice(2)}`;
+    const decorateKey = `__decorateDispose_${sentinel}__`;
+    const globalState = globalThis as Record<string, unknown>;
+    globalState[sentinel] = { fired: 0 };
+    globalState[decorateKey] = decorateDispose;
+    const source = `
+      export default (host) => {
+        const slot = globalThis[${JSON.stringify(sentinel)}];
+        const decorate = globalThis[${JSON.stringify(decorateKey)}];
+        decorate(host.scope, () => { slot.fired += 1; });
+        const provider = {
+          read: () => ({
+            name: 'spy',
+            model: 'spy',
+            dims: 1,
+            normalization: 'l2',
+            specId: 'spy:1:l2',
+            embedDocuments: async () => [],
+            embedQuery: async () => new Float32Array([0]),
+          }),
+          consumer: {
+            id: 'spy-embedder',
+            authority: 'journal',
+            registrationKind: 'stateless',
+          },
+        };
+        host.registerConsumer(provider.consumer, host.scope);
+        host.bind(host.kb.embedding, provider);
+      };
+    `;
+    const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
+    const SPY_ENTRY = {
+      id: 'spy-embedder',
+      version: '0.0.0',
+      specifier,
+      metadata: { description: 'dispose spy', slot: 'kb.embedding' },
+    } as const;
+
+    try {
+      const { lifecycle } = createLifecycleHarness({
+        manifest: [SPY_ENTRY] as unknown as readonly typeof FAKE_EMBEDDER_ENTRY[],
+      });
+
+      await lifecycle.equip('spy-embedder');
+      expect((globalState[sentinel] as { fired: number }).fired).toBe(0);
+
+      await lifecycle.unequip('spy-embedder');
+      expect((globalState[sentinel] as { fired: number }).fired).toBe(1);
+    } finally {
+      delete globalState[sentinel];
+      delete globalState[decorateKey];
+    }
+  });
+
+  it('rejects re-equipping a second embedder while another already holds kb.embedding', async () => {
+    const SECOND_EMBEDDER = {
+      id: 'second-embedder',
+      version: '0.0.0',
+      specifier: '#tests/fakes/fake-embedder.js',
+      metadata: { description: 'second fake embedder', slot: 'kb.embedding' },
+    } as const;
+    const { kb, lifecycle } = createLifecycleHarness({
+      manifest: [FAKE_EMBEDDER_ENTRY, SECOND_EMBEDDER],
+    });
+
+    await lifecycle.equip('test-embedder');
+    expect(kb.embedding.heldBy).toBe('test-embedder');
+
+    await expect(lifecycle.equip('second-embedder')).rejects.toMatchObject({
+      code: 'binding_occupied',
+      context: { binding: 'kb.embedding', heldBy: 'test-embedder' },
+    });
+    // First embedder remains bound; the failed second equip rolled back its scope.
+    expect(kb.embedding.heldBy).toBe('test-embedder');
   });
 
   it('accepts installed-not-active in expansion schemas and allows lastError on the view', () => {
