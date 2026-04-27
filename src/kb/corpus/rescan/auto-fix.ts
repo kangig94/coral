@@ -226,12 +226,12 @@ function resolveRepairClassification(incident: DetectedIncident): IncidentClassi
 }
 
 function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
-  const reasons = (incident.signals as { reasons?: unknown }).reasons;
+  const reasons = incident.signals['reasons'];
   if (!Array.isArray(reasons)) {
     return false;
   }
 
-  const normalizedValue = (incident.signals as { normalizedValue?: unknown }).normalizedValue;
+  const normalizedValue = incident.signals['normalizedValue'];
   if (typeof normalizedValue !== 'number' || !Number.isSafeInteger(normalizedValue) || normalizedValue < 1) {
     return false;
   }

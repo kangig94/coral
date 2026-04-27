@@ -342,7 +342,8 @@ export function detectRescanInfo(
   try {
     const indexMtime = statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
-    const pendingRepairIds = new Set(readCurateRetryQueue(kb.db).map((entry) => entry.entryId));
+    const retryQueue = readCurateRetryQueue(kb.db);
+    const pendingRepairIds = new Set(retryQueue.map((entry) => entry.entryId));
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (currentIndex !== null) {
@@ -370,7 +371,7 @@ export function detectRescanInfo(
 
     externalMutation = mergeMutationLane(
       externalMutation,
-      detectIncidentRetryDrift(readCurateRetryQueue(kb.db), projectIncidents(scan), scan),
+      detectIncidentRetryDrift(retryQueue, projectIncidents(scan), scan),
     );
 
     return {
