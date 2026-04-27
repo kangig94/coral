@@ -37,10 +37,10 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **Failures (Journal)** = domain events on their originating stream; job terminals carry `causeRef: {stream, seq}` pointers. No wrapped fault union. The only fault ADT is `JobLifecycleFault` (3 variants).
 - **Cross-authority references** = `KbRef = { entryId, contentHash? }`. `contentHash` optional for point-in-time semantics.
 - **Schema evolution** = per-`type` `bodyVersion` + upcaster chain for Journal events; ordered SQL schema scripts for projection schema; markdown format evolution via frontmatter parser flexibility.
-- **Equipment** (Zelda UX) = opt-in `/equip needle` enhances specific query paths. Base tier fully functional with Orama (FTS zero-config, vector with embedding provider config per README). No native deps in base bundle.
+- **Expansion (Zelda UX metaphor)** = opt-in `/equip needle` enhances specific query paths. Base tier fully functional with Orama (FTS zero-config, vector with embedding provider config per README). No native deps in base bundle.
 - Everything else (`status.json`, `result.md` as authority, `WorkflowCheckpoint`, `LaunchState` files, segment rotation, checkpoint files, advisory `writer.lock`, multi-variant `CoralFault` union, unified "everything is an event" thesis) either becomes a projection/export or disappears outright.
 
-Flavor-gated data families use sibling top-level roots: production data under `~/.coral/data/<family>/`, development data under `~/.coral/data-dev/<family>/`. Do not encode flavor into the family name (`data/<family>-dev/`). This applies to the Journal store, Corpus-derived retrieval artifacts, equipment runtime artifacts, and any future device-local rebuildable state. The Corpus authority itself remains `~/.coral/kb/` for production and `~/.coral/kb-dev/` for development.
+Flavor-gated data families use sibling top-level roots: production data under `~/.coral/data/<family>/`, development data under `~/.coral/data-dev/<family>/`. Do not encode flavor into the family name (`data/<family>-dev/`). This applies to the Journal store, Corpus-derived retrieval artifacts, expansion runtime artifacts, and any future device-local rebuildable state. The Corpus authority itself remains `~/.coral/kb/` for production and `~/.coral/kb-dev/` for development.
 
 ---
 
@@ -141,8 +141,8 @@ The rewrite is judged by ownership, not by file count. Every module should answe
 | `sessions/` | Provider continuity, session scope, resumability | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
 | `workflow/` | Durable plan, slots, dependency semantics | Workflow streams/projections | Child jobs through coordinator composition | Provider/session persistence |
 | `discuss/` | Discuss events, reducer, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle or transport |
-| `kb/` | Corpus markdown authority and KB query semantics | Corpus files under mutation lock | Equipment view through KB runtime port | Equipment slot ownership, coordinator startup |
-| `coordinator/` | Live state, startup order, equipment slots, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary or wire formatting |
+| `kb/` | Corpus markdown authority and KB query semantics | Corpus files under mutation lock | Expansion view through KB runtime port | Expansion slot ownership, coordinator startup |
+| `coordinator/` | Live state, startup order, expansion lifecycle, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary or wire formatting |
 | `transport/` | No truth; carriage only | Nothing authoritative | Coordinator ports and domain contracts | Business behavior, startup, recovery |
 | `cli/` | User command surface and local startup/activation glue | No domain truth directly | IPC/HTTP clients and `read-model/CoralStore` | Backend/domain truth |
 | `infra/` / `runtime/` | Low-level paths, build flavor, process/env/I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
@@ -788,7 +788,7 @@ type SourceImportReadiness =
   | 'all-equipped'; // every installed Corpus consumer is fresh
 ```
 
-The default CLI experience may create the job and wait internally, but the underlying contract is job/wait. The default readiness is `base-search`: after `kb source import paper.pdf` returns, `kb search paper` should observe the document. Stricter readiness (`active-vector` or `all-equipped`) is explicit because it binds the command to embedding and equipment latency.
+The default CLI experience may create the job and wait internally, but the underlying contract is job/wait. The default readiness is `base-search`: after `kb source import paper.pdf` returns, `kb search paper` should observe the document. Stricter readiness (`active-vector` or `all-equipped`) is explicit because it binds the command to embedding and expansion latency.
 
 **Explicit reindex is also coordinator-owned**: `kb reindex` rebuilds Corpus text artifacts and then waits for base-search freshness through the CorpusConsumer driver. It records an internal `kb.reindex` job on `job/<id>` for recovery and observability, but it is not a provider/session job and has `session_id = NULL`, `provider = NULL`. Fast KB reads, note writes, memo operations, and normal search remain direct commands because they are expected to be immediate.
 
@@ -867,7 +867,7 @@ Fast coordinator KB operations follow the same pattern inside a single **Corpus 
 2. Bump `contentSeq` (or `metadataSeq`) in the corpus version state.
 3. Update lightweight Corpus metadata/index state (`index.json`, manifest authority records) needed to describe the Corpus itself.
 4. Release lock.
-5. Notify Corpus consumers (`orama-base` for FTS+vector, `needle-vector` for equipment-tier vector, etc.) — they run their apply loop asynchronously (§9).
+5. Notify Corpus consumers (`orama-base` for FTS+vector, `needle-vector` for expansion-tier vector, etc.) — they run their apply loop asynchronously (§9).
 
 Retrieval artifacts are not built inside the authoritative critical section. A command that promises retrieval freshness captures the committed `contentSeq` / `metadataSeq` and waits for the relevant consumer cursor after the lock releases. This keeps the Corpus write small while still giving long-running commands a precise readiness contract.
 
@@ -892,11 +892,11 @@ Retrieval readiness is observed through `waitFreshUntil('corpus', version, consu
 |---|---|---|---|---|
 | KB runtime/query layer | — (direct read, no consumer) | direct markdown read + list/diagnose helpers | base, always | `~/.coral/kb/` + `~/.coral/data/kb/` |
 | **Orama** (JS-native) | `orama-base` | FTS (BM25) + vector (cosine), one consumer over one in-memory index | base, always | `~/.coral/data/kb/orama/orama-index.json` |
-| **coral-needle** (C++ DuckDB ScanANN) | `needle-vector` | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/needle/` |
+| **coral-needle** (C++ DuckDB ScanANN) | `needle-vector` | ANN vector at scale; replaces Orama's vector path | expansion (`/equip needle`) | `~/.coral/data/kb/needle/` |
 
 **Why one Orama consumer, not two**: FTS and vector share the same Orama instance, the same on-disk snapshot, and the same atomic snapshot-swap lifecycle. Splitting them into `orama-fts` and `orama-vector` consumers would force two parallel apply paths over one underlying index — one in-flight `apply()` could swap the snapshot out from under the other. Treating Orama as a single consumer is structurally honest about what is one piece of state. `needle-vector` is a separate consumer because needle is a separate process-side index with its own snapshot store.
 
-KB has no SQLite content projection in the steady state. Markdown remains authoritative; Orama/needle are rebuildable retrieval artifacts; SQLite stores only control state (`kb_corpus_state`, curate scheduler/retry tables, and equipment cursors).
+KB has no SQLite content projection in the steady state. Markdown remains authoritative; Orama/needle are rebuildable retrieval artifacts; SQLite stores only control state (`kb_corpus_state`, curate scheduler/retry tables, and `consumer_cursors`).
 
 **Equipment principle applied**:
 - Command surface is identical in both tiers: `kb search "query"`, `kb search --vector <emb>`, `kb search --hybrid "query"` all exist.
@@ -1362,7 +1362,7 @@ interface CorpusConsumer {
 Projection types:
 
 - Orama serialized index (base-tier FTS + cosine vector).
-- needle DuckDB ANN index (equipment-tier vector).
+- needle DuckDB ANN index (expansion-tier vector).
 
 The per-consumer manifest (hashes of processed entries) lives beside the consumer's storage — e.g., `~/.coral/data/kb/needle/snapshots/<snapshot>/manifest.json` for installed needle snapshots, with staging under `~/.coral/data/kb/needle-staging/<snapshot>/manifest.json` during rebuild.
 
@@ -1422,7 +1422,7 @@ governs how each domain shapes itself internally.
 ```
 src/
   coordinator/   ← single-writer daemon; live state, cross-domain composition,
-                   warm-start lock, projection consumer driver, equipment
+                   warm-start lock, projection consumer driver, expansion
                    lifecycle, shutdown sequencing, request/repair services
   store/         ← SQL/Journal substrate over SQLite (event DB, schema loader,
                    transactional append, projection consumer registration)
@@ -1449,7 +1449,7 @@ src/
                    user-facing ops (memo/promote/source-import/reindex)
   providers/     ← provider plugin boundary (contract, registry, catalog,
                    per-provider adapters: claude/codex/claude-appserver)
-  expansion/     ← installable equipment catalog (`needle`, `cgc`, …) +
+  expansion/     ← installable expansion catalog (`needle`, `cgc`, …) +
                    install/activate/workflow modules consumed by `/equip`
   cli/           ← Commander CLI client (one-shot process); resolves plugin
                    root, classifies command, dispatches to coordinator IPC
@@ -2094,7 +2094,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 39. Expansion catalog entries are **tool-named** (`needle`), not capability-named (`kb`).
 40. Expansion projections are maintained by registered consumers with durable cursors in `consumer_cursors`. Journal consumers use range-based replay; Corpus consumers use snapshot-based content-hash diff. Updates flow via in-process async push (`ConsumerDriver.notify(authority, version)` after authoritative write).
 41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil('journal', version, consumerId)` — a condition-variable wake, never a polling loop.
-41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listEquipment` is status observation, not a readiness waiter.
+41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listExpansion` is status observation, not a readiness waiter.
 42. Expansion failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
 43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding-occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
 43a. Built-in defaults are constructed at binding creation time, NOT registered as Expansions. Expansions exist only for behaviors that may or may not be present in the running process. Treating Orama as a "priority-0 expansion" or any registered binding filler is forbidden — Orama is the constructor-time default value of `kbRuntime.vector` and `kbRuntime.fts`, supplied when those bindings are created on `KbRuntime`.

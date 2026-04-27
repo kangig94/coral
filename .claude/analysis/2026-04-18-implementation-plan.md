@@ -94,7 +94,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - **Skeleton directories**: `src/store/`, `src/coordinator/`, `src/jobs/`, `src/sessions/`, `src/providers/middleware/`, `src/transport/{ipc,http}/`, `src/runtime/`, `src/infra/`, `src/workflow/`, plus debug/test support outside production under `tools/`.
 
 - **Canonical SQLite schema reference** at `src/store/schemas/001_initial.sql`:
-  - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `meta`, `kb_corpus_state`, `equipment_cursors`, `kb_curate_scheduler`, `kb_curate_retry_queue`.
+  - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `meta`, `kb_corpus_state`, `consumer_cursors`, `expansion_state`, `kb_curate_scheduler`, `kb_curate_retry_queue`.
   - Indexes: `events_stream`, `events_type`, `events_refs_parent`, `curate_retry_by_time`.
   - All `CREATE TABLE IF NOT EXISTS` for crash-resume idempotency.
   - **Explicit seed rows** (singleton tables):
@@ -162,7 +162,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/store/envelope.ts` — Zod schema for event envelope + `bodyVersion` validation + upcaster registry (`registerUpcaster(type, fromVersion, toVersion, fn)`).
 - `src/store/queries/events.ts` — `getEvent(stream, seq)`, `getEventsSince(afterSeq, filter?)`.
 - `src/store/schema-loader.ts` — idempotent schema loader described in Phase 0.
-- `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil(authority, version, consumerId)`, cursor persistence in `equipment_cursors`.
+- `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil(authority, version, consumerId)`, cursor persistence in `consumer_cursors`.
 - `src/simulation/runtime.ts` — `SimulationRuntime` implementing all 6 `Runtime` ports. **Substrate decision**: `:memory:` SQLite instance for journal, virtual filesystem for Corpus. `SimulationRuntime` is the reference deterministic implementation for all subsequent phase tests.
 - `src/store/index.ts` — public barrel: `CoralStore` (query-only handle). Write-side uses the `appendEvents` primitive in `src/store/append.ts`; there is no separate `CoralWriter` class.
 
@@ -451,6 +451,8 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 ---
 
 ### Phase 7 — Equipment + simplify + expansion consolidation (dynamic register + race/install-lock, install logic migrated to `src/expansion/` as `coral-cli expansion <verb> <name>`)
+
+> **NOTE**: Phase 7 deliverables below reflect the pre-A9 slot model. The A9 amendment in §Amendments is the authoritative implementation spec — vocabulary collapses (Plugin → Expansion, Equipment → Expansion internal), `kb.embedding` has NO default (peer-category embedders), `equipment_state` → `expansion_state`, `equipment_cursors` → `consumer_cursors`. Read A9 first; the Phase 7 body is preserved as historical context only.
 
 **Goal**: `/equip needle` activates live without coordinator restart. Equipment model operational. Race/install-lock infrastructure verified.
 
