@@ -22,7 +22,7 @@ export function persistCurateState(kb: KbRuntime, state: CurateState, next: Cura
     return state;
   }
 
-  const normalizedNext = normalizeCurateStateRepairFrontier(next);
+  const normalizedNext = normalizeCurateStateRepairFrontier(kb, next);
   writeCurateState(kb, normalizedNext);
   return normalizedNext;
 }

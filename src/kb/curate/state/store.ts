@@ -5,19 +5,108 @@ import type {
 import type { KbRuntime } from '../../contract.js';
 import { parsePositiveInteger } from '../../validation.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
-import { readCurateRetryQueue, syncCurateRetryQueue } from '../retry.js';
+import { readCurateRetryQueue } from '../retry.js';
 import {
   compareCursor,
   cursorEntryKind,
   defaultCurateState,
   kbEntryIdSchema,
-  normalizeCurateStateRepairFrontier,
+  type CurateCursor,
+  type CurateRepairFrontier,
   type CurateState,
+  type PendingRepair,
 } from './model.js';
 import { prepareCached, resolveSqliteDb } from '../sqlite.js';
 import { readCurateSchedulerState, writeCurateSchedulerState } from '../state-scheduler.js';
 
-type CurateStateTarget = Pick<KbRuntime, 'db'>;
+export type CurateStateTarget = Pick<KbRuntime, 'db'>;
+
+function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
+  if (left.entrySeq === null || right.entrySeq === null) {
+    if (left.entrySeq === null && right.entrySeq === null) {
+      return left.entryId.localeCompare(right.entryId);
+    }
+
+    return left.entrySeq === null ? -1 : 1;
+  }
+
+  return compareCursor(
+    {
+      entryId: left.entryId,
+      entrySeq: left.entrySeq,
+    },
+    {
+      entryId: right.entryId,
+      entrySeq: right.entrySeq,
+    },
+  );
+}
+
+export function getCurateRepairFrontier(target: CurateStateTarget): CurateRepairFrontier {
+  const queue = readCurateRetryQueue(target);
+  if (queue.length === 0) {
+    return { kind: 'none' };
+  }
+
+  const sorted = [...queue].sort(comparePendingRepair);
+  if (sorted.some((entry) => entry.entrySeq === null)) {
+    return { kind: 'unknown' };
+  }
+
+  const first = sorted[0];
+  if (first === undefined || first.entrySeq === null) {
+    return { kind: 'none' };
+  }
+
+  return {
+    kind: 'known',
+    cursor: {
+      entryId: first.entryId,
+      entrySeq: first.entrySeq,
+    },
+  };
+}
+
+function clampCursorToRepairFrontier(cursor: CurateCursor | null, frontier: CurateRepairFrontier): CurateCursor | null {
+  if (cursor === null || frontier.kind === 'none') {
+    return cursor;
+  }
+  if (frontier.kind === 'unknown') {
+    return null;
+  }
+
+  return compareCursor(cursor, frontier.cursor) >= 0 ? null : cursor;
+}
+
+export function normalizeCurateStateRepairFrontier(target: CurateStateTarget, state: CurateState): CurateState {
+  const frontier = getCurateRepairFrontier(target);
+
+  if (frontier.kind === 'unknown') {
+    return {
+      ...state,
+      processedThrough: null,
+      lastAttemptedThrough: null,
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+    };
+  }
+
+  if (frontier.kind === 'known' && state.discoveryHighSeq >= frontier.cursor.entrySeq) {
+    return {
+      ...state,
+      processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
+      lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
+      discoveryHighSeq: Math.max(frontier.cursor.entrySeq - 1, 0),
+      discoveryOffset: 0,
+    };
+  }
+
+  return {
+    ...state,
+    processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
+    lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
+  };
+}
 
 function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
   const row = prepareCached<[], KbCurateActiveClaimRow | undefined>(
@@ -155,8 +244,7 @@ function writeCommunitySummaryInputFingerprints(
 
 export function readCurateState(target: CurateStateTarget): CurateState {
   const scheduler = readCurateSchedulerState(target);
-  const retryQueue = readCurateRetryQueue(target);
-  const state = normalizeCurateStateRepairFrontier({
+  return normalizeCurateStateRepairFrontier(target, {
     ...defaultCurateState(),
     processedThrough: scheduler.processedThrough,
     discoveryHighSeq: scheduler.discoveryHighSeq,
@@ -166,7 +254,6 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     retryNotBefore: scheduler.retryNotBefore,
     activeClaim: readActiveClaim(target),
     pendingDiscoveries: readCurateDiscoveryBacklog(target),
-    pendingRepair: retryQueue.length === 0 ? null : retryQueue,
     communityTopologyHash: scheduler.communityTopologyHash,
     communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
     communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(target),
@@ -174,12 +261,10 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
     initialized: scheduler.initialized,
   });
-
-  return state;
 }
 
 export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
-  const normalized = normalizeCurateStateRepairFrontier(state);
+  const normalized = normalizeCurateStateRepairFrontier(target, state);
   const db = resolveSqliteDb(target);
   db.transaction(() => {
     writeCurateSchedulerState(target, {
@@ -195,7 +280,6 @@ export function writeCurateState(target: CurateStateTarget, state: CurateState):
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,
     });
-    syncCurateRetryQueue(target, normalized.pendingRepair ?? []);
     syncCurateDiscoveryBacklog(target, normalized.pendingDiscoveries);
     writeActiveClaim(target, normalized.activeClaim);
     writeCommunitySummaryInputFingerprints(target, normalized.communitySummaryInputFingerprints);

@@ -1,4 +1,9 @@
-export { readCurateState, writeCurateState } from './store.js';
+export {
+  getCurateRepairFrontier,
+  normalizeCurateStateRepairFrontier,
+  readCurateState,
+  writeCurateState,
+} from './store.js';
 export {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -8,11 +13,8 @@ export {
   compareCursor,
   compareOptionalCursor,
   defaultCurateState,
-  getCurateRepairFrontier,
   isClaimStale,
-  normalizeCurateStateRepairFrontier,
   noteCursor,
-  resetCurateStateForBackfill,
   sameStringList,
   type CurateCursor,
   type CurateRepairFrontier,

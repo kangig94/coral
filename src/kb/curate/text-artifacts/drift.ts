@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord } from '../../../infra/json.js';
-import { readCurateState } from '../state/index.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../../corpus/index-records.js';
 import { extractBody, parseSourceFrontmatter } from '../../corpus/frontmatter.js';
 import type { CorpusMarkdownFileScan, CorpusScanView, DetectedIncident } from '../../corpus/repair/corpus-scan.js';
@@ -341,7 +340,7 @@ export function detectTextArtifactRebuildInfo(
   try {
     const indexMtime = statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
-    const pendingRepairIds = new Set((readCurateState(kb).pendingRepair ?? []).map((entry) => entry.entryId));
+    const pendingRepairIds = new Set(readCurateRetryQueue(kb.db).map((entry) => entry.entryId));
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (!existsSync(kb.entityGraphPath())) {

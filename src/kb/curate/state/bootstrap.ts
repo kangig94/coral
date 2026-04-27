@@ -357,13 +357,9 @@ export function persistState(
   scannedNotes: ScannedNote[],
   scannedSources: ScannedSource[],
 ): void {
-  // Source pendingRepair from the SQL retry queue (sole authority); writeCurateState
-  // syncs it back idempotently without disturbing typed-pipeline rows just enqueued.
-  const retryQueue = readCurateRetryQueue(kb.db);
   writeCurateState(kb, {
     ...state,
     processedThrough: inferProcessedThrough(state, scannedNotes, scannedSources),
-    pendingRepair: retryQueue.length === 0 ? null : retryQueue,
     initialized: true,
   });
 }

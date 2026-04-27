@@ -373,7 +373,6 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    pendingRepair: null,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,

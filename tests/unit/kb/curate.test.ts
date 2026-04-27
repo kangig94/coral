@@ -23,6 +23,7 @@ import {
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
+import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
@@ -48,7 +49,6 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    pendingRepair: null,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
@@ -922,15 +922,15 @@ describe('curate', () => {
         runtime,
         createCurateState({
           lastRunDay: '2026-03-24',
-          pendingRepair: [
-            {
-              entryId: noteEntryId('coral-note-05'),
-              entrySeq: 5,
-              detectedAt: '2026-03-25T11:59:00.000Z',
-            },
-          ],
         }),
       );
+      syncCurateRetryQueue(runtime, [
+        {
+          entryId: noteEntryId('coral-note-05'),
+          entrySeq: 5,
+          detectedAt: '2026-03-25T11:59:00.000Z',
+        },
+      ]);
 
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
       expect(readCurateState(runtime)).toMatchObject({
@@ -1310,18 +1310,14 @@ describe('curate', () => {
       entityMeta: {},
       relationships: [],
 });
-      writeCurateState(
-        runtime,
-        createCurateState({
-          pendingRepair: [
-            {
-              entryId: noteEntryId('coral-frontier'),
-              entrySeq: 5,
-              detectedAt: '2026-03-25T11:59:00.000Z',
-            },
-          ],
-        }),
-      );
+      writeCurateState(runtime, createCurateState());
+      syncCurateRetryQueue(runtime, [
+        {
+          entryId: noteEntryId('coral-frontier'),
+          entrySeq: 5,
+          detectedAt: '2026-03-25T11:59:00.000Z',
+        },
+      ]);
 
       await internals.commitMetadataTargets([
         {
@@ -1351,14 +1347,14 @@ describe('curate', () => {
       ]);
       expect(readCurateState(runtime)).toMatchObject({
         processedThrough: cursor('coral-safe', 4),
-        pendingRepair: [
-          {
-            entryId: noteEntryId('coral-frontier'),
-            entrySeq: 5,
-            detectedAt: '2026-03-25T11:59:00.000Z',
-          },
-        ],
       });
+      expect(readCurateRetryQueue(runtime)).toMatchObject([
+        {
+          entryId: noteEntryId('coral-frontier'),
+          entrySeq: 5,
+          detectedAt: '2026-03-25T11:59:00.000Z',
+        },
+      ]);
     });
 
     it('applies desiredTags exactly when committing note metadata', async () => {
@@ -1859,15 +1855,15 @@ describe('curate', () => {
           processedThrough: cursor('coral-stale-10', 10),
           discoveryHighSeq: 9,
           pendingDiscoveries: [pendingDiscovery],
-          pendingRepair: [
-            {
-              entryId: noteEntryId('coral-stale-11'),
-              entrySeq: 11,
-              detectedAt: '2026-03-25T11:59:00.000Z',
-            },
-          ],
         }),
       );
+      syncCurateRetryQueue(runtime, [
+        {
+          entryId: noteEntryId('coral-stale-11'),
+          entrySeq: 11,
+          detectedAt: '2026-03-25T11:59:00.000Z',
+        },
+      ]);
 
       releaseSpawn.resolve();
       await discoveryPromise;
@@ -1881,14 +1877,14 @@ describe('curate', () => {
         discoveryHighSeq: 9,
         discoveryOffset: 0,
         pendingDiscoveries: [pendingDiscovery],
-        pendingRepair: [
-          {
-            entryId: noteEntryId('coral-stale-11'),
-            entrySeq: 11,
-            detectedAt: '2026-03-25T11:59:00.000Z',
-          },
-        ],
       });
+      expect(readCurateRetryQueue(runtime)).toMatchObject([
+        {
+          entryId: noteEntryId('coral-stale-11'),
+          entrySeq: 11,
+          detectedAt: '2026-03-25T11:59:00.000Z',
+        },
+      ]);
     });
 
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
@@ -2346,7 +2342,7 @@ describe('curate', () => {
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(state.pendingRepair?.map((repair) => repair.entryId)).toContain('note:coral-malformed');
+      expect(readCurateRetryQueue(runtime).map((repair) => repair.entryId)).toContain('note:coral-malformed');
       expect(state.communitySummaryInputFingerprints).toBeDefined();
       expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
 

@@ -28,7 +28,7 @@ import {
   syncIndex,
 } from '#src/kb/curate/state/bootstrap.js';
 import { readCurateDiscoveryBacklog } from '#src/kb/curate/discovery-backlog.js';
-import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
+import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
@@ -74,7 +74,6 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    pendingRepair: null,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
@@ -254,13 +253,6 @@ describe('curate state', () => {
           createdAt: '2026-03-25T11:58:00.000Z',
         },
       ],
-      pendingRepair: [
-        {
-          entryId: noteEntryId('coral-repair'),
-          entrySeq: 6,
-          detectedAt: '2026-03-25T11:57:00.000Z',
-        },
-      ],
       communityTopologyHash: 'graph-hash',
       communitySummaryTopologyHash: 'graph-hash',
       communitySummaryInputFingerprints: {
@@ -272,6 +264,13 @@ describe('curate state', () => {
     });
 
     writeCurateState(runtime, persisted);
+    syncCurateRetryQueue(runtime, [
+      {
+        entryId: noteEntryId('coral-repair'),
+        entrySeq: 6,
+        detectedAt: '2026-03-25T11:57:00.000Z',
+      },
+    ]);
 
     expect(readCurateSchedulerState(runtime)).toEqual({
       processedThrough: cursor('coral-first', 3),
@@ -295,17 +294,7 @@ describe('curate state', () => {
       },
     ]);
 
-    const state = readCurateState(runtime);
-    const { pendingRepair, ...actualRest } = state;
-    const { pendingRepair: _expectedPendingRepair, ...expectedRest } = persisted;
-    expect(actualRest).toEqual(expectedRest);
-    expectPendingRepairEntries(pendingRepair, [
-      {
-        entryId: noteEntryId('coral-repair'),
-        entrySeq: 6,
-        detectedAt: '2026-03-25T11:57:00.000Z',
-      },
-    ]);
+    expect(readCurateState(runtime)).toEqual(persisted);
   });
 
   it('treats missing community fingerprint rows as undefined when reading scheduler state', () => {
@@ -381,13 +370,6 @@ describe('curate state', () => {
           createdAt: '2026-03-25T12:00:00.000Z',
         },
       ],
-      pendingRepair: [
-        {
-          entryId: noteEntryId('coral-repair'),
-          entrySeq: 200,
-          detectedAt: '2026-03-25T11:57:00.000Z',
-        },
-      ],
       communitySummaryInputFingerprints: {
         'contract-first-design': 'summary-input-hash',
         'graph-rag': 'members-hash',
@@ -396,6 +378,13 @@ describe('curate state', () => {
     });
 
     writeCurateState(runtime, baseline);
+    syncCurateRetryQueue(runtime, [
+      {
+        entryId: noteEntryId('coral-repair'),
+        entrySeq: 200,
+        detectedAt: '2026-03-25T11:57:00.000Z',
+      },
+    ]);
 
     const beforeChanges = (runtime.db.prepare(`SELECT total_changes() AS count`).get() as { count: number }).count;
     writeCurateState(runtime, {
@@ -415,7 +404,7 @@ describe('curate state', () => {
       communitySummaryInputFingerprints: baseline.communitySummaryInputFingerprints,
       initialized: true,
     });
-    expectPendingRepairEntries(readCurateState(runtime).pendingRepair, [
+    expectPendingRepairEntries(readCurateRetryQueue(runtime), [
       {
         entryId: noteEntryId('coral-repair'),
         entrySeq: 200,
@@ -425,20 +414,22 @@ describe('curate state', () => {
   });
 
   it('normalizes repair frontiers without rewinding cursors that still sort before the malformed entry', () => {
+    syncCurateRetryQueue(runtime, [
+      {
+        entryId: noteEntryId('coral-beta'),
+        entrySeq: 5,
+        detectedAt: '2026-03-25T12:00:00.000Z',
+      },
+    ]);
+
     expect(
       normalizeCurateStateRepairFrontier(
+        runtime,
         createCurateState({
           processedThrough: cursor('coral-alpha', 5),
           lastAttemptedThrough: cursor('coral-gamma', 5),
           discoveryHighSeq: 9,
           discoveryOffset: 4,
-          pendingRepair: [
-            {
-              entryId: noteEntryId('coral-beta'),
-              entrySeq: 5,
-              detectedAt: '2026-03-25T12:00:00.000Z',
-            },
-          ],
         }),
       ),
     ).toEqual(
@@ -447,13 +438,6 @@ describe('curate state', () => {
         lastAttemptedThrough: null,
         discoveryHighSeq: 4,
         discoveryOffset: 0,
-        pendingRepair: [
-          {
-            entryId: noteEntryId('coral-beta'),
-            entrySeq: 5,
-            detectedAt: '2026-03-25T12:00:00.000Z',
-          },
-        ],
       }),
     );
   });
@@ -794,17 +778,14 @@ describe('curate state', () => {
       const detectedAt = '2026-03-25T12:00:00.000Z';
       const scan = scanCorpus(runtime, detectedAt);
 
-      // Seed the SQL retry queue (sole authority for pendingRepair after Phase 4).
-      writeCurateState(runtime, {
-        ...createCurateState(),
-        pendingRepair: [
-          {
-            entryId: noteEntryId('coral-malformed'),
-            entrySeq: 7,
-            detectedAt,
-          },
-        ],
-      });
+      // Seed the SQL retry queue (sole authority for pending repair rows).
+      syncCurateRetryQueue(runtime, [
+        {
+          entryId: noteEntryId('coral-malformed'),
+          entrySeq: 7,
+          detectedAt,
+        },
+      ]);
 
       persistState(
         runtime,
@@ -821,7 +802,7 @@ describe('curate state', () => {
         discoveryOffset: 3,
         initialized: true,
       });
-      expectPendingRepairEntries(state.pendingRepair, [
+      expectPendingRepairEntries(readCurateRetryQueue(runtime), [
         {
           entryId: noteEntryId('coral-malformed'),
           entrySeq: 7,
@@ -931,7 +912,7 @@ describe('curate state', () => {
     ).toBe(31);
     // Typed pipeline detects malformed YAML as frontmatter-shape and enqueues with the lenient
     // entrySeq (30) so assignEntrySeqs uses it as the floor when allocating new sequences.
-    const queued = readCurateState(runtime).pendingRepair ?? [];
+    const queued = readCurateRetryQueue(runtime);
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({
       entryId: noteEntryId('coral-malformed'),
@@ -1022,8 +1003,8 @@ describe('curate state', () => {
       initialized: true,
     });
     // Typed pipeline detects malformed YAML as frontmatter-shape/yaml-parse-error and enqueues
-    // typed rows on kb_curate_retry_queue, which project back into state.pendingRepair.
-    const queued = state.pendingRepair ?? [];
+    // typed rows on kb_curate_retry_queue.
+    const queued = readCurateRetryQueue(runtime);
     expect(queued.map((entry) => entry.entryId).sort()).toEqual(
       [noteEntryId('coral-malformed-note'), sourceEntryId('coral-malformed-source')].sort(),
     );

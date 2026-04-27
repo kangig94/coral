@@ -198,8 +198,8 @@ export async function commitMetadataTargetsLocked(
   state: CurateState,
   plan: MetadataCommitPlan = {},
 ): Promise<CurateState> {
-  const normalizedState = normalizeCurateStateRepairFrontier(state);
-  const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
+  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
+  const repairFrontier = getCurateRepairFrontier(kb);
   const currentIndex = kb.readIndexOrEmpty();
   const nextIndex = cloneKbIndex(currentIndex);
   const currentGraph = snapshotEntityGraph(currentIndex);
@@ -357,7 +357,7 @@ export async function commitMetadataTargetsLocked(
     processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
   }
 
-  const nextState = normalizeCurateStateRepairFrontier({
+  const nextState = normalizeCurateStateRepairFrontier(kb, {
     ...normalizedState,
     processedThrough,
     activeClaim: null,

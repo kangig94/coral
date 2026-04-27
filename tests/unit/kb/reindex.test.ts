@@ -625,7 +625,6 @@ This note has source as a bare string.
 
   it('persists malformed note and source files into pendingRepair during reindex rebuilds', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -682,7 +681,8 @@ entrySeq: nope
       sources: 0,
       mode: 'text',
     });
-    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
+    const { readCurateRetryQueue } = await import('#src/kb/curate/retry.js');
+    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
@@ -696,7 +696,7 @@ entrySeq: nope
 
   it('does not retry unchanged pendingRepair files on every runtime access', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state/index.js');
+    const { readCurateRetryQueue } = await import('#src/kb/curate/retry.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -734,15 +734,15 @@ This note has malformed frontmatter.
     );
 
     await reindex(kb);
-    const pendingRepair = readCurateState(kb).pendingRepair;
+    const pendingRepair = readCurateRetryQueue(kb.db);
     expectPendingRepairEntries(pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
       },
     ]);
-    expect(pendingRepair?.[0]?.observedContentHash).toMatch(/^[a-f0-9]{64}$/);
-    const detectedAt = pendingRepair?.[0]?.detectedAt;
+    expect(pendingRepair[0]?.observedContentHash).toMatch(/^[a-f0-9]{64}$/);
+    const detectedAt = pendingRepair[0]?.detectedAt;
     expect(detectedAt).toBeDefined();
     setMtime(
       join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-note.md'),
@@ -755,7 +755,7 @@ This note has malformed frontmatter.
     await kb.ensureCorpusFreshness();
 
     expect(reindexSuccessSpy).not.toHaveBeenCalled();
-    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
+    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
@@ -766,6 +766,7 @@ This note has malformed frontmatter.
   it('automatically retries pendingRepair notes after file content changes without relying on mtimes', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState, writeCurateState } = await import('#src/kb/curate/state/index.js');
+    const { readCurateRetryQueue } = await import('#src/kb/curate/retry.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -817,7 +818,7 @@ This note has malformed frontmatter.
 
     await reindex(kb);
 
-    const pendingRepair = readCurateState(kb).pendingRepair;
+    const pendingRepair = readCurateRetryQueue(kb.db);
     expectPendingRepairEntries(pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
@@ -831,7 +832,7 @@ This note has malformed frontmatter.
       discoveryOffset: 0,
     });
 
-    const detectedAt = pendingRepair?.[0]?.detectedAt;
+    const detectedAt = pendingRepair[0]?.detectedAt;
     expect(detectedAt).toBeDefined();
 
     writeFileSync(
@@ -862,10 +863,10 @@ This note is valid now.
 
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(kb)).toMatchObject({
-      pendingRepair: null,
       discoveryHighSeq: 6,
       discoveryOffset: 0,
     });
+    expect(readCurateRetryQueue(kb.db)).toEqual([]);
     expect(kb.readIndex()?.entries[noteEntryId('bad-note')]).toEqual({
       kind: 'note',
       slug: 'bad-note',
@@ -882,7 +883,7 @@ This note is valid now.
 
   it('automatically retries pendingRepair sources after file content changes even when mtimes stay quiet', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('#src/kb/curate/state/index.js');
+    const { readCurateRetryQueue } = await import('#src/kb/curate/retry.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.sourcesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -903,8 +904,8 @@ Malformed source frontmatter.
 
     await reindex(kb);
 
-    const detectedAt = readCurateState(kb).pendingRepair?.[0]?.detectedAt;
-    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
+    const detectedAt = readCurateRetryQueue(kb.db)[0]?.detectedAt;
+    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
       {
         entryId: sourceEntryId('bad-source'),
         entrySeq: 8,
@@ -935,7 +936,7 @@ Source body.
 
     await kb.ensureCorpusFreshness();
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
-    expect(readCurateState(kb).pendingRepair).toBeNull();
+    expect(readCurateRetryQueue(kb.db)).toEqual([]);
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
       kind: 'source',
       slug: 'bad-source',

@@ -52,7 +52,6 @@ export type CurateState = {
     startedAt: string;
   } | null;
   pendingDiscoveries: PendingDiscovery[];
-  pendingRepair: PendingRepair[] | null;
   communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   communitySummaryInputFingerprints?: Record<string, string>;
@@ -92,7 +91,6 @@ export function defaultCurateState(): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    pendingRepair: null,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
@@ -100,19 +98,6 @@ export function defaultCurateState(): CurateState {
     consecutiveCommunityBatchFailures: 0,
     initialized: false,
   };
-}
-
-export function resetCurateStateForBackfill(state: CurateState): CurateState {
-  return normalizeCurateStateRepairFrontier({
-    ...state,
-    processedThrough: null,
-    activeClaim: null,
-    lastAttemptedThrough: null,
-    retryNotBefore: null,
-    lastRunDay: null,
-    consecutiveClaimFailures: 0,
-    consecutiveCommunityBatchFailures: 0,
-  });
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {
@@ -155,104 +140,6 @@ export function sameStringList(left: readonly string[], right: readonly string[]
   }
 
   return left.every((value, index) => value === right[index]);
-}
-
-function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
-  if (left.entrySeq === null || right.entrySeq === null) {
-    if (left.entrySeq === null && right.entrySeq === null) {
-      return left.entryId.localeCompare(right.entryId);
-    }
-
-    return left.entrySeq === null ? -1 : 1;
-  }
-
-  return compareCursor(
-    {
-      entryId: left.entryId,
-      entrySeq: left.entrySeq,
-    },
-    {
-      entryId: right.entryId,
-      entrySeq: right.entrySeq,
-    },
-  );
-}
-
-function effectivePendingRepair(pendingRepair: CurateState['pendingRepair']): PendingRepair[] | null {
-  if (pendingRepair === null || pendingRepair.length === 0) {
-    return null;
-  }
-
-  return [...pendingRepair].sort(comparePendingRepair);
-}
-
-export function getCurateRepairFrontier(pendingRepair: CurateState['pendingRepair']): CurateRepairFrontier {
-  const normalizedPendingRepair = effectivePendingRepair(pendingRepair);
-  if (normalizedPendingRepair === null) {
-    return { kind: 'none' };
-  }
-
-  if (normalizedPendingRepair.some((entry) => entry.entrySeq === null)) {
-    return { kind: 'unknown' };
-  }
-
-  const first = normalizedPendingRepair[0];
-  if (first === undefined || first.entrySeq === null) {
-    return { kind: 'none' };
-  }
-
-  return {
-    kind: 'known',
-    cursor: {
-      entryId: first.entryId,
-      entrySeq: first.entrySeq,
-    },
-  };
-}
-
-function clampCursorToRepairFrontier(cursor: CurateCursor | null, frontier: CurateRepairFrontier): CurateCursor | null {
-  if (cursor === null || frontier.kind === 'none') {
-    return cursor;
-  }
-  if (frontier.kind === 'unknown') {
-    return null;
-  }
-
-  return compareCursor(cursor, frontier.cursor) >= 0 ? null : cursor;
-}
-
-export function normalizeCurateStateRepairFrontier(state: CurateState): CurateState {
-  const pendingRepair = effectivePendingRepair(state.pendingRepair);
-  const frontier = getCurateRepairFrontier(pendingRepair);
-
-  if (frontier.kind === 'unknown') {
-    return {
-      ...state,
-      processedThrough: null,
-      lastAttemptedThrough: null,
-      discoveryHighSeq: 0,
-      discoveryOffset: 0,
-      pendingRepair,
-    };
-  }
-
-  if (frontier.kind === 'known' && state.discoveryHighSeq >= frontier.cursor.entrySeq) {
-    return {
-      ...state,
-      processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
-      lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
-      discoveryHighSeq: Math.max(frontier.cursor.entrySeq - 1, 0),
-      discoveryOffset: 0,
-      pendingRepair,
-    };
-  }
-
-  return {
-    ...state,
-    processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
-    lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
-    pendingRepair,
-  };
 }
 
 function retryBaseCooldownMs(error: unknown): number {

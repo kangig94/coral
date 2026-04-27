@@ -122,7 +122,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
       return null;
     }
 
-    const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+    const repairFrontier = getCurateRepairFrontier(kb);
     const pendingEntries = filterCandidatesBeforeRepairFrontier(
       collectClaimCandidates(index).filter(
         (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
@@ -233,7 +233,7 @@ export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: Curat
       return false;
     }
 
-    const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+    const repairFrontier = getCurateRepairFrontier(kb);
     return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
       (candidate) => compareCursor(candidate.cursor, cursor) > 0,
     );

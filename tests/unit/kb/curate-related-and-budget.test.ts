@@ -394,7 +394,6 @@ describe('curate related-resolution and budget guards', () => {
       retryNotBefore: null,
       activeClaim: null,
       pendingDiscoveries: [],
-      pendingRepair: null,
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       communitySummaryInputFingerprints: undefined,

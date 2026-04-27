@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../infra/json.js';
+import type { KbRuntime } from '../contract.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
@@ -125,11 +126,12 @@ function shouldRunDiscoveryBatch(
 }
 
 export function prepareDiscoveryBatch(
+  kb: Pick<KbRuntime, 'db'>,
   index: KbIndex,
   state: CurateState,
   requestedProcessedThrough: CurateCursor,
 ): PreparedDiscoveryBatch | null {
-  const normalizedState = normalizeCurateStateRepairFrontier(state);
+  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
   const currentProcessedThrough = normalizedState.processedThrough;
   if (currentProcessedThrough === null) {
     return null;
@@ -139,7 +141,7 @@ export function prepareDiscoveryBatch(
       ? requestedProcessedThrough
       : currentProcessedThrough;
 
-  const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
+  const repairFrontier = getCurateRepairFrontier(kb);
   const allClassified = filterCandidatesBeforeRepairFrontier(
     collectDiscoveryCandidates(index).filter((candidate) => compareCursor(candidate.cursor, processedThrough) <= 0),
     repairFrontier,
