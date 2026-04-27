@@ -5,6 +5,7 @@ import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
+  EmbeddingService,
   KbCorpusSnapshot,
   KbRuntime,
 } from '../../contract.js';
@@ -22,7 +23,7 @@ import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocumen
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
-import { createEmbeddingProvider, type EmbeddingProvider } from '../embedding.js';
+import { CoralSetupError } from '../../../runtime/errors.js';
 import type {
   RetrievalScope,
   TextRetrieval,
@@ -310,8 +311,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
   readonly registrationKind = 'base';
   readonly backendKind = 'orama';
   onApplyFailure?: (error: ConsumerApplyError) => void;
-  private embeddingProviderPromise: Promise<EmbeddingProvider | null> | null = null;
-
   constructor(private readonly runtime: KbRuntime) {}
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
@@ -429,9 +428,15 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     });
   }
 
-  private async getEmbeddingProvider(): Promise<EmbeddingProvider | null> {
-    this.embeddingProviderPromise ??= createEmbeddingProvider(this.runtime.runtimeDir, undefined, this.runtime.env.get);
-    return this.embeddingProviderPromise;
+  private async getEmbeddingProvider(): Promise<EmbeddingService | null> {
+    try {
+      return this.runtime.embedding.read().read();
+    } catch (error) {
+      if (error instanceof CoralSetupError && error.code === 'binding-empty') {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private async buildDocumentsForIndex(

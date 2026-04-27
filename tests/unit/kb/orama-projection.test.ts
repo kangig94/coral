@@ -1,21 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-vi.mock('#src/kb/search/embedding.js', () => ({
-  createEmbeddingProvider: async () => ({
-    name: 'test-embedding-provider',
-    model: 'test-embedding-model',
-    dims: 4,
-    async embedDocuments(texts: string[]) {
-      return texts.map(embedText);
-    },
-    async embedQuery(text: string) {
-      return embedText(text);
-    },
-  }),
-}));
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { writeCurateState } from '#src/kb/curate/state/index.js';
 import {
@@ -33,6 +19,7 @@ import {
 } from '#src/kb/corpus/index-records.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/kb/search/orama/backend.js';
+import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const TOP_K = 10;
@@ -407,6 +394,14 @@ async function createSeededRuntime(root: string): Promise<ReturnType<typeof crea
     runtimeDir: join(root, '.runtime'),
     db: createKbTestDb(join(root, '.runtime')),
   });
+  await bindEmbedding(runtime, {
+    async embedDocuments(texts: string[]) {
+      return texts.map(embedText);
+    },
+    async embedQuery(text: string) {
+      return embedText(text);
+    },
+  });
   seedCorpus(runtime);
   await installCurrentFullSnapshot(runtime);
   return runtime;
@@ -632,7 +627,6 @@ describe('orama projection invariants', () => {
     while (tempRoots.length > 0) {
       rmSync(tempRoots.pop()!, { recursive: true, force: true });
     }
-    vi.restoreAllMocks();
   });
 
   it.each(scenarios)('keeps full consumer installs deterministic for $name', async (scenario) => {

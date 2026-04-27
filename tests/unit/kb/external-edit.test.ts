@@ -3,20 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('#src/kb/search/embedding.js', () => ({
-  createEmbeddingProvider: async () => ({
-    name: 'test-embedding-provider',
-    model: 'test-embedding-model',
-    dims: 4,
-    async embedDocuments(texts: string[]) {
-      return texts.map(embedText);
-    },
-    async embedQuery(text: string) {
-      return embedText(text);
-    },
-  }),
-}));
-
 import type { KbRuntime } from '#src/kb/contract.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';

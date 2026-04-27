@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as NeedleStoreModule from '#src/kb/search/needle/store.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -11,6 +10,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
+import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
   return async (publication: { snapshot: ReturnType<typeof readCorpusState>; changedLanes: readonly ('content' | 'metadata')[] }) => {
@@ -59,25 +59,8 @@ type PersistedMockStore = {
 };
 
 const mockState = vi.hoisted(() => ({
-  createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
-  resolveEmbeddingProviderConfig: null as null | ((...args: any[]) => any),
   openedDbPaths: [] as string[],
 }));
-
-vi.mock('#src/kb/search/embedding.js', async () => {
-  const actual = await vi.importActual<typeof EmbeddingModule>('#src/kb/search/embedding.js');
-  return {
-    ...actual,
-    createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
-      mockState.createEmbeddingProvider === null
-        ? actual.createEmbeddingProvider(...args)
-        : mockState.createEmbeddingProvider(...args),
-    resolveEmbeddingProviderConfig: (...args: Parameters<typeof actual.resolveEmbeddingProviderConfig>) =>
-      mockState.resolveEmbeddingProviderConfig === null
-        ? actual.resolveEmbeddingProviderConfig(...args)
-        : mockState.resolveEmbeddingProviderConfig(...args),
-  };
-});
 
 vi.mock('#src/kb/search/needle/store.js', async () => {
   const actual = await vi.importActual<typeof NeedleStoreModule>('#src/kb/search/needle/store.js');
@@ -313,8 +296,6 @@ function readJsonFile<T>(filePath: string): T {
 
 afterEach(() => {
   __setNeedleBackendStagingHookForTests(null);
-  mockState.createEmbeddingProvider = null;
-  mockState.resolveEmbeddingProviderConfig = null;
   mockState.openedDbPaths.length = 0;
 
   for (const root of tempRoots.splice(0).reverse()) {
@@ -322,27 +303,24 @@ afterEach(() => {
   }
 });
 
+function createMockEmbeddingService() {
+  return {
+    name: 'mock-embeddings',
+    model: 'mock-small',
+    dims: 3,
+    normalization: 'l2' as const,
+    specId: 'mock-small:3:l2',
+    async embedDocuments(texts: string[]) {
+      return texts.map((text, index) => Float32Array.from([text.length, index + 1, 1]));
+    },
+    async embedQuery() {
+      return Float32Array.from([1, 0, 0]);
+    },
+  };
+}
+
 describe('needle staging crash replay', () => {
   it('recomputes a full manifest on startup replay after a crash leaves a staged snapshot behind', async () => {
-    mockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: null,
-      baseUrl: 'http://localhost/mock',
-    });
-    mockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      embedDocuments: async (texts: string[]) =>
-        texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
-      embedQuery: async () => Float32Array.from([1, 0, 0]),
-    });
-
     const rootDir = mkdtempSync(join(tmpdir(), 'needle-staging-crash-'));
     const markdownRoot = join(rootDir, 'vault');
     const runtimeDir = join(rootDir, 'runtime');
@@ -365,6 +343,7 @@ describe('needle staging crash replay', () => {
     let secondDriver: ConsumerDriver | null = null;
 
     try {
+      await bindEmbedding(firstRuntime, createMockEmbeddingService());
       await reindex(firstRuntime);
       const publishedSnapshot = firstRuntime.captureCorpusSnapshot();
       const persistedPublication = persistCorpusState(db, publishedSnapshot, {
@@ -423,6 +402,7 @@ describe('needle staging crash replay', () => {
 
       const secondRuntimeHarness = createRuntimeHarness(markdownRoot, runtimeDir, db);
       secondRuntime = secondRuntimeHarness.kb;
+      await bindEmbedding(secondRuntime, createMockEmbeddingService());
       secondDriver = new ConsumerDriver({
         db,
         now: () => FIXED_NOW,

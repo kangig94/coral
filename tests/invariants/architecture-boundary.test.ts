@@ -11,6 +11,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { BUNDLED_EXPANSIONS } from '#src/expansion/bundled.js';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -1153,6 +1154,71 @@ describe('architecture boundary guard', () => {
     expect(runtimeSource).not.toMatch(
       /createRuntimeBinding<Backed<EmbeddingService>>\(\s*(?:undefined|create[A-Za-z0-9_]+|\{|\[|'|"|`)/,
     );
+  });
+  it('keeps kb.embedding defaultless and aligns bundled slot metadata with declared KbRuntime bindings', () => {
+    const runtimePath = resolve(REPO_ROOT, 'src/kb/runtime.ts');
+    const contractPath = resolve(REPO_ROOT, 'src/kb/contract.ts');
+    const runtimeSource = readFileSync(runtimePath, 'utf8');
+    const contractSource = readFileSync(contractPath, 'utf8');
+    const runtimeFile = ts.createSourceFile(runtimePath, runtimeSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const contractFile = ts.createSourceFile(contractPath, contractSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const bindingNames = new Set<string>();
+    let embeddingBindingArgs: number | null = null;
+
+    const collectBindings = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.name.text === 'KbRuntime') {
+        for (const member of node.members) {
+          if (
+            ts.isPropertySignature(member)
+            && member.type
+            && ts.isTypeReferenceNode(member.type)
+            && ts.isIdentifier(member.type.typeName)
+            && member.type.typeName.text === 'RuntimeBinding'
+            && member.name
+            && ts.isIdentifier(member.name)
+          ) {
+            bindingNames.add(`kb.${member.name.text}`);
+          }
+        }
+      }
+
+      ts.forEachChild(node, collectBindings);
+    };
+
+    const visitRuntime = (node: ts.Node): void => {
+
+      if (
+        ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === 'createRuntimeBinding'
+        && ts.isBinaryExpression(node.parent)
+        && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && ts.isPropertyAccessExpression(node.parent.left)
+        && node.parent.left.expression.kind === ts.SyntaxKind.ThisKeyword
+        && node.parent.left.name.text === 'embedding'
+      ) {
+        embeddingBindingArgs = node.arguments.length;
+      }
+
+      ts.forEachChild(node, visitRuntime);
+    };
+
+    collectBindings(contractFile);
+    visitRuntime(runtimeFile);
+
+    expect(embeddingBindingArgs).toBe(0);
+    expect(BUNDLED_EXPANSIONS.some((entry) => entry.metadata.slot === 'kb.embedding')).toBe(true);
+
+    const declaredBindings = [...bindingNames];
+    expect(declaredBindings.length).toBeGreaterThan(0);
+    expect(declaredBindings).toContain('kb.embedding');
+    expect(
+      BUNDLED_EXPANSIONS
+        .map((entry) => entry.metadata.slot)
+        .filter((slot): slot is string => typeof slot === 'string')
+        .every((slot) => bindingNames.has(slot)),
+    ).toBe(true);
+    expect(existsSync(resolve(REPO_ROOT, 'src/kb/search/embedding.ts'))).toBe(false);
   });
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];

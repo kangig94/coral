@@ -18,7 +18,7 @@ import {
   type Onboarding,
   type OnboardingStep,
 } from '../../coordinator/expansion/rpc.js';
-import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
+import { BUNDLED_EXPANSIONS, bundledEntrySchema as bundledManifestEntrySchema } from '../../expansion/bundled.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
 
@@ -40,8 +40,8 @@ export {
   type OnboardingStep,
 };
 
-export const bundledEntrySchema = catalogEntrySchema;
-export type BundledEntry = CatalogEntry;
+export const bundledEntrySchema = bundledManifestEntrySchema;
+export type BundledEntry = z.infer<typeof bundledEntrySchema>;
 
 export const expansionArgsSchema = z
   .object({

@@ -18,7 +18,7 @@ const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'install
 const postInstallActionLiterals = ['register_equipment'] as const;
 
 const catalogEntryCommonShape = {
-  id: z.string().min(1),
+  id: z.string(),
   name: z.string().min(1),
   description: z.string().min(1),
   statusDescription: z.string().min(1).optional(),

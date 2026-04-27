@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { RuntimeBinding } from '../runtime/binding.js';
-import type { CorpusConsumerRegistration } from '../store/consumer-contract.js';
+import type { ConsumerRegistration } from '../store/consumer-contract.js';
 import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
@@ -60,7 +60,7 @@ export interface KbCachedOramaIndex {
   tokenizer: KbOramaTokenizer;
 }
 
-export type Consumer = CorpusConsumerRegistration;
+export type Consumer = ConsumerRegistration;
 
 export interface Backed<T> {
   read(): T;

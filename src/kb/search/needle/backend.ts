@@ -5,6 +5,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { nowIsoString } from '../../../infra/time.js';
+import { CoralSetupError } from '../../../runtime/errors.js';
 import type {
   Backed,
   ConsumerApplyError,
@@ -18,12 +19,7 @@ import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, t
 import { needleIndexDir, needleStagingDir } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { chunkEntry, type ChunkSeed } from '../chunking.js';
-import {
-  createEmbeddingProvider,
-  resolveEmbeddingProviderConfig,
-  computeSpecId,
-  EMBEDDING_NORMALIZATION,
-} from '../embedding.js';
+import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../embedding/vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
 import { readNeedleBackedOptions, type NeedleBackedOptions } from './backed-config.js';
 import {
@@ -117,7 +113,7 @@ function resolveBoundNeedleEmbedder(embedder: Backed<EmbeddingService>): Resolve
   const specId =
     typeof service.specId === 'string' && service.specId.length > 0
       ? service.specId
-      : computeSpecId(provider, model, dims, normalization);
+      : computeEmbeddingSpecId(provider, model, dims, normalization);
 
   return {
     service,
@@ -132,26 +128,14 @@ function resolveBoundNeedleEmbedder(embedder: Backed<EmbeddingService>): Resolve
 }
 
 async function resolveRuntimeNeedleEmbedder(runtime: KbRuntime): Promise<ResolvedNeedleEmbedder | null> {
-  const desiredSpec = resolveEmbeddingProviderConfig(runtime.env.get);
-  if (desiredSpec === null) {
-    return null;
+  try {
+    return resolveBoundNeedleEmbedder(runtime.embedding.read());
+  } catch (error) {
+    if (error instanceof CoralSetupError && error.code === 'binding-empty') {
+      return null;
+    }
+    throw error;
   }
-
-  const service = await createEmbeddingProvider(runtime.runtimeDir, desiredSpec, runtime.env.get);
-  if (service === null) {
-    return null;
-  }
-
-  return {
-    service,
-    spec: {
-      provider: desiredSpec.name,
-      model: desiredSpec.model,
-      dims: desiredSpec.dims,
-      normalization: desiredSpec.normalization,
-      specId: desiredSpec.specId,
-    },
-  };
 }
 
 function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {

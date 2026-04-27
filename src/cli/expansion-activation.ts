@@ -42,7 +42,7 @@ function isIpcConnectFailed(error: unknown): boolean {
 }
 
 export type ExpansionStatus =
-  | { status: 'available'; equipment: Array<ExpansionView & { slot: 'kb.vector' }> }
+  | { status: 'available'; equipment: Array<ExpansionView & { slot: string }> }
   | { status: 'unavailable' };
 
 export interface CliExpansionActivation {
@@ -56,9 +56,17 @@ export interface CliExpansionActivation {
   readExpansionStatus(name?: string): Promise<ExpansionStatus>;
 }
 
-function withLegacySlot<T extends { name: string; status: string }>(view: T): T & { slot: 'kb.vector' } {
+function requiresLocalInstall(entry: BundledExpansion): boolean {
+  return entry.metadata.repo !== undefined;
+}
+
+function resolveManifestSlot(name: string): string {
+  return resolveBundledExpansion(name)?.metadata.slot ?? 'kb.vector';
+}
+
+function withManifestSlot<T extends { name: string; status: string }>(view: T): T & { slot: string } {
   return {
-    slot: 'kb.vector',
+    slot: resolveManifestSlot(view.name),
     ...view,
   };
 }
@@ -78,16 +86,21 @@ function unknownExpansionResponse(name: string) {
 function toCatalogEntry(
   entry: BundledExpansion,
   runtime: Runtime,
-  passive: (ExpansionView & { slot: 'kb.vector' }) | null,
+  passive: (ExpansionView & { slot: string }) | null,
 ): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
+  const status =
+    passive?.status
+    ?? (requiresLocalInstall(entry)
+      ? (local.installLocked ? 'installing' : local.installed ? 'inactive' : 'not_equipped')
+      : 'inactive');
   return catalogEntrySchema.parse({
     id: entry.id,
     name: entry.id,
     description: entry.metadata.description,
     activation: 'equipment',
-    status: passive?.status ?? (local.installLocked ? 'installing' : local.installed ? 'inactive' : 'not_equipped'),
-    addonPath: local.addonPath,
+    status,
+    ...(requiresLocalInstall(entry) ? { addonPath: local.addonPath } : {}),
     version: local.version ?? entry.version,
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
   });
@@ -100,7 +113,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       const result = equipExpansionResultSchema.parse(await client.request('coordinator.equipExpansion', { name }));
       return installResultSchema.parse({
         ...result,
-        equipment: withLegacySlot(result.equipment),
+        equipment: withManifestSlot(result.equipment),
       });
     },
 
@@ -130,7 +143,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const result = listExpansionResultSchema.parse(
           await createIpcClient(record.socketPath).request('coordinator.listExpansion', {}),
         );
-        const equipment = result.equipment.map(withLegacySlot);
+        const equipment = result.equipment.map(withManifestSlot);
 
         return {
           status: 'available',
@@ -182,13 +195,16 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async equip(name: string): Promise<InstallResponse> {
       try {
-        if (!resolveBundledExpansion(name)) {
+        const entry = resolveBundledExpansion(name);
+        if (!entry) {
           return unknownExpansionResponse(name);
         }
 
-        const installResult = await installExpansion(name);
-        if (installResult.status === 'error') {
-          return installResult;
+        if (requiresLocalInstall(entry)) {
+          const installResult = await installExpansion(name);
+          if (installResult.status === 'error') {
+            return installResult;
+          }
         }
 
         return await lowLevel.activateExpansion(name);
@@ -199,13 +215,19 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async unequip(name: string): Promise<InstallResponse> {
       try {
-        if (!resolveBundledExpansion(name)) {
+        const entry = resolveBundledExpansion(name);
+        if (!entry) {
           return unknownExpansionResponse(name);
         }
 
         const passive = await lowLevel.readExpansionStatus(name);
-        if (passive.status === 'available' && passive.equipment[0] !== undefined) {
+        const activeEntry = passive.status === 'available' ? passive.equipment[0] : undefined;
+        if (activeEntry !== undefined) {
           await lowLevel.deactivateExpansion(name);
+        }
+
+        if (!requiresLocalInstall(entry)) {
+          return installResultSchema.parse({ status: activeEntry ? 'uninstalled' : 'not_equipped' });
         }
 
         return await uninstallExpansion(name);
@@ -216,13 +238,16 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async update(name: string): Promise<InstallResponse> {
       try {
-        if (!resolveBundledExpansion(name)) {
+        const entry = resolveBundledExpansion(name);
+        if (!entry) {
           return unknownExpansionResponse(name);
         }
 
-        const installResult = await installExpansion(name, { update: true });
-        if (installResult.status === 'error' || installResult.status === 'already_up_to_date') {
-          return installResult;
+        if (requiresLocalInstall(entry)) {
+          const installResult = await installExpansion(name, { update: true });
+          if (installResult.status === 'error' || installResult.status === 'already_up_to_date') {
+            return installResult;
+          }
         }
 
         return await lowLevel.activateExpansion(name);
