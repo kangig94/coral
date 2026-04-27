@@ -2,60 +2,22 @@ import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerDriver } from '../consumer-driver.js';
-import type { Backed, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '../../kb/contract.js';
-import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
-import {
-  NEEDLE_CONSUMER_ID,
-  type NeedleBackend,
-  type NeedleBackendModule,
-  type NeedleBackendOptions,
-} from '../../kb/search/needle/contract.js';
-import type { VectorRetrieval } from '../../kb/search/contract.js';
-import { nowDate } from '../../infra/time.js';
-import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
+import { createHostFactory } from '../expansion/host-factory.js';
+import type { BundledExpansion } from '../../expansion/contract.js';
+import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
+import { registeredConsumerHandles } from '../../expansion/host.js';
+import { loadExpansions } from '../../expansion/loader.js';
+import type { KbRuntime } from '../../kb/contract.js';
+import { configureNeedleBacked } from '../../kb/search/needle/backed-config.js';
+import type { NeedleBackend, NeedleBackendOptions } from '../../kb/search/needle/contract.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle/store.js';
+import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { nowDate } from '../../infra/time.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
-import { errorMessage } from '../../infra/error-format.js';
 import type { ConsumerHandle } from '../../store/consumer-contract.js';
-import type { SlotRegistry } from './slots.js';
-
-export interface RuntimeActivationSnapshot {
-  retrieval: VectorRetrieval;
-  snapshotId: string | null;
-  contentSeq: number;
-  contentManifestHash: string | null;
-}
-
-// Produces the inactive default snapshot readers use before equipment is live.
-function emptySnapshot(retrieval: VectorRetrieval): RuntimeActivationSnapshot {
-  return {
-    retrieval,
-    snapshotId: null,
-    contentSeq: 0,
-    contentManifestHash: null,
-  };
-}
-
-// Derives the router-visible freshness tuple from the registered equipment
-// consumer handle.
-function runtimeActivationFromHandle(
-  retrieval: VectorRetrieval,
-  handle: ConsumerHandle,
-): RuntimeActivationSnapshot {
-  const status = handle.status();
-  if (status.authority !== 'corpus') {
-    return emptySnapshot(retrieval);
-  }
-
-  return {
-    retrieval,
-    snapshotId: status.snapshotId,
-    contentSeq: status.contentSeq,
-    contentManifestHash: status.contentManifestHash,
-  };
-}
 
 type DurableEquipmentState = 'equipped' | 'disabled_pending_reinstall';
 type StoredEquipmentState = DurableEquipmentState | 'unequipped';
@@ -80,7 +42,6 @@ type ActiveEquipmentEntry = {
   name: 'needle';
   slotId: 'kb.vector';
   bindingScope: Disposable;
-  retrieval: VectorRetrieval;
   backend: NeedleBackend;
   handle: ConsumerHandle;
 };
@@ -88,75 +49,23 @@ type ActiveEquipmentEntry = {
 type EquipmentDescriptor = {
   name: 'needle';
   slotId: 'kb.vector';
-  consumerId: typeof NEEDLE_CONSUMER_ID;
+  consumerId: 'needle';
   addonPath: () => string;
 };
 
 type PreparedActivation = {
   descriptor: EquipmentDescriptor;
   runtime: KbRuntime;
-  addonPath: string;
-};
-
-interface ActivateNeedleOptions {
-  readonly consumerId?: string;
-  readonly storeFactory?: NeedleBackendOptions['storeFactory'];
-}
-
-type ActivateNeedleFn = (
-  runtime: KbRuntime,
-  addonPath: string,
-  options?: ActivateNeedleOptions,
-) => NeedleBackend | Promise<NeedleBackend>;
-
-type CloseNeedleBackendFn = (runtime: KbRuntime) => Promise<void>;
-
-async function loadNeedleBackendModule(): Promise<NeedleBackendModule> {
-  return import('../../kb/search/needle/backend.js');
-}
-
-const activateNeedle: ActivateNeedleFn = async (runtime, addonPath, options = {}) => {
-  const { createNeedleBackend } = await loadNeedleBackendModule();
-  return createNeedleBackend(runtime, {
-    addonPath,
-    ...(options.consumerId === undefined ? {} : { consumerId: options.consumerId }),
-    ...(options.storeFactory === undefined ? {} : { storeFactory: options.storeFactory }),
-  });
-};
-
-function createBindingScope(): Disposable {
-  return {
-    [Symbol.dispose]() {},
-  };
-}
-
-function wrapNeedleBacked(backend: NeedleBackend): Backed<BoundVectorRetrieval> {
-  const retrieval: BoundVectorRetrieval = {
-    read(embedding, topK, scope) {
-      return backend.search(embedding, topK, scope);
-    },
-  };
-  return {
-    read: () => retrieval,
-    consumer: backend,
-  };
-}
-
-const closeNeedleBackend: CloseNeedleBackendFn = async (runtime) => {
-  const needle = await loadNeedleBackendModule();
-  await needle.closeNeedleBackend(runtime);
+  entry: BundledExpansion;
 };
 
 export interface EquipmentLifecycleServiceOptions {
   readonly db: BetterSqlite3.Database;
-  readonly runtime: Pick<Runtime, 'paths'>;
+  readonly runtime: Runtime;
   readonly consumerDriver: ConsumerDriver;
-  readonly slotRegistry: SlotRegistry;
   readonly resolveKbRuntime: () => KbRuntime | null;
   readonly removeInstallArtifacts?: (name: string) => Promise<void>;
   readonly now?: () => Date;
-  readonly closeNeedleBackend?: CloseNeedleBackendFn;
-  readonly activateNeedle?: ActivateNeedleFn;
   readonly needleBackendOptions?: Pick<NeedleBackendOptions, 'storeFactory'>;
 }
 
@@ -164,8 +73,6 @@ const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'
 
 export class EquipmentLifecycleService {
   private readonly now: () => Date;
-  private readonly closeNeedleBackendFn: CloseNeedleBackendFn;
-  private readonly activateNeedleFn: ActivateNeedleFn;
   private readonly descriptors = new Map<string, EquipmentDescriptor>();
   private readonly activeBySlot = new Map<string, ActiveEquipmentEntry>();
   private readonly slotGuardQueues = new Map<string, Array<(release: () => void) => void>>();
@@ -178,8 +85,6 @@ export class EquipmentLifecycleService {
 
   constructor(private readonly options: EquipmentLifecycleServiceOptions) {
     this.now = options.now ?? (() => nowDate());
-    this.closeNeedleBackendFn = options.closeNeedleBackend ?? closeNeedleBackend;
-    this.activateNeedleFn = options.activateNeedle ?? activateNeedle;
     this.selectStateStmt = options.db.prepare<[string], EquipmentStateRow>(
       `
         SELECT name, state, installed_at, last_error_code, last_error_message
@@ -213,7 +118,7 @@ export class EquipmentLifecycleService {
     this.descriptors.set('needle', {
       name: 'needle',
       slotId: 'kb.vector',
-      consumerId: NEEDLE_CONSUMER_ID,
+      consumerId: 'needle',
       addonPath: () => options.runtime.paths.coral.equipment.addonPath('needle'),
     });
   }
@@ -264,29 +169,47 @@ export class EquipmentLifecycleService {
         equipment: current,
       };
     }
-    const { descriptor, runtime, addonPath } = this.prepareActivation(name);
+
+    const { descriptor, runtime, entry } = this.prepareActivation(name);
+    let scope: Disposable | null = null;
     let handle: ConsumerHandle | null = null;
     let backend: NeedleBackend | null = null;
 
     try {
-      backend = await this.activateNeedleFn(runtime, addonPath, {
-        consumerId: descriptor.consumerId,
-        ...(this.options.needleBackendOptions?.storeFactory === undefined
-          ? {}
-          : { storeFactory: this.options.needleBackendOptions.storeFactory }),
+      const hostFactory = createHostFactory({
+        runtime: this.options.runtime,
+        kbRuntime: runtime,
+        consumerDriver: this.options.consumerDriver,
       });
+      const scopes = await loadExpansions(hostFactory, [entry]);
+      scope = scopes[0] ?? null;
+      if (scope === null) {
+        throw new Error(`Expansion '${name}' did not return a scope.`);
+      }
+
+      handle = registeredConsumerHandles(scope)[0] ?? null;
+      if (handle === null) {
+        throw new Error(`Expansion '${name}' did not register a consumer.`);
+      }
+
+      const vectorBacked = runtime.vector.read();
+      if (vectorBacked.consumer.id !== descriptor.consumerId) {
+        throw new Error(`Expansion '${name}' did not bind '${descriptor.slotId}'.`);
+      }
+
+      backend = vectorBacked.consumer as NeedleBackend;
       backend.onApplyFailure = (error) => {
         void this.handleApplyFailure(name, error);
       };
-      handle = this.registerConsumer(backend, name);
-      this.commitActivation(name, handle, backend, descriptor, runtime);
+
+      this.commitActivation(name, scope, handle, backend, descriptor, runtime);
       const equipment = this.getEquipment(name);
       return {
         status: equipment.status === 'equipped' ? 'equipped' : 'catching_up',
         equipment,
       };
     } catch (error) {
-      await this.rollbackActivation(name, handle, backend);
+      await this.rollbackActivation(name, scope, handle, backend);
 
       if (this.isBinaryLoadFailure(error)) {
         this.writeStateRow(name, 'disabled_pending_reinstall', {
@@ -308,33 +231,23 @@ export class EquipmentLifecycleService {
       return { status: 'not_equipped' };
     }
 
-    await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
+    await this.rollbackActivation(name, active?.bindingScope ?? null, active?.handle ?? null, active?.backend ?? null);
     await this.options.removeInstallArtifacts?.(name);
     return { status: 'uninstalled' };
   }
 
-  getRuntimeActivation(): RuntimeActivationSnapshot | null {
-    const active = this.activeBySlot.get('kb.vector');
-    if (!active) {
-      return null;
-    }
-
-    return runtimeActivationFromHandle(active.retrieval, active.handle);
-  }
-
   async shutdownActiveEquipment(): Promise<void> {
     const activeEntries = [...this.activeBySlot.values()];
-    if (activeEntries.length === 0) {
-      return;
-    }
+    this.activeBySlot.clear();
 
     for (const entry of activeEntries) {
       await entry.handle.stop().catch(() => {});
+      try {
+        this.options.consumerDriver.unregisterStoppedConsumer(entry.handle.id);
+      } catch {}
+      entry.bindingScope[Symbol.dispose]();
+      await entry.backend.close().catch(() => {});
     }
-
-    this.activeBySlot.clear();
-    activeEntries[0]?.bindingScope[Symbol.dispose]();
-    await this.closeRuntimeBackend(this.options.resolveKbRuntime(), activeEntries[0]?.backend ?? null);
   }
 
   private drainSlotGuardQueue(slotId: string): void {
@@ -372,49 +285,34 @@ export class EquipmentLifecycleService {
     }
 
     const runtime = this.requireKbRuntime(name);
-    if (resolveEmbeddingProviderConfig() === null) {
-      throw documentedCoralSetupError('equipment_embedding_provider_missing', { name: 'Needle' });
+    if (this.options.needleBackendOptions !== undefined) {
+      configureNeedleBacked(runtime, this.options.needleBackendOptions);
     }
 
-    const addonPath = descriptor.addonPath();
-    if (!this.isAddonFileReadable(addonPath)) {
+    if (!this.isAddonFileReadable(descriptor.addonPath())) {
       throw documentedCoralSetupError('equipment_binary_corrupt', { name });
     }
 
-    return { descriptor, runtime, addonPath };
-  }
-
-  private registerConsumer(backend: NeedleBackend, name: string): ConsumerHandle {
-    let handle: ConsumerHandle | null = null;
-    const registerTxn = this.options.db.transaction(() => {
-      handle = this.options.consumerDriver.register(backend);
-    });
-    registerTxn.immediate();
-
-    if (handle === null) {
-      throw new Error(`Equipment registration did not produce a handle for ${name}.`);
-    }
-
-    return handle;
+    return {
+      descriptor,
+      runtime,
+      entry: this.requireEntry(name),
+    };
   }
 
   private commitActivation(
     name: string,
+    scope: Disposable,
     handle: ConsumerHandle,
     backend: NeedleBackend,
     descriptor: EquipmentDescriptor,
     runtime: KbRuntime,
   ): void {
-    const bindingScope = createBindingScope();
-    const backed = wrapNeedleBacked(backend);
-    const retrieval = backend as VectorRetrieval;
     const commitTxn = this.options.db.transaction(() => {
-      runtime.vector.bind(backed, bindingScope, descriptor.name);
       this.activeBySlot.set(descriptor.slotId, {
         name: descriptor.name,
         slotId: descriptor.slotId,
-        bindingScope,
-        retrieval,
+        bindingScope: scope,
         backend,
         handle,
       });
@@ -424,11 +322,17 @@ export class EquipmentLifecycleService {
     commitTxn.immediate();
   }
 
-  private async rollbackActivation(name: string, handle: ConsumerHandle | null, backend: NeedleBackend | null): Promise<void> {
+  private async rollbackActivation(
+    name: string,
+    scope: Disposable | null,
+    handle: ConsumerHandle | null,
+    backend: NeedleBackend | null,
+  ): Promise<void> {
     const descriptor = this.requireDescriptor(name);
     const active = this.activeBySlot.get(descriptor.slotId);
-    const runtime = this.options.resolveKbRuntime();
+    const bindingScope = active?.name === name ? active.bindingScope : scope;
     const handleToStop = active?.name === name ? active.handle : handle;
+    const backendToClose = active?.name === name ? active.backend : backend;
 
     if (handleToStop !== null) {
       await handleToStop.stop().catch(() => {});
@@ -449,8 +353,8 @@ export class EquipmentLifecycleService {
     rollbackTxn.immediate();
 
     this.activeBySlot.delete(descriptor.slotId);
-    active?.bindingScope[Symbol.dispose]();
-    await this.closeRuntimeBackend(runtime, backend);
+    bindingScope?.[Symbol.dispose]();
+    await backendToClose?.close().catch(() => {});
   }
 
   private async handleApplyFailure(name: string, applyError: ConsumerApplyError): Promise<void> {
@@ -463,8 +367,7 @@ export class EquipmentLifecycleService {
       const descriptor = this.requireDescriptor(name);
       const active = this.activeBySlot.get(descriptor.slotId);
       const installedAt = this.readStateRow(name)?.installed_at ?? this.now().toISOString();
-      // Apply-failure leaves local artifacts on disk; user must run 'coral-cli expansion unequip <name>' to reclaim.
-      await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
+      await this.rollbackActivation(name, active?.bindingScope ?? null, active?.handle ?? null, active?.backend ?? null);
       this.writeStateRow(name, 'disabled_pending_reinstall', {
         installedAt,
         lastErrorCode: this.isBinaryLoadFailure(applyError.cause) ? 'equipment_binary_corrupt' : null,
@@ -502,29 +405,20 @@ export class EquipmentLifecycleService {
     return descriptor;
   }
 
+  private requireEntry(name: string): BundledExpansion {
+    const entry = BUNDLED_EXPANSIONS.find((candidate) => candidate.id === name);
+    if (entry === undefined) {
+      throw documentedCoralSetupError('unknown_equipment', { name });
+    }
+    return entry;
+  }
+
   private requireKbRuntime(name: string): KbRuntime {
     const runtime = this.options.resolveKbRuntime();
     if (!runtime) {
       throw documentedCoralSetupError('equipment_runtime_unavailable', { name });
     }
     return runtime;
-  }
-
-  private async closeRuntimeBackend(runtime: KbRuntime | null, backend: NeedleBackend | null = null): Promise<void> {
-    if (runtime !== null) {
-      await this.closeNeedleBackendFn(runtime).catch(() => {});
-      return;
-    }
-
-    await backend?.close().catch(() => {});
-  }
-
-  private safeUnequipSlot(slotId: string): void {
-    try {
-      this.options.slotRegistry.get<VectorRetrieval>(slotId).unequip();
-    } catch {
-      // The slot may not be declared yet in isolated tests; treat as best-effort cleanup.
-    }
   }
 
   private isInstallLockPresent(name: string): boolean {

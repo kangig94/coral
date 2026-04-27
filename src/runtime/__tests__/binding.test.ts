@@ -52,15 +52,14 @@ describe('createRuntimeBinding', () => {
     expect((thrown as CoralSetupError & { binding: string }).binding).toBe('kb.embedding');
   });
 
-  it('supports using scopes as a disposal smoke test', () => {
+  it('supports scope disposal as a smoke test', () => {
     const binding = createRuntimeBinding('orama');
     binding.binding = 'kb.vector';
     let disposed = false;
-    {
-      using scope: Disposable = { [Symbol.dispose]: () => { disposed = true; } };
-      binding.bind('needle', scope, 'needle');
-      expect(binding.read()).toBe('needle');
-    }
+    const scope: Disposable = { [Symbol.dispose]: () => { disposed = true; } };
+    binding.bind('needle', scope, 'needle');
+    expect(binding.read()).toBe('needle');
+    scope[Symbol.dispose]();
     expect(disposed).toBe(true);
     expect(binding.read()).toBe('orama');
   });

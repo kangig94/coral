@@ -3,45 +3,32 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { createHostFactory } from '#src/coordinator/expansion/host-factory.js';
 import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '#src/coordinator/equipment/lifecycle.js';
+import { loadExpansions } from '#src/expansion/loader.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
 import { equipmentPaths } from "#src/infra/path/equipment.js";
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { closeNeedleBackend } from '#src/kb/search/needle/backend.js';
-import { NeedleAddonLoadError } from '#src/kb/search/needle/store.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
 import { createNeedleStoreFake } from '#tests/helpers/fixtures/needle-store-fake.js';
 import { createFixtureRuntime } from '#tests/helpers/fixtures/runtime-paths.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
-import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 
 const FIXED_NOW = new Date('2026-04-22T00:00:00.000Z');
 const tempRoots: string[] = [];
-
-const embeddingMockState = vi.hoisted(() => ({
-  createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
-  resolveEmbeddingProviderConfig: null as null | ((...args: any[]) => any),
-}));
-
-vi.mock('#src/kb/search/embedding.js', async () => {
-  const actual = await vi.importActual<typeof EmbeddingModule>('#src/kb/search/embedding.js');
-  return {
-    ...actual,
-    createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
-      embeddingMockState.createEmbeddingProvider === null
-        ? actual.createEmbeddingProvider(...args)
-        : embeddingMockState.createEmbeddingProvider(...args),
-    resolveEmbeddingProviderConfig: (...args: Parameters<typeof actual.resolveEmbeddingProviderConfig>) =>
-      embeddingMockState.resolveEmbeddingProviderConfig === null
-        ? actual.resolveEmbeddingProviderConfig(...args)
-        : embeddingMockState.resolveEmbeddingProviderConfig(...args),
-  };
-});
+const FAKE_EMBEDDER_ENTRY = {
+  id: 'test-embedder',
+  version: '0.0.0',
+  specifier: '#tests/fakes/fake-embedder.js',
+  metadata: {
+    description: 'fake embedder',
+    slot: 'kb.embedding',
+  },
+};
 
 const nodeStorage = {
   readFileSync(path: string, encoding: BufferEncoding): string {
@@ -70,7 +57,7 @@ type CreateHarnessOptions = {
   storeFactory?: () => ReturnType<typeof createNeedleStoreFake>;
   corruptAddon?: boolean;
   removeInstallArtifacts?: EquipmentLifecycleServiceOptions['removeInstallArtifacts'];
-  activateNeedle?: EquipmentLifecycleServiceOptions['activateNeedle'];
+  bindEmbedder?: boolean;
 };
 
 function createDb(): InstanceType<typeof Database> {
@@ -109,25 +96,17 @@ ${body}
 
 function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: InstanceType<typeof Database>): {
   kb: ReturnType<typeof createKbRuntime>;
-  slotRegistry: ReturnType<typeof createSlotRegistry>;
   currentBackendKind(): string;
   vectorRouteBackend(): 'orama' | 'needle';
 } {
-  const slotRegistry = createSlotRegistry();
   const kb = createKbRuntime({
     markdownRoot,
     runtimeDir,
     db,
   });
-  const vectorSlot = createEquipmentSlot<{ backendKind: 'orama' | 'needle' }>({
-    id: 'kb.vector',
-    defaultOwner: () => ({ backendKind: 'orama' }),
-  });
-  slotRegistry.declare(vectorSlot);
 
   return {
     kb,
-    slotRegistry,
     currentBackendKind: () => (kb.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID ? 'orama' : 'needle'),
     vectorRouteBackend: () => (kb.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID ? 'orama' : 'needle'),
   };
@@ -170,16 +149,24 @@ async function createHarness(options: CreateHarnessOptions = {}): Promise<Harnes
     db,
     now: () => FIXED_NOW,
   });
+  const runtime = createFixtureRuntime(coralBaseDir);
+  const expansionHostFactory = createHostFactory({
+    runtime,
+    kbRuntime: kb,
+    consumerDriver: driver,
+  });
+  const embedderScopes =
+    options.bindEmbedder === false
+      ? []
+      : await loadExpansions(expansionHostFactory, [FAKE_EMBEDDER_ENTRY]);
 
   const lifecycle = new EquipmentLifecycleService({
     db,
     consumerDriver: driver,
-    slotRegistry: runtimeHarness.slotRegistry,
     resolveKbRuntime: () => kb,
     now: () => FIXED_NOW,
-    runtime: createFixtureRuntime(coralBaseDir),
+    runtime,
     ...(options.removeInstallArtifacts === undefined ? {} : { removeInstallArtifacts: options.removeInstallArtifacts }),
-    ...(options.activateNeedle === undefined ? {} : { activateNeedle: options.activateNeedle }),
     ...(options.storeFactory === undefined ? {} : { needleBackendOptions: { storeFactory: () => options.storeFactory?.() ?? null } }),
   });
 
@@ -195,7 +182,10 @@ async function createHarness(options: CreateHarnessOptions = {}): Promise<Harnes
     currentBackendKind: runtimeHarness.currentBackendKind,
     vectorRouteBackend: runtimeHarness.vectorRouteBackend,
     async dispose() {
-      await closeNeedleBackend(kb).catch(() => {});
+      await lifecycle.shutdownActiveEquipment().catch(() => {});
+      for (const scope of [...embedderScopes].reverse()) {
+        scope[Symbol.dispose]();
+      }
       await driver.shutdown();
       db.close();
     },
@@ -237,58 +227,13 @@ async function waitForCondition(predicate: () => Promise<boolean> | boolean, tim
 }
 
 afterEach(async () => {
-  embeddingMockState.createEmbeddingProvider = null;
-  embeddingMockState.resolveEmbeddingProviderConfig = null;
-
   for (const root of tempRoots.splice(0).reverse()) {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 describe('EquipmentLifecycleService', () => {
-  function mockEmbeddingProvider(
-    overrides: Partial<EmbeddingModule.EmbeddingProviderConfig> & {
-      delayMs?: number;
-      embedDocuments?: EmbeddingModule.EmbeddingProvider['embedDocuments'];
-    } = {},
-  ): EmbeddingModule.EmbeddingProviderConfig {
-    const { delayMs, embedDocuments, ...configOverrides } = overrides;
-    const config: EmbeddingModule.EmbeddingProviderConfig = {
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: 'test',
-      baseUrl: 'http://localhost/mock',
-      ...configOverrides,
-    };
-    const vectorFrom = (values: number[]): Float32Array =>
-      Float32Array.from(Array.from({ length: config.dims }, (_, index) => values[index] ?? 0));
-    const provider: EmbeddingModule.EmbeddingProvider = {
-      name: config.name,
-      model: config.model,
-      dims: config.dims,
-      embedDocuments:
-        embedDocuments ??
-        (async (texts: string[]) => {
-          if (delayMs !== undefined) {
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-          }
-          return texts.map((text, index) => vectorFrom([text.length, index + 1, 1]));
-        }),
-      embedQuery: async () => vectorFrom([1, 0, 0]),
-    };
-
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue(config);
-    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue(provider);
-    return config;
-  }
-
   it('transitions needle from not_equipped to catching_up to equipped and reports already_equipped when active', async () => {
-    mockEmbeddingProvider({ delayMs: 20 });
-
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
     });
@@ -369,7 +314,6 @@ describe('EquipmentLifecycleService', () => {
   });
 
   it('demotes corrupt binaries to disabled_pending_reinstall after apply failure without removing local artifacts', async () => {
-    mockEmbeddingProvider();
     let cleanupBaseDir = '';
     const removeInstallArtifacts = vi.fn(async (name: string) => {
       rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
@@ -406,46 +350,23 @@ describe('EquipmentLifecycleService', () => {
     }
   });
 
-  it('leaves local artifacts on disk when equip rollback handles a binary load failure', async () => {
-    mockEmbeddingProvider();
-    let cleanupBaseDir = '';
-    const removeInstallArtifacts = vi.fn(async (name: string) => {
-      rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 100,
-      });
-    });
-    const activateNeedle: NonNullable<EquipmentLifecycleServiceOptions['activateNeedle']> = () => {
-      throw new NeedleAddonLoadError('simulated addon load failure', {
-        addonPath: equipmentPaths("prod", { baseDir: cleanupBaseDir }).addonPath('needle'),
-      });
-    };
-
+  it('surfaces binding-required when needle is equipped without an embedder expansion bound first', async () => {
     const harness = await createHarness({
-      removeInstallArtifacts,
-      activateNeedle,
-    } satisfies CreateHarnessOptions);
-    cleanupBaseDir = harness.coralBaseDir;
+      bindEmbedder: false,
+    });
 
     try {
       await expect(harness.lifecycle.equip('needle')).rejects.toMatchObject({
-        code: 'equipment_binary_corrupt',
+        code: 'binding-required',
+        binding: 'kb.embedding',
+        requiredBy: 'needle',
       });
-      expect(removeInstallArtifacts).not.toHaveBeenCalled();
-      expect(readEquipmentStateRow(harness.db, 'needle')).toMatchObject({
-        state: 'disabled_pending_reinstall',
-        last_error_code: 'equipment_binary_corrupt',
-      });
-      expect(existsSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'))).toBe(true);
     } finally {
       await harness.dispose();
     }
   });
 
   it('uninstalls the active needle consumer, invokes artifact cleanup, and reverts kb.vector to the default owner', async () => {
-    mockEmbeddingProvider();
     let cleanupBaseDir = '';
     const removeInstallArtifacts = vi.fn(async (name: string) => {
       rmSync(equipmentPaths('prod', { baseDir: cleanupBaseDir }).dataDir(name), {
@@ -502,8 +423,6 @@ describe('EquipmentLifecycleService', () => {
   });
 
   it('reports previously equipped needle as inactive on restart while the binary is still present', async () => {
-    mockEmbeddingProvider();
-
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
     });
@@ -514,7 +433,7 @@ describe('EquipmentLifecycleService', () => {
       await harness.driver.drainAll();
       expect((await harness.lifecycle.listEquipment())[0]?.status).toBe('equipped');
 
-      await closeNeedleBackend(harness.kb);
+      await harness.lifecycle.shutdownActiveEquipment();
       await harness.driver.shutdown();
 
       const restartedRuntimeHarness = createRuntimeHarness(harness.markdownRoot, harness.runtimeDir, harness.db);
@@ -525,7 +444,6 @@ describe('EquipmentLifecycleService', () => {
       const restartedLifecycle = new EquipmentLifecycleService({
         db: harness.db,
         consumerDriver: restartedDriver,
-        slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
         runtime: createFixtureRuntime(harness.coralBaseDir),
@@ -547,8 +465,6 @@ describe('EquipmentLifecycleService', () => {
   });
 
   it('reports previously equipped needle as unavailable on restart when the binary was deleted externally', async () => {
-    mockEmbeddingProvider();
-
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
     });
@@ -559,7 +475,7 @@ describe('EquipmentLifecycleService', () => {
       await harness.driver.drainAll();
       expect((await harness.lifecycle.listEquipment())[0]?.status).toBe('equipped');
 
-      await closeNeedleBackend(harness.kb);
+      await harness.lifecycle.shutdownActiveEquipment();
       await harness.driver.shutdown();
       rmSync(equipmentPaths("prod", { baseDir: harness.coralBaseDir }).dataDir('needle'), { recursive: true, force: true });
 
@@ -571,7 +487,6 @@ describe('EquipmentLifecycleService', () => {
       const restartedLifecycle = new EquipmentLifecycleService({
         db: harness.db,
         consumerDriver: restartedDriver,
-        slotRegistry: restartedRuntimeHarness.slotRegistry,
         resolveKbRuntime: () => restartedRuntimeHarness.kb,
         now: () => FIXED_NOW,
         runtime: createFixtureRuntime(harness.coralBaseDir),

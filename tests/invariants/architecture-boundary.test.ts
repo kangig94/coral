@@ -594,13 +594,13 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('needle equipment backend is loaded only through lifecycle dynamic import', () => {
+  it('needle backend is loaded only through the needle expansion module', () => {
     expect(PARSED_IMPORT_EDGES.filter((edge) => edge.target === NEEDLE_BACKEND_TARGET)).toEqual([
       {
-        source: 'src/coordinator/equipment/lifecycle.ts',
-        specifier: '../../kb/search/needle/backend.js',
+        source: 'src/kb/search/needle/expansion.ts',
+        specifier: './backend.js',
         target: NEEDLE_BACKEND_TARGET,
-        via: 'DynamicImport',
+        via: 'ImportDeclaration',
         runtime: true,
         typeOnly: false,
       },
@@ -1056,6 +1056,49 @@ describe('architecture boundary guard', () => {
     }
 
     expect(violations).toEqual([]);
+  });
+  it('needle expansion keeps embedder access structural and free of captured concrete fallbacks', () => {
+    const source = readFileSync(resolve(REPO_ROOT, 'src/kb/search/needle/expansion.ts'), 'utf8');
+    const sourceFile = ts.createSourceFile(
+      resolve(REPO_ROOT, 'src/kb/search/needle/expansion.ts'),
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const importedNames = sourceFile.statements
+      .filter(ts.isImportDeclaration)
+      .flatMap((statement) => {
+        const clause = statement.importClause;
+        if (!clause) {
+          return [];
+        }
+
+        const names: string[] = [];
+        if (clause.name) {
+          names.push(clause.name.text);
+        }
+        const bindings = clause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          names.push(...bindings.elements.map((element) => element.name.text));
+        }
+        if (bindings && ts.isNamespaceImport(bindings)) {
+          names.push(bindings.name.text);
+        }
+        return names;
+      });
+
+    expect(importedNames).not.toContain('createEmbeddingProvider');
+    expect(importedNames).not.toContain('GeminiEmbeddingProvider');
+    expect(importedNames).not.toContain('OpenAICompatibleProvider');
+    expect(importedNames).not.toContain('LocalOnnxProvider');
+    expect(source).not.toMatch(/\bcreateEmbeddingProvider\b/u);
+    expect(source).not.toMatch(/\bGEMINI_API_KEY\b/u);
+    expect(source).not.toMatch(/\bGeminiEmbeddingProvider\b/u);
+    expect(source).not.toMatch(/\bOpenAICompatibleProvider\b/u);
+    expect(source).not.toMatch(/\bLocalOnnxProvider\b/u);
+    expect(source).not.toMatch(/['"]gemini['"]/u);
+    expect(source).toMatch(/host\.require\(host\.kb\.embedding\)/u);
   });
   it('providers/contract.ts stays under the magnet threshold', () => {
     // The provider protocol surface is inherently broad (request/action/spec/lease/

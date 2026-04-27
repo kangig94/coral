@@ -5,20 +5,35 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { nowIsoString } from '../../../infra/time.js';
-import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../../contract.js';
+import type {
+  Backed,
+  ConsumerApplyError,
+  CorpusConsumerApplyContext,
+  EmbeddingService,
+  KbRuntime,
+  VectorRetrieval as BoundVectorRetrieval,
+} from '../../contract.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { chunkEntry, type ChunkSeed } from '../chunking.js';
-import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from '../embedding.js';
+import {
+  createEmbeddingProvider,
+  resolveEmbeddingProviderConfig,
+  computeSpecId,
+  EMBEDDING_NORMALIZATION,
+} from '../embedding.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
+import { readNeedleBackedOptions, type NeedleBackedOptions } from './backed-config.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,
   type NeedleBackendOptions,
 } from './contract.js';
 import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../contract.js';
+import type { EmbeddingSpec } from './store.js';
+import type { Runtime } from '../../../runtime/ports.js';
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';
@@ -69,8 +84,75 @@ type StagedVectorEntry = {
   chunks: ChunkSeed[];
 };
 
+type BoundEmbeddingMetadata = {
+  readonly name?: string;
+  readonly model?: string;
+  readonly dims?: number;
+  readonly normalization?: EmbeddingSpec['normalization'];
+  readonly specId?: string;
+};
+
+type ResolvedNeedleEmbedder = {
+  readonly service: EmbeddingService;
+  readonly spec: Omit<EmbeddingSpec, 'createdAt'>;
+};
+
 const SHARED_NEEDLE_BACKENDS = new WeakMap<KbRuntime, NeedleBackend>();
 let needleBackendStagingHookForTests: NeedleBackendStagingHook | null = null;
+
+function asNeedleEmbeddingProvider(service: EmbeddingService): EmbeddingService & BoundEmbeddingMetadata {
+  return service as EmbeddingService & BoundEmbeddingMetadata;
+}
+
+function resolveBoundNeedleEmbedder(embedder: Backed<EmbeddingService>): ResolvedNeedleEmbedder {
+  const service = asNeedleEmbeddingProvider(embedder.read());
+  const provider = typeof service.name === 'string' && service.name.length > 0 ? service.name : embedder.consumer.id;
+  const model = typeof service.model === 'string' && service.model.length > 0 ? service.model : provider;
+  const dims = service.dims;
+  if (typeof dims !== 'number' || !Number.isInteger(dims) || dims <= 0) {
+    throw new Error(`Bound embedding service '${embedder.consumer.id}' did not declare a valid dims field.`);
+  }
+
+  const normalization = service.normalization === 'none' ? 'none' : EMBEDDING_NORMALIZATION;
+  const specId =
+    typeof service.specId === 'string' && service.specId.length > 0
+      ? service.specId
+      : computeSpecId(provider, model, dims, normalization);
+
+  return {
+    service,
+    spec: {
+      provider,
+      model,
+      dims,
+      normalization,
+      specId,
+    },
+  };
+}
+
+async function resolveRuntimeNeedleEmbedder(runtime: KbRuntime): Promise<ResolvedNeedleEmbedder | null> {
+  const desiredSpec = resolveEmbeddingProviderConfig(runtime.env.get);
+  if (desiredSpec === null) {
+    return null;
+  }
+
+  const service = await createEmbeddingProvider(runtime.runtimeDir, desiredSpec, runtime.env.get);
+  if (service === null) {
+    return null;
+  }
+
+  return {
+    service,
+    spec: {
+      provider: desiredSpec.name,
+      model: desiredSpec.model,
+      dims: desiredSpec.dims,
+      normalization: desiredSpec.normalization,
+      specId: desiredSpec.specId,
+    },
+  };
+}
 
 function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {
   return (
@@ -245,17 +327,19 @@ export class NeedleBackend implements NeedleBackendContract {
   private addonPath: string;
   private pluginRoot?: string;
   private storeFactory?: NeedleBackendOptions['storeFactory'];
+  private readonly boundEmbedder?: ResolvedNeedleEmbedder;
   private activeHandle: ActiveNeedleHandle | null = null;
   private readonly retiredHandles = new Set<ActiveNeedleHandle>();
 
   constructor(
     private readonly runtime: KbRuntime,
-    options: NeedleBackendOptions,
+    options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder },
   ) {
     this.id = options.consumerId ?? NEEDLE_CONSUMER_ID;
     this.addonPath = options.addonPath;
     this.pluginRoot = options.pluginRoot;
     this.storeFactory = options.storeFactory;
+    this.boundEmbedder = options.embedder;
   }
 
   configure(options: NeedleBackendOptions): void {
@@ -342,20 +426,20 @@ export class NeedleBackend implements NeedleBackendContract {
       return;
     }
 
-    const desiredSpec = resolveEmbeddingProviderConfig(this.runtime.env.get);
-    if (desiredSpec === null) {
+    const embedder = this.boundEmbedder ?? await resolveRuntimeNeedleEmbedder(this.runtime);
+    if (embedder === null) {
       throw new Error('KB needle backend requires an embedding provider configuration.');
     }
 
-    const stagingDir = await this.stageSnapshot(ctx.snapshot, desiredSpec);
+    const stagingDir = await this.stageSnapshot(ctx.snapshot, embedder);
     let preserveStagingDir = false;
     try {
       await needleBackendStagingHookForTests?.({
         snapshot: ctx.snapshot,
         stagingDir,
-        specId: desiredSpec.specId,
+        specId: embedder.spec.specId,
       });
-      await this.installStagedSnapshot(stagingDir, ctx.snapshot.snapshotId, desiredSpec.specId);
+      await this.installStagedSnapshot(stagingDir, ctx.snapshot.snapshotId, embedder.spec.specId);
     } catch (error: unknown) {
       preserveStagingDir = error instanceof NeedleBackendSimulatedCrashError;
       throw error;
@@ -442,7 +526,8 @@ export class NeedleBackend implements NeedleBackendContract {
       });
   }
 
-  private async stageSnapshot(snapshot: NeedleApplyContext['snapshot'], desiredSpec: EmbeddingProviderConfig): Promise<string> {
+  private async stageSnapshot(snapshot: NeedleApplyContext['snapshot'], embedder: ResolvedNeedleEmbedder): Promise<string> {
+    const desiredSpec = embedder.spec;
     const stagingDir = join(needleStagingDir(this.runtime.runtimeDir), snapshot.snapshotId);
     rmSync(stagingDir, { recursive: true, force: true });
     mkdirSync(stagingDir, { recursive: true });
@@ -461,7 +546,7 @@ export class NeedleBackend implements NeedleBackendContract {
       if (currentSpec?.specId !== desiredSpec.specId) {
         await stagedStore.store.setActiveSpec({
           specId: desiredSpec.specId,
-          provider: desiredSpec.name,
+          provider: desiredSpec.provider,
           model: desiredSpec.model,
           dims: desiredSpec.dims,
           normalization: desiredSpec.normalization,
@@ -472,12 +557,7 @@ export class NeedleBackend implements NeedleBackendContract {
       const vectorEntries = this.collectVectorEntries();
       const chunks = vectorEntries.flatMap((entry) => entry.chunks);
       if (chunks.length > 0) {
-        const provider = await createEmbeddingProvider(this.runtime.runtimeDir, desiredSpec, this.runtime.env.get);
-        if (provider === null) {
-          throw new Error('KB needle backend could not initialize the embedding provider.');
-        }
-
-        const vectors = await provider.embedDocuments(chunks.map((chunk) => chunk.text));
+        const vectors = await embedder.service.embedDocuments(chunks.map((chunk) => chunk.text));
         const upserts = chunks.map((chunk, indexPosition) => {
           const vector = vectors[indexPosition];
           if (vector === undefined) {
@@ -681,6 +761,28 @@ export function createNeedleBackend(runtime: KbRuntime, options: NeedleBackendOp
   const backend = new NeedleBackend(runtime, options);
   SHARED_NEEDLE_BACKENDS.set(runtime, backend);
   return backend;
+}
+
+export async function createNeedleBacked(
+  kbRuntime: KbRuntime,
+  runtime: Pick<Runtime, 'paths'>,
+  embedder: Backed<EmbeddingService>,
+): Promise<Backed<BoundVectorRetrieval>> {
+  const backend = new NeedleBackend(kbRuntime, {
+    addonPath: runtime.paths.coral.equipment.addonPath('needle'),
+    ...(readNeedleBackedOptions(kbRuntime) ?? {}),
+    embedder: resolveBoundNeedleEmbedder(embedder),
+  });
+  const retrieval: BoundVectorRetrieval = {
+    read(embedding, topK, scope) {
+      return backend.search(embedding, topK, scope);
+    },
+  };
+
+  return {
+    read: () => retrieval,
+    consumer: backend,
+  };
 }
 
 export class NeedleBackendSimulatedCrashError extends Error {

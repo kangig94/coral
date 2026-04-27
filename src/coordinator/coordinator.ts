@@ -36,7 +36,6 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama/index.js';
-import { NEEDLE_CONSUMER_ID } from '../kb/search/needle/contract.js';
 import type { Backed, KbRuntime, VectorRetrieval } from '../kb/contract.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
@@ -141,7 +140,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     db: getStoreDb(),
     runtime,
     consumerDriver: getConsumerDriver(),
-    slotRegistry: equipmentSlots,
     resolveKbRuntime: () => currentKbRuntime,
     removeInstallArtifacts: (name) => removeInstallArtifacts(runtime, name),
     now: () => nowDate(runtime.time),
@@ -244,13 +242,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       }
 
       const driver = getConsumerDriver();
-      const waitForOrama = () =>
-        driver.waitFreshUntil('corpus', snapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
-      const waitForNeedle = () =>
-        driver.waitFreshUntil('corpus', snapshot, NEEDLE_CONSUMER_ID, bootFreshnessTimeoutMs);
-
       if (readiness === 'base-search') {
-        await waitForOrama();
+        await driver.waitFreshUntil('corpus', snapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
         return;
       }
 

@@ -3,6 +3,7 @@ import type { KbRuntime } from '../kb/contract.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
+import type { ConsumerHandle } from '../store/consumer-contract.js';
 import type { ExpansionHost } from './contract.js';
 
 export interface ExpansionHostDeps {
@@ -12,6 +13,12 @@ export interface ExpansionHostDeps {
   readonly id: string;
   readonly consumerDriver: ConsumerDriver;
 }
+
+const REGISTERED_CONSUMER_HANDLES = Symbol('expansion-registered-consumer-handles');
+
+type ExpansionScope = Disposable & {
+  [REGISTERED_CONSUMER_HANDLES]?: ConsumerHandle[];
+};
 
 function decorateDispose(scope: Disposable, onDispose: () => void): void {
   const dispose = scope[Symbol.dispose].bind(scope);
@@ -29,6 +36,10 @@ function decorateDispose(scope: Disposable, onDispose: () => void): void {
 function bindingNameOf<T>(binding: RuntimeBinding<T>, error: unknown): string {
   const fromError = error instanceof CoralSetupError ? error.context?.binding : undefined;
   return typeof fromError === 'string' && fromError.length > 0 ? fromError : binding.binding;
+}
+
+export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
+  return (scope as ExpansionScope)[REGISTERED_CONSUMER_HANDLES] ?? [];
 }
 
 export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
@@ -61,6 +72,10 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
     },
     registerConsumer(reg, scope) {
       const handle = deps.consumerDriver.register(reg);
+      const expandedScope = scope as ExpansionScope;
+      const handles = expandedScope[REGISTERED_CONSUMER_HANDLES] ?? [];
+      handles.push(handle);
+      expandedScope[REGISTERED_CONSUMER_HANDLES] = handles;
       decorateDispose(scope, () => {
         void handle.stop().catch(() => {}).then(() => handle.unregister()).catch(() => {});
       });

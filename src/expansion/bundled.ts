@@ -18,4 +18,16 @@ export const bundledEntrySchema = z
   })
   .strict();
 
-export const BUNDLED_EXPANSIONS: readonly BundledExpansion[] = [];
+export const BUNDLED_EXPANSIONS: readonly BundledExpansion[] = [
+  {
+    id: 'needle',
+    version: '0.2.0',
+    specifier: '#src/kb/search/needle/expansion.js',
+    metadata: {
+      description: 'Needle vector backend (DuckDB-backed ScanANN; replaces Orama vector when equipped)',
+      repo: '../coral-needle',
+      onboarding: 'optional',
+      slot: 'kb.vector',
+    },
+  },
+];
