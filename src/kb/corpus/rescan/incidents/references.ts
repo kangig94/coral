@@ -39,11 +39,11 @@ export const referenceIntegrityDetector: Detector = {
 };
 
 function detectOrphanEntityGraphRefs(corpus: Parameters<Detector['detect']>[0]): DetectedIncident | null {
-  if (corpus.entityGraph === null || corpus.entityGraph.relationships === null) {
+  if (corpus.entityGraph === null || corpus.entityGraph.graph === null) {
     return null;
   }
 
-  const orphans = corpus.entityGraph.relationships.flatMap((relationship, relationshipIndex) =>
+  const orphans = corpus.entityGraph.graph.relationships.flatMap((relationship, relationshipIndex) =>
     relationship.evidence.flatMap((reference, evidenceIndex) => {
       const normalized = parseKbEntryId(reference);
       if (normalized !== null && corpus.activeEntryIds.has(normalized)) {

@@ -61,11 +61,12 @@ export async function performRescan(
   const sources = loadSources(scan);
   const principles = loadPrinciples(scan);
   const rebuildInfo = detectRescanInfo(kb, scan);
-  const topologyIndex = buildKbIndex(kb, notes, sources, [], principles);
+  const topologyIndex = buildKbIndex(scan, notes, sources, [], principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   // Topology refresh may delete/regenerate community files on disk; re-scan the corpus to capture them.
-  const communities = loadCommunities(buildCorpusScanView(kb));
-  const index = buildKbIndex(kb, notes, sources, communities, principles);
+  const refreshedScan = buildCorpusScanView(kb);
+  const communities = loadCommunities(refreshedScan);
+  const index = buildKbIndex(refreshedScan, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
   kb.writeIndex(index);
 

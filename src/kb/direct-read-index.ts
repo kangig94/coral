@@ -16,7 +16,7 @@ function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const principles = loadPrinciples(scan);
   const communities = loadCommunities(scan);
 
-  return buildKbIndex(kb, notes, sources, communities, principles);
+  return buildKbIndex(scan, notes, sources, communities, principles);
 }
 
 export function readKnowledgeBaseListIndex(kb: KbRuntime): KbIndex {

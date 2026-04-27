@@ -1,17 +1,20 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
+import { isNoEntryError } from '../../../infra/fs-errors.js';
 import {
   extractTitle,
   parseCommunityFrontmatter,
   parseFrontmatter,
   parseSourceFrontmatter,
 } from '../frontmatter.js';
+import { parseEntityGraph } from '../entity-graph-store.js';
 import {
   noteEntryId,
   sourceEntryId,
   communityEntryId,
   type CommunityFrontmatter,
+  type EntityGraph,
   type KbEntryId,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
@@ -49,10 +52,6 @@ export interface CorpusMarkdownFileScan {
   titleError: unknown | null;
 }
 
-export interface CorpusEntityGraphRelationshipScan {
-  evidence: readonly string[];
-}
-
 // Synthetic scan identifier for the detached entity-graph artifact; not a valid KbEntryId.
 export const ENTITY_GRAPH_SCAN_ENTRY_ID = 'entity-graph:.entity-graph.json' as const;
 
@@ -60,7 +59,7 @@ export interface CorpusEntityGraphScan {
   entryId: typeof ENTITY_GRAPH_SCAN_ENTRY_ID;
   path: string;
   content: string;
-  relationships: readonly CorpusEntityGraphRelationshipScan[] | null;
+  graph: EntityGraph | null;
   error: unknown | null;
 }
 
@@ -96,29 +95,15 @@ export function createCorpusMarkdownFileScan(input: {
 
 export function createCorpusEntityGraphScan(input: { content: string; path?: string }): CorpusEntityGraphScan {
   try {
-    const parsed: unknown = JSON.parse(input.content);
-    if (!isPlainRecord(parsed) || !Array.isArray(parsed.relationships)) {
-      throw new Error('Entity graph must be an object with a relationships array');
+    if (input.content.includes('<<<<<<<')) {
+      throw new Error('Merge conflict markers detected.');
     }
-
+    const graph = parseEntityGraph(JSON.parse(input.content) as unknown);
     return {
       entryId: ENTITY_GRAPH_SCAN_ENTRY_ID,
       path: input.path ?? '.entity-graph.json',
       content: input.content,
-      relationships: parsed.relationships.map((relationship, index) => {
-        if (!isPlainRecord(relationship) || !Array.isArray(relationship.evidence)) {
-          throw new Error(`relationships[${index}] must include an evidence array`);
-        }
-
-        const evidence = relationship.evidence.map((entry, evidenceIndex) => {
-          if (typeof entry !== 'string') {
-            throw new Error(`relationships[${index}].evidence[${evidenceIndex}] must be a string`);
-          }
-          return entry;
-        });
-
-        return { evidence };
-      }),
+      graph,
       error: null,
     };
   } catch (error: unknown) {
@@ -126,7 +111,7 @@ export function createCorpusEntityGraphScan(input: { content: string; path?: str
       entryId: ENTITY_GRAPH_SCAN_ENTRY_ID,
       path: input.path ?? '.entity-graph.json',
       content: input.content,
-      relationships: null,
+      graph: null,
       error,
     };
   }
@@ -162,7 +147,7 @@ export function createCorpusScanView(input: {
 }
 
 export function buildCorpusScanView(
-  kb: { markdownRoot: string; corpusStorage: CorpusStorage },
+  kb: { markdownRoot: string; corpusStorage: CorpusStorage; entityGraphPath(): string },
 ): CorpusScanView {
   const markdownFiles: CorpusMarkdownFileScan[] = [];
   for (const handle of kb.corpusStorage.scan(kb.markdownRoot)) {
@@ -174,7 +159,25 @@ export function buildCorpusScanView(
       }),
     );
   }
-  return createCorpusScanView({ markdownFiles });
+  return createCorpusScanView({
+    markdownFiles,
+    entityGraph: readEntityGraphScan(kb),
+  });
+}
+
+function readEntityGraphScan(
+  kb: { corpusStorage: CorpusStorage; entityGraphPath(): string },
+): CorpusEntityGraphScan | null {
+  const path = kb.entityGraphPath();
+  try {
+    const content = kb.corpusStorage.readFileSync(path, 'utf-8');
+    return createCorpusEntityGraphScan({ content, path });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 const FRONTMATTER_OPEN_PATTERN = /^---\r?\n/;

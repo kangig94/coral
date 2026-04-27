@@ -166,14 +166,14 @@ function requireTitle(file: CorpusMarkdownFileScan): string {
 }
 
 export function buildKbIndex(
-  kb: KbRuntime,
+  scan: CorpusScanView,
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
   communities: KbReindexCommunityRecord[],
   principles: Array<[string, string]>,
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
-  const entityGraph = kb.readEntityGraph();
+  const entityGraph = scan.entityGraph?.graph ?? null;
 
   for (const note of notes) {
     entries[noteEntryId(note.note)] = buildNoteIndexEntry({

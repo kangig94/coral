@@ -15,10 +15,12 @@ import {
   isSourceEntry,
   noteEntryId,
   sourceEntryId,
+  type EntityGraph,
+  type EntityRelationship,
   type KbIndex,
 } from '../../entry-types.js';
 import { projectIncidents } from './projections.js';
-import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
+import type { CorpusEntityGraphScan, CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident } from './incidents/catalog.js';
 
 const INDEX_FILE = 'index.json';
@@ -323,7 +325,6 @@ export function detectRescanInfo(
     | 'sourcesDir'
     | 'communitiesDir'
     | 'principlesDir'
-    | 'entityGraphPath'
   >,
   scan: CorpusScanView,
 ): {
@@ -344,15 +345,11 @@ export function detectRescanInfo(
     const pendingRepairIds = new Set(readCurateRetryQueue(kb.db).map((entry) => entry.entryId));
     let externalMutation: KbIndexMutationLane | null = null;
 
-    if (!existsSync(kb.entityGraphPath())) {
-      if (
-        currentIndex !== null &&
-        (Object.keys(currentIndex.entityMeta).length > 0 || currentIndex.relationships.length > 0)
-      ) {
-        externalMutation = mergeMutationLane(externalMutation, 'metadata');
-      }
-    } else if (fileModifiedAfter(kb.entityGraphPath(), indexMtime)) {
-      externalMutation = mergeMutationLane(externalMutation, 'metadata');
+    if (currentIndex !== null) {
+      externalMutation = mergeMutationLane(
+        externalMutation,
+        detectEntityGraphDrift(scan.entityGraph, currentIndex),
+      );
     }
 
     const principleFiles = scan.markdownFiles.filter((file) => file.kind === 'principle');
@@ -386,6 +383,61 @@ export function detectRescanInfo(
       externalMutation: 'both',
     };
   }
+}
+
+/**
+ * Pure projection: returns `'metadata'` when the scanned `.entity-graph.json`
+ * disagrees with the entity slice projected into `currentIndex`. Folds the
+ * previous standalone mtime-based branch into the unified MutationLane emitter,
+ * eliminating the false-positive of a touch-without-content-change rebuild.
+ */
+export function detectEntityGraphDrift(
+  scanned: CorpusEntityGraphScan | null,
+  currentIndex: Pick<KbIndex, 'entityMeta' | 'relationships'>,
+): KbIndexMutationLane | null {
+  const indexedGraph: EntityGraph = {
+    entityMeta: currentIndex.entityMeta,
+    relationships: currentIndex.relationships,
+  };
+  const scannedGraph = scanned?.graph ?? EMPTY_ENTITY_GRAPH;
+  return graphsEqual(scannedGraph, indexedGraph) ? null : 'metadata';
+}
+
+const EMPTY_ENTITY_GRAPH: EntityGraph = { entityMeta: {}, relationships: [] };
+
+function graphsEqual(left: EntityGraph, right: EntityGraph): boolean {
+  return (
+    canonicalEntityMeta(left.entityMeta) === canonicalEntityMeta(right.entityMeta) &&
+    canonicalRelationships(left.relationships) === canonicalRelationships(right.relationships)
+  );
+}
+
+function canonicalEntityMeta(entityMeta: EntityGraph['entityMeta']): string {
+  const sortedEntries = Object.entries(entityMeta)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, meta]) => [
+      name,
+      {
+        type: meta.type,
+        description: meta.description,
+        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases].sort((a, b) => a.localeCompare(b)) }),
+      },
+    ]);
+  return JSON.stringify(sortedEntries);
+}
+
+function canonicalRelationships(relationships: readonly EntityRelationship[]): string {
+  // Order is significant: relationships[0] vs [1] are distinct entries in the
+  // index. Sorting would mask reorders that are real authority writes.
+  return JSON.stringify(
+    relationships.map((relationship) => ({
+      source: relationship.source,
+      target: relationship.target,
+      type: relationship.type,
+      description: relationship.description,
+      evidence: [...relationship.evidence],
+    })),
+  );
 }
 
 export function applyLaneMutation(
