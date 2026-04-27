@@ -432,7 +432,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     try {
       return this.runtime.embedding.read().read();
     } catch (error) {
-      if (error instanceof CoralSetupError && error.code === 'binding-empty') {
+      if (error instanceof CoralSetupError && error.code === 'binding_empty') {
         return null;
       }
       throw error;

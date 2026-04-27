@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
-import { createExpansionHost } from '#src/expansion/host.js';
+import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
@@ -17,10 +16,9 @@ describe('createExpansionHost', () => {
       kb,
       scope,
       id: 'needle',
-      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriver,
+      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
     });
-    const binding = createRuntimeBinding('orama');
-    binding.binding = 'kb.vector';
+    const binding = createRuntimeBinding<string>('kb.vector', 'orama');
 
     host.bind(binding, 'needle');
 
@@ -35,19 +33,17 @@ describe('createExpansionHost', () => {
       kb,
       scope: { [Symbol.dispose]() {} },
       id: 'needle',
-      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriver,
+      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
     });
-    const binding = createRuntimeBinding<string>();
-    binding.binding = 'kb.embedding';
+    const binding = createRuntimeBinding<string>('kb.embedding');
 
     expect(() => host.require(binding)).toThrowError(CoralSetupError);
     try {
       host.require(binding);
     } catch (error) {
       expect(error).toMatchObject({
-        code: 'binding-required',
-        binding: 'kb.embedding',
-        requiredBy: 'needle',
+        code: 'binding_required',
+        context: { binding: 'kb.embedding', requiredBy: 'needle' },
       });
     }
   });
@@ -66,7 +62,7 @@ describe('createExpansionHost', () => {
         unregister,
         status: () => ({ authority: 'journal' as const, cursor: 0, pending: false, lastApplyError: null }),
       })),
-    } as unknown as ConsumerDriver;
+    } as unknown as ConsumerDriverPort;
     const host = createExpansionHost({
       runtime,
       kb,

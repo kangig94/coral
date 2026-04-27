@@ -15,7 +15,8 @@ import { createKbRuntime } from '#src/kb/runtime.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
-import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createNotifyCorpusMutation } from '#src/coordinator/corpus-notify.js';
 
 type ObservedSnapshot = Pick<CorpusStateSnapshot, 'contentSeq' | 'metadataSeq'>;

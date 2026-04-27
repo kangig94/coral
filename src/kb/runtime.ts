@@ -161,12 +161,9 @@ class KbRuntimeImpl implements KbRuntime {
     this.env = env ?? { get: readProcessEnv };
     this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
-    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>(createOramaBacked(this, this.baseProjection));
-    this.vector.binding = 'kb.vector';
-    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>();
-    this.embedding.binding = 'kb.embedding';
-    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>(createOramaFtsBacked(this, this.baseProjection));
-    this.fts.binding = 'kb.fts';
+    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', createOramaBacked(this, this.baseProjection));
+    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', createOramaFtsBacked(this, this.baseProjection));
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.oramaSnapshotStore = new OramaSnapshotStore(this.runtimeDir);
     this.indexStore = new KbIndexStore({

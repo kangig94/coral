@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeTimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { ConsumerDriver, FreshnessTimeout, type JournalConsumerRegistration } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver.js';
+import type { JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {

@@ -1,21 +1,10 @@
 import type { Disposable } from '../runtime/ports.js';
 import type { BundledExpansion, Expansion, ExpansionHost } from './contract.js';
+import { createScope } from './scope.js';
 
 type ExpansionModule = {
   default: Expansion;
 };
-
-function createScope(): Disposable {
-  let disposed = false;
-  return {
-    [Symbol.dispose]() {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-    },
-  };
-}
 
 function disposeQuietly(scope: Disposable): void {
   try {

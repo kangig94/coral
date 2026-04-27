@@ -46,13 +46,13 @@ type TextGraphSearchState = TextSearchState & {
 };
 
 function rethrowMissingEmbedder(error: unknown): never {
-  if (!(error instanceof CoralSetupError) || error.code !== 'binding-empty' || error.context?.binding !== 'kb.embedding') {
+  if (!(error instanceof CoralSetupError) || error.code !== 'binding_empty' || error.context?.binding !== 'kb.embedding') {
     throw error;
   }
 
   throw Object.assign(
     new CoralSetupError({
-      code: 'binding-empty',
+      code: 'binding_empty',
       userMessage: 'Vector search needs an embedder.',
       remediation:
         "Configure one via `coral-cli expansion list` (filter: `metadata.slot=kb.embedding`) and `coral-cli expansion equip <embedder>`. FTS-only search continues to work zero-config.",

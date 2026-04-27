@@ -35,10 +35,8 @@ describe('loadExpansions', () => {
 
   it('disposes earlier scopes when a later expansion fails', async () => {
     const { makeHost } = createTestRuntime();
-    const vector = createRuntimeBinding('orama');
-    vector.binding = 'kb.vector';
-    const fts = createRuntimeBinding('base-fts');
-    fts.binding = 'kb.fts';
+    const vector = createRuntimeBinding<string>('kb.vector', 'orama');
+    const fts = createRuntimeBinding<string>('kb.fts', 'base-fts');
     (globalThis as { __vectorBinding?: typeof vector; __ftsBinding?: typeof fts }).__vectorBinding = vector;
     (globalThis as { __vectorBinding?: typeof vector; __ftsBinding?: typeof fts }).__ftsBinding = fts;
 

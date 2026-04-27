@@ -1,6 +1,7 @@
 import type { Expansion } from '#src/expansion/contract.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '../vector.js';
+import { fetchWithTransientRetry, isRecord } from '../fetch.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 
 export const GEMINI_API_KEY_ENV = 'GEMINI_API_KEY';
@@ -38,41 +39,11 @@ function buildGeminiHeaders(apiKey: string): HeadersInit {
   };
 }
 
-const TRANSIENT_RETRY_LIMIT = 2;
-const TRANSIENT_RETRY_BASE_MS = 1_000;
-
-async function fetchWithTransientRetry(input: string, init?: RequestInit): Promise<Response> {
-  let lastError: Error | undefined;
-
-  for (let attempt = 0; attempt <= TRANSIENT_RETRY_LIMIT; attempt += 1) {
-    try {
-      const response = await fetch(input, init);
-      if (response.ok || ![408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
-        return response;
-      }
-      lastError = new Error(`${response.status} ${response.statusText}`);
-    } catch (error: unknown) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-    }
-
-    if (attempt < TRANSIENT_RETRY_LIMIT) {
-      const delayMs = TRANSIENT_RETRY_BASE_MS * 2 ** attempt;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-
-  throw lastError ?? new Error('fetch failed');
-}
-
 async function parseJsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     throw new Error(`Gemini embedding request failed (${response.status} ${response.statusText}): ${await response.text()}`);
   }
   return response.json();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseGeminiEmbeddingResponse(payload: unknown, dims: number): Float32Array {

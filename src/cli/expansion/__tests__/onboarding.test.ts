@@ -87,7 +87,7 @@ describe('needle onboarding', () => {
     };
 
     await expect(needleOnboarding.run(ctx)).rejects.toMatchObject({
-      code: 'user-cancelled',
+      code: 'user_cancelled',
       context: { during: 'needle-onboarding' },
     });
     expect(events).toEqual([]);

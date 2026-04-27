@@ -2,9 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type { ExpansionHost } from '#src/expansion/contract.js';
-import { createExpansionHost } from '#src/expansion/host.js';
+import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -87,7 +86,7 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
     });
   })();
   const registerConsumer = options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));
-  const consumerDriver = { register: registerConsumer } as Pick<ConsumerDriver, 'register'> as ConsumerDriver;
+  const consumerDriver: ConsumerDriverPort = { register: registerConsumer };
 
   // Tests model fake backends as Expansions and load them through the same
   // makeHost/manifest path as production code.

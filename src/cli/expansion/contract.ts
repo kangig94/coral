@@ -126,7 +126,7 @@ function finalizeInstallError(error: InstallError): InstallError {
 function bindingRequiredInstallError(
   structured: NonNullable<ReturnType<typeof serializeCoralSetupError>>,
 ): InstallError | null {
-  if (structured.code !== 'binding-required') {
+  if (structured.code !== 'binding_required') {
     return null;
   }
 

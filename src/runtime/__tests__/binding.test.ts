@@ -5,15 +5,13 @@ import type { Disposable } from '#src/runtime/ports.js';
 
 describe('createRuntimeBinding', () => {
   it('binds and reads the bound value', () => {
-    const binding = createRuntimeBinding('orama');
-    binding.binding = 'kb.vector';
+    const binding = createRuntimeBinding<string>('kb.vector', 'orama');
     binding.bind('needle', { [Symbol.dispose]() {} }, 'needle');
     expect(binding.read()).toBe('needle');
   });
 
-  it('throws binding-occupied with heldBy on double bind', () => {
-    const binding = createRuntimeBinding('orama');
-    binding.binding = 'kb.vector';
+  it('throws binding_occupied with heldBy on double bind', () => {
+    const binding = createRuntimeBinding<string>('kb.vector', 'orama');
     binding.bind('needle', { [Symbol.dispose]() {} }, 'needle');
     let thrown: unknown;
     try {
@@ -22,13 +20,14 @@ describe('createRuntimeBinding', () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(CoralSetupError);
-    expect((thrown as CoralSetupError & { heldBy: string }).code).toBe('binding-occupied');
-    expect((thrown as CoralSetupError & { heldBy: string }).heldBy).toBe('needle');
+    expect(thrown).toMatchObject({
+      code: 'binding_occupied',
+      context: { binding: 'kb.vector', heldBy: 'needle' },
+    });
   });
 
   it('returns the default again after scope disposal', () => {
-    const binding = createRuntimeBinding('orama');
-    binding.binding = 'kb.vector';
+    const binding = createRuntimeBinding<string>('kb.vector', 'orama');
     let disposeCalls = 0;
     const scope: Disposable = { [Symbol.dispose]: () => { disposeCalls += 1; } };
     binding.bind('needle', scope, 'needle');
@@ -38,9 +37,8 @@ describe('createRuntimeBinding', () => {
     expect(binding.read()).toBe('orama');
   });
 
-  it('throws binding-empty with the binding name when no default exists', () => {
-    const binding = createRuntimeBinding<string>();
-    binding.binding = 'kb.embedding';
+  it('throws binding_empty with the binding name when no default exists', () => {
+    const binding = createRuntimeBinding<string>('kb.embedding');
     let thrown: unknown;
     try {
       binding.read();
@@ -48,19 +46,9 @@ describe('createRuntimeBinding', () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(CoralSetupError);
-    expect((thrown as CoralSetupError & { binding: string }).code).toBe('binding-empty');
-    expect((thrown as CoralSetupError & { binding: string }).binding).toBe('kb.embedding');
-  });
-
-  it('supports scope disposal as a smoke test', () => {
-    const binding = createRuntimeBinding('orama');
-    binding.binding = 'kb.vector';
-    let disposed = false;
-    const scope: Disposable = { [Symbol.dispose]: () => { disposed = true; } };
-    binding.bind('needle', scope, 'needle');
-    expect(binding.read()).toBe('needle');
-    scope[Symbol.dispose]();
-    expect(disposed).toBe(true);
-    expect(binding.read()).toBe('orama');
+    expect(thrown).toMatchObject({
+      code: 'binding_empty',
+      context: { binding: 'kb.embedding' },
+    });
   });
 });

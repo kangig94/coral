@@ -7,12 +7,12 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import {
-  ConsumerDriver,
-  type ConsumerApplyError,
-  type CorpusConsumerRegistration,
-  type JournalConsumerRegistration,
-} from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import type {
+  ConsumerApplyError,
+  CorpusConsumerRegistration,
+  JournalConsumerRegistration,
+} from '#src/store/consumer-contract.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),

@@ -1,26 +1,26 @@
-import { CoralSetupError } from './errors.js';
+import { documentedCoralSetupError } from './errors.js';
 import type { Disposable } from './ports.js';
 
 export interface RuntimeBinding<T> {
-  binding: string;
+  readonly name: string;
   readonly heldBy: string | undefined;
   read(): T;
   bind(value: T, scope: Disposable, holder: string): void;
 }
 
-export function createRuntimeBinding<T>(defaultValue?: T): RuntimeBinding<T> {
-  const hasDefault = arguments.length > 0;
+export function createRuntimeBinding<T>(name: string, defaultValue?: T): RuntimeBinding<T> {
+  const hasDefault = arguments.length > 1;
   let bound = defaultValue;
   let heldBy: string | undefined;
-  const binding: RuntimeBinding<T> = {
-    binding: 'unknown',
+  return {
+    name,
     get heldBy() { return heldBy; },
     read() {
       if (heldBy !== undefined || hasDefault) return bound as T;
-      throw Object.assign(new CoralSetupError({ code: 'binding-empty', userMessage: `Binding '${binding.binding}' is empty.`, remediation: 'Bind the required runtime capability before reading it.', context: { binding: binding.binding } }), { binding: binding.binding });
+      throw documentedCoralSetupError('binding_empty', { binding: name });
     },
     bind(value, scope, holder) {
-      if (heldBy !== undefined) throw Object.assign(new CoralSetupError({ code: 'binding-occupied', userMessage: `Binding '${binding.binding}' is held by '${heldBy}'.`, remediation: `Dispose '${heldBy}' before rebinding '${binding.binding}'.`, context: { heldBy } }), { heldBy });
+      if (heldBy !== undefined) throw documentedCoralSetupError('binding_occupied', { binding: name, heldBy });
       bound = value;
       heldBy = holder;
       const dispose = scope[Symbol.dispose].bind(scope);
@@ -34,5 +34,4 @@ export function createRuntimeBinding<T>(defaultValue?: T): RuntimeBinding<T> {
       };
     },
   };
-  return binding;
 }

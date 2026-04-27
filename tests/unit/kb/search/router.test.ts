@@ -35,8 +35,8 @@ describe('createRouter', () => {
     const textRetrieval: FtsRetrieval = {
       read: vi.fn(async () => ({ hits: [] })),
     };
-    const vector = createRuntimeBinding(vectorBacked);
-    const fts = createRuntimeBinding({
+    const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', vectorBacked);
+    const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', {
       read: () => textRetrieval,
       consumer: {
         id: 'mock-orama',
@@ -45,8 +45,6 @@ describe('createRouter', () => {
         registrationKind: 'base',
       },
     });
-    vector.binding = 'kb.vector';
-    fts.binding = 'kb.fts';
 
     const runtime = {
       vector,

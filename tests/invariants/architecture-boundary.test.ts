@@ -1148,11 +1148,11 @@ describe('architecture boundary guard', () => {
     }
 
     const runtimeSource = readFileSync(resolve(REPO_ROOT, 'src/kb/runtime.ts'), 'utf8');
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<VectorRetrieval>>\(\s*createOramaBacked\(/);
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<FtsRetrieval>>\(\s*createOramaFtsBacked\(/);
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*\)/);
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<VectorRetrieval>>\(\s*'kb\.vector'\s*,\s*createOramaBacked\(/);
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<FtsRetrieval>>\(\s*'kb\.fts'\s*,\s*createOramaFtsBacked\(/);
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*\)/);
     expect(runtimeSource).not.toMatch(
-      /createRuntimeBinding<Backed<EmbeddingService>>\(\s*(?:undefined|create[A-Za-z0-9_]+|\{|\[|'|"|`)/,
+      /createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*,/,
     );
   });
   it('keeps kb.embedding defaultless and aligns bundled slot metadata with declared KbRuntime bindings', () => {
@@ -1206,7 +1206,7 @@ describe('architecture boundary guard', () => {
     collectBindings(contractFile);
     visitRuntime(runtimeFile);
 
-    expect(embeddingBindingArgs).toBe(0);
+    expect(embeddingBindingArgs).toBe(1);
     expect(BUNDLED_EXPANSIONS.some((entry) => entry.metadata.slot === 'kb.embedding')).toBe(true);
 
     const declaredBindings = [...bindingNames];

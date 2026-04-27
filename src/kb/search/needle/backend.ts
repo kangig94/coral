@@ -131,7 +131,7 @@ async function resolveRuntimeNeedleEmbedder(runtime: KbRuntime): Promise<Resolve
   try {
     return resolveBoundNeedleEmbedder(runtime.embedding.read());
   } catch (error) {
-    if (error instanceof CoralSetupError && error.code === 'binding-empty') {
+    if (error instanceof CoralSetupError && error.code === 'binding_empty') {
       return null;
     }
     throw error;

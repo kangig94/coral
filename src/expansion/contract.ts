@@ -15,6 +15,8 @@ export interface ExpansionHost {
   readonly id: string;
 }
 
+export type BundledExpansionSlot = 'kb.vector' | 'kb.embedding' | 'kb.fts';
+
 export interface BundledExpansion {
   readonly id: string;
   readonly version: string;
@@ -23,6 +25,6 @@ export interface BundledExpansion {
     readonly description: string;
     readonly repo?: string;
     readonly onboarding?: 'optional' | 'required';
-    readonly slot?: string;
+    readonly slot?: BundledExpansionSlot;
   };
 }

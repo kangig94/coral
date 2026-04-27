@@ -25,6 +25,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'unknown_expansion'
   | 'expansion_runtime_unavailable'
   | 'expansion_embedding_provider_missing'
+  | 'expansion_not_equipped'
   | 'consumer_not_registered'
   | 'consumer_authority_mismatch'
   | 'consumer_interest_mismatch'
@@ -34,7 +35,11 @@ export type DocumentedCoralSetupErrorCode =
   | 'consumer_unregister_requires_stop'
   | 'consumer_interest_invalid'
   | 'consumer_registration_kind_invalid'
-  | 'expansion_install_path_unwritable';
+  | 'expansion_install_path_unwritable'
+  | 'binding_empty'
+  | 'binding_occupied'
+  | 'binding_required'
+  | 'user_cancelled';
 
 type DocumentedCoralSetupErrorSpec = {
   readonly userMessage: string | ((context?: CoralSetupErrorContext) => string);
@@ -129,6 +134,41 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Cannot write to the Coral expansion install path for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: 'Check filesystem permissions and free space under ~/.coral/data/expansion/, then retry.',
+  },
+  expansion_not_equipped: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'name', 'this expansion')}' is not equipped.`,
+    remediation: "Check 'coral-cli expansion list' before unequipping.",
+  },
+  binding_empty: {
+    userMessage: (context) =>
+      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is empty.`,
+    remediation: 'Bind the required runtime capability before reading it.',
+  },
+  binding_occupied: {
+    userMessage: (context) =>
+      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is held by '${stringContextValue(context, 'heldBy', 'another expansion')}'.`,
+    remediation: (context) => {
+      const heldBy = stringContextValue(context, 'heldBy', '<holder>');
+      return `Run '/equip uninstall ${heldBy}' (or 'coral-cli expansion unequip ${heldBy}') to release the binding, then retry.`;
+    },
+  },
+  binding_required: {
+    userMessage: (context) =>
+      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is required by '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
+    remediation: (context) =>
+      `Bind '${stringContextValue(context, 'binding', 'unknown')}' before loading '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
+  },
+  user_cancelled: {
+    userMessage: (context) =>
+      `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,
+    remediation: (context) => {
+      const alreadyEquipped = context?.alreadyEquipped;
+      if (typeof alreadyEquipped === 'string' && alreadyEquipped.length > 0) {
+        return `An embedder ('${alreadyEquipped}') is already configured. Run '/equip needle' again to continue, or '/equip uninstall ${alreadyEquipped}' to clean up.`;
+      }
+      return 'Retry the operation when ready.';
+    },
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
 

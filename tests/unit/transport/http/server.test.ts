@@ -506,18 +506,15 @@ describe('execution backend server', () => {
     const ftsRetrieval: FtsRetrieval = {
       read: vi.fn(async () => ({ hits: [] })),
     };
-    const vector = createRuntimeBinding<Backed<VectorRetrieval>>({
+    const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', {
       read: () => vectorRetrieval,
       consumer: baseConsumer,
     });
-    const fts = createRuntimeBinding<Backed<FtsRetrieval>>({
+    const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', {
       read: () => ftsRetrieval,
       consumer: baseConsumer,
     });
-    const embedding = createRuntimeBinding<Backed<EmbeddingService>>();
-    vector.binding = 'kb.vector';
-    fts.binding = 'kb.fts';
-    embedding.binding = 'kb.embedding';
+    const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
     return {
       kb: {
         vector,

@@ -29,16 +29,9 @@ import {
   toConsumerApplyError,
 } from './consumer-driver-support.js';
 
-export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contract.js';
-export type {
-  ConsumerApplyError,
-  ConsumerHandle,
-  ConsumerHandleStatus,
-  ConsumerRegistration,
-  ConsumerRegistrationKind,
-  JournalApplyContext,
-  JournalConsumerRegistration,
-} from '../store/consumer-contract.js';
+// Consumer-related contract types live at their canonical home in
+// `src/store/consumer-contract.ts` (single-home per design-philosophy §7).
+// Importers should reach there directly — no re-export shim from this file.
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {

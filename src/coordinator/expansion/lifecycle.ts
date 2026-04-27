@@ -1,9 +1,10 @@
 import { backendLog } from '../../infra/backend-log.js';
-import type { BundledExpansion, ExpansionHost } from '../../expansion/contract.js';
+import type { BundledExpansion, BundledExpansionSlot, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
 import { registeredConsumerHandles } from '../../expansion/host.js';
+import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
-import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import type { ExpansionStateStore } from './state.js';
 
@@ -26,33 +27,21 @@ export interface ExpansionLifecycleServiceOptions {
   readonly resolveKbRuntime?: () => KbRuntime | null;
 }
 
-function createScope(): Disposable {
-  let disposed = false;
-  return {
-    [Symbol.dispose]() {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-    },
-  };
-}
-
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function bindingOf(kb: KbRuntime, name: string) {
-  switch (name) {
-    case 'kb.vector':
-      return kb.vector;
-    case 'kb.embedding':
-      return kb.embedding;
-    case 'kb.fts':
-      return kb.fts;
-    default:
-      return null;
+const KB_BINDING_BY_SLOT: Record<BundledExpansionSlot, keyof Pick<KbRuntime, 'vector' | 'embedding' | 'fts'>> = {
+  'kb.vector': 'vector',
+  'kb.embedding': 'embedding',
+  'kb.fts': 'fts',
+};
+
+function bindingOf(kb: KbRuntime, slot: string) {
+  if (slot in KB_BINDING_BY_SLOT) {
+    return kb[KB_BINDING_BY_SLOT[slot as BundledExpansionSlot]];
   }
+  return null;
 }
 
 export class ExpansionLifecycleService {
@@ -96,12 +85,7 @@ export class ExpansionLifecycleService {
     const row = this.options.state.get(name);
     const failed = this.failedRecovery.has(name);
     if (!scope && !row && !failed) {
-      throw new CoralSetupError({
-        code: 'expansion-not-equipped',
-        userMessage: `Expansion '${name}' is not equipped.`,
-        remediation: "Check 'coral-cli expansion list' before unequipping.",
-        context: { name },
-      });
+      throw documentedCoralSetupError('expansion_not_equipped', { name });
     }
 
     if (scope) {

@@ -21,7 +21,7 @@ export async function searchExplicitVectorResults(
   try {
     queryVector = await embedQueryForVectorSearch(rt, rawQuery);
   } catch (error) {
-    if (error instanceof CoralSetupError && error.code === 'binding-empty') {
+    if (error instanceof CoralSetupError && error.code === 'binding_empty') {
       throw error;
     }
     return {

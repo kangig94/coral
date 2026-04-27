@@ -14,7 +14,7 @@ export const bundledEntrySchema = z
         description: z.string().min(1),
         repo: z.string().min(1).optional(),
         onboarding: z.enum(['optional', 'required']).optional(),
-        slot: z.string().min(1).optional(),
+        slot: z.enum(['kb.vector', 'kb.embedding', 'kb.fts']).optional(),
       })
       .strict(),
   })

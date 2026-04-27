@@ -8,7 +8,7 @@ import { coralEnvPath, readCoralEnvFile } from '../../kb/env.js';
 import { GEMINI_API_KEY_ENV } from '../../kb/embedding/gemini/expansion.js';
 import { ensureOnnxModelAvailable } from '../../kb/embedding/onnx/expansion.js';
 import { resolveBuildFlavor } from '../../infra/build-flavor.js';
-import { CoralSetupError } from '../../runtime/errors.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
 export interface OnboardingFlow {
@@ -28,15 +28,6 @@ interface OnboardingFlowDeps {
   readSecret?(message: string): Promise<string | null>;
   writeEnvVar?(key: string, value: string): Promise<void>;
   ensureOnnxModel?(): Promise<void>;
-}
-
-function cancellationError(during: string, userMessage: string, remediation: string): CoralSetupError {
-  return new CoralSetupError({
-    code: 'user-cancelled',
-    userMessage,
-    remediation,
-    context: { during },
-  });
 }
 
 async function readSecretPrompt(message: string): Promise<string | null> {
@@ -77,11 +68,7 @@ export const needleOnboarding: OnboardingFlow = {
     const choices = ctx.catalog.filter((entry) => entry.metadata.slot === 'kb.embedding');
     const chosen = await ctx.prompt.choose('Vector search needs an embedder:', choices);
     if (!chosen) {
-      throw cancellationError(
-        'needle-onboarding',
-        'Needle onboarding was cancelled before an embedder was chosen.',
-        "Retry the needle onboarding flow and choose an embedder when you're ready.",
-      );
+      throw documentedCoralSetupError('user_cancelled', { during: 'needle-onboarding' });
     }
 
     await ctx.runOnboarding(chosen.id);
@@ -102,11 +89,7 @@ export function createGeminiOnboardingFlow(deps: OnboardingFlowDeps = {}): Onboa
       const writeEnvVar = deps.writeEnvVar ?? writeCoralEnvVar;
       const apiKey = await readSecret(`Enter ${GEMINI_API_KEY_ENV} (blank to cancel):`);
       if (!apiKey) {
-        throw cancellationError(
-          'gemini-onboarding',
-          'Gemini onboarding was cancelled before an API key was saved.',
-          `Retry onboarding and provide ${GEMINI_API_KEY_ENV}, or export it before equipping gemini.`,
-        );
+        throw documentedCoralSetupError('user_cancelled', { during: 'gemini-onboarding' });
       }
 
       await writeEnvVar(GEMINI_API_KEY_ENV, apiKey);

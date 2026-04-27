@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as RouterModule from '#src/kb/search/router.js';
-import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
+import type { ConsumerHandleStatus } from '#src/store/consumer-contract.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import {

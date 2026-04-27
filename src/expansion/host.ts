@@ -1,17 +1,24 @@
-import type { ConsumerDriver } from '../coordinator/consumer-driver.js';
 import type { KbRuntime } from '../kb/contract.js';
-import { CoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
-import type { ConsumerHandle } from '../store/consumer-contract.js';
+import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { ExpansionHost } from './contract.js';
+import { decorateDispose } from './scope.js';
+
+// Narrow port over the coordinator's ConsumerDriver. The host receives only
+// the registration entrypoint, not the full coordinator class — keeps
+// `src/expansion/` from importing `coordinator/` (Design Philosophy §10.2).
+export interface ConsumerDriverPort {
+  register(reg: ConsumerRegistration): ConsumerHandle;
+}
 
 export interface ExpansionHostDeps {
   readonly runtime: Runtime;
   readonly kb: KbRuntime;
   readonly scope: Disposable;
   readonly id: string;
-  readonly consumerDriver: ConsumerDriver;
+  readonly consumerDriver: ConsumerDriverPort;
 }
 
 const REGISTERED_CONSUMER_HANDLES = Symbol('expansion-registered-consumer-handles');
@@ -20,22 +27,9 @@ type ExpansionScope = Disposable & {
   [REGISTERED_CONSUMER_HANDLES]?: ConsumerHandle[];
 };
 
-function decorateDispose(scope: Disposable, onDispose: () => void): void {
-  const dispose = scope[Symbol.dispose].bind(scope);
-  let disposed = false;
-  scope[Symbol.dispose] = () => {
-    if (disposed) {
-      return;
-    }
-    disposed = true;
-    onDispose();
-    dispose();
-  };
-}
-
 function bindingNameOf<T>(binding: RuntimeBinding<T>, error: unknown): string {
   const fromError = error instanceof CoralSetupError ? error.context?.binding : undefined;
-  return typeof fromError === 'string' && fromError.length > 0 ? fromError : binding.binding;
+  return typeof fromError === 'string' && fromError.length > 0 ? fromError : binding.name;
 }
 
 export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
@@ -55,19 +49,11 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
       try {
         return binding.read();
       } catch (error) {
-        if (!(error instanceof CoralSetupError) || error.code !== 'binding-empty') {
+        if (!(error instanceof CoralSetupError) || error.code !== 'binding_empty') {
           throw error;
         }
         const bindingName = bindingNameOf(binding, error);
-        throw Object.assign(
-          new CoralSetupError({
-            code: 'binding-required',
-            userMessage: `Binding '${bindingName}' is required by '${host.id}'.`,
-            remediation: `Bind '${bindingName}' before loading '${host.id}'.`,
-            context: { binding: bindingName, requiredBy: host.id },
-          }),
-          { binding: bindingName, requiredBy: host.id, cause: error },
-        );
+        throw documentedCoralSetupError('binding_required', { binding: bindingName, requiredBy: host.id });
       }
     },
     registerConsumer(reg, scope) {

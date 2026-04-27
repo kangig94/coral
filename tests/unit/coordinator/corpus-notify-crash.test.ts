@@ -11,7 +11,8 @@ import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
-import { ConsumerDriver, type CorpusConsumerRegistration } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
   return async (publication: { snapshot: CorpusStateSnapshot; changedLanes: readonly ('content' | 'metadata')[] }) => {

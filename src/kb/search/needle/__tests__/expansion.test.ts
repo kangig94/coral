@@ -50,13 +50,12 @@ describe('needle expansion', () => {
     }
   });
 
-  it('throws binding-required when no embedder expansion is bound', async () => {
+  it('throws binding_required when no embedder expansion is bound', async () => {
     const { makeHost } = createTestRuntime();
 
     await expect(loadExpansions(makeHost, [NEEDLE_ENTRY])).rejects.toMatchObject({
-      code: 'binding-required',
-      binding: 'kb.embedding',
-      requiredBy: 'needle',
+      code: 'binding_required',
+      context: { binding: 'kb.embedding', requiredBy: 'needle' },
     });
   });
 
