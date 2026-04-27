@@ -4,6 +4,7 @@ import type { RuntimeBinding } from '../runtime/binding.js';
 import type { ConsumerRegistration } from '../store/consumer-contract.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
+import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
@@ -103,9 +104,14 @@ export interface KbRuntime {
   readonly ids: Pick<IdPort, 'uuid'>;
   /**
    * general-purpose I/O surface used by gitSync; do NOT use for corpus
-   * markdown reads — use corpusStorage (added in Phase 8) instead.
+   * markdown reads — use corpusStorage instead.
    */
   readonly storagePort: StoragePort;
+  /**
+   * typed iterator narrowed for the rescan SRW boundary; do not use for
+   * writes — use storagePort instead. Forbidden in auto-fix.ts.
+   */
+  readonly corpusStorage: CorpusStorage;
   readonly spawnCli: SpawnCliFn;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;

@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
 import {
@@ -8,7 +7,6 @@ import {
   parseFrontmatter,
   parseSourceFrontmatter,
 } from '../frontmatter.js';
-import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   noteEntryId,
   sourceEntryId,
@@ -20,9 +18,9 @@ import {
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
-import type { KbRuntime } from '../../contract.js';
+import type { CorpusMarkdownKind, CorpusStorage } from './storage.js';
 
-export type CorpusMarkdownKind = 'note' | 'source' | 'community' | 'principle';
+export type { CorpusMarkdownKind } from './storage.js';
 export type PrincipleEntryId = `principle:${string}`;
 export type CorpusActiveEntryId = KbEntryId | PrincipleEntryId;
 
@@ -164,28 +162,19 @@ export function createCorpusScanView(input: {
 }
 
 export function buildCorpusScanView(
-  kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir'>,
+  kb: { markdownRoot: string; corpusStorage: CorpusStorage },
 ): CorpusScanView {
-  const markdownFiles = [
-    ...scanMarkdownDirectory('note', kb.notesDir()),
-    ...scanMarkdownDirectory('source', kb.sourcesDir()),
-    ...scanMarkdownDirectory('community', kb.communitiesDir()),
-    ...scanMarkdownDirectory('principle', kb.principlesDir()),
-  ];
-
+  const markdownFiles: CorpusMarkdownFileScan[] = [];
+  for (const handle of kb.corpusStorage.scan(kb.markdownRoot)) {
+    markdownFiles.push(
+      createCorpusMarkdownFileScan({
+        kind: handle.kind,
+        path: handle.path,
+        content: handle.read(),
+      }),
+    );
+  }
   return createCorpusScanView({ markdownFiles });
-}
-
-
-function scanMarkdownDirectory(kind: CorpusMarkdownKind, dirPath: string): CorpusMarkdownFileScan[] {
-  return sortedMarkdownEntries(dirPath).map((entry) => {
-    const path = join(dirPath, entry);
-    return createCorpusMarkdownFileScan({
-      kind,
-      path,
-      content: readFileSync(path, 'utf-8'),
-    });
-  });
 }
 
 const FRONTMATTER_OPEN_PATTERN = /^---\r?\n/;

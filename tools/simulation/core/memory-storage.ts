@@ -7,12 +7,14 @@ type FileNode = {
   content: Buffer;
   mode?: number;
   mtimeMs: number;
+  mtimeNs: bigint;
 };
 
 type DirectoryNode = {
   kind: 'dir';
   mode?: number;
   mtimeMs: number;
+  mtimeNs: bigint;
 };
 
 type OpenFile = {
@@ -26,6 +28,7 @@ export type InMemoryStorageSnapshot = {
   nextFd: number;
   openFiles: Array<[number, OpenFile]>;
   lastStamp: number;
+  subTickCounter: bigint;
 };
 
 export type InMemoryRoots = {
@@ -76,6 +79,7 @@ function cloneFileNode(node: FileNode): FileNode {
     content: Buffer.from(node.content),
     mode: node.mode,
     mtimeMs: node.mtimeMs,
+    mtimeNs: node.mtimeNs,
   };
 }
 
@@ -84,6 +88,7 @@ function cloneDirectoryNode(node: DirectoryNode): DirectoryNode {
     kind: 'dir',
     mode: node.mode,
     mtimeMs: node.mtimeMs,
+    mtimeNs: node.mtimeNs,
   };
 }
 
@@ -101,13 +106,14 @@ export class InMemoryStorage implements StoragePort {
   private readonly openFiles = new Map<number, OpenFile>();
   private nextFd = 100;
   private lastStamp: number;
+  private subTickCounter: bigint = 0n;
 
   constructor(
     private readonly time: Pick<TimePort, 'now'>,
     private readonly roots: InMemoryRoots = {},
   ) {
     this.lastStamp = this.time.now();
-    this.directories.set('/', { kind: 'dir', mtimeMs: this.nextStamp() });
+    this.directories.set('/', { kind: 'dir', ...this.nextStamps() });
     this.childIndex.set('/', new Set());
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
     this.mkdirSync(this.coralRoot(), { recursive: true });
@@ -120,6 +126,7 @@ export class InMemoryStorage implements StoragePort {
       nextFd: this.nextFd,
       openFiles: [...this.openFiles.entries()].map(([fd, open]) => [fd, { ...open }]),
       lastStamp: this.lastStamp,
+      subTickCounter: this.subTickCounter,
     };
   }
 
@@ -140,6 +147,7 @@ export class InMemoryStorage implements StoragePort {
     }
     this.nextFd = snapshot.nextFd;
     this.lastStamp = snapshot.lastStamp;
+    this.subTickCounter = snapshot.subTickCounter;
     this.rebuildChildIndex();
   }
 
@@ -166,7 +174,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
-      mtimeMs: this.nextStamp(),
+      ...this.nextStamps(),
     });
     this.registerChild(normalized);
     this.touchAncestors(parent);
@@ -195,7 +203,7 @@ export class InMemoryStorage implements StoragePort {
         kind: 'file',
         content: Buffer.from(existing.content),
         mode: existing.mode,
-        mtimeMs: this.nextStamp(),
+        ...this.nextStamps(),
       });
       this.registerChild(to);
       this.touchAncestors(parentPath(from));
@@ -236,7 +244,7 @@ export class InMemoryStorage implements StoragePort {
       this.directories.set(nextPath, {
         kind: 'dir',
         mode: node.mode,
-        mtimeMs: this.nextStamp(),
+        ...this.nextStamps(),
       });
       this.registerDirectory(nextPath);
     }
@@ -246,7 +254,7 @@ export class InMemoryStorage implements StoragePort {
         kind: 'file',
         content: Buffer.from(node.content),
         mode: node.mode,
-        mtimeMs: this.nextStamp(),
+        ...this.nextStamps(),
       });
       this.registerChild(nextPath);
     }
@@ -286,7 +294,7 @@ export class InMemoryStorage implements StoragePort {
         if (!this.directories.has(cursor)) {
           this.directories.set(cursor, {
             kind: 'dir',
-            mtimeMs: this.nextStamp(),
+            ...this.nextStamps(),
           });
           this.registerDirectory(cursor);
           this.touchAncestors(parentPath(cursor));
@@ -297,7 +305,7 @@ export class InMemoryStorage implements StoragePort {
 
     this.directories.set(normalized, {
       kind: 'dir',
-      mtimeMs: this.nextStamp(),
+      ...this.nextStamps(),
     });
     this.registerDirectory(normalized);
     this.touchAncestors(parent);
@@ -352,10 +360,25 @@ export class InMemoryStorage implements StoragePort {
       });
   }
 
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } {
+  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: string, options: { bigint: true }): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+  statSync(
+    path: string,
+    options?: { bigint: true },
+  ):
+    | { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean }
+    | { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean } {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
     if (file) {
+      if (options?.bigint === true) {
+        return {
+          size: BigInt(file.content.length),
+          mtimeNs: file.mtimeNs,
+          isDirectory: () => false,
+          isFile: () => true,
+        };
+      }
       return {
         size: file.content.length,
         mtimeMs: file.mtimeMs,
@@ -366,6 +389,14 @@ export class InMemoryStorage implements StoragePort {
     const directory = this.directories.get(normalized);
     if (!directory) {
       throw createErrnoError('ENOENT', normalized);
+    }
+    if (options?.bigint === true) {
+      return {
+        size: 0n,
+        mtimeNs: directory.mtimeNs,
+        isDirectory: () => true,
+        isFile: () => false,
+      };
     }
     return {
       size: 0,
@@ -432,7 +463,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content,
       mode: current?.mode,
-      mtimeMs: this.nextStamp(),
+      ...this.nextStamps(),
     });
     this.registerChild(normalized);
     this.touchAncestors(parent);
@@ -473,7 +504,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
-      mtimeMs: this.nextStamp(),
+      ...this.nextStamps(),
     });
     this.registerChild(normalized);
     this.touchAncestors(parentPath(normalized));
@@ -492,7 +523,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
-      mtimeMs: this.nextStamp(),
+      ...this.nextStamps(),
     });
     this.registerChild(tempPath);
     this.renameSync(tempPath, normalized);
@@ -508,13 +539,17 @@ export class InMemoryStorage implements StoragePort {
     const file = this.files.get(normalized);
     if (file) {
       file.mode = mode;
-      file.mtimeMs = this.nextStamp();
+      const stamps = this.nextStamps();
+      file.mtimeMs = stamps.mtimeMs;
+      file.mtimeNs = stamps.mtimeNs;
       return;
     }
     const directory = this.directories.get(normalized);
     if (directory) {
       directory.mode = mode;
-      directory.mtimeMs = this.nextStamp();
+      const stamps = this.nextStamps();
+      directory.mtimeMs = stamps.mtimeMs;
+      directory.mtimeNs = stamps.mtimeNs;
       return;
     }
     throw createErrnoError('ENOENT', normalized);
@@ -528,10 +563,23 @@ export class InMemoryStorage implements StoragePort {
     return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
   }
 
-  private nextStamp(): number {
+  private nextStamps(): { mtimeMs: number; mtimeNs: bigint } {
     const candidate = this.time.now();
-    this.lastStamp = Math.max(candidate, this.lastStamp + 1);
-    return this.lastStamp;
+    const previousMs = this.lastStamp;
+    this.lastStamp = Math.max(candidate, previousMs + 1);
+    // subTickCounter increments only when nextStamps is invoked twice within the
+    // same `lastStamp` ms tick; the surrounding monotonic-bump above ordinarily
+    // advances mtimeMs by ≥1, so the counter resets — but the formula keeps
+    // sub-millisecond ordering correct if a same-tick path is added later.
+    if (this.lastStamp === previousMs) {
+      this.subTickCounter += 1n;
+    } else {
+      this.subTickCounter = 0n;
+    }
+    return {
+      mtimeMs: this.lastStamp,
+      mtimeNs: BigInt(this.lastStamp) * 1_000_000n + this.subTickCounter,
+    };
   }
 
   private requireDirectory(path: string): void {
@@ -668,7 +716,9 @@ export class InMemoryStorage implements StoragePort {
     while (true) {
       const directory = this.directories.get(cursor);
       if (directory) {
-        directory.mtimeMs = this.nextStamp();
+        const stamps = this.nextStamps();
+        directory.mtimeMs = stamps.mtimeMs;
+        directory.mtimeNs = stamps.mtimeNs;
       }
       if (cursor === '/') {
         return;

@@ -8,6 +8,7 @@ import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/hos
 import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
 import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
@@ -44,14 +45,17 @@ export interface CreateTestKbRuntimeOptions {
 
 /**
  * Constructs a `KbRuntime` for tests, sourcing the four port slots
- * (`storage`, `spawnCli`, `processPort`, `envPort`) from a `SimulationRuntime`
- * by default. Tests pass their own `runtime` to share state with surrounding
- * fixture code. `time`/`ids` defer to `createKbRuntime`'s `SYSTEM_TIME_PORT` /
- * `randomUUID` defaults so existing tests that rely on `vi.setSystemTime` keep
- * working without re-injecting clock ports through the helper.
+ * (`storage`, `spawnCli`, `processPort`, `envPort`) from a real-FS-backed
+ * runtime by default — the kb runtime now reads corpus markdown through
+ * `corpusStorage`, so tests that write fixture files via `node:fs` need the
+ * port to read from the same disk. Tests pass their own `runtime` to share
+ * state with surrounding fixture code or to opt into `SimulationRuntime`.
+ * `time`/`ids` defer to `createKbRuntime`'s `SYSTEM_TIME_PORT` / `randomUUID`
+ * defaults so existing tests that rely on `vi.setSystemTime` keep working
+ * without re-injecting clock ports through the helper.
  */
 export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRuntime {
-  const runtime = options.runtime ?? new SimulationRuntime();
+  const runtime = options.runtime ?? createRealRuntime('prod');
   return createKbRuntime({
     markdownRoot: options.markdownRoot,
     runtimeDir: options.runtimeDir,

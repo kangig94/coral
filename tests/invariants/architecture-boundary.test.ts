@@ -656,6 +656,28 @@ describe('architecture boundary guard', () => {
     );
     expect(violations.map((edge) => `${edge.source} -> ${edge.target}`)).toEqual([]);
   });
+  it('rescan scan.ts reaches the corpus only through the kb-domain CorpusStorage port (Phase 8 SRW boundary)', () => {
+    const scanPath = 'src/kb/corpus/rescan/scan.ts';
+    const source = readFileSync(resolve(REPO_ROOT, scanPath), 'utf8');
+    const violations: string[] = [];
+    if (/from\s+['"]node:fs['"]/u.test(source)) {
+      violations.push(`${scanPath}: imports node:fs (must reach corpus via CorpusStorage)`);
+    }
+    if (/\bStoragePort\b/u.test(source)) {
+      violations.push(`${scanPath}: references StoragePort (only CorpusStorage allowed at the rescan boundary)`);
+    }
+    expect(violations).toEqual([]);
+  });
+  it('CorpusFileHandle is kb-domain vocabulary and stays out of src/infra/**', () => {
+    const infraFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => isWithinPath(filePath, 'src/infra'));
+    const violations = infraFiles.flatMap((filePath) => {
+      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+      return /\bCorpusFileHandle\b/u.test(source)
+        ? [`${filePath}: references CorpusFileHandle (kb-domain vocabulary must not appear under src/infra)`]
+        : [];
+    });
+    expect(violations).toEqual([]);
+  });
   it('the removed src client tree must remain deleted', () => {
     const clientFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, CLIENT_ROOT));
     expect(clientFiles).toEqual([]);

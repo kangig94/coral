@@ -31,6 +31,7 @@ export interface StoragePort {
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: string, options: { bigint: true }): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
   existsSync(path: string): boolean;
   openSync(path: string, flags: string): number;
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;

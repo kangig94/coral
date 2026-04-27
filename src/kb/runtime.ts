@@ -33,6 +33,7 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
 import { detectRescanInfo } from './corpus/rescan/drift.js';
 import { performRescan } from './corpus/rescan/index.js';
+import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
 import {
   type EntityGraph,
   type KbIndex,
@@ -101,6 +102,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly time: Pick<TimePort, 'now'>;
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly storagePort: StoragePort;
+  readonly corpusStorage: CorpusStorage;
   readonly spawnCli: SpawnCliFn;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
@@ -169,6 +171,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.time = time ?? SYSTEM_TIME_PORT;
     this.ids = ids ?? { uuid: () => randomUUID() };
     this.storagePort = storage;
+    this.corpusStorage = createCorpusStorage(storage);
     this.spawnCli = spawnCli;
     this.processPort = processPort;
     this.envPort = envPort;

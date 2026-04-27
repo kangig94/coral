@@ -155,7 +155,16 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     mkdirSync: (path, options) => mkdirSync(path, options),
     rmSync: (path, options) => rmSync(path, options),
     readdirSync: (path, options) => readdirSync(path, options),
-    statSync: (path) => {
+    statSync: ((path: string, options?: { bigint: true }) => {
+      if (options?.bigint === true) {
+        const stats = statSync(path, { bigint: true });
+        return {
+          size: stats.size,
+          mtimeNs: stats.mtimeNs,
+          isDirectory: () => stats.isDirectory(),
+          isFile: () => stats.isFile(),
+        };
+      }
       const stats = statSync(path);
       return {
         size: stats.size,
@@ -163,7 +172,7 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
         isDirectory: () => stats.isDirectory(),
         isFile: () => stats.isFile(),
       };
-    },
+    }) as StoragePort['statSync'],
     existsSync: (path) => existsSync(path),
     openSync: (path, flags) => openSync(path, flags),
     readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
