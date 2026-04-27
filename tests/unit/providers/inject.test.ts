@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeFs from 'node:fs';
+import type * as KbPathsModule from '#src/kb/paths.js';
 
 let mockInjectMd = '';
 let mockInjectMdError: Error | null = null;
@@ -19,7 +20,7 @@ vi.mock('node:fs', async () => {
 });
 
 vi.mock('#src/kb/paths.js', async () => {
-  const actual = await vi.importActual<typeof import('#src/kb/paths.js')>('#src/kb/paths.js');
+  const actual = await vi.importActual<typeof KbPathsModule>('#src/kb/paths.js');
   return {
     ...actual,
     kbRoot: () => '/mock/kb',

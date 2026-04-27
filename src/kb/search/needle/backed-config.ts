@@ -1,7 +1,7 @@
 import type { KbRuntime } from '../../contract.js';
 import type { NeedleBackendOptions } from './contract.js';
 
-export interface NeedleBackedOptions extends Pick<NeedleBackendOptions, 'consumerId' | 'pluginRoot' | 'storeFactory'> {}
+export type NeedleBackedOptions = Pick<NeedleBackendOptions, 'consumerId' | 'pluginRoot' | 'storeFactory'>;
 
 const NEEDLE_BACKED_OPTIONS = new WeakMap<KbRuntime, NeedleBackedOptions>();
 

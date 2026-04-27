@@ -6,13 +6,12 @@ import type * as NodeOs from 'node:os';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createHybridFusion } from '#src/kb/search/hybrid.js';
-import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from '#src/kb/search/contract.js';
+import type { TextRetrievalResult, VectorRetrievalResult } from '#src/kb/search/contract.js';
 import {
   bindEmbedding,
   createCorpusHandle,
   bindVectorBacked,
   seedNeedleRouteState,
-  type TaggedVectorRetrieval,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 

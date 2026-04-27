@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
+import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -326,7 +327,7 @@ describe('createRealRuntime', () => {
   it('runtime.paths.coral captures the active node:os.homedir() at construction', async () => {
     vi.resetModules();
     vi.doMock('node:os', async () => {
-      const actual = await vi.importActual<typeof import('node:os')>('node:os');
+      const actual = await vi.importActual<typeof NodeOs>('node:os');
       return { ...actual, homedir: () => '/home/first' };
     });
 
@@ -336,7 +337,7 @@ describe('createRealRuntime', () => {
       expect(firstRuntime.paths.coral.store.dbDir.startsWith('/home/first/.coral')).toBe(true);
 
       vi.doMock('node:os', async () => {
-        const actual = await vi.importActual<typeof import('node:os')>('node:os');
+        const actual = await vi.importActual<typeof NodeOs>('node:os');
         return { ...actual, homedir: () => '/home/second' };
       });
       vi.resetModules();

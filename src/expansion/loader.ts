@@ -20,7 +20,9 @@ function createScope(): Disposable {
 function disposeQuietly(scope: Disposable): void {
   try {
     scope[Symbol.dispose]();
-  } catch {}
+  } catch {
+    return;
+  }
 }
 
 export async function loadExpansions(

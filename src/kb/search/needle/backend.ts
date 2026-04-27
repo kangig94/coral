@@ -21,7 +21,7 @@ import { loadKbNote, loadKbSource } from '../../read.js';
 import { chunkEntry, type ChunkSeed } from '../chunking.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../embedding/vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
-import { readNeedleBackedOptions, type NeedleBackedOptions } from './backed-config.js';
+import { readNeedleBackedOptions } from './backed-config.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,

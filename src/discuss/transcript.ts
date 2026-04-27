@@ -61,14 +61,6 @@ export function generateOneLiner(content: string): string {
   return cut > 0 ? flat.slice(0, cut) + '…' : flat.slice(0, 100) + '…';
 }
 
-function summarizeSpeech(agentName: string, content: string): string {
-  return `- ${agentName}: ${generateOneLiner(content)}`;
-}
-
-function isSpeechEntry(entry: TranscriptEntry): entry is Extract<TranscriptEntry, { type: 'speech' }> {
-  return entry.type === 'speech';
-}
-
 function renderBidRows(
   bids: Record<string, number>,
   agents: Record<string, AgentState>,
@@ -156,4 +148,3 @@ export function renderHeader(topic: string, agents?: Record<string, AgentState>)
   }
   return title + '\n## Epoch 1\n';
 }
-

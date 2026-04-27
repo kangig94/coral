@@ -7,7 +7,6 @@ import type {
   ConsumerHandleStatus,
   ConsumerRegistration,
   ConsumerRegistrationKind,
-  JournalApplyContext,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';

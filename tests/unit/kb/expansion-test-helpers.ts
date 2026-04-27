@@ -22,9 +22,7 @@ function registry(): Map<string, EmbeddingService> {
   const globalState = globalThis as typeof globalThis & {
     __coralTestEmbedderRegistry__?: Map<string, EmbeddingService>;
   };
-  if (!globalState.__coralTestEmbedderRegistry__) {
-    globalState.__coralTestEmbedderRegistry__ = new Map<string, EmbeddingService>();
-  }
+  globalState.__coralTestEmbedderRegistry__ ??= new Map<string, EmbeddingService>();
   return globalState.__coralTestEmbedderRegistry__;
 }
 

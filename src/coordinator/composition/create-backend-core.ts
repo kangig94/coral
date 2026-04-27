@@ -9,7 +9,6 @@
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
-import { join } from 'node:path';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
