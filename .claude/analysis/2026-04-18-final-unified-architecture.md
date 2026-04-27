@@ -200,9 +200,9 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 - Hybrid RRF uses whichever vector backend is active.
 - Onboarding: embedding provider setup (local ONNX model or manual config) — see `skills/equip/SKILL.md`.
 
-The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus pure expansion workflow/install modules, CLI-owned activation (`src/cli/expansion-activation.ts`), `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
+The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus pure install/onboarding modules under `src/cli/expansion/` and the runtime plugin contract under `src/runtime/plugin/` (see §2.8a). The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
-Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
+Plugin activation is tracked in an explicit durable plugin registry keyed by plugin id, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `equipment_state` (rows: `{id, version, installedAt}`). The KB domain declares `kb.vector` and `kb.fts` as `RuntimeBinding<Provider<...>>` cells with Orama as constructor-time default value (Orama is not a plugin — see invariant #43a in §16, and §2.8a for the full contract). Equipment plugins call `host.bind(binding, provider)` under their own scope; structural single-occupancy enforces "at most one active equipment per binding" (#43) without lifecycle bookkeeping. The needle addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`.
 
 **Equipment paths are per-name closures, not per-name standalone functions.** `runtime.paths.coral.equipment` exposes `dataDir(name)`, `addonPath(name)`, and `installLockPath(name)` — closures bound to the resolved `EquipmentPaths` family. Equipment consumers (lifecycle, expansion install/activate, retrieval backends) call these closures with the equipment name and never recompute paths from `coralRoot()` or compose the path family themselves. This keeps path-shape decisions (e.g., "data lives under `data/equipment/<name>/`") in one place — the `equipmentPaths` composer — and prevents per-call sites from quietly diverging on naming or layout. Wrapper helpers like a former `createExpansionPathHelpers(name)` that re-derived paths per call are an anti-pattern: the closure form already provides the same ergonomics with one less layer of indirection.
 
@@ -217,99 +217,127 @@ For coordinator-mediated KB writes: the Corpus mutation lock wraps only authorit
 
 This decouples projection latency from authoritative write latency: a slow or failing retrieval projection never blocks the Corpus commit. A caller that needs strict retrieval readiness waits after commit via `waitFreshUntil`; if the wait fails, the Corpus commit remains durable and the running job reports the readiness failure. Failed drains retain the last-successful cursor for retry on next `notify` or startup. Fault isolation is structural.
 
-### 2.8a Slot-based provider architecture (newly added 2026-04-27 — design pending implementation)
+### 2.8a Provider plugin architecture (newly designed 2026-04-27, synthesized 2026-04-27)
 
-> **Status**: New section added on 2026-04-27. This subsection was missing from the original 2026-04-18 draft of §2.8 and is recorded here as a design the rewrite branch will adopt. The implementation has not yet landed; the current code still uses the binary "default + override" model described and superseded below. Open questions at the end of this section must be resolved before commit 1 of the migration order.
+> **Status**: Initial draft (slot + provider + expansion-contract model, with priority and explicit `isReady`/`waitForReady`) authored 2026-04-27 morning; superseded the same day by the meta-pioneer synthesis recorded below. The synthesis collapses the original draft's eight open questions into structural answers. Implementation has not yet landed; the current code still uses the binary "default + override" model. The migration order at the bottom of this section is the single source of truth for the commit sequence.
 
-The current implementation uses a binary "default owner + override" slot model: `EquipmentSlot.defaultOwner` returns Orama, `equip()` swaps in needle. This works for one equipment but encodes asymmetry — Orama is treated as fallback, needle as the only thing that can override. Adding a second backend (e.g. Pinecone) immediately needs a `'needle' | 'pinecone'` discriminator somewhere, and the `coordinator/coordinator.ts` `activeKind === 'needle'` branch returns under a new name. The default+override pattern *is* the smell.
+The current implementation uses a binary "default owner + override" slot model: `EquipmentSlot.defaultOwner` returns Orama, `equip()` swaps in needle. This works for one equipment but encodes asymmetry — Orama is treated as fallback, needle as the only thing that can override. The default+override pattern *is* the smell.
 
-This subsection records the agreed redesign. The model unifies built-in defaults and equipment under one **slot + provider + expansion-contract** mechanism. Implementation lands across a sequence of commits (see *Migration order* below). Until that lands, the code differs from the description here; this section is the target.
+**Diagnosis**: the question is not "which of several competing implementations?" (a multiplexer) but "which implementation is currently bound for this name?" (a single mutable cell). A multiplexer with one decision is a reference cell with extra steps. The original §2.8a draft's `Slot`/`SlotProvider`/`SlotRegistry` apparatus was a multiplexer addressing a problem Coral does not have.
 
-#### Core types (decided)
+The unified design uses three load-bearing primitives:
+
+1. **`RuntimeBinding<T>`** — a domain-owned mutable cell with structural single-occupancy and an optional default value. Replaces `Slot`/`SlotProvider`/`SlotRegistry`.
+2. **`Plugin = (host) => void | Promise<void>`** — a single-function contract for everything that participates: equipment, third-party expansions, tests. Replaces `ExpansionContract`'s four-method interface.
+3. **`Provider<T> = { read(): T, consumer: Consumer }`** — capability + freshness, exposed by every backend. The cell holds `Provider<T>`, not raw `T`. This is the synthesis-level move that lets routing read `binding.read().read(...)` synchronously while coordinator's `waitFreshUntil` reads `binding.read().consumer.id` — same cell, two clients, two faces.
+
+#### Core types
 
 ```ts
-// SlotProvider — provider owns its readiness; the slot does not.
-interface SlotProvider<T> {
-  readonly id: string;            // "kb.vector.orama", "kb.vector.needle"
-  readonly priority: number;      // higher wins among READY providers
-  resolve(): T;                   // synchronous; called per request
-  isReady(): boolean;             // synchronous routing decision
-  waitForReady(timeoutMs: number, signal?: AbortSignal): Promise<void>;
-  onReadinessChange(listener: (ready: boolean) => void): () => void;
+// runtime/binding.ts — the cell.
+interface RuntimeBinding<T> {
+  read(): T;                                          // returns bound value or constructor-time default; throws CoralSetupError if neither
+  bind(value: T, scope: Disposable): void;            // single-occupancy; throws CoralSetupError('binding-occupied') if already bound
+  watch(listener: (value: T) => void): () => void;
+}
+function createRuntimeBinding<T>(defaultValue?: T): RuntimeBinding<T>;
+
+// runtime/plugin/contract.ts — every plugin.
+type Plugin = (host: PluginHost) => void | Promise<void>;
+
+interface PluginHost {
+  bind<T>(binding: RuntimeBinding<Provider<T>>, provider: Provider<T>): void;
+  require<T>(binding: RuntimeBinding<Provider<T>>): Provider<T>;   // throws CoralSetupError if unbound
+  runtime: Runtime;
+  scope: Disposable;                                  // the plugin's own dispose token
 }
 
-// Slot — one place where a class of provider plugs in.
-interface Slot<T> {
-  readonly id: string;            // "kb.vector"
-  current(): T;                       // priority-max ready provider; throws if none
-  active(): SlotProvider<T> | null;
-  list(): readonly SlotProvider<T>[];
-  waitForReady(timeoutMs: number): Promise<SlotProvider<T>>;
-  onChange(listener: (provider: SlotProvider<T> | null) => void): () => void;
+// kb/contract.ts — capability + freshness.
+interface Provider<T> {
+  read(): T;                                          // synchronous capability handle
+  consumer: Consumer;                                 // CorpusConsumer | JournalConsumer (§9)
 }
 
-// ExpansionContract — what every plugin (built-in or third-party) exports.
-interface ExpansionContract {
-  readonly id: string;                  // "needle" (catalog id)
-  readonly slot: string;                // "kb.vector"
-  readonly priority: number;            // 100 for equipment, 0 for built-ins
-  install(ctx, opts?): Promise<InstallResult>;
-  uninstall(ctx): Promise<UninstallResult>;
-  activate(ctx): Promise<SlotProvider<unknown>>;     // builds the SlotProvider
-  deactivate(ctx, provider): Promise<void>;          // idempotent
+// kb/runtime.ts — KB declares which bindings it owns.
+interface KbRuntime {
+  readonly vector:    RuntimeBinding<Provider<VectorRetrieval>>;     // default = Orama
+  readonly embedding: RuntimeBinding<Provider<EmbeddingBackend>>;    // no default; setup error if no plugin binds
+  readonly fts:       RuntimeBinding<Provider<FtsRetrieval>>;        // default = Orama
 }
 ```
 
-Load-bearing invariants:
-- **Routing knows only `slot.current()`**. No `'orama' | 'needle'` literal anywhere outside the two provider modules.
-- **Orama registers eagerly** at backend startup (priority 0, always ready). It is a SlotProvider, not a fallback.
-- **Equipment registers lazily** on `/equip activate` (priority 100, ready only when corpus snapshot fresh).
-- **Provider owns readiness**: `isReady()` reads the provider's own `(snapshotId, contentManifestHash)` against `runtime.getCorpusStateSnapshot()`. The slot does not know corpus semantics.
-- **Router calls `slot.current()` per request** (no cached `vectorRoute`). Mid-flight staleness — needle goes stale during a search — automatically routes the next request to whichever provider is now `current()`.
-- **Slot's `waitForReady`** = `Promise.race(providers.map(p => p.waitForReady))`. First ready wins; coordinator uses this for source-import readiness without naming any backend.
-- **Adding a new backend** (e.g. Pinecone) = new module exporting an `ExpansionContract`. Coordinator/router/lifecycle code changes: zero.
+Load-bearing invariants (also tracked in §16 #43, #43a, #43b, #43c):
+
+- **Routing reads `binding.read().read(...)`** — one indirection. No literal union, no priority compare, no readiness poll at the routing layer.
+- **Built-in defaults are constructor-time values of the binding, NOT plugins.** Orama is the default value of `kbRuntime.vector` and `kbRuntime.fts`; it is not registered as a plugin. Treating Orama as a "priority-0 plugin" is forbidden (#43a).
+- **Equipment plugins call `host.bind(binding, provider)`** under their own scope; `scope.dispose()` is the only un-bind path.
+- **Single-occupancy is structural**: `RuntimeBinding.bind` throws `CoralSetupError('binding-occupied', { heldBy })` if already held. Invariant #43 is enforced inside the primitive, not by lifecycle bookkeeping.
+- **Readiness is a comparison**: `provider.consumer.cursor ≥ runtime.authorities.<kind>.version`. No `isReady()` / `waitForReady()` on the provider contract. The only readiness primitive is `waitFreshUntil(version, consumerId)` from §9.4 (#43c).
+- **Capability deps via `host.require(binding)`** — inline at plugin top, throws `CoralSetupError` before any `bind`. Order-independent because base plugins all run first.
+- **Adding a backend** = one new `Plugin` module + (optionally) one new binding declaration on the relevant domain runtime. Coordinator/router/lifecycle code change: zero.
 
 #### Ownership
 
 | Concern | Owner |
 |---|---|
-| `Slot`/`SlotProvider`/`SlotRegistry` primitives | `coordinator/equipment/slots.ts` (no domain imports) |
-| `ExpansionContract` shape | `expansion/contract.ts` |
-| Orama provider (`kb.vector.orama`) | `kb/search/orama/expansion.ts` |
-| Needle provider (`kb.vector.needle`) | `kb/search/needle/expansion.ts` |
-| Lifecycle (install/equip/unequip wiring, durable state, slot guard) | `coordinator/equipment/lifecycle.ts` (rewritten — generic over `ExpansionContract[]`) |
-| Catalog | `expansion/catalog.ts` (open registry, `z.string()` id) |
-| Bundled expansions array | `expansion/bundled.ts` |
+| `RuntimeBinding<T>` primitive | `runtime/binding.ts` |
+| `Plugin`, `PluginHost` types and impl | `runtime/plugin/contract.ts` + `runtime/plugin/host.ts` |
+| Plugin loader (bundled + filesystem in Phase 2) | `runtime/plugin/loader.ts` |
+| Bundled plugin import-specifier list | `runtime/plugin/bundled.ts` |
+| `Provider<T>` shape; KB capability interfaces | `kb/contract.ts` |
+| Domain binding declarations | `<domain>/runtime.ts` (e.g., `kb/runtime.ts` declares `vector`/`embedding`/`fts`) |
+| Orama default backend (built-in, NOT a plugin) | `kb/search/orama/` (constructed at binding creation time) |
+| Needle plugin | `kb/search/needle/plugin.ts` |
+| Coordinator plugin lifecycle (equip = invoke plugin + persist row; unequip = dispose scope + delete row) | `coordinator/plugins/lifecycle.ts` |
+| Durable plugin state — keyed by plugin id | `coordinator/plugins/state.ts` (rows: `{id, version, installedAt}`) |
+| Install/uninstall (filesystem + addon download) | `cli/expansion/install.ts` (NOT imported at runtime) |
+| Onboarding flows | `cli/expansion/onboarding.ts` (cli tier, not runtime) |
+
+Deleted: `coordinator/equipment/slots.ts`, `expansion/contract.ts`, `expansion/catalog.ts`, `expansion/bundled.ts` — `Slot`/`SlotProvider`/`SlotRegistry`/`ExpansionContract` no longer exist.
+
+Retired (drift items never to exist): `coordinator/discovery-api.ts`, `expansion/paths.ts`.
 
 #### Migration order (each commit independently green)
 
-1. Introduce `SlotProvider`/`Slot`/`SlotRegistry` alongside existing types — no callers yet, types only.
-2. Move Orama into `kb/search/orama/` self-contained module (file moves, import updates).
-3. Define `ExpansionContract`; add Orama and needle expansion modules — typed but unwired.
-4. Rewrite `EquipmentLifecycleService` to walk `ExpansionContract[]`. Delete needle-specific lifecycle functions.
-5. Cut router over to `slot.current()`. Delete `'orama' | 'needle'` union and `resolveVectorRoute`.
-6. Cut coordinator source-import readiness over to `slot.waitForReady()`. Delete `activeKind === 'needle'` branches.
-7. Open the catalog: `catalogIdSchema = z.string()`; needle/cgc literal schemas migrate into their own expansion modules.
+1. **Introduce `RuntimeBinding<T>` in `runtime/binding.ts`.** Single-occupancy, default value support, `watch` listener. Tests for bind/dispose/single-occupancy. No callers yet. *Load-bearing first commit — every subsequent change collapses into this cell.*
+2. **Introduce `Plugin` and `PluginHost` in `runtime/plugin/`.** `host.bind`, `host.require`, scope plumbing, `loader.ts` skeleton with empty `BUNDLED_PLUGINS`. Tests for ordered loading and scope disposal cascade.
+3. **Move Orama into `kb/search/orama/`; declare `kb.vector` and `kb.fts` bindings on `KbRuntime` with Orama as default.** Cut `kb/router.ts` over to `kbRuntime.vector.read().read(...)`. Delete `'orama' | 'needle'` literal union, `resolveVectorRoute`, `cachedVectorRoute`, `getActiveVectorSurface`, `getBaseRetrievalSurface`, `getEquipmentView`. Existing equipment lifecycle still drives needle through *the same binding* via a temporary adapter so this commit stays green without depending on later commits.
+4. **Rebuild needle as a `Plugin` at `kb/search/needle/plugin.ts`.** Plugin reads `host.require(kbRuntime.embedding)` (with a captured Gemini default until commit 7), constructs needle, calls `host.bind(kbRuntime.vector, needleProvider)`. Old needle-specific lifecycle code deleted.
+5. **Rewrite `coordinator/plugins/lifecycle.ts` as generic Plugin walker.** `equip(name)` = lookup, dynamic-import, call plugin with fresh scope, persist row. `unequip(name)` = lookup scope, dispose, delete row. Crash recovery = on boot, walk `equipment_state` rows and re-invoke each plugin.
+6. **Cut coordinator source-import readiness over to comparison-based wait.** `waitForKbSourceImportReadiness(V)` becomes `runtime.authorities.corpus.waitFreshUntil(V, kbRuntime.vector.read().consumer.id)`. Delete `activeKind === 'needle'` branch, delete `slot.waitForReady` shim. Delete `Slot`/`SlotProvider`/`SlotRegistry` files. Delete `expansion/contract.ts`, `expansion/catalog.ts`, `expansion/bundled.ts`.
+7. **Open the catalog and add `kb.embedding` binding.** `catalogIdSchema = z.string()`. Migrate the Gemini default into a separate plugin (`kb/embedding/gemini/plugin.ts`) that needle's plugin can `host.require()` cleanly. Move onboarding into `cli/expansion/onboarding.ts`. Retire `discovery-api.ts` and `expansion/paths.ts` (already deleted in commit 6; this commit removes the last prose references).
 
 #### Forward compatibility — Phase 2 (third-party loading)
 
-This contract is third-party-ready. "Third-party" = a published expansion module that follows `ExpansionContract`; loading mechanism is orthogonal:
+This contract is third-party-ready. Loading mechanism is orthogonal:
 
-- **Phase 1 (this round)**: bundled only. `BUNDLED_EXPANSIONS: readonly ExpansionContract[]` in `expansion/bundled.ts`.
-- **Phase 2 (later)**: `lifecycle.ts` adds one line: `const all = [...BUNDLED, ...await loadDirectory(paths.expansionsDir)]`. Filesystem at `~/.coral/expansions/<name>/expansion.js` exports `default: ExpansionContract`. No contract change. Slot/router/coordinator stay byte-identical.
+- **Phase 1 (this round)**: bundled only. `BUNDLED_PLUGINS: readonly string[]` (import specifiers) in `runtime/plugin/bundled.ts`.
+- **Phase 2 (later)**: `loader.ts` adds one line scanning `~/.coral/expansions/<name>/package.json` for a `"coral": { "plugin": "./dist/plugin.js" }` field; dynamic-imports each, calls the default export with the same `PluginHost`. No contract change; bundled and filesystem plugins are byte-identical to the loader.
 
-The third-party test: bundled expansions and filesystem expansions get **equal treatment** — same priority knob, same readiness model, same lifecycle. If they require different code paths, the contract is wrong.
+The third-party test: bundled and filesystem plugins get **equal treatment** — same `Plugin` type, same `PluginHost`, same lifecycle. Sandboxing is a property of *how* the loader invokes `plugin(host)` (worker thread / vm context), not of the contract.
 
-#### Open questions (require future discussion before implementation lands)
+#### Resolutions to original-draft open questions
 
-1. **Multi-slot expansion**. One expansion providing multiple capabilities (e.g. needle could plug `kb.vector` *and* `kb.embedding` if it ships an embedder). Initial scope is 1 expansion = 1 slot for simplicity; the contract may need to evolve to `slots: string[]` or compose multiple `ExpansionContract`s per package.
-2. **Capability negotiation**. Needle requires an embedding provider. Should the `ExpansionContract` declare prerequisites (`requires: ['kb.embedding']`) so the lifecycle refuses activation when a dependency is missing? Or stay implicit (provider's `isReady()` returns false)?
-3. **Test priority override**. The current proposal lets tests re-register with `priority + ε`. This is functional but not elegant — tests injecting fakes shouldn't need to know production priorities. Alternatives: explicit `slot.replaceForTest(provider)`; a separate test-only registry layer; named overrides via env. Decide before commit 1.
-4. **Phase 2 manifest format**. When `~/.coral/expansions/<name>/` is scanned, what file is read? `expansion.js` directly? `package.json` with a `coral.expansion` field? Plain JSON manifest plus a code module? Affects packaging UX for plugin authors.
-5. **Phase 2 security model**. Filesystem-discovered code runs in the coordinator process. Sandboxing? Capability tokens? Manifest signature verification? Out of scope for Phase 1 contract design but constrains Phase 2.
-6. **Onboarding ownership**. Today `expansion/catalog.ts` declares onboarding for needle (`buildNeedleOnboarding`). Under the new model, onboarding belongs to the expansion module (`kb/search/needle/expansion.ts`). Confirm the move; update `/equip` skill UX accordingly.
-7. **`coordinator/discovery-api.ts` and `expansion/paths.ts`** mentioned in §2.8 prose above do not exist in current code — they are themselves drift items orthogonal to this redesign. Decide whether they remain prescribed (and thus follow-up work) or get retired in favor of the unified contract.
-8. **Routing freshness vs. authority writes**. Router calls `slot.current()` per request. Under high-frequency Corpus mutations, this means every search re-evaluates `isReady()` for each provider. The cost is bounded (cursor compare, no I/O), but verify under load. If meaningful, providers can cache `isReady()` between explicit `notify()` events.
+1. **Multi-slot expansion.** A `Plugin` calls `host.bind` N times on one scope; one scope releases all bindings. No `slots: string[]` field, no `Expansion.bindings[]` array. Single-binding is the degenerate case of N=1.
+2. **Capability negotiation.** `host.require(binding)` inline at plugin top, throws `CoralSetupError` before any `bind`. Order-independent because base plugins all run first.
+3. **Test priority override.** Tests are plugins. `loadPlugins([fakePlugin])` binds the fake; `scope.dispose()` releases it. No priority arithmetic, no `replaceForTest`. Default values vs. bound values cleanly distinguish base behavior from test injection.
+4. **Phase 2 manifest format.** `package.json` with `"coral": { "plugin": "./dist/plugin.js" }`. The plugin module's default export is `Plugin`. Reuses Node's existing manifest with no Coral-specific dialect.
+5. **Phase 2 security model.** Out of contract; loader-level concern. The `PluginHost`'s `bind`/`require` already pass capabilities structurally — a plugin can only touch bindings it imports — so future sandboxing wraps `plugin(host)` invocation without changing the contract.
+6. **Onboarding ownership.** Lives in `cli/expansion/onboarding.ts`, keyed by plugin id. NOT on the runtime plugin function. Onboarding runs once before any plugin invocation.
+7. **`coordinator/discovery-api.ts` and `expansion/paths.ts`.** Both retire as drift items. Discovery becomes `runtime/plugin/loader.ts::list()`; paths fold into `runtime.paths.coral.equipment(name)` (already canonical).
+8. **Routing freshness vs. authority writes.** Non-issue. Router calls `binding.read()` — one indirection. Readiness is computed only when a caller invokes `waitFreshUntil`. Per-request cost: zero readiness checks.
+
+#### Synthesis history
+
+The original 2026-04-27 draft proposed a `Slot`/`SlotProvider`/`ExpansionContract` model with `priority` and explicit `isReady`/`waitForReady` — eight open questions remained. On 2026-04-27, five parallel pioneers (A–E) explored alternative framings; a meta-pioneer synthesized them. Pioneer attribution per primitive:
+
+- **E** (delete the slot): `RuntimeBinding<T>` cell, domain ownership, structural single-occupancy, Orama-as-default-value-not-plugin.
+- **A** (plugin contract first): single-function `Plugin = (host) => void`, scope-disposable lifecycle, `host.bind`/`host.require`, tests-as-plugins.
+- **C** (readiness as comparison): `Provider<T>` carries `consumer`, comparison-based readiness, sole reliance on existing `waitFreshUntil` from §9.4.
+- **D** (multi-slot canonical): the multi-binding insight (one plugin can fill `kb.vector` AND `kb.embedding`) — expressed via A's `host.bind` mechanism, not D's Expansion/Binding noun split.
+- **B** (state machine): dominated. The 6-state machine is over-engineered for a 1-bit cell; `Stale` survives only as documentation vocabulary, not a state field.
+
+Synthesis-level move that no single pioneer reached: the binding holds `Provider<T>`, not raw `T`. This composition lets E's "delete the slot" coexist with C's "readiness is comparison" without E's workaround (private Orama delegate inside needle). The router and `waitFreshUntil` see two faces of the same cell.
 
 ---
 
@@ -440,16 +468,18 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
   registration_kind      TEXT    NOT NULL DEFAULT 'base'  -- 'base' | 'equipment'
 );
 
--- Equipment activation registry (durable slot ownership; see §2.8).
--- Tracks which expansion currently owns each equipment slot and its
--- install/error state for diagnostics. The KB router reads this through
--- KbRuntime.getEquipmentView().
+-- Plugin activation registry (durable plugin ownership; see §2.8a).
+-- One row per currently-equipped plugin, keyed by plugin id. Row existence
+-- is the only durable transition: pre-write crash leaves no row (re-equip on
+-- boot is a no-op); post-write crash leaves a row that the lifecycle replays
+-- by re-invoking the plugin during boot recovery. There is no `state` column
+-- because lifecycle transitions happen in memory and are not persisted —
+-- structural single-occupancy on `RuntimeBinding<T>` (invariant #43) makes a
+-- state machine unnecessary.
 CREATE TABLE IF NOT EXISTS equipment_state (
-  name               TEXT PRIMARY KEY,
-  state              TEXT NOT NULL,
-  installed_at       TEXT,
-  last_error_code    TEXT,
-  last_error_message TEXT
+  id                 TEXT PRIMARY KEY,             -- plugin id (e.g., 'needle')
+  version            TEXT NOT NULL,                -- plugin version captured at install time
+  installed_at       TEXT NOT NULL                 -- ISO 8601 of most recent successful install
 );
 
 -- Curate scheduler bookkeeping (replaces today's curate-state.json).
@@ -2065,7 +2095,10 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil('journal', version, consumerId)` — a condition-variable wake, never a polling loop.
 41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listEquipment` is status observation, not a readiness waiter.
 42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
-43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to unequip Y first (internal route `coral-cli expansion unequip Y`; user-facing skill grammar `/equip uninstall Y`).
+43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding-occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
+43a. Built-in defaults are constructed at binding creation time, NOT registered as plugins. Plugins exist only for behaviors that may or may not be present in the running process. Treating Orama as a "priority-0 plugin" or registered SlotProvider is forbidden — Orama is the constructor-time default value of `kbRuntime.vector` and `kbRuntime.fts`, supplied when those bindings are created on `KbRuntime`.
+43b. A `Plugin` is a function `(host: PluginHost) => void | Promise<void>`. Plugins do not export `id`, `priority`, `slots`, `requires`, `install`, `uninstall`, `activate`, or `deactivate` fields on a contract object. Identity is the import specifier; priority is registration order; slot binding is `host.bind(binding, provider)`; capability deps are `host.require(binding)`; install is a CLI-tier concern that runs before the plugin is loaded; deactivation is `scope.dispose()`.
+43c. Provider readiness is a comparison: `provider.consumer.cursor ≥ runtime.authorities.<kind>.version`. No provider exposes a boolean `isReady()` or `waitForReady()` method on its public contract. The only readiness primitive in the system is `runtime.authorities.<kind>.waitFreshUntil(version, consumerId)` from §9.4 (see invariants #41a/#41b).
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
