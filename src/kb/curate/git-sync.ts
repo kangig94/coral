@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { runCurateClaude } from './operations.js';
 import type { GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
 

@@ -35,7 +35,7 @@ import {
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
 } from './snapshot.js';
-import type { KbIndexMutationLane, KbRuntime } from '../contracts.js';
+import type { KbIndexMutationLane, KbRuntime } from '../contract.js';
 import { mergeMutationLane } from './lanes.js';
 
 type InboundSyncTarget = Pick<

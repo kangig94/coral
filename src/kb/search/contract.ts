@@ -1,5 +1,5 @@
 import type { KbEntryId, KbResult, KbSearchScope } from '../entry-types.js';
-import type { KbOramaDocument } from '../orama-document-builder.js';
+import type { KbOramaDocument } from './orama/document-builder.js';
 
 export type RetrievalScope = KbSearchScope;
 export type RetrievalKind = KbResult['kind'];

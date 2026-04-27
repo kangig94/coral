@@ -3,7 +3,7 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { assertNoteSlug } from '../validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {

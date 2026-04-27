@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contracts.js';
+import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contract.js';
 import type {
   ConsumerApplyError,
   ConsumerHandle,
@@ -30,7 +30,7 @@ import {
   toConsumerApplyError,
 } from './consumer-driver-support.js';
 
-export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contracts.js';
+export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../kb/contract.js';
 export type {
   ConsumerApplyError,
   ConsumerHandle,
@@ -253,7 +253,7 @@ export class ConsumerDriver {
         if (storedKind !== existing.registrationKind) {
           throw consumerRegistrationKindMismatchError(reg.id, existing.registrationKind, storedKind);
         }
-      } else {
+      } else if (existing.registrationKind !== 'stateless') {
         this.insertCursorRow(reg, existing.registrationKind);
       }
       return existing.handle;
@@ -464,6 +464,9 @@ export class ConsumerDriver {
   ): ConsumerRegistrationKind {
     const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
     const requestedKind = reg.registrationKind;
+    if (requestedKind === 'stateless' && row === undefined) {
+      return 'stateless';
+    }
 
     if (row) {
       if (row.authority !== reg.authority) {
@@ -481,6 +484,10 @@ export class ConsumerDriver {
         if (!allowRegistrationKindUpdate) {
           throw consumerRegistrationKindMismatchError(reg.id, requestedKind, storedKind);
         }
+        if (requestedKind === 'stateless') {
+          this.deleteCursorRowStmt.run(reg.id);
+          return requestedKind;
+        }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);
         return requestedKind;
       }
@@ -494,6 +501,9 @@ export class ConsumerDriver {
   }
 
   private insertCursorRow(reg: ConsumerRegistration, registrationKind: ConsumerRegistrationKind): void {
+    if (registrationKind === 'stateless') {
+      return;
+    }
     const nowIso = this.now().toISOString();
     if (reg.authority === 'journal') {
       this.insertJournalCursorRowStmt.run(reg.id, reg.authority, nowIso, registrationKind);
@@ -604,6 +614,9 @@ export class ConsumerDriver {
       if (state.reg.authority !== 'journal') {
         return true;
       }
+      if (state.registrationKind === 'stateless' || state.reg.apply === undefined) {
+        return true;
+      }
 
       const fromSeq = this.readJournalCursor(state.reg.id);
       const upToSeq = Math.max(fromSeq, target);
@@ -629,6 +642,9 @@ export class ConsumerDriver {
   private async runCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot): Promise<boolean> {
     try {
       if (state.reg.authority !== 'corpus') {
+        return true;
+      }
+      if (state.registrationKind === 'stateless' || state.reg.apply === undefined) {
         return true;
       }
 
@@ -759,7 +775,7 @@ export class ConsumerDriver {
     if (this.consumers.get(state.reg.id) === state) {
       this.consumers.delete(state.reg.id);
     }
-    if (state.registrationKind === 'equipment' && options.preserveCursor !== true) {
+    if (state.registrationKind === 'expansion' && options.preserveCursor !== true) {
       this.deleteCursorRowStmt.run(state.reg.id);
     }
 

@@ -65,7 +65,7 @@ const COORDINATOR_EXEMPT_PREFIXES = [
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
-  'src/kb/contracts.ts',
+  'src/kb/contract.ts',
   'src/kb/state/corpus-state.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',

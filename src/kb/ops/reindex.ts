@@ -1,4 +1,4 @@
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts/index.js';
 import type { ReindexResult } from '../entry-types.js';
 

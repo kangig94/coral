@@ -1,4 +1,4 @@
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
 import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';

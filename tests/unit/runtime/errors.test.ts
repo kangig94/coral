@@ -103,9 +103,9 @@ describe('CoralSetupError', () => {
     ],
     [
       'consumer_registration_kind_mismatch',
-      { id: 'consumer-a', expected: 'base', actual: 'equipment' },
-      'Consumer consumer-a registration kind mismatch: expected base, got equipment.',
-      'Check that registration kind (base vs equipment) is consistent.',
+      { id: 'consumer-a', expected: 'base', actual: 'expansion' },
+      'Consumer consumer-a registration kind mismatch: expected base, got expansion.',
+      'Check that registration kind (base vs expansion) is consistent.',
     ],
     [
       'consumer_lane_invalid',

@@ -7,7 +7,7 @@ import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentMutation } from '../corpus/index-mutations.js';
 import { buildNoteIndexEntry } from '../corpus/index-records.js';
-import type { KbMutationEffects, KbRuntime } from '../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../contract.js';
 
 export async function applyNoteUpdateLocked(
   rt: KbRuntime,

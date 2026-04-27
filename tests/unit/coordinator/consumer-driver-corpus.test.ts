@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contracts.js';
+import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

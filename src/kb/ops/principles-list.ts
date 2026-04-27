@@ -1,4 +1,4 @@
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { readKnowledgeBaseListIndex } from '../direct-read-index.js';
 import {
   isNoteEntry,

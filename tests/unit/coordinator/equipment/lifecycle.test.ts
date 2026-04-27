@@ -12,10 +12,9 @@ import { persistCorpusState } from '#src/kb/state/corpus-state.js';
 import { equipmentPaths } from "#src/infra/path/equipment.js";
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { closeNeedleBackend } from '#src/kb/search/needle/backend.js';
 import { NeedleAddonLoadError } from '#src/kb/search/needle/store.js';
-import { resolveVectorRoute } from '#src/kb/search/router.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
 import { createNeedleStoreFake } from '#tests/helpers/fixtures/needle-store-fake.js';
 import { createFixtureRuntime } from '#tests/helpers/fixtures/runtime-paths.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
@@ -111,37 +110,31 @@ ${body}
 function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: InstanceType<typeof Database>): {
   kb: ReturnType<typeof createKbRuntime>;
   slotRegistry: ReturnType<typeof createSlotRegistry>;
-  setLifecycleResolver(resolver: () => ReturnType<EquipmentLifecycleService['getRuntimeActivation']>): void;
   currentBackendKind(): string;
   vectorRouteBackend(): 'orama' | 'needle';
 } {
   const slotRegistry = createSlotRegistry();
-  let resolveEquipmentView: (() => ReturnType<EquipmentLifecycleService['getRuntimeActivation']>) | null = null;
   const kb = createKbRuntime({
     markdownRoot,
     runtimeDir,
     db,
-    getEquipmentView: () => resolveEquipmentView?.() ?? null,
   });
-  const vectorSlot = createEquipmentSlot<VectorRetrieval>({
+  const vectorSlot = createEquipmentSlot<{ backendKind: 'orama' | 'needle' }>({
     id: 'kb.vector',
-    defaultOwner: () => kb.getBaseRetrievalSurface(),
+    defaultOwner: () => ({ backendKind: 'orama' }),
   });
   slotRegistry.declare(vectorSlot);
 
   return {
     kb,
     slotRegistry,
-    setLifecycleResolver(resolver: () => ReturnType<EquipmentLifecycleService['getRuntimeActivation']>) {
-      resolveEquipmentView = resolver;
-    },
-    currentBackendKind: () => (vectorSlot.currentOwner() as VectorRetrieval & { backendKind?: string }).backendKind ?? 'unknown',
-    vectorRouteBackend: () => resolveVectorRoute(kb).backend,
+    currentBackendKind: () => (kb.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID ? 'orama' : 'needle'),
+    vectorRouteBackend: () => (kb.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID ? 'orama' : 'needle'),
   };
 }
 
 function equipmentBackendKind(runtime: ReturnType<typeof createKbRuntime>): string {
-  return (runtime.getEquipmentView().retrieval as VectorRetrieval & { backendKind?: string }).backendKind ?? 'unknown';
+  return runtime.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID ? 'orama' : 'needle';
 }
 
 async function createHarness(options: CreateHarnessOptions = {}): Promise<Harness> {
@@ -189,7 +182,6 @@ async function createHarness(options: CreateHarnessOptions = {}): Promise<Harnes
     ...(options.activateNeedle === undefined ? {} : { activateNeedle: options.activateNeedle }),
     ...(options.storeFactory === undefined ? {} : { needleBackendOptions: { storeFactory: () => options.storeFactory?.() ?? null } }),
   });
-  runtimeHarness.setLifecycleResolver(() => lifecycle.getRuntimeActivation());
 
   return {
     root,
@@ -539,8 +531,6 @@ describe('EquipmentLifecycleService', () => {
         runtime: createFixtureRuntime(harness.coralBaseDir),
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
-      restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());
-
       expect(await restartedLifecycle.listEquipment()).toEqual([
         {
           slot: 'kb.vector',
@@ -587,8 +577,6 @@ describe('EquipmentLifecycleService', () => {
         runtime: createFixtureRuntime(harness.coralBaseDir),
         needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
       });
-      restartedRuntimeHarness.setLifecycleResolver(() => restartedLifecycle.getRuntimeActivation());
-
       expect(await restartedLifecycle.listEquipment()).toEqual([
         {
           slot: 'kb.vector',

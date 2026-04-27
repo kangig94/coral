@@ -3,15 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as RouterModule from '#src/kb/search/router.js';
 import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import {
+  bindEmbedding,
   createCorpusHandle,
   equipVectorSlot,
-  equipmentViewResolvers,
   seedNeedleRouteState,
 } from '#tests/unit/kb/equipment-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -20,13 +19,8 @@ const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
-const hybridMockState = vi.hoisted(() => ({
-  createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
-}));
-
 const routerMockState = vi.hoisted(() => ({
   createRouter: null as null | ((...args: unknown[]) => unknown),
-  resolveVectorRoute: null as null | ((...args: unknown[]) => unknown),
 }));
 
 vi.mock('node:os', async () => {
@@ -34,17 +28,6 @@ vi.mock('node:os', async () => {
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
-  };
-});
-
-vi.mock('#src/kb/search/embedding.js', async () => {
-  const actual = await vi.importActual<typeof EmbeddingModule>('#src/kb/search/embedding.js');
-  return {
-    ...actual,
-    createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
-      hybridMockState.createEmbeddingProvider === null
-        ? actual.createEmbeddingProvider(...args)
-        : hybridMockState.createEmbeddingProvider(...args),
   };
 });
 
@@ -56,10 +39,6 @@ vi.mock('#src/kb/search/router.js', async () => {
       routerMockState.createRouter === null
         ? actual.createRouter(...args)
         : (routerMockState.createRouter(...args) as ReturnType<typeof actual.createRouter>),
-    resolveVectorRoute: (...args: Parameters<typeof actual.resolveVectorRoute>) =>
-      routerMockState.resolveVectorRoute === null
-        ? actual.resolveVectorRoute(...args)
-        : (routerMockState.resolveVectorRoute(...args) as ReturnType<typeof actual.resolveVectorRoute>),
   };
 });
 
@@ -89,15 +68,11 @@ function createRuntime(
   createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  let kb!: ReturnType<typeof createKbRuntime>;
-  // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
-  kb = createKbRuntime({
+  return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
-    getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
-  return kb;
 }
 
 function setMtime(path: string, mtime: Date): void {
@@ -380,7 +355,8 @@ function installMockHybridSearch(
     embedQuery?: (query: string) => Promise<Float32Array>;
   },
 ) {
-  hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+  bindEmbedding(kb, {
+    embedDocuments: vi.fn(async () => []),
     embedQuery,
   });
   equipVectorSlot(
@@ -422,9 +398,7 @@ describe('kb search', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
-    hybridMockState.createEmbeddingProvider = null;
     routerMockState.createRouter = null;
-    routerMockState.resolveVectorRoute = null;
     vi.resetModules();
   });
 
@@ -772,7 +746,7 @@ describe('kb search', () => {
     }
     setMtime(kb.entityGraphPath(), new Date(editedGraphMtimeMs));
     await kb.ensureCorpusFreshness();
-    await kb.getBaseRetrievalSurface().apply({
+    await kb.fts.read().consumer.apply?.({
       snapshot: kb.captureCorpusSnapshot(),
       db: kb.db,
     });
@@ -836,7 +810,7 @@ describe('kb search', () => {
     await reindex(kb);
     const [{ insertMultiple }, { createOramaDb }] = await Promise.all([
       import('@orama/orama'),
-      import('#src/kb/search/orama-backend.js'),
+      import('#src/kb/search/orama/backend.js'),
     ]);
     const { db } = await createOramaDb();
     await insertMultiple(db, [
@@ -871,7 +845,8 @@ describe('kb search', () => {
     ]);
     kb.persistOramaSnapshot(db);
     kb.invalidateKbCache();
-    hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+    bindEmbedding(kb, {
+      embedDocuments: vi.fn(async () => []),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([1, 0])),
     });
 
@@ -957,16 +932,12 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'alpha-archive').snippet).toBeUndefined();
   });
 
-  it('resolves the vector route once per hybrid search request', async () => {
+  it('creates the router once per hybrid search request', async () => {
     const actualRouter = await vi.importActual<typeof RouterModule>('#src/kb/search/router.js');
-    const resolveVectorRouteSpy = vi.fn((...args: Parameters<typeof actualRouter.resolveVectorRoute>) =>
-      actualRouter.resolveVectorRoute(...args),
-    );
     const createRouterSpy = vi.fn((...args: Parameters<typeof actualRouter.createRouter>) =>
       actualRouter.createRouter(...args),
     );
 
-    routerMockState.resolveVectorRoute = asUnknownHandler(resolveVectorRouteSpy);
     routerMockState.createRouter = asUnknownHandler(createRouterSpy);
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
@@ -986,13 +957,11 @@ describe('kb search', () => {
     const response = await searchKb(kb, 'semantic', 2);
 
     expect(response.mode).toBe('hybrid');
-    expect(resolveVectorRouteSpy).toHaveBeenCalledTimes(1);
+    expect(createRouterSpy).toHaveBeenCalledTimes(1);
     expect(createRouterSpy).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        vectorRoute: expect.objectContaining({
-          backend: 'needle',
-        }),
+        graph: expect.anything(),
       }),
     );
   });
@@ -1078,7 +1047,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    const { embedQuery } = installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([]),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     });
@@ -1087,7 +1056,7 @@ describe('kb search', () => {
 
     expect(response.mode).toBe('text');
     expect(resultNotes(response.results)).toEqual(['graph-rag']);
-    expect(hybridMockState.createEmbeddingProvider).not.toHaveBeenCalled();
+    expect(embedQuery).not.toHaveBeenCalled();
   });
 
   it('keeps hybrid search enabled when only metadataSeq advances beyond the vector snapshot', async () => {
@@ -1126,7 +1095,7 @@ describe('kb search', () => {
     expect(resultNotes(response.results)).toContain('hybrid-metadata-note');
   });
 
-  it('falls back to text mode when the vector snapshot lags behind contentSeq', async () => {
+  it('keeps hybrid search enabled when the vector snapshot lags behind contentSeq', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -1158,7 +1127,7 @@ describe('kb search', () => {
 
     const response = await searchKb(kb, 'rendering', 5);
 
-    expect(response.mode).toBe('text');
+    expect(response.mode).toBe('hybrid');
     expect(resultFor(response.results, 'stale-vector-note').matchedBy).toEqual(expect.arrayContaining(['content']));
   });
 

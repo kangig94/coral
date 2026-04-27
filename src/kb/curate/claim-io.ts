@@ -1,4 +1,4 @@
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { approximateTokenCount, fingerprintEntryContent } from './content-normalize.js';
 import type { ClaimCandidate, CurateClaimedEntry } from './pipeline-types.js';

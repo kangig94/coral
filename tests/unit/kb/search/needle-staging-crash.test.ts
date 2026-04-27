@@ -7,10 +7,9 @@ import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as NeedleStoreModule from '#src/kb/search/needle/store.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
-import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+import type { KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
@@ -23,18 +22,6 @@ function createNotifyCorpusMutation(driver: ConsumerDriver) {
   };
 }
 
-function runtimeActivationFromHandle(retrieval: VectorRetrieval, handle: ConsumerHandle): KbRuntimeActivationSnapshot {
-  const status = handle.status();
-  if (status.authority !== 'corpus') {
-    return { retrieval, snapshotId: null, contentSeq: 0, contentManifestHash: null };
-  }
-  return {
-    retrieval,
-    snapshotId: status.snapshotId,
-    contentSeq: status.contentSeq,
-    contentManifestHash: status.contentManifestHash,
-  };
-}
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
@@ -200,31 +187,40 @@ function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: Inst
   kb: KbRuntime;
   equip(owner: VectorRetrieval, handle: ConsumerHandle): void;
 } {
-  let resolveEquipmentView: (() => ReturnType<typeof runtimeActivationFromHandle> | null) | null = null;
-  let kb!: KbRuntime;
-  // eslint-disable-next-line prefer-const -- self-referential closure via resolveEquipmentView
-  kb = createKbRuntime({
+  let bindingScope = {
+    [Symbol.dispose]() {},
+  };
+  const kb = createKbRuntime({
     markdownRoot,
     runtimeDir,
     db,
-    getEquipmentView: () => resolveEquipmentView?.() ?? null,
   });
-
-  const registry = createSlotRegistry();
-  const slot = createEquipmentSlot<VectorRetrieval>({
-    id: 'kb.vector',
-    defaultOwner: () => kb.getBaseRetrievalSurface(),
-  });
-  registry.declare(slot);
 
   return {
     kb,
     equip(owner: VectorRetrieval, handle: ConsumerHandle) {
-      slot.equip(owner, handle);
-      resolveEquipmentView = () => {
-        const slotView = registry.list().find((entry) => entry.id === slot.id);
-        return slotView?.handle ? runtimeActivationFromHandle(slot.currentOwner(), slotView.handle) : null;
+      bindingScope[Symbol.dispose]();
+      bindingScope = {
+        [Symbol.dispose]() {},
       };
+      const retrieval: BoundVectorRetrieval = {
+        read(embedding, topK, scope) {
+          return owner.search(embedding, topK, scope);
+        },
+      };
+      kb.vector.bind(
+        {
+          read: () => retrieval,
+          consumer: {
+            id: handle.id,
+            authority: 'corpus',
+            corpusInterest: 'content',
+            registrationKind: handle.registrationKind,
+          },
+        },
+        bindingScope,
+        handle.id,
+      );
     },
   };
 }

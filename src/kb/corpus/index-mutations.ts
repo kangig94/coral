@@ -1,6 +1,6 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import type { KbIndexState, KbRuntime } from '../contracts.js';
+import type { KbIndexState, KbRuntime } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import { cloneKbIndex } from './index-records.js';
 

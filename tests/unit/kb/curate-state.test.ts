@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import {
   assignEntrySeqs,
   applyAddPendingDiscovery,

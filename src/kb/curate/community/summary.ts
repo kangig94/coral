@@ -1,4 +1,4 @@
-import type { KbRuntime } from '../../contracts.js';
+import type { KbRuntime } from '../../contract.js';
 import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from '../../entry-types.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { compareLocale, stripMarkdownCodeFences } from '../../validation.js';

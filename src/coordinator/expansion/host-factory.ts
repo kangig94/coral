@@ -1,7 +1,7 @@
 import type { ConsumerDriver } from '../consumer-driver.js';
 import { createExpansionHost } from '../../expansion/host.js';
 import type { ExpansionHost } from '../../expansion/contract.js';
-import type { KbRuntime } from '../../kb/contracts.js';
+import type { KbRuntime } from '../../kb/contract.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
 
 export interface CreateHostFactoryDeps {

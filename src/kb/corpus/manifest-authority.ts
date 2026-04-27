@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { noteEntryId, sourceEntryId } from '../entry-types.js';
 import { stripMdExt } from '../paths.js';
 import {

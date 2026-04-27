@@ -1,53 +1,64 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { KbCorpusSnapshot, KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
-import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import { resolveVectorRoute } from '#src/kb/search/router.js';
+import type { Backed, FtsRetrieval, KbRuntime, VectorRetrieval } from '#src/kb/contract.js';
+import { createRuntimeBinding } from '#src/runtime/binding.js';
+import { createRouter } from '#src/kb/search/router.js';
 
 type BackendVectorRetrieval = VectorRetrieval & {
   readonly backendKind: 'needle' | 'orama';
 };
 
-function createVectorRetrieval(backendKind: BackendVectorRetrieval['backendKind']): BackendVectorRetrieval {
-  return {
+function createVectorBacked(
+  backendKind: BackendVectorRetrieval['backendKind'],
+): { backed: Backed<VectorRetrieval>; retrieval: BackendVectorRetrieval } {
+  const retrieval: BackendVectorRetrieval = {
     backendKind,
-    search: vi.fn(async () => ({ hits: [] })),
+    read: vi.fn(async () => ({ hits: [] })),
+  };
+  return {
+    retrieval,
+    backed: {
+      read: () => retrieval,
+      consumer: {
+        id: `mock-${backendKind}`,
+        authority: 'corpus',
+        corpusInterest: 'content',
+        registrationKind: 'expansion',
+      },
+    },
   };
 }
 
-describe('resolveVectorRoute', () => {
-  it('uses runtime.getCorpusStateSnapshot without touching runtime.db', () => {
-    const base = createVectorRetrieval('orama');
-    const needle = createVectorRetrieval('needle');
-    const corpusSnapshot: KbCorpusSnapshot = {
-      snapshotId: 'snapshot-1',
-      contentSeq: 7,
-      metadataSeq: 0,
-      contentManifestHash: 'manifest-1',
-      metadataManifestHash: 'metadata-1',
+describe('createRouter', () => {
+  it('reads vector and fts bindings without touching runtime.db', () => {
+    const { backed: vectorBacked, retrieval: vectorRetrieval } = createVectorBacked('needle');
+    const textRetrieval: FtsRetrieval = {
+      read: vi.fn(async () => ({ hits: [] })),
     };
-    const activation: KbRuntimeActivationSnapshot = {
-      retrieval: needle,
-      snapshotId: 'snapshot-1',
-      contentSeq: 7,
-      contentManifestHash: 'manifest-1',
-    };
-    const getCorpusStateSnapshot = vi.fn(() => corpusSnapshot);
+    const vector = createRuntimeBinding(vectorBacked);
+    const fts = createRuntimeBinding({
+      read: () => textRetrieval,
+      consumer: {
+        id: 'mock-orama',
+        authority: 'corpus',
+        corpusInterest: 'content',
+        registrationKind: 'base',
+      },
+    });
+    vector.binding = 'kb.vector';
+    fts.binding = 'kb.fts';
 
     const runtime = {
-      getEquipmentView: () => activation,
-      getActiveVectorSurface: () => needle,
-      getBaseRetrievalSurface: () => base,
-      getCorpusStateSnapshot,
+      vector,
+      fts,
       get db() {
-        throw new Error('resolveVectorRoute should not touch runtime.db');
+        throw new Error('createRouter should not touch runtime.db');
       },
     } as unknown as KbRuntime;
 
-    expect(resolveVectorRoute(runtime)).toEqual({
-      retrieval: needle,
-      backend: 'needle',
-    });
-    expect(getCorpusStateSnapshot).toHaveBeenCalledTimes(1);
+    const router = createRouter(runtime);
+
+    expect(router.vector).toBe(vectorRetrieval);
+    expect(router.text).toBe(textRetrieval);
   });
 });

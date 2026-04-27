@@ -1,6 +1,5 @@
 import { components, create } from '@orama/orama';
-import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './orama-schema.js';
-import { computeContentSurfaceHash, computeMetadataSurfaceHash, type CanonicalFrontmatterRecord } from './corpus/snapshot.js';
+import { computeContentSurfaceHash, computeMetadataSurfaceHash, type CanonicalFrontmatterRecord } from '../../corpus/snapshot.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -8,7 +7,8 @@ import {
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
-} from './entry-types.js';
+} from '../../entry-types.js';
+import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 
 const ORAMA_LANGUAGE = 'english';
 

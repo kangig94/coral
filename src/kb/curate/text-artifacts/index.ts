@@ -11,7 +11,7 @@ import {
   loadPrinciples,
   loadSources,
 } from './loaders.js';
-import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contracts.js';
+import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type {
   KbReindexCommunityRecord,

@@ -2,7 +2,7 @@ import type {
   KbCorpusPublishCallbacks,
   KbCorpusPublication,
   KbPersistCorpusStateResult,
-} from '../contracts.js';
+} from '../contract.js';
 import type { CorpusSnapshot } from './snapshot.js';
 import { mergeCorpusLanes } from './lanes.js';
 

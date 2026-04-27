@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { nowIsoString } from '../../../infra/time.js';
-import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../../contract.js';
 import {
   captureCommunityManifestDelta,
   captureNoteManifestDeltas,

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { reindex } from '#src/kb/ops/reindex.js';
+import { CoralSetupError } from '#src/runtime/errors.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
@@ -54,8 +56,8 @@ afterEach(() => {
   }
 });
 
-describe('KbRuntime base vector surface stability', () => {
-  it('keeps the same base vector surface across a corpus rebuild', async () => {
+describe('KbRuntime base vector binding stability', () => {
+  it('keeps the same base vector and fts defaults across a corpus rebuild', async () => {
     const root = allocateRoot();
     writeNote(root, 1, 'Initial corpus body.');
 
@@ -67,15 +69,17 @@ describe('KbRuntime base vector surface stability', () => {
     openDatabases.push(kb.db);
 
     await reindex(kb);
-    const before = kb.getBaseRetrievalSurface();
+    const beforeVector = kb.vector.read();
+    const beforeFts = kb.fts.read();
 
     writeNote(root, 2, 'Updated corpus body after rebuild.');
     await reindex(kb);
 
-    expect(kb.getBaseRetrievalSurface()).toBe(before);
+    expect(kb.vector.read()).toBe(beforeVector);
+    expect(kb.fts.read()).toBe(beforeFts);
   });
 
-  it('returns a frozen cached empty equipment snapshot when no equipment resolver is present', () => {
+  it('defaults vector and fts to Orama while leaving embedding unbound', () => {
     const root = allocateRoot();
     const kb = createKbRuntime({
       markdownRoot: root,
@@ -84,12 +88,13 @@ describe('KbRuntime base vector surface stability', () => {
     });
     openDatabases.push(kb.db);
 
-    const first = kb.getEquipmentView();
-    const second = kb.getEquipmentView();
+    const firstVector = kb.vector.read();
+    const secondVector = kb.vector.read();
+    const fts = kb.fts.read();
 
-    expect(first).toBe(second);
-    expect(Object.isFrozen(first)).toBe(true);
-    expect(first.retrieval).toBe(kb.getBaseRetrievalSurface());
-    expect(kb.getActiveVectorSurface()).toBe(kb.getBaseRetrievalSurface());
+    expect(firstVector).toBe(secondVector);
+    expect(firstVector.consumer.id).toBe(ORAMA_BASE_CONSUMER_ID);
+    expect(fts.consumer.id).toBe(ORAMA_BASE_CONSUMER_ID);
+    expect(() => kb.embedding.read()).toThrow(CoralSetupError);
   });
 });

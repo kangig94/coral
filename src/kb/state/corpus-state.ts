@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../contracts.js';
+import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../contract.js';
 import type { KbCorpusStateRow } from './schema.js';
 
 type Database = BetterSqlite3.Database;

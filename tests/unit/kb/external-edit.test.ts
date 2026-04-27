@@ -17,11 +17,12 @@ vi.mock('#src/kb/search/embedding.js', () => ({
   }),
 }));
 
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
+import { bindEmbedding } from '#tests/unit/kb/equipment-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 type StoredOramaDocument = {
@@ -68,6 +69,10 @@ function createRegisteredRuntime(root: string): KbRuntime {
     db: createKbTestDb(root),
   });
   openDatabases.push(kb.db);
+  bindEmbedding(kb, {
+    embedDocuments: async (texts) => texts.map(embedText),
+    embedQuery: async (text) => embedText(text),
+  });
   kb.register({
     persistCorpusState: (snapshot) => persistCorpusState(kb.db, snapshot, { now: () => nowDate(kb.time) }),
     notifyCorpusMutation: () => {},
@@ -83,7 +88,7 @@ async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
 }
 
 async function applyBaseProjection(kb: KbRuntime): Promise<void> {
-  await kb.getBaseRetrievalSurface().apply({
+  await kb.fts.read().consumer.apply?.({
     snapshot: kb.captureCorpusSnapshot(),
     db: kb.db,
   });

@@ -9,7 +9,7 @@ type SlotOwner = { backendKind: 'needle' | 'orama' };
 function createHandle(id: string): ConsumerHandle {
   return {
     id,
-    registrationKind: 'equipment',
+    registrationKind: 'expansion',
     lastApplyError: null,
     async stop() {},
     async unregister() {},

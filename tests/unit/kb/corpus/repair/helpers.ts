@@ -7,7 +7,7 @@ import { expect } from 'vitest';
 
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import { sortedMarkdownEntries } from '#src/kb/corpus/markdown-entries.js';
 import { readCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { classifyIncident, type IncidentClassification } from '#src/kb/corpus/repair/classify.js';

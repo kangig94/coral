@@ -99,7 +99,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   consumer_registration_kind_mismatch: {
     userMessage: (context) =>
       `Consumer ${stringContextValue(context, 'id', 'this consumer')} registration kind mismatch: expected ${stringContextValue(context, 'expected', 'unknown')}, got ${stringContextValue(context, 'actual', 'unknown')}.`,
-    remediation: 'Check that registration kind (base vs equipment) is consistent.',
+    remediation: 'Check that registration kind (base vs expansion) is consistent.',
   },
   consumer_lane_invalid: {
     userMessage: (context) =>

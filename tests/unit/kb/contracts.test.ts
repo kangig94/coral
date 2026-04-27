@@ -9,8 +9,8 @@ function readKbFile(name: string): string {
 }
 
 describe('kb contracts boundary', () => {
-  it('moves shared runtime contracts into contracts.ts and keeps runtime value exports explicit', () => {
-    const contractsSource = readKbFile('contracts.ts');
+  it('moves shared runtime contracts into contract.ts and keeps runtime value exports explicit', () => {
+    const contractsSource = readKbFile('contract.ts');
     const runtimeSource = readKbFile('runtime.ts');
 
     for (const contractName of [
@@ -25,12 +25,12 @@ describe('kb contracts boundary', () => {
     expect(runtimeSource).toContain('export function createKbRuntime');
   });
 
-  it('keeps kb runtime-type consumers pointed at contracts.ts instead of runtime.ts', () => {
+  it('keeps kb runtime-type consumers pointed at contract.ts instead of runtime.ts', () => {
     for (const [fileName, contractImport] of [
-      ['curate/state/bootstrap.ts', "from '../../contracts.js'"],
-      ['curate/state/store.ts', "from '../../contracts.js'"],
-      ['corpus/index-mutations.ts', "from '../contracts.js'"],
-      ['curate/text-artifacts/index.ts', "from '../../contracts.js'"],
+      ['curate/state/bootstrap.ts', "from '../../contract.js'"],
+      ['curate/state/store.ts', "from '../../contract.js'"],
+      ['corpus/index-mutations.ts', "from '../contract.js'"],
+      ['curate/text-artifacts/index.ts', "from '../../contract.js'"],
     ] as const) {
       const source = readKbFile(fileName);
       expect(source).toContain(contractImport);

@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
-import type { CorpusSnapshot } from './corpus/snapshot.js';
+import { createRuntimeBinding } from '../runtime/binding.js';
+import { readProcessEnv } from '../infra/process-env.js';
+import { SYSTEM_TIME_PORT } from '../infra/time.js';
+import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
 import type {
-  CorpusConsumerRegistration,
+  Backed,
+  EmbeddingService,
+  FtsRetrieval,
   KbInboundSyncOptions,
   KbCachedOramaIndex,
   KbCorpusPublishCallbacks,
@@ -12,9 +17,9 @@ import type {
   KbIndexMutationLane,
   KbIndexState,
   KbMutationEffects,
-  KbRuntimeActivationSnapshot,
   KbRuntime,
-} from './contracts.js';
+  VectorRetrieval,
+} from './contract.js';
 import {
   createKbMutationLock,
   type KbMutationLockContext,
@@ -26,16 +31,15 @@ import {
 } from './corpus/manifest-authority.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
-import { createOramaDb } from './orama-document-builder.js';
-import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts/index.js';
 import {
   type EntityGraph,
   type KbIndex,
 } from './entry-types.js';
-import { createOramaBaseProjection } from './search/orama-backend.js';
+import { createOramaDb } from './search/orama/document-builder.js';
+import type { KbOramaDb, KbOramaTokenizer } from './search/orama/schema.js';
+import { createOramaBacked, createOramaBaseProjection, createOramaFtsBacked } from './search/orama/index.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
-import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import {
   applyMutationLane,
   captureIndexStateSnapshot,
@@ -54,7 +58,7 @@ import {
 } from './corpus/index-store.js';
 import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
-import { OramaSnapshotStore } from './search/orama-snapshot.js';
+import { OramaSnapshotStore } from './search/orama/snapshot.js';
 import {
   buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,
@@ -66,13 +70,7 @@ import {
 } from './corpus/inbound-sync.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
 import { pendingRepairNeedsRetry } from './corpus/repair/pending-retry.js';
-import {
-  buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot,
-  emptyRuntimeActivationSnapshot,
-} from './state/corpus-snapshot-builder.js';
-import { SYSTEM_TIME_PORT } from '../infra/time.js';
-import { readProcessEnv } from '../infra/process-env.js';
-import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
+import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
 
 type MutationLockContext = KbMutationLockContext<
   KbIndex,
@@ -86,7 +84,6 @@ export interface CreateKbRuntimeOptions {
   runtimeDir: string;
   db: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
-  getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   readOnlyOrama?: boolean;
   time?: Pick<RuntimeTimePort, 'now'>;
   ids?: Pick<RuntimeIdsPort, 'uuid'>;
@@ -100,6 +97,9 @@ class KbRuntimeImpl implements KbRuntime {
   readonly time: Pick<RuntimeTimePort, 'now'>;
   readonly ids: Pick<RuntimeIdsPort, 'uuid'>;
   readonly env: Pick<RuntimeEnvPort, 'get'>;
+  readonly vector: KbRuntime['vector'];
+  readonly embedding: KbRuntime['embedding'];
+  readonly fts: KbRuntime['fts'];
   private readonly readOnlyOrama: boolean;
   private readonly paths: KbRuntimePaths;
   private readonly manifestAuthority = createManifestAuthority();
@@ -110,8 +110,6 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly baseProjection = createOramaBaseProjection(this);
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly publicationQueue: CorpusPublicationQueue;
-  private readonly equipmentViewResolver?: () => KbRuntimeActivationSnapshot | null;
-  private readonly emptyEquipmentView: KbRuntimeActivationSnapshot;
   private activeMutationContext: MutationLockContext | null = null;
   private readonly mutationEffects: KbMutationEffects = {
     queueManifestAuthorityDelta: (deltas) => {
@@ -150,7 +148,6 @@ class KbRuntimeImpl implements KbRuntime {
     runtimeDir,
     db,
     corpusPublishCallbacks,
-    getEquipmentView,
     readOnlyOrama,
     time,
     ids,
@@ -164,6 +161,12 @@ class KbRuntimeImpl implements KbRuntime {
     this.env = env ?? { get: readProcessEnv };
     this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
+    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>(createOramaBacked(this, this.baseProjection));
+    this.vector.binding = 'kb.vector';
+    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>();
+    this.embedding.binding = 'kb.embedding';
+    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>(createOramaFtsBacked(this, this.baseProjection));
+    this.fts.binding = 'kb.fts';
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.oramaSnapshotStore = new OramaSnapshotStore(this.runtimeDir);
     this.indexStore = new KbIndexStore({
@@ -181,8 +184,6 @@ class KbRuntimeImpl implements KbRuntime {
         this.invalidateCorpusStateSnapshot();
       },
     });
-    this.equipmentViewResolver = getEquipmentView;
-    this.emptyEquipmentView = Object.freeze(emptyRuntimeActivationSnapshot(this.baseProjection));
 
     mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -191,18 +192,6 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.manifestAuthority.seedFromFullCollectors(this);
-  }
-
-  getEquipmentView(): KbRuntimeActivationSnapshot {
-    return this.equipmentViewResolver?.() ?? this.emptyEquipmentView;
-  }
-
-  getActiveVectorSurface(): VectorRetrieval {
-    return this.getEquipmentView().retrieval;
-  }
-
-  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval & CorpusConsumerRegistration {
-    return this.baseProjection;
   }
 
   notesDir(): string {
@@ -506,7 +495,7 @@ class KbRuntimeImpl implements KbRuntime {
     return buildInboundSyncIndexDelta(this.activeMutationContext?.startIndex ?? this.readIndex(), changedEntryIds, this);
   }
 
-  private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): CorpusSnapshot {
+  private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): KbCorpusSnapshot {
     return buildRuntimeCorpusSnapshot(state, this.manifestAuthority);
   }
 

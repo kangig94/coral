@@ -1,7 +1,6 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { KbRuntime } from '#src/kb/contracts.js';
 import type { KbEntryId } from '#src/kb/entry-types.js';
 
 vi.mock('#src/kb/curate/state/index.js', () => ({
@@ -39,7 +38,7 @@ vi.mock('#src/kb/read.js', () => ({
   },
 }));
 
-import { createOramaDb, OramaBaseProjection } from '#src/kb/search/orama-backend.js';
+import { createOramaDb, OramaBaseProjection } from '#src/kb/search/orama/backend.js';
 
 const RNG_SEED = 0xc05173;
 const DIMENSIONS = 32;
@@ -139,7 +138,7 @@ async function createProjection(documents: readonly TestDocument[]): Promise<Ora
     })),
   );
 
-  const runtime = {
+  const projection = new OramaBaseProjection({
     async ensureOramaIndex() {
       return {
         db,
@@ -150,32 +149,7 @@ async function createProjection(documents: readonly TestDocument[]): Promise<Ora
         },
       };
     },
-    getEquipmentView() {
-      return {
-        retrieval: projection,
-        snapshotId: null,
-        contentSeq: 0,
-        contentManifestHash: null,
-      };
-    },
-    getActiveVectorSurface() {
-      return projection;
-    },
-    getBaseRetrievalSurface() {
-      return projection;
-    },
-    getCorpusStateSnapshot() {
-      return {
-        snapshotId: 'orama-cosine-test-snapshot',
-        contentSeq: 0,
-        metadataSeq: 0,
-        contentManifestHash: '',
-        metadataManifestHash: '',
-      };
-    },
-  } as unknown as KbRuntime;
-
-  const projection = new OramaBaseProjection(runtime);
+  } as never);
   return projection;
 }
 

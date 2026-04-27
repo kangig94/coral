@@ -8,9 +8,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createCoordinatorServer } from '#src/coordinator/coordinator.js';
-import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contracts.js';
-import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama-backend.js';
+import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot, VectorRetrieval } from '#src/kb/contract.js';
+import { createRuntimeBinding } from '#src/runtime/binding.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 
 const tempRoots: string[] = [];
@@ -23,24 +23,36 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
 };
 
 function createMockKb(order?: string[]) {
-  const baseSurface: VectorRetrieval & {
-    id: string;
-    authority: 'corpus';
-    corpusInterest: 'content';
-    registrationKind: 'base';
-    backendKind: 'orama';
-    apply(ctx: { snapshot: CorpusSnapshot }): Promise<void>;
-  } = {
+  const baseConsumer = {
     id: ORAMA_BASE_CONSUMER_ID,
-    authority: 'corpus',
-    corpusInterest: 'content',
-    registrationKind: 'base',
-    backendKind: 'orama',
-    search: vi.fn(async () => ({ hits: [] })),
+    authority: 'corpus' as const,
+    corpusInterest: 'content' as const,
+    registrationKind: 'base' as const,
     apply: vi.fn(async () => {}),
   };
+  const vectorRetrieval: VectorRetrieval = {
+    read: vi.fn(async () => ({ hits: [] })),
+  };
+  const ftsRetrieval: FtsRetrieval = {
+    read: vi.fn(async () => ({ hits: [] })),
+  };
+  const vector = createRuntimeBinding<Backed<VectorRetrieval>>({
+    read: () => vectorRetrieval,
+    consumer: baseConsumer,
+  });
+  const fts = createRuntimeBinding<Backed<FtsRetrieval>>({
+    read: () => ftsRetrieval,
+    consumer: baseConsumer,
+  });
+  const embedding = createRuntimeBinding<Backed<EmbeddingService>>();
+  vector.binding = 'kb.vector';
+  fts.binding = 'kb.fts';
+  embedding.binding = 'kb.embedding';
 
   return {
+    vector,
+    fts,
+    embedding,
     retryPendingCorpusPublication: vi.fn(async () => {
       order?.push('retryPendingCorpusPublication');
     }),
@@ -76,14 +88,6 @@ function createMockKb(order?: string[]) {
       order?.push('getCorpusStateSnapshot');
       return { ...EMPTY_CORPUS_SNAPSHOT };
     }),
-    getEquipmentView: vi.fn(() => ({
-      retrieval: baseSurface,
-      snapshotId: null,
-      contentSeq: 0,
-      contentManifestHash: null,
-    })),
-    getActiveVectorSurface: vi.fn(() => baseSurface),
-    getBaseRetrievalSurface: vi.fn(() => baseSurface),
   } as never;
 }
 

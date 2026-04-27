@@ -16,7 +16,7 @@ import {
 import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { stripMdExt } from '../../paths.js';
-import type { KbMutationEffects, KbRuntime } from '../../contracts.js';
+import type { KbMutationEffects, KbRuntime } from '../../contract.js';
 import type { CommunityDocument, DetectedCommunity, ExistingGeneratedCommunity } from './contracts.js';
 
 type BuildCommunityDocumentsOptions = {

@@ -8,7 +8,7 @@ import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import { buildNoteIndexEntry } from '../corpus/index-records.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { currentEntrySeq } from '../index-state.js';
 
 export async function promote(

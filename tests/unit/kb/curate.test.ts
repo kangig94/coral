@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as curateState from '#src/kb/curate/state/index.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import {
   buildClassificationPrompt,
   buildDiscoveryPrompt,
@@ -2328,7 +2328,7 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       expect(lockSpy).toHaveBeenCalledTimes(1);
-      await runtime.getBaseRetrievalSurface().apply({
+      await runtime.fts.read().consumer.apply?.({
         snapshot: runtime.captureCorpusSnapshot(),
         db: runtime.db,
       });

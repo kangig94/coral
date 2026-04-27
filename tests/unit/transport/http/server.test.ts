@@ -38,6 +38,8 @@ import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import type { Backed, EmbeddingService, FtsRetrieval, VectorRetrieval } from '#src/kb/contract.js';
+import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/response.js';
 import {
   handleKbCommunityRead,
@@ -57,7 +59,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama-backend.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
 import {
   LaunchCoordinator,
   TypedEventBus,
@@ -491,17 +493,36 @@ describe('execution backend server', () => {
   });
 
   function createMockKbSubsystem() {
-    const baseRetrievalSurface = {
+    const baseConsumer = {
       id: ORAMA_BASE_CONSUMER_ID,
-      authority: 'corpus',
-      corpusInterest: 'content',
-      registrationKind: 'base',
-      backendKind: 'orama',
-      search: vi.fn(async () => ({ hits: [] })),
+      authority: 'corpus' as const,
+      corpusInterest: 'content' as const,
+      registrationKind: 'base' as const,
       apply: vi.fn(async () => {}),
     };
+    const vectorRetrieval: VectorRetrieval = {
+      read: vi.fn(async () => ({ hits: [] })),
+    };
+    const ftsRetrieval: FtsRetrieval = {
+      read: vi.fn(async () => ({ hits: [] })),
+    };
+    const vector = createRuntimeBinding<Backed<VectorRetrieval>>({
+      read: () => vectorRetrieval,
+      consumer: baseConsumer,
+    });
+    const fts = createRuntimeBinding<Backed<FtsRetrieval>>({
+      read: () => ftsRetrieval,
+      consumer: baseConsumer,
+    });
+    const embedding = createRuntimeBinding<Backed<EmbeddingService>>();
+    vector.binding = 'kb.vector';
+    fts.binding = 'kb.fts';
+    embedding.binding = 'kb.embedding';
     return {
       kb: {
+        vector,
+        fts,
+        embedding,
         retryPendingCorpusPublication: vi.fn(async () => {}),
         withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
         ensureOramaIndex: vi.fn(async () => ({
@@ -519,14 +540,6 @@ describe('execution backend server', () => {
           principles: {},
           entityMeta: {},
           relationships: [],
-        })),
-        getBaseRetrievalSurface: vi.fn(() => baseRetrievalSurface),
-        getActiveVectorSurface: vi.fn(() => baseRetrievalSurface),
-        getEquipmentView: vi.fn(() => ({
-          retrieval: baseRetrievalSurface,
-          snapshotId: null,
-          contentSeq: 0,
-          contentManifestHash: null,
         })),
         getCorpusStateSnapshot: vi.fn(() => ({
           snapshotId: '',

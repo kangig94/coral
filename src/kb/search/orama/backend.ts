@@ -7,29 +7,29 @@ import type {
   CorpusConsumerRegistration,
   KbCorpusSnapshot,
   KbRuntime,
-} from '../contracts.js';
+} from '../../contract.js';
 import {
   buildRetrievalAuthorityText,
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
-} from '../corpus/snapshot.js';
-import { areCommunityDocumentsFresh } from '../curate/text-artifacts/index.js';
-import type { CommunityDocument } from '../curate/community/detection.js';
-import { extractBody, parseCommunityFrontmatter } from '../corpus/frontmatter.js';
-import { cloneKbIndex } from '../corpus/index-records.js';
-import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
-import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-document-builder.js';
-import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
-import { loadKbNote, loadKbSource } from '../read.js';
-import { isNoEntryError } from '../../infra/fs-errors.js';
-import { createEmbeddingProvider, type EmbeddingProvider } from './embedding.js';
+} from '../../corpus/snapshot.js';
+import { areCommunityDocumentsFresh } from '../../curate/text-artifacts/index.js';
+import type { CommunityDocument } from '../../curate/community/detection.js';
+import { extractBody, parseCommunityFrontmatter } from '../../corpus/frontmatter.js';
+import { cloneKbIndex } from '../../corpus/index-records.js';
+import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
+import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from './document-builder.js';
+import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
+import { loadKbNote, loadKbSource } from '../../read.js';
+import { isNoEntryError } from '../../../infra/fs-errors.js';
+import { createEmbeddingProvider, type EmbeddingProvider } from '../embedding.js';
 import type {
   RetrievalScope,
   TextRetrieval,
   TextRetrievalResult,
   VectorRetrieval,
   VectorRetrievalResult,
-} from './contract.js';
+} from '../contract.js';
 import {
   isCommunityEntry,
   isNoteEntry,
@@ -39,10 +39,10 @@ import {
   type KbIndex,
   type NoteEntry,
   type SourceEntry,
-} from '../entry-types.js';
+} from '../../entry-types.js';
 
-export { createOramaDb, normalizeHyphens, normalizeOramaTerm, normalizeWhitespace, tokenizeField, tokenizeQuery, toOramaDocument, type KbOramaDocument } from '../orama-document-builder.js';
-export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from '../orama-schema.js';
+export { createOramaDb, normalizeHyphens, normalizeOramaTerm, normalizeWhitespace, tokenizeField, tokenizeQuery, toOramaDocument, type KbOramaDocument } from './document-builder.js';
+export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
   'slug',

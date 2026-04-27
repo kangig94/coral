@@ -1,4 +1,4 @@
-import type { KbCorpusLane, KbIndexMutationLane, KbIndexState } from '../contracts.js';
+import type { KbCorpusLane, KbIndexMutationLane, KbIndexState } from '../contract.js';
 import { currentEntrySeq } from '../index-state.js';
 
 export type KbIndexStateSnapshot = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;

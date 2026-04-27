@@ -1,5 +1,5 @@
 import type { ConsumerDriver } from '../coordinator/consumer-driver.js';
-import type { KbRuntime } from '../kb/contracts.js';
+import type { KbRuntime } from '../kb/contract.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';

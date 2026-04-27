@@ -1,13 +1,14 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
-import type { EntityGraph, KbIndex } from './entry-types.js';
+import type { RuntimeBinding } from '../runtime/binding.js';
+import type { CorpusConsumerRegistration } from '../store/consumer-contract.js';
+import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
-import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
-import type { CorpusConsumerRegistration } from './corpus/consumer-contract.js';
-import type { RuntimeEnvPort, RuntimeIdsPort, RuntimeTimePort } from '../runtime/ports.js';
+import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
+import type { TextRetrievalResult, VectorRetrievalResult } from './search/contract.js';
+import type { KbOramaDb, KbOramaTokenizer } from './search/orama/schema.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,
@@ -15,7 +16,7 @@ export type {
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
-} from './corpus/consumer-contract.js';
+} from '../store/consumer-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -59,11 +60,24 @@ export interface KbCachedOramaIndex {
   tokenizer: KbOramaTokenizer;
 }
 
-export interface KbRuntimeActivationSnapshot {
-  retrieval: VectorRetrieval;
-  snapshotId: string | null;
-  contentSeq: number;
-  contentManifestHash: string | null;
+export type Consumer = CorpusConsumerRegistration;
+
+export interface Backed<T> {
+  read(): T;
+  consumer: Consumer;
+}
+
+export interface VectorRetrieval {
+  read(embedding: number[], topK: number, scope?: KbSearchScope): Promise<VectorRetrievalResult>;
+}
+
+export interface FtsRetrieval {
+  read(query: string, topK: number, scope?: KbSearchScope): Promise<TextRetrievalResult>;
+}
+
+export interface EmbeddingService {
+  embedDocuments(texts: string[]): Promise<Float32Array[]>;
+  embedQuery(text: string): Promise<Float32Array>;
 }
 
 export interface KbInboundSyncOptions {
@@ -82,9 +96,9 @@ export interface KbRuntime {
   readonly time: Pick<RuntimeTimePort, 'now'>;
   readonly ids: Pick<RuntimeIdsPort, 'uuid'>;
   readonly env: Pick<RuntimeEnvPort, 'get'>;
-  getEquipmentView(): KbRuntimeActivationSnapshot;
-  getActiveVectorSurface(): VectorRetrieval;
-  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval & CorpusConsumerRegistration;
+  readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
+  readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
+  readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;

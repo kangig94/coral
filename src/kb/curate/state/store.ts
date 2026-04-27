@@ -2,7 +2,7 @@ import type {
   KbCurateActiveClaimRow,
   KbCurateCommunitySummaryInputFingerprintRow,
 } from '../../state/schema.js';
-import type { KbRuntime } from '../../contracts.js';
+import type { KbRuntime } from '../../contract.js';
 import { parsePositiveInteger } from '../../validation.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '../retry.js';

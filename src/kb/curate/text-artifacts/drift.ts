@@ -9,7 +9,7 @@ import { computeContentSurfaceHash } from '../../corpus/snapshot.js';
 import { stripMdExt } from '../../paths.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contracts.js';
+import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contract.js';
 import {
   isNoteEntry,
   isSourceEntry,

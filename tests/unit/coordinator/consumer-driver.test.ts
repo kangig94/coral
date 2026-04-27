@@ -143,7 +143,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     }
   });
 
-  it('supports register -> stop -> unregister for equipment consumers and drops future notifications after stop', async () => {
+  it('supports register -> stop -> unregister for expansion consumers and drops future notifications after stop', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
     const applyCalls: Array<{ fromSeq: number; upToSeq: number }> = [];
@@ -160,7 +160,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const handle = driver.register({
         id: 'equipment-consumer',
         authority: 'journal',
-        registrationKind: 'equipment',
+        registrationKind: 'expansion',
         async apply({ fromSeq, upToSeq }) {
           applyCalls.push({ fromSeq, upToSeq });
           releaseApply();
@@ -441,7 +441,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       driver.register({
         id: 'equipment-cursor',
         authority: 'journal',
-        registrationKind: 'equipment',
+        registrationKind: 'expansion',
         async apply() {},
       });
 

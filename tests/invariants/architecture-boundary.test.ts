@@ -1068,4 +1068,41 @@ describe('architecture boundary guard', () => {
     const lineCount = source.split('\n').length;
     expect(lineCount).toBeLessThanOrEqual(450);
   });
+
+  it('keeps Orama as constructor-defaulted KB infrastructure instead of an Expansion', () => {
+    const oramaRoot = resolve(REPO_ROOT, 'src/kb/search/orama');
+    const pending = [oramaRoot];
+    const oramaFiles: string[] = [];
+
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current || !existsSync(current)) {
+        continue;
+      }
+
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        const nextPath = resolve(current, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(nextPath);
+          continue;
+        }
+        if (entry.isFile() && nextPath.endsWith('.ts')) {
+          oramaFiles.push(nextPath);
+        }
+      }
+    }
+
+    for (const filePath of oramaFiles) {
+      const source = readFileSync(filePath, 'utf8');
+      expect(source).not.toMatch(/\bExpansion\b/);
+    }
+
+    const runtimeSource = readFileSync(resolve(REPO_ROOT, 'src/kb/runtime.ts'), 'utf8');
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<VectorRetrieval>>\(\s*createOramaBacked\(/);
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<FtsRetrieval>>\(\s*createOramaFtsBacked\(/);
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*\)/);
+    expect(runtimeSource).not.toMatch(
+      /createRuntimeBinding<Backed<EmbeddingService>>\(\s*(?:undefined|create[A-Za-z0-9_]+|\{|\[|'|"|`)/,
+    );
+  });
 });

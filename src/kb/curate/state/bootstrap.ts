@@ -7,7 +7,7 @@ import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../../
 import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../../index-state.js';
 import { stripMdExt } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
-import type { KbIndexState, KbRuntime } from '../../contracts.js';
+import type { KbIndexState, KbRuntime } from '../../contract.js';
 import { nowIsoString } from '../../../infra/time.js';
 import {
   isNoteEntry,

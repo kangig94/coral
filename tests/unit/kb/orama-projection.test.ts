@@ -32,7 +32,7 @@ import {
   cloneKbIndex,
 } from '#src/kb/corpus/index-records.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
-import { createOramaBaseProjection } from '#src/kb/search/orama-backend.js';
+import { createOramaBaseProjection } from '#src/kb/search/orama/backend.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const TOP_K = 10;

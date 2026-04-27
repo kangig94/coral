@@ -1,5 +1,5 @@
 import type { RuntimeBinding } from '../runtime/binding.js';
-import type { KbRuntime } from '../kb/contracts.js';
+import type { KbRuntime } from '../kb/contract.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 

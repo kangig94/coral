@@ -35,13 +35,12 @@ import { workflowRecover } from '../workflow/recover.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama-backend.js';
+import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama/index.js';
 import { NEEDLE_CONSUMER_ID } from '../kb/search/needle/contract.js';
-import type { KbRuntime } from '../kb/contracts.js';
+import type { Backed, KbRuntime, VectorRetrieval } from '../kb/contract.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
 import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
-import type { VectorRetrieval } from '../kb/search/contract.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
@@ -177,10 +176,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ...ctx,
         db: getStoreDb(),
         flavor,
-        getEquipmentView: () =>
-          equipmentLifecycleService.getRuntimeActivation()
-          ?? currentKbRuntime?.getEquipmentView()
-          ?? null,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => nowDate(runtime.time),
@@ -201,9 +196,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         },
       });
       currentKbRuntime = kbSubsystem.kb;
-      const vectorSlot = createEquipmentSlot<VectorRetrieval>({
+      const vectorSlot = createEquipmentSlot<Backed<VectorRetrieval>>({
         id: 'kb.vector',
-        defaultOwner: () => kbSubsystem.kb.getBaseRetrievalSurface(),
+        defaultOwner: () => kbSubsystem.kb.vector.read(),
       });
       equipmentSlots.declare(vectorSlot);
       if (kbSubsystem.curateScheduler) {
@@ -218,7 +213,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Boot step 2: absorb external Corpus edits before replaying consumers.
       await kbSubsystem.kb.ensureCorpusFreshness();
       const driver = getConsumerDriver();
-      driver.register(kbSubsystem.kb.getBaseRetrievalSurface());
+      driver.register(kbSubsystem.kb.vector.read().consumer);
       // Boot step 3: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
@@ -260,15 +255,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       }
 
       if (readiness === 'active-vector') {
-        const activeKind = (kb.getActiveVectorSurface() as { backendKind?: string }).backendKind;
-        await (activeKind === 'needle' ? waitForNeedle() : waitForOrama());
+        const vectorBacked = kb.vector.read();
+        await driver.waitFreshUntil('corpus', snapshot, vectorBacked.consumer.id, bootFreshnessTimeoutMs);
         return;
       }
 
-      await waitForOrama();
-      if ((kb.getActiveVectorSurface() as { backendKind?: string }).backendKind === 'needle') {
-        await waitForNeedle();
-      }
+      const vectorBacked = kb.vector.read();
+      await driver.waitFreshUntil('corpus', snapshot, vectorBacked.consumer.id, bootFreshnessTimeoutMs);
     },
     runStartupRecoveryFn: async ({
       identity,

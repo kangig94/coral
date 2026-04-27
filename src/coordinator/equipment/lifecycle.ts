@@ -2,8 +2,8 @@ import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerDriver } from '../consumer-driver.js';
+import type { Backed, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '../../kb/contract.js';
 import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
-import type { KbRuntime } from '../../kb/contracts.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend,
@@ -14,17 +14,19 @@ import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { nowDate } from '../../infra/time.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle/store.js';
-import type { Runtime } from '../../runtime/ports.js';
+import type { Disposable, Runtime } from '../../runtime/ports.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../infra/error-format.js';
-import type { KbRuntimeActivationSnapshot } from '../../kb/contracts.js';
 import type { ConsumerHandle } from '../../store/consumer-contract.js';
 import type { SlotRegistry } from './slots.js';
 
-// Re-exports the KB-facing runtime activation shape so coordinator equipment
-// code shares one contract.
-export type RuntimeActivationSnapshot = KbRuntimeActivationSnapshot;
+export interface RuntimeActivationSnapshot {
+  retrieval: VectorRetrieval;
+  snapshotId: string | null;
+  contentSeq: number;
+  contentManifestHash: string | null;
+}
 
 // Produces the inactive default snapshot readers use before equipment is live.
 function emptySnapshot(retrieval: VectorRetrieval): RuntimeActivationSnapshot {
@@ -77,6 +79,8 @@ type EquipmentCursorRow = {
 type ActiveEquipmentEntry = {
   name: 'needle';
   slotId: 'kb.vector';
+  bindingScope: Disposable;
+  retrieval: VectorRetrieval;
   backend: NeedleBackend;
   handle: ConsumerHandle;
 };
@@ -119,6 +123,24 @@ const activateNeedle: ActivateNeedleFn = async (runtime, addonPath, options = {}
     ...(options.storeFactory === undefined ? {} : { storeFactory: options.storeFactory }),
   });
 };
+
+function createBindingScope(): Disposable {
+  return {
+    [Symbol.dispose]() {},
+  };
+}
+
+function wrapNeedleBacked(backend: NeedleBackend): Backed<BoundVectorRetrieval> {
+  const retrieval: BoundVectorRetrieval = {
+    read(embedding, topK, scope) {
+      return backend.search(embedding, topK, scope);
+    },
+  };
+  return {
+    read: () => retrieval,
+    consumer: backend,
+  };
+}
 
 const closeNeedleBackend: CloseNeedleBackendFn = async (runtime) => {
   const needle = await loadNeedleBackendModule();
@@ -297,7 +319,7 @@ export class EquipmentLifecycleService {
       return null;
     }
 
-    return runtimeActivationFromHandle(active.backend, active.handle);
+    return runtimeActivationFromHandle(active.retrieval, active.handle);
   }
 
   async shutdownActiveEquipment(): Promise<void> {
@@ -311,7 +333,7 @@ export class EquipmentLifecycleService {
     }
 
     this.activeBySlot.clear();
-    this.safeUnequipSlot('kb.vector');
+    activeEntries[0]?.bindingScope[Symbol.dispose]();
     await this.closeRuntimeBackend(this.options.resolveKbRuntime(), activeEntries[0]?.backend ?? null);
   }
 
@@ -383,12 +405,16 @@ export class EquipmentLifecycleService {
     descriptor: EquipmentDescriptor,
     runtime: KbRuntime,
   ): void {
-    const slot = this.options.slotRegistry.get<VectorRetrieval>(descriptor.slotId);
+    const bindingScope = createBindingScope();
+    const backed = wrapNeedleBacked(backend);
+    const retrieval = backend as VectorRetrieval;
     const commitTxn = this.options.db.transaction(() => {
-      slot.equip(backend, handle);
+      runtime.vector.bind(backed, bindingScope, descriptor.name);
       this.activeBySlot.set(descriptor.slotId, {
         name: descriptor.name,
         slotId: descriptor.slotId,
+        bindingScope,
+        retrieval,
         backend,
         handle,
       });
@@ -423,7 +449,7 @@ export class EquipmentLifecycleService {
     rollbackTxn.immediate();
 
     this.activeBySlot.delete(descriptor.slotId);
-    this.safeUnequipSlot(descriptor.slotId);
+    active?.bindingScope[Symbol.dispose]();
     await this.closeRuntimeBackend(runtime, backend);
   }
 

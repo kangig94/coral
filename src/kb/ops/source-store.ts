@@ -10,7 +10,7 @@ import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/i
 import { buildSourceIndexEntry } from '../corpus/index-records.js';
 import { readKnowledgeBaseListIndex } from '../direct-read-index.js';
 import { assertWithin } from '../paths.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import {
   deleteEntry,
   isSourceEntry,

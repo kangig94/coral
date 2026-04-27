@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { deleteFn } from '#src/kb/ops/delete.js';
 import { update } from '#src/kb/ops/update.js';

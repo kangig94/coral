@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
 
-export type ConsumerRegistrationKind = 'base' | 'equipment';
+export type ConsumerRegistrationKind = 'base' | 'expansion' | 'stateless';
 
 export interface ConsumerApplyError {
   readonly message: string;
@@ -56,7 +56,7 @@ export interface JournalConsumerRegistration {
    * - Cursor advances only on clean return; crash between apply commit and
    *   cursor update is tolerated because the same range re-applies on next start.
    */
-  apply(ctx: JournalApplyContext): Promise<void>;
+  apply?(ctx: JournalApplyContext): Promise<void>;
 }
 
 export type CorpusLaneHint = 'content' | 'metadata';
@@ -73,7 +73,7 @@ export interface CorpusConsumerRegistration {
   readonly corpusInterest: CorpusInterest;
   readonly registrationKind?: ConsumerRegistrationKind;
   readonly onApplyFailure?: (err: ConsumerApplyError) => void;
-  apply(ctx: CorpusConsumerApplyContext): Promise<void>;
+  apply?(ctx: CorpusConsumerApplyContext): Promise<void>;
 }
 
 export type ConsumerRegistration = JournalConsumerRegistration | CorpusConsumerRegistration;

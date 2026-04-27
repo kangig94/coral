@@ -35,7 +35,7 @@ const ADDED_DOCUMENTED_SETUP_ERRORS = [
   { code: 'consumer_interest_mismatch', context: { id: 'consumer-a' } },
   {
     code: 'consumer_registration_kind_mismatch',
-    context: { id: 'consumer-a', expected: 'base', actual: 'equipment' },
+    context: { id: 'consumer-a', expected: 'base', actual: 'expansion' },
   },
   { code: 'consumer_lane_invalid', context: { id: 'consumer-a' } },
   { code: 'consumer_wait_unsupported', context: { id: 'consumer-a' } },

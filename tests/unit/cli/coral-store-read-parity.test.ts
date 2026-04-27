@@ -47,7 +47,7 @@ async function seedKbSearchSnapshot(): Promise<void> {
 
   try {
     await reindex(kb);
-    await kb.getBaseRetrievalSurface().apply({
+    await kb.fts.read().consumer.apply?.({
       snapshot: kb.captureCorpusSnapshot(),
       db: kb.db,
     });

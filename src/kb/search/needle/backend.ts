@@ -5,7 +5,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { nowIsoString } from '../../../infra/time.js';
-import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../../contracts.js';
+import type { ConsumerApplyError, CorpusConsumerApplyContext, KbRuntime } from '../../contract.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../../paths.js';
@@ -238,7 +238,7 @@ export class NeedleBackend implements NeedleBackendContract {
   readonly authority = 'corpus';
   readonly backendKind = 'needle';
   readonly corpusInterest = 'content';
-  readonly registrationKind = 'equipment';
+  readonly registrationKind = 'expansion';
   readonly id: string;
   onApplyFailure?: (error: ConsumerApplyError) => void;
 

@@ -1,4 +1,4 @@
-import type { KbIndexState } from './contracts.js';
+import type { KbIndexState } from './contract.js';
 
 type SequencedIndexState = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
 

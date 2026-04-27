@@ -2,12 +2,12 @@ import { load, save, type RawData } from '@orama/orama';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { KbCachedOramaIndex } from '../contracts.js';
-import { createOramaDb } from '../orama-document-builder.js';
-import type { KbOramaDb } from '../orama-schema.js';
-import { oramaSnapshotDir } from '../paths.js';
-import { writeJsonAtomic } from '../corpus/index-store.js';
+import { isNoEntryError } from '../../../infra/fs-errors.js';
+import type { KbCachedOramaIndex } from '../../contract.js';
+import { writeJsonAtomic } from '../../corpus/index-store.js';
+import { oramaSnapshotDir } from '../../paths.js';
+import { createOramaDb } from './document-builder.js';
+import type { KbOramaDb } from './schema.js';
 
 export const ORAMA_INDEX_FILE = 'orama-index.json';
 

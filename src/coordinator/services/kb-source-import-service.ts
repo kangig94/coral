@@ -3,7 +3,7 @@ import { prepareSourceImport } from '../../kb/ops/source-import.js';
 import { persistPreparedSource } from '../../kb/ops/source-store.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
-import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contracts.js';
+import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';

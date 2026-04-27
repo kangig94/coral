@@ -1,28 +1,73 @@
 import type { ConsumerHandleStatus } from '#src/coordinator/consumer-driver.js';
-import { createEquipmentSlot, createSlotRegistry } from '#src/coordinator/equipment/slots.js';
-import type { KbRuntime, KbRuntimeActivationSnapshot } from '#src/kb/contracts.js';
+import type { Backed, EmbeddingService, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import type { ConsumerHandle } from '#src/store/consumer-contract.js';
-
-function runtimeActivationFromHandle(
-  retrieval: VectorRetrieval,
-  handle: ConsumerHandle,
-): KbRuntimeActivationSnapshot {
-  const status = handle.status();
-  if (status.authority !== 'corpus') {
-    return { retrieval, snapshotId: null, contentSeq: 0, contentManifestHash: null };
-  }
-  return {
-    retrieval,
-    snapshotId: status.snapshotId,
-    contentSeq: status.contentSeq,
-    contentManifestHash: status.contentManifestHash,
-  };
-}
+import type { Consumer, ConsumerHandle, ConsumerRegistrationKind } from '#src/store/consumer-contract.js';
+import type { Disposable } from '#src/runtime/ports.js';
 
 export type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
 
-export const equipmentViewResolvers = new WeakMap<KbRuntime, () => KbRuntimeActivationSnapshot | null>();
+const vectorScopes = new WeakMap<KbRuntime, Disposable>();
+const embeddingScopes = new WeakMap<KbRuntime, Disposable>();
+
+function createScope(): Disposable {
+  return {
+    [Symbol.dispose]() {},
+  };
+}
+
+function rebind<T>(map: WeakMap<KbRuntime, Disposable>, runtime: KbRuntime, bindingScope: Disposable): void {
+  map.get(runtime)?.[Symbol.dispose]();
+  map.set(runtime, bindingScope);
+}
+
+function createCorpusConsumer(
+  id: string,
+  registrationKind: ConsumerRegistrationKind,
+  apply: Consumer['apply'] = async () => {},
+): Consumer {
+  return {
+    id,
+    authority: 'corpus',
+    corpusInterest: 'content',
+    registrationKind,
+    apply,
+  };
+}
+
+function createVectorBacked(
+  retrieval: TaggedVectorRetrieval,
+  consumer: Consumer,
+): Backed<BoundVectorRetrieval> {
+  const vector: BoundVectorRetrieval = {
+    read(embedding, topK, scope) {
+      return retrieval.search(embedding, topK, scope);
+    },
+  };
+  return {
+    read: () => vector,
+    consumer,
+  };
+}
+
+export function bindEmbedding(
+  runtime: KbRuntime,
+  embedding: EmbeddingService,
+  options: {
+    id?: string;
+    registrationKind?: ConsumerRegistrationKind;
+  } = {},
+): void {
+  const scope = createScope();
+  rebind(embeddingScopes, runtime, scope);
+  runtime.embedding.bind(
+    {
+      read: () => embedding,
+      consumer: createCorpusConsumer(options.id ?? 'mock-embedder', options.registrationKind ?? 'expansion'),
+    },
+    scope,
+    options.id ?? 'mock-embedder',
+  );
+}
 
 export function createCorpusHandle(
   initial: Partial<Extract<ConsumerHandleStatus, { authority: 'corpus' }>>,
@@ -42,7 +87,7 @@ export function createCorpusHandle(
 
   return {
     id: 'mock-needle-handle',
-    registrationKind: 'equipment',
+    registrationKind: 'expansion',
     get lastApplyError() {
       return status.lastApplyError;
     },
@@ -53,17 +98,13 @@ export function createCorpusHandle(
 }
 
 export function equipVectorSlot(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
-  const registry = createSlotRegistry();
-  const slot = createEquipmentSlot<VectorRetrieval>({
-    id: 'kb.vector',
-    defaultOwner: () => runtime.getBaseRetrievalSurface(),
-  });
-  registry.declare(slot);
-  slot.equip(retrieval, handle);
-  equipmentViewResolvers.set(runtime, () => {
-    const slotView = registry.list().find((entry) => entry.id === slot.id);
-    return slotView?.handle ? runtimeActivationFromHandle(slot.currentOwner(), slotView.handle) : null;
-  });
+  const scope = createScope();
+  rebind(vectorScopes, runtime, scope);
+  runtime.vector.bind(
+    createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
+    scope,
+    handle.id,
+  );
 }
 
 export function seedNeedleRouteState(

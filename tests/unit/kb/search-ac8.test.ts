@@ -4,13 +4,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as OramaModule from '@orama/orama';
 import type * as NodeOs from 'node:os';
-import type * as EmbeddingModule from '#src/kb/search/embedding.js';
 import type * as RouterModule from '#src/kb/search/router.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import {
+  bindEmbedding,
   createCorpusHandle,
   equipVectorSlot,
-  equipmentViewResolvers,
   seedNeedleRouteState,
 } from '#tests/unit/kb/equipment-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -18,7 +17,6 @@ import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
   oramaSearch: null as null | ((...args: unknown[]) => unknown),
-  createEmbeddingProvider: null as null | ((...args: unknown[]) => unknown),
   createRouter: null as null | ((...args: unknown[]) => unknown),
 }));
 
@@ -38,17 +36,6 @@ vi.mock('@orama/orama', async () => {
       mockState.oramaSearch === null
         ? actual.search(...args)
         : (mockState.oramaSearch(...args) as ReturnType<typeof actual.search>),
-  };
-});
-
-vi.mock('#src/kb/search/embedding.js', async () => {
-  const actual = await vi.importActual<typeof EmbeddingModule>('#src/kb/search/embedding.js');
-  return {
-    ...actual,
-    createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
-      mockState.createEmbeddingProvider === null
-        ? actual.createEmbeddingProvider(...args)
-        : (mockState.createEmbeddingProvider(...args) as ReturnType<typeof actual.createEmbeddingProvider>),
   };
 });
 
@@ -89,15 +76,11 @@ function createRuntime(
   createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  let kb!: ReturnType<typeof createKbRuntime>;
-  // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
-  kb = createKbRuntime({
+  return createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
-    getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
-  return kb;
 }
 
 function writeNote(
@@ -146,7 +129,6 @@ describe('kb search AC8 mode branching', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     mockState.oramaSearch = null;
-    mockState.createEmbeddingProvider = null;
     mockState.createRouter = null;
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
@@ -160,7 +142,6 @@ describe('kb search AC8 mode branching', () => {
     });
     const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
     const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
-    const createEmbeddingProviderSpy = vi.fn().mockResolvedValue({ embedDocuments, embedQuery });
     const needleSearchSpy = vi.fn().mockResolvedValue({
       hits: [
         {
@@ -178,10 +159,10 @@ describe('kb search AC8 mode branching', () => {
 
     mockState.oramaSearch = asUnknownHandler(oramaSearchSpy);
     mockState.createRouter = asUnknownHandler(createRouterSpy);
-    mockState.createEmbeddingProvider = asUnknownHandler(createEmbeddingProviderSpy);
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
+    bindEmbedding(kb, { embedDocuments, embedQuery });
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-note', {
       title: 'Vector Note',
@@ -242,12 +223,7 @@ describe('kb search AC8 mode branching', () => {
     } satisfies EntityGraph);
     await reindex(kb);
 
-    const createEmbeddingProviderSpy = vi.fn(() => {
-      throw new Error('explicit text mode should not create an embedding provider');
-    });
-
     mockState.createRouter = asUnknownHandler(createRouterSpy);
-    mockState.createEmbeddingProvider = asUnknownHandler(createEmbeddingProviderSpy);
     equipVectorSlot(
       kb,
       {
@@ -270,6 +246,5 @@ describe('kb search AC8 mode branching', () => {
     expect(response.mode).toBe('text');
     expect(resultNotes(response.results)).toEqual(['rendering-guides']);
     expect(createRouterSpy).not.toHaveBeenCalled();
-    expect(createEmbeddingProviderSpy).not.toHaveBeenCalled();
   });
 });

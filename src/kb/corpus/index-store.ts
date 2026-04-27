@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord, isStringArray } from '../../infra/json.js';
-import type { KbIndexState } from '../contracts.js';
+import type { KbIndexState } from '../contract.js';
 import {
   communityEntryId,
   type CommunityEntry,

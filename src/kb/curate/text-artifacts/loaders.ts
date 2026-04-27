@@ -18,7 +18,7 @@ import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
 import { stripMdExt } from '../../paths.js';
 import { loadKbNote } from '../../read.js';
 import { assertCommunitySlug, assertSourceSlug } from '../../validation.js';
-import type { KbRuntime } from '../../contracts.js';
+import type { KbRuntime } from '../../contract.js';
 import {
   communityEntryId,
   noteEntryId,

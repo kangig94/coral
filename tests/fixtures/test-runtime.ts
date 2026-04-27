@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type { ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost } from '#src/expansion/host.js';
-import type { KbRuntime } from '#src/kb/contracts.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { openStoreDatabase } from '#src/store/db.js';
