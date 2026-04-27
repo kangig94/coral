@@ -262,7 +262,7 @@ export class CoordinatorClient {
       }
 
       if (!response.body) {
-        throw new Error('Backend wait stream returned no response body');
+        throw new Error('Coordinator wait stream returned no response body');
       }
 
       return this.createWaitStream(response.body);

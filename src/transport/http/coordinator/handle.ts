@@ -47,7 +47,7 @@ export async function resolveDiscoveredCoordinator(pluginRoot?: string): Promise
     paths: runtime.paths,
   });
   if (!info || !isProcessAlive(info.pid)) {
-    throw new CoordinatorUnreachableError('Coral backend is not running.');
+    throw new CoordinatorUnreachableError('Coral coordinator is not running.');
   }
 
   return {

@@ -22,5 +22,5 @@ export function throwCoordinatorCommunicationError(error: unknown): never {
     throw new CoordinatorUnreachableError(errorMessage(error));
   }
   if (error instanceof Error) throw error;
-  throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+  throw new Error(`Coordinator communication error: ${String(error)}`, { cause: error });
 }

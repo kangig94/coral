@@ -21,7 +21,7 @@ export type VerifyBackendOwnershipFn = (options: {
 
 export class BackendAlreadyRunningError extends Error {
   constructor() {
-    super('Coral backend already running');
+    super('Coral coordinator already running');
     this.name = 'BackendAlreadyRunningError';
   }
 }

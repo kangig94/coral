@@ -205,7 +205,7 @@ export function resolveCoordinatorDefaults(
     eager,
     finalizeWithWorld(bindings) {
       if (finalized) {
-        throw new Error('Backend defaults plan already finalized');
+        throw new Error('Coordinator defaults plan already finalized');
       }
       finalized = true;
 

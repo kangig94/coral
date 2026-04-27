@@ -1,7 +1,7 @@
 import { isRecord } from '../../../infra/json.js';
 
 /**
- * Health metadata exposed by the Coral backend over HTTP.
+ * Health metadata exposed by the Coral coordinator over HTTP.
  */
 export interface CoordinatorHealth {
   status: 'ok';

@@ -359,7 +359,7 @@ describe('cli format', () => {
       );
 
       expect(parsed.indicator).toBe('[vector]');
-      expect(parsed.warnings).toEqual(['Search index is unavailable; start the Coral backend to rebuild it.']);
+      expect(parsed.warnings).toEqual(['Search index is unavailable; start the Coral coordinator to rebuild it.']);
     });
 
     it('formats kb read note payloads as JSON', () => {
@@ -507,7 +507,7 @@ describe('cli format', () => {
         formatError({
           statusCode: 403,
           body: { code: 'scope_mismatch', message: 'Scope mismatch' },
-          message: 'Backend request failed: 403 Forbidden',
+          message: 'Coordinator request failed: 403 Forbidden',
         }),
       ).toBe('HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}');
     });
@@ -625,7 +625,7 @@ describe('cli format', () => {
         error: {
           statusCode: 403,
           body: { code: 'scope_mismatch', message: 'Scope mismatch' },
-          message: 'Backend request failed: 403 Forbidden',
+          message: 'Coordinator request failed: 403 Forbidden',
         },
         expectedText: 'HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}',
         expectedEnvelope: 'Scope mismatch [code=scope_mismatch, http=403]',

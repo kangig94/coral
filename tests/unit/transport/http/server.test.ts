@@ -1338,7 +1338,7 @@ describe('execution backend server', () => {
       const kbUnavailableResult = {
         ok: false as const,
         code: 'kb_unavailable',
-        message: 'Knowledge base is not available. Check backend health for details.',
+        message: 'Knowledge base is not available. Check coordinator health for details.',
       };
       const withKb = <T,>(
         run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
@@ -1627,7 +1627,7 @@ describe('execution backend server', () => {
           return {
             ok: false,
             code: 'kb_unavailable',
-            message: 'Knowledge base is not available. Check backend health for details.',
+            message: 'Knowledge base is not available. Check coordinator health for details.',
           };
         }
         return run(kbSubsystem);
@@ -1640,7 +1640,7 @@ describe('execution backend server', () => {
           return {
             ok: false,
             code: 'kb_unavailable',
-            message: 'Knowledge base is not available. Check backend health for details.',
+            message: 'Knowledge base is not available. Check coordinator health for details.',
           };
         }
         return run(kbSubsystem);
@@ -2657,7 +2657,7 @@ describe('execution backend server', () => {
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
           code: 'kb_unavailable',
-          message: 'Knowledge base is not available. Check backend health for details.',
+          message: 'Knowledge base is not available. Check coordinator health for details.',
         });
       } finally {
         await _closeHttpServer(started.server);
@@ -4294,7 +4294,7 @@ describe('execution backend server', () => {
     expect(body.status).toBe('draining');
     expect(typeof body.instanceId).toBe('string');
 
-    // Backend is idle (no active jobs in test), so drain fires promptly
+    // Coordinator is idle (no active jobs in test), so drain fires promptly
     await backend.controller.waitForShutdown();
 
     expect(backend.controller.getLifecycle()).toBe('stopped');

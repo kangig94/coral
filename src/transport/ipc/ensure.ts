@@ -719,7 +719,7 @@ async function forceReplaceCoordinator(
   }
 
   if (isProcessAlive(pid)) {
-    throw new CoordinatorUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
+    throw new CoordinatorUnreachableError(`Failed to terminate sick Coral coordinator pid ${pid}.`);
   }
 
   removeFileIfSnapshotMatches(coordinatorLockPath(paths), ownership.cleanupSnapshot.lockRaw);
@@ -757,7 +757,7 @@ async function applyAction(
 
     case 'failUnsafeReplacement':
       throw new CoordinatorUnreachableError(
-        `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}. Run 'coral-cli backend status' and restart if the problem persists.`,
+        `Refusing unsafe replacement for sick Coral coordinator pid ${action.pid}: ${action.reason}. Run 'coral-cli coordinator status' and restart if the problem persists.`,
       );
 
     case 'quarantineCorruptLock':

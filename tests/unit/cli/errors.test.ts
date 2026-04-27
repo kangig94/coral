@@ -53,11 +53,11 @@ describe('cli errors', () => {
     });
 
     it('maps TransientHttpError to transient and exit 75', () => {
-      expect(buildErrorEnvelope(new TransientHttpError(503, 'Backend shutting down'))).toEqual({
+      expect(buildErrorEnvelope(new TransientHttpError(503, 'Coordinator shutting down'))).toEqual({
         envelope: {
           error: true,
           code: 'transient',
-          message: 'Backend shutting down',
+          message: 'Coordinator shutting down',
         },
         exitCode: 75,
       });
@@ -86,7 +86,7 @@ describe('cli errors', () => {
     });
 
     it.each([
-      [{ code: 'coordinator_shutting_down', message: 'Backend shutting down' }, 503, 75],
+      [{ code: 'coordinator_shutting_down', message: 'Coordinator shutting down' }, 503, 75],
       [{ code: 'internal_error', message: 'Internal error' }, 500, 70],
       [{ code: 'unauthorized', message: 'Unauthorized' }, 401, 1],
       [{ code: 'coordinator_error', message: 'Retry later' }, 503, 75],

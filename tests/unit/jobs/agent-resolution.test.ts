@@ -257,7 +257,7 @@ describe('resolveAgent', () => {
     expect(error).toBeInstanceOf(AgentNamespaceNotFoundError);
     expect((error as AgentNamespaceNotFoundError).kind).toBe('agent_namespace_not_found');
     expect(error.message).toContain('Plugin namespace "unknown" not found.');
-    expect(error.message).toContain('If you just installed the plugin, restart the Coral backend');
+    expect(error.message).toContain('If you just installed the plugin, restart the Coral coordinator');
   });
 
   it('throws AgentNotFoundError when a known plugin namespace does not contain the agent file', () => {

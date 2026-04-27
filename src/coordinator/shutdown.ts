@@ -140,7 +140,7 @@ export async function runShutdownSequence({
   const mode = shutdownModeFromReason(reason);
   const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
-  log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
+  log(`Coral coordinator shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
 
@@ -163,7 +163,7 @@ export async function runShutdownSequence({
   state.ownershipCheckerTeardown = null;
 
   if (mode === 'hard') {
-    markJobsAsErrorFn(namespace, 'Backend shutting down');
+    markJobsAsErrorFn(namespace, 'Coordinator shutting down');
     await providerHostManager.shutdown();
     terminateAllFn();
   } else {

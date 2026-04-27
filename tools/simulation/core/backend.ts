@@ -621,7 +621,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     try {
       await core.handleRequest(req, res);
     } catch (error: unknown) {
-      core.identity.log(`Backend request error: ${formatError(error)}\n`);
+      core.identity.log(`Coordinator request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
         sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
         return;

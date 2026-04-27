@@ -30,7 +30,7 @@ function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'
   return warning
     .replace(
       /\bkb_search_degraded_until_coordinator_rebuild\b/g,
-      'Search index is unavailable; start the Coral backend to rebuild it.',
+      'Search index is unavailable; start the Coral coordinator to rebuild it.',
     )
     .replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
 }

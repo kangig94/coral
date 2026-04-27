@@ -1081,7 +1081,7 @@ describe('transport/http http-client', () => {
     });
 
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ code: 'coordinator_shutting_down', message: 'Backend shutting down' }, 503, 'Service Unavailable'),
+      jsonResponse({ code: 'coordinator_shutting_down', message: 'Coordinator shutting down' }, 503, 'Service Unavailable'),
     );
 
     let caught: unknown;
@@ -1092,11 +1092,11 @@ describe('transport/http http-client', () => {
     }
 
     expect(caught).toBeInstanceOf(CoordinatorHttpError);
-    expect((caught as CoordinatorHttpError).message).toBe('Backend shutting down');
+    expect((caught as CoordinatorHttpError).message).toBe('Coordinator shutting down');
     expect((caught as CoordinatorHttpError).statusCode).toBe(503);
     expect((caught as CoordinatorHttpError).body).toEqual({
       code: 'coordinator_shutting_down',
-      message: 'Backend shutting down',
+      message: 'Coordinator shutting down',
     });
   });
 });

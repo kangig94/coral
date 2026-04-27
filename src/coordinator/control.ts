@@ -232,7 +232,7 @@ export async function listen(
       server.off('error', reject);
       const address = server.address();
       if (!address || typeof address === 'string') {
-        reject(new Error('Backend server failed to bind to a TCP port'));
+        reject(new Error('Coordinator server failed to bind to a TCP port'));
         return;
       }
       resolve({ port: address.port, host: resolveClientHost(bindHost, advertiseHost) });
@@ -381,7 +381,7 @@ async function runLifecycleStartup({
   const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
-    throw new Error('Backend server already started');
+    throw new Error('Coordinator server already started');
   }
 
   const assertStartupStillActive = (): void => {

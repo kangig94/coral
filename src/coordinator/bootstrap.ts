@@ -101,7 +101,7 @@ export async function main(): Promise<number> {
   }
 
   if (typeof __PLUGIN_ROOT__ !== 'string') {
-    throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
+    throw new Error('Coral coordinator bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
   const coordinator = createCoordinatorServer({

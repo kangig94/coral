@@ -136,7 +136,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const kbUnavailableResult = {
     ok: false as const,
     code: 'kb_unavailable',
-    message: 'Knowledge base is not available. Check backend health for details.',
+    message: 'Knowledge base is not available. Check coordinator health for details.',
   };
   const withKb = <T>(
     run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
@@ -454,7 +454,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const server = defaults.createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {
-      world.log(`Backend request error: ${formatError(error)}\n`);
+      world.log(`Coordinator request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
         sendJson(res, 500, buildTransportErrorResponse(error).body);
         return;
