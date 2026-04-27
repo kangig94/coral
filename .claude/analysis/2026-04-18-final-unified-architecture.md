@@ -244,8 +244,13 @@ function createRuntimeBinding<T>(defaultValue?: T): RuntimeBinding<T>;
 type Expansion = (host: ExpansionHost) => void | Promise<void>;
 
 interface ExpansionHost {
-  bind<T>(binding: RuntimeBinding<Backed<T>>, backed: Backed<T>): void;
-  require<T>(binding: RuntimeBinding<Backed<T>>): Backed<T>;       // throws CoralSetupError if unbound
+  // Generic over T (not constrained to Backed<T>) — Backed<T> is a KB-specific
+  // composition (capability + consumer freshness), and tying host.bind to it
+  // would block future domains that own bindings with a different shape.
+  // Today's KB bindings happen to be RuntimeBinding<Backed<T>>; the host
+  // contract stays one layer above that choice.
+  bind<T>(binding: RuntimeBinding<T>, value: T): void;
+  require<T>(binding: RuntimeBinding<T>): T;          // throws CoralSetupError if unbound
   runtime: Runtime;
   kb: KbRuntime;
   scope: Disposable;                                  // the expansion's own dispose token
@@ -929,9 +934,13 @@ The repair pipeline runs during rescan + curate passes. It classifies each detec
 | **Needs manual** | Queue the entry in `kb_curate_retry_queue` with a repair hint. User sees a diagnostic (`coral-cli kb diagnose` or dashboard). |
 | **Unrecoverable** | Log + skip. Entry absent from projections until user fixes the source file. |
 
-**Status note**: the current codebase has a partial, ad-hoc repair mechanism (`kb/curate/text-artifacts.ts`: `rebuildTextArtifactsAndPersistRepairState`, `detectTextArtifactRebuildInfo`, `pendingRepair[]`) that handles specific cases encountered during initial development. The refactor **redesigns** this from scratch — not porting the existing ad-hoc code but building a proper classification-driven repair pipeline. Coverage of the detected-issue taxonomy is a deliverable of the refactor, not a best-effort outcome.
+**Status note (current state)**: this section describes two surfaces that exist together by intent — the spec's earlier framing conflated them. They have distinct concerns and distinct lifetimes:
 
-Repair operations that mutate the Corpus go through the standard Corpus mutation lock (§6.4 mutations). No special substrate.
+1. **Classification-driven repair pipeline** (`src/kb/corpus/repair/{detect,classify,fix,pending-retry,corpus-scan,incident-ids}.ts`). This is the redesigned surface that owns *individual entry diagnosis + classified fix dispatch* per the table above. As of this writing, the structural skeleton is in place and `pending-retry.ts` is wired into KB freshness — `pendingRepairNeedsRetry` gates `KbRuntime.ensureCorpusFreshness` via the `kb_curate_retry_queue` SQL table. End-to-end wiring of `detect → classify → fix` into the runtime drain loop is forward work; until that lands, malformed-entry detection during bulk reload (#2 below) covers the gap.
+
+2. **Derived-index cache maintenance** (`src/kb/curate/text-artifacts/`). This is *not* repair — it owns the drift detection and bulk rebuild of the derived `index.json` + `orama-index.json` artifacts vs the Corpus markdown. `detectTextArtifactRebuildInfo` answers "is the cached index stale?"; `rebuildTextArtifacts` reloads the derived snapshot from current markdown. The shallow `pendingRepair[]` it produces during reload is a side-effect of try/catching parse errors per file, persisted to `curate-state.json` and synced to `kb_curate_retry_queue` by `curate/state/store.ts`. This is structural cache machinery, not ad-hoc repair, and remains load-bearing.
+
+Both surfaces converge at `kb_curate_retry_queue` — the SQL table that tracks pending repair work regardless of which surface detected it. Repair operations that mutate the Corpus go through the standard Corpus mutation lock (§6.4 mutations). No special substrate.
 
 ### 6.5 Workflow (`stream.kind = 'workflow'`)
 
