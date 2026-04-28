@@ -46,7 +46,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const { openStoreDatabase } = await import('../store/db.js');
     const { commit } = await import('../store/append.js');
     const { composeReducers } = await import('../store/reducers.js');
-    const { createEmptyRegistry } = await import('../store/envelope.js');
+    const { createDefaultUpcasterRegistry } = await import('../store/envelope.js');
     const { getEvent } = await import('../store/event-queries.js');
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
     const db = openStoreDatabase({
@@ -57,7 +57,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
     try {
       const reducers = composeReducers();
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
       const readCtx = { schemas: reducers.schemas, upcasters };
       const [event] = commit(
         db,

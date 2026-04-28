@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import type { SessionContinuityState, SessionProviderFailureReason } from '#src/sessions/fault.js';
@@ -18,7 +18,7 @@ const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-22T00:00:00.000Z');
 const RAW_EVENT_READ_CTX: StoreReadContext = {
   schemas: new Map(),
-  upcasters: createEmptyRegistry(),
+  upcasters: createDefaultUpcasterRegistry(),
 };
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),

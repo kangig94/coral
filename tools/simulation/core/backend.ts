@@ -41,7 +41,7 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openBackendStoreDb } from '../../../src/store/db.js';
-import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';

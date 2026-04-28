@@ -8,7 +8,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');

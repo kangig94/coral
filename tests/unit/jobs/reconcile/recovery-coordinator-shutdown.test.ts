@@ -9,7 +9,7 @@ import { jobsDir } from "#src/jobs/paths.js";
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

@@ -28,7 +28,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';

@@ -18,7 +18,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -64,7 +64,7 @@ describe('sessions shell store', () => {
       schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const upcasters = createEmptyRegistry();
+    const upcasters = createDefaultUpcasterRegistry();
     const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
       commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),

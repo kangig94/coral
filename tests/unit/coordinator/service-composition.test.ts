@@ -44,7 +44,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';

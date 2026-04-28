@@ -16,7 +16,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';

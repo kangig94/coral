@@ -34,7 +34,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');

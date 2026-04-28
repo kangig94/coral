@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -35,7 +35,7 @@ function ctx(): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
-    upcasters: createEmptyRegistry(),
+    upcasters: createDefaultUpcasterRegistry(),
   };
 }
 

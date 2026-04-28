@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
@@ -47,7 +47,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
         {
           now: () => new Date(0),
           reducers: composeReducers(testCounterRegistry),
-          upcasters: createEmptyRegistry(),
+          upcasters: createDefaultUpcasterRegistry(),
         },
       );
 
@@ -95,7 +95,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
           {
             now: () => new Date(0),
             reducers: throwingReducers,
-            upcasters: createEmptyRegistry(),
+            upcasters: createDefaultUpcasterRegistry(),
           },
         ),
       ).toThrow(/reducer failure/);
@@ -149,7 +149,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
           {
             now: () => new Date(0),
             reducers: composeReducers(registry),
-            upcasters: createEmptyRegistry(),
+            upcasters: createDefaultUpcasterRegistry(),
           },
         ),
       ).toThrow(/append validator failure/);
@@ -185,7 +185,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
         {
           now: () => new Date(0),
           reducers: composeReducers(),
-          upcasters: createEmptyRegistry(),
+          upcasters: createDefaultUpcasterRegistry(),
         },
       );
 

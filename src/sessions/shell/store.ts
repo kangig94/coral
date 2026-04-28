@@ -10,7 +10,7 @@ import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime, IdPort, TimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import {
   DEFAULT_SESSION_CONTROLLER,
   sessionControllerFromProfile,

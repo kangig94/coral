@@ -8,12 +8,12 @@ import {
 } from '../store/append.js';
 import { nowDate } from '../infra/time.js';
 import type { TimePort } from '../runtime/ports.js';
-import { createEmptyRegistry } from '../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../store/envelope.js';
 import { composeReducers } from '../store/reducers.js';
 import { workflowRegistry } from './events.js';
 
 const workflowReducers = composeReducers(workflowRegistry);
-const upcasters = createEmptyRegistry();
+const upcasters = createDefaultUpcasterRegistry();
 
 export type WorkflowJournal = {
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): void;

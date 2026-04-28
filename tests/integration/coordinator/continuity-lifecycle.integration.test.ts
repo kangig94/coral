@@ -12,7 +12,7 @@ import { ProgressStore } from '#src/jobs/job-store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/pool.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '#src/providers/contract.js';

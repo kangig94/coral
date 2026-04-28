@@ -8,7 +8,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 

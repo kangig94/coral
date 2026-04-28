@@ -17,7 +17,7 @@ vi.mock('node:os', async () => {
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';

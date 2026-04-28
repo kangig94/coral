@@ -21,7 +21,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { composeReducers } from '../../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { sessionsRegistry } from '../../sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../discuss/event-registry.js';

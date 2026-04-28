@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type AppendInput } from '#src/store/append.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
@@ -87,11 +87,11 @@ describe('events queries', () => {
     appended = commitInputs(db, inputs, {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
       reducers: composeReducers(testCounterRegistry),
-      upcasters: createEmptyRegistry(),
+      upcasters: createDefaultUpcasterRegistry(),
     });
     readCtx = {
       schemas: composeReducers(testCounterRegistry).schemas,
-      upcasters: createEmptyRegistry(),
+      upcasters: createDefaultUpcasterRegistry(),
     };
   });
 

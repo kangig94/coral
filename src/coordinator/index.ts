@@ -18,7 +18,7 @@ import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
-import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { readJobProgress, loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';

@@ -24,7 +24,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import * as ProviderRequestPolicy from '#src/providers/request-policy.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 function assertNotMocked(name: string, value: unknown): void {

@@ -9,7 +9,7 @@ import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discus
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,

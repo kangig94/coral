@@ -10,7 +10,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { type AppendInput } from '#src/store/append.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -148,7 +148,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const db = openMemoryDatabase(storage, schemasDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createEmptyRegistry();
+  const upcasters = createDefaultUpcasterRegistry();
   const streamIds = Array.from({ length: 3 }, () => runtime.ids.uuid());
   const counterIds = Array.from({ length: 5 }, () => runtime.ids.uuid());
 
@@ -206,7 +206,7 @@ async function runPlannedSequence(runtime: { storage: SchemaStorage }, plan: Seq
   const db = openMemoryDatabase(storage, schemasDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createEmptyRegistry();
+  const upcasters = createDefaultUpcasterRegistry();
 
   try {
     applyStoreSchemas({ db, storage, schemasDir });

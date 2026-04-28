@@ -7,7 +7,7 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { type StoragePort } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';

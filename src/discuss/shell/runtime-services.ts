@@ -15,7 +15,7 @@ import { toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
-import { createEmptyRegistry } from '../../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../../store/envelope.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 
 type CreateDiscussRuntimeDeps = {
@@ -59,7 +59,7 @@ export function createDiscussRuntime({ world, runtime, getExecutionService }: Cr
   const discussStores = new Map<string, DiscussSessionStore>();
   const readCtx: StoreReadContext = {
     schemas: new Map(),
-    upcasters: createEmptyRegistry(),
+    upcasters: createDefaultUpcasterRegistry(),
   };
 
   function snapshotBelongsToSource(snapshot: { projectRoot: string }, source: string): boolean {

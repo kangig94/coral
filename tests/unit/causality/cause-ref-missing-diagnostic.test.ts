@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { describeTerminalOutcome, type TerminalOutcome } from '#src/jobs/outcome.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
@@ -21,7 +21,7 @@ const storageAdapter = {
 };
 const RAW_EVENT_READ_CTX: StoreReadContext = {
   schemas: new Map(),
-  upcasters: createEmptyRegistry(),
+  upcasters: createDefaultUpcasterRegistry(),
 };
 
 function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {

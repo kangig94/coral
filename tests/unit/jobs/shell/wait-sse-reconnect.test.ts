@@ -11,7 +11,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobProgress, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';

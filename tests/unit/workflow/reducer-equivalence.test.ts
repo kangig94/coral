@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -34,7 +34,7 @@ describe('workflow reducer equivalence', () => {
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(workflowRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
@@ -105,7 +105,7 @@ describe('workflow reducer equivalence', () => {
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry, workflowRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });

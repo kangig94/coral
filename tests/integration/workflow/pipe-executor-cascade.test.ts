@@ -17,7 +17,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 type RecordedLaunchRequest = ProviderRequest & {

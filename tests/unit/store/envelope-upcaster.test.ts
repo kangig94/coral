@@ -2,11 +2,11 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 
 describe('UpcasterRegistry', () => {
   it('registerUpcaster records the type/fromVersion pair (verified via parseBody behavior)', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.recorded', 1, 2, (body) => ({ upgraded: (body as { previous: number }).previous * 10 }));
 
     const result = registry.parseBody(
@@ -19,7 +19,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('throws CoralSetupError(upcaster_conflict) for duplicate type/fromVersion registrations', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     const fn = (body: unknown) => body;
     registry.registerUpcaster('test.recorded', 1, 2, fn);
 
@@ -36,7 +36,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('parseBody applies a single v1 -> v2 upcaster', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.upcasted', 1, 2, (body) => ({ count: (body as { n: number }).n }));
 
     const parsed = registry.parseBody(
@@ -54,7 +54,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('parseBody applies a v1 -> v2 -> v3 chain', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.upcasted', 1, 2, (body) => ({ count: (body as { n: number }).n }));
     registry.registerUpcaster('test.upcasted', 2, 3, (body) => ({
       count: (body as { count: number }).count,
@@ -77,7 +77,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('parseBody validates against currentSchema and returns the parsed result', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     const parsed = registry.parseBody(
       'test.current',
       2,
@@ -93,7 +93,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('throws CoralSetupError(upcaster_missing) when the upcaster chain is incomplete', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.upcasted', 1, 2, (body) => ({ count: (body as { n: number }).n }));
 
     let thrown: unknown;
@@ -122,7 +122,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('throws CoralSetupError(upcaster_cycle) when registered upcasters loop back', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.looped', 1, 2, (body) => body);
     registry.registerUpcaster('test.looped', 2, 1, (body) => body);
 
@@ -147,7 +147,7 @@ describe('UpcasterRegistry', () => {
   });
 
   it('validates directly against the current schema when bodyVersion is already current', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     const parsed = registry.parseBody(
       'test.current',
       2,

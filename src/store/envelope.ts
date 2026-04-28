@@ -4,7 +4,7 @@ import { CoralSetupError } from '../runtime/errors.js';
 import { decodeEventBody } from './body-codec.js';
 import type { EventsRow } from './schema.js';
 import type { CauseRefToken } from '../causality/cause-ref.js';
-export { UpcasterRegistry, createEmptyRegistry } from './upcaster-registry.js';
+export { UpcasterRegistry, createDefaultUpcasterRegistry } from './upcaster-registry.js';
 
 declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 

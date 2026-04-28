@@ -4,7 +4,7 @@ import type { ConsumerApplyError, ConsumerRegistrationKind } from './consumer-co
 import type { StoreReadContext } from './body-codec.js';
 import { getEventsSince } from './event-queries.js';
 import { applyReducer, composeReducers, type ComposedReducers, type DomainEventRegistry } from './reducers.js';
-import { createDefaultUpcasterRegistry } from './upcasters.js';
+import { createDefaultUpcasterRegistry } from './upcaster-registry.js';
 
 export interface ProjectionConsumerHandle {
   readonly id: string;

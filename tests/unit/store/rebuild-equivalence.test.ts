@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
@@ -26,7 +26,7 @@ describe('rebuildProjections replay identity', () => {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const ids = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
       const inputs = Array.from({ length: 1000 }, (_, i) => ({
@@ -69,7 +69,7 @@ describe('rebuildProjections replay identity', () => {
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers();
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       db.prepare(
         `UPDATE kb_corpus_state
@@ -143,7 +143,7 @@ describe('rebuildProjections replay identity', () => {
       ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', 1, Buffer.from('{}'));
 
       const reducers = composeReducers();
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       let thrown: unknown;
       try {

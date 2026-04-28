@@ -7,7 +7,7 @@ import { z } from 'zod';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
@@ -46,7 +46,7 @@ describe('append/rebuild upcaster round-trip', () => {
         ],
       });
 
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
       upcasters.registerUpcaster('test.upcasted', 1, 2, (body) => {
         const v1 = body as { n: number };
         return { count: v1.n };

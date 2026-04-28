@@ -11,11 +11,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { createEmptyRegistry } from '#src/store/upcaster-registry.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 
 describe('Invariant #15 — upcaster duplicate registration rejected', () => {
   it('throws CoralSetupError(upcaster_conflict) on second registration at same fromVersion', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.event', 1, 2, (body) => body);
 
     let thrown: unknown;
@@ -30,7 +30,7 @@ describe('Invariant #15 — upcaster duplicate registration rejected', () => {
   });
 
   it('rejects duplicate even when toVersion differs (key is type+fromVersion)', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     registry.registerUpcaster('test.event', 1, 2, (body) => body);
 
     let thrown: unknown;
@@ -44,7 +44,7 @@ describe('Invariant #15 — upcaster duplicate registration rejected', () => {
   });
 
   it('accepts multiple registrations for the same type at different fromVersions', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     expect(() => {
       registry.registerUpcaster('test.event', 1, 2, (body) => body);
       registry.registerUpcaster('test.event', 2, 3, (body) => body);
@@ -53,7 +53,7 @@ describe('Invariant #15 — upcaster duplicate registration rejected', () => {
   });
 
   it('accepts the same fromVersion across distinct type names', () => {
-    const registry = createEmptyRegistry();
+    const registry = createDefaultUpcasterRegistry();
     expect(() => {
       registry.registerUpcaster('test.alpha', 1, 2, (body) => body);
       registry.registerUpcaster('test.beta', 1, 2, (body) => body);

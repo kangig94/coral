@@ -4,7 +4,7 @@ import { sessionsRegistry } from '../sessions/events.js';
 import { workflowRegistry } from '../workflow/events.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import { composeReducers } from '../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 
 const defaultReducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
 let defaultReadCtx: StoreReadContext | null = null;

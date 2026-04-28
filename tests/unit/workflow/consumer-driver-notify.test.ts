@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { commit } from '#src/store/append.js';
-import { createEmptyRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -36,7 +36,7 @@ describe('workflow consumer-driver notify', () => {
 
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
       const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
         const appended = commit(db, cb, {
           now: () => new Date('2026-04-19T00:00:00.000Z'),

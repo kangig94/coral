@@ -10,7 +10,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;

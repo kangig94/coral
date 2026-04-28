@@ -61,6 +61,7 @@ export class UpcasterRegistry {
   }
 }
 
-export function createEmptyRegistry(): UpcasterRegistry {
+// Canonical factory: all read contexts must construct via this so any future upcaster registrations apply uniformly — do not bypass even when no upcasters are registered yet.
+export function createDefaultUpcasterRegistry(): UpcasterRegistry {
   return new UpcasterRegistry();
 }
