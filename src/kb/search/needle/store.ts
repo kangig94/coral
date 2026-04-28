@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { isRecord } from '../../../infra/json.js';
 import { needleIndexDir } from '../../paths.js';
+import type { ChunkSeed } from '../../chunking.js';
 
 export const NEEDLE_STORE_SCHEMA_VERSION = 1;
 export const NEEDLE_STORE_MIN_NAPI_VERSION = 8;
@@ -20,13 +21,7 @@ export type EmbeddingSpec = {
   createdAt: string;
 };
 
-export type ChunkRecord = {
-  id: string;
-  entryId: string;
-  entryKind: string;
-  chunkIndex: number;
-  text: string;
-  contentHash: string;
+export type ChunkRecord = ChunkSeed & {
   vector: Float32Array;
   specId: string;
 };

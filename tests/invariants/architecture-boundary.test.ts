@@ -1473,7 +1473,7 @@ describe('architecture boundary guard', () => {
 
     const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');
     expect(skillSource).toContain("activation: 'equip'");
-    expect(skillSource).toContain('~/.coral/data/expansion/needle/coral-needle.node');
+    expect(skillSource).toContain('~/.coral/data/engines/needle/coral-needle.node');
   });
 
   it('forbids any built-in default backend (Orama) from being registered as an Expansion (§16 #43a)', () => {

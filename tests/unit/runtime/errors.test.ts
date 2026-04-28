@@ -141,7 +141,7 @@ describe('CoralSetupError', () => {
       'expansion_install_path_unwritable',
       { name: 'needle' },
       'Cannot write to the Coral expansion install path for needle.',
-      'Check filesystem permissions and free space under ~/.coral/data/expansion/, then retry.',
+      'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
     ],
   ] satisfies Array<[DocumentedCoralSetupErrorCode, Record<string, unknown>, string, string]>)(
     'renders documented setup error %s through CoralSetupError',

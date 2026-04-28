@@ -79,7 +79,7 @@ function logInstallEvent(ctx: ExpansionInstallContext, kind: string, message: st
 }
 
 function metaPath(ctx: ExpansionInstallContext, name: string): string {
-  return join(ctx.runtime.paths.coral.expansion.dataDir(name), `.${name}-meta.json`);
+  return join(ctx.runtime.paths.coral.engine.dataDir(name), `.${name}-meta.json`);
 }
 
 function readInstalledMeta(ctx: ExpansionInstallContext, name: string): { version: string; method: string } | null {
@@ -96,7 +96,7 @@ function writeInstalledMeta(ctx: ExpansionInstallContext, name: string, method: 
 function hasNonLockArtifacts(ctx: ExpansionInstallContext, name: string): boolean {
   try {
     return ctx.runtime.storage
-      .readdirSync(ctx.runtime.paths.coral.expansion.dataDir(name), { withFileTypes: true })
+      .readdirSync(ctx.runtime.paths.coral.engine.dataDir(name), { withFileTypes: true })
       .some((entry) => entry.name !== 'install.lock');
   } catch {
     return false;
@@ -105,7 +105,7 @@ function hasNonLockArtifacts(ctx: ExpansionInstallContext, name: string): boolea
 
 function isAddonInstalled(ctx: ExpansionInstallContext, name: string): boolean {
   try {
-    return ctx.runtime.storage.statSync(ctx.runtime.paths.coral.expansion.addonPath(name)).isFile();
+    return ctx.runtime.storage.statSync(ctx.runtime.paths.coral.engine.addonPath(name, 'coral-needle.node')).isFile();
   } catch {
     return false;
   }
@@ -113,7 +113,7 @@ function isAddonInstalled(ctx: ExpansionInstallContext, name: string): boolean {
 
 function isInstallLocked(ctx: ExpansionInstallContext, name: string): boolean {
   try {
-    ctx.runtime.storage.statSync(ctx.runtime.paths.coral.expansion.installLockPath(name));
+    ctx.runtime.storage.statSync(ctx.runtime.paths.coral.engine.installLockPath(name));
     return true;
   } catch {
     return false;
@@ -159,8 +159,8 @@ async function withInstallLock<T>(
   timeoutMs: number,
   run: () => Promise<T>,
 ): Promise<T | InstallError> {
-  const targetDir = ctx.runtime.paths.coral.expansion.dataDir(name);
-  const lockPath = ctx.runtime.paths.coral.expansion.installLockPath(name);
+  const targetDir = ctx.runtime.paths.coral.engine.dataDir(name);
+  const lockPath = ctx.runtime.paths.coral.engine.installLockPath(name);
   ctx.runtime.storage.mkdirSync(targetDir, { recursive: true });
 
   let release: () => void;
@@ -331,9 +331,9 @@ export function inspectExpansionInstallState(runtime: Runtime, name: string): Lo
   const ctx = createContext(runtime);
   const installedMeta = readInstalledMeta(ctx, name);
   return {
-    targetDir: runtime.paths.coral.expansion.dataDir(name),
-    addonPath: runtime.paths.coral.expansion.addonPath(name),
-    installLockPath: runtime.paths.coral.expansion.installLockPath(name),
+    targetDir: runtime.paths.coral.engine.dataDir(name),
+    addonPath: runtime.paths.coral.engine.addonPath(name, 'coral-needle.node'),
+    installLockPath: runtime.paths.coral.engine.installLockPath(name),
     version: installedMeta?.version ?? null,
     method: installedMeta?.method ?? null,
     installed: isAddonInstalled(ctx, name),
@@ -364,7 +364,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
       }
 
       const hadExistingInstall = current.durableState;
-      const addonPath = ctx.runtime.paths.coral.expansion.addonPath(name);
+      const addonPath = ctx.runtime.paths.coral.engine.addonPath(name, 'coral-needle.node');
       const failures: string[] = [];
 
       try {
@@ -411,7 +411,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
 }
 
 export async function removeInstallArtifacts(runtime: Runtime, name: string): Promise<void> {
-  rmSync(runtime.paths.coral.expansion.dataDir(name), {
+  rmSync(runtime.paths.coral.engine.dataDir(name), {
     recursive: true,
     force: true,
     maxRetries: 3,

@@ -131,7 +131,7 @@ Install and configure Coral companion tooling for Claude Code.
 ## Notes
 
 - Binary installs go to `~/.claude/tools/`
-- `needle` installs the native addon to `~/.coral/data/expansion/needle/coral-needle.node` (production flavor) or `~/.coral/data-dev/expansion/needle/coral-needle.node` (dev flavor, when `CORAL_FLAVOR=dev` is set)
+- `needle` installs the native addon to `~/.coral/data/engines/needle/coral-needle.node` (production flavor) or `~/.coral/data-dev/engines/needle/coral-needle.node` (dev flavor, when `CORAL_FLAVOR=dev` is set)
 - Corpus indexes stay under `~/.coral/data/kb/`
 - If a Needle prebuild is unavailable, the installer falls back to `cmake` and may install it via `uv tool install cmake`
 - To remove Needle, run `/equip uninstall needle`

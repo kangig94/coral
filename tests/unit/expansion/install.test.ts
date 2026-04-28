@@ -9,7 +9,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type * as InstallSupportModule from '#src/cli/expansion/install-support.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/cli/expansion/contract.js';
-import { expansionPaths } from '#src/infra/path/expansion.js';
+import { enginePaths } from '#src/infra/path/engine.js';
 import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -51,7 +51,7 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
-  const fixtureExpansion = expansionPaths('prod', { baseDir: fixture.baseDir });
+  const fixtureEngine = enginePaths('prod', { baseDir: fixture.baseDir });
 
   return {
     ...realRuntime,
@@ -67,7 +67,7 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
     paths: {
       ...realRuntime.paths,
       get coral() {
-        return { ...realRuntime.paths.coral, expansion: fixtureExpansion };
+        return { ...realRuntime.paths.coral, engine: fixtureEngine };
       },
     },
   };
@@ -118,14 +118,14 @@ describe('installExpansion', () => {
       status: 'installed',
       method: 'prebuild',
       version: '0.2.0',
-      targetDir: expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
+      targetDir: enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_expansion'],
     });
-    expect(readFileSync(expansionPaths('prod', { baseDir: fixture.baseDir }).addonPath('needle'))).toEqual(addonBytes);
+    expect(readFileSync(enginePaths('prod', { baseDir: fixture.baseDir }).addonPath('needle', 'coral-needle.node'))).toEqual(addonBytes);
     expect(
-      JSON.parse(readFileSync(join(expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'), '.needle-meta.json'), 'utf-8')),
+      JSON.parse(readFileSync(join(enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'), '.needle-meta.json'), 'utf-8')),
     ).toEqual({ version: '0.2.0', method: 'prebuild' });
-    expect(pathExists(expansionPaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(false);
+    expect(pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(false);
   });
 
   it('returns a structured unknown_expansion error for names outside the bundled manifest', async () => {
@@ -144,9 +144,9 @@ describe('installExpansion', () => {
   it('returns already_up_to_date when the installed addon already matches the bundled version', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const targetDir = expansionPaths('prod', { baseDir: fixture.baseDir }).dataDir('needle');
+    const targetDir = enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
-    writeFileSync(expansionPaths('prod', { baseDir: fixture.baseDir }).addonPath('needle'), Buffer.from('addon'));
+    writeFileSync(enginePaths('prod', { baseDir: fixture.baseDir }).addonPath('needle', 'coral-needle.node'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
 
     const result = await installExpansion('needle', { runtime, update: true });
@@ -171,7 +171,7 @@ describe('installExpansion', () => {
     });
 
     const firstInstall = installExpansion('needle', { runtime, lockTimeoutMs: 25 });
-    await waitForCondition(() => pathExists(expansionPaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle')));
+    await waitForCondition(() => pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle')));
 
     const secondInstall = await installExpansion('needle', { runtime, lockTimeoutMs: 25 });
     blocker.resolve();
@@ -189,7 +189,7 @@ describe('removeInstallArtifacts', () => {
   it('removes local expansion artifacts for uninstall cleanup', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
-    const targetDir = runtime.paths.coral.expansion.dataDir('needle');
+    const targetDir = runtime.paths.coral.engine.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'coral-needle.node'), Buffer.from('addon'));
     writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');

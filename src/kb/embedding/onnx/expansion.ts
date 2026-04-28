@@ -235,7 +235,7 @@ class LocalOnnxProvider implements OnnxEmbeddingService {
 }
 
 const onnxExpansion: Expansion = async (host) => {
-  const dataDir = host.runtime.paths.coral.expansion.dataDir(host.id);
+  const dataDir = host.runtime.paths.coral.engine.dataDir(host.id);
   const runtimeModule = onnxExpansionTestHooks?.resolveRuntimeModule?.(host.kb.runtimeDir) ?? resolveOnnxRuntime(host.kb.runtimeDir);
   if (runtimeModule === null) {
     throw new CoralSetupError({

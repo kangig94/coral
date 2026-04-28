@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto';
-import { noteEntryId, sourceEntryId, type EntryRecord } from '../entry-types.js';
-import type { ChunkRecord } from './needle/store.js';
+import { noteEntryId, sourceEntryId, type EntryRecord } from './entry-types.js';
 
 const MAX_CHUNK_TOKENS = 2048;
 const APPROX_CHARS_PER_TOKEN = 4;
 const MAX_CHUNK_CHARS = MAX_CHUNK_TOKENS * APPROX_CHARS_PER_TOKEN;
 
-export type ChunkSeed = Omit<ChunkRecord, 'specId' | 'vector'>;
+export type ChunkSeed = {
+  id: string;
+  entryId: string;
+  entryKind: string;
+  chunkIndex: number;
+  text: string;
+  contentHash: string;
+};
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);

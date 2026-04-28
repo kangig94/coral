@@ -18,7 +18,7 @@ import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
-import { chunkEntry, type ChunkSeed } from '../chunking.js';
+import { chunkEntry, type ChunkSeed } from '../../chunking.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../embedding/vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
 import {
@@ -752,7 +752,7 @@ export async function createNeedleBacked(
   embedder: Backed<EmbeddingService>,
 ): Promise<Backed<BoundVectorRetrieval>> {
   const backend = new NeedleBackend(kbRuntime, {
-    addonPath: runtime.paths.coral.expansion.addonPath('needle'),
+    addonPath: runtime.paths.coral.engine.addonPath('needle', 'coral-needle.node'),
     embedder: resolveBoundNeedleEmbedder(embedder),
   });
   const retrieval: BoundVectorRetrieval = {

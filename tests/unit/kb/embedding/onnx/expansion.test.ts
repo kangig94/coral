@@ -78,7 +78,7 @@ describe('onnx expansion', () => {
     const [scope] = await loadExpansions(makeHost, [ONNX_ENTRY]);
 
     try {
-      const cachedModelPath = join(runtime.paths.coral.expansion.dataDir('onnx'), 'nomic-embed-text.onnx');
+      const cachedModelPath = join(runtime.paths.coral.engine.dataDir('onnx'), 'nomic-embed-text.onnx');
       expect(downloadFile).toHaveBeenCalledTimes(1);
       expect(existsSync(cachedModelPath)).toBe(true);
       expect(kb.embedding.heldBy).toBe('onnx');

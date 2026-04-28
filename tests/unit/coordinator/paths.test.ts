@@ -2,18 +2,18 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/path/compose.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { expansionPaths } from '#src/infra/path/expansion.js';
+import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
   it('returns a record covering all five path families', () => {
     const p = composeCoralPaths('prod');
-    expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'expansion', 'exports', 'store']);
+    expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'engine', 'exports', 'store']);
     expect(p.store.dbFile).toContain('.coral/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
     expect(p.coordinator.socketPath).toMatch(/\.coral\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/);
     expect(p.exports.jobsRoot).toContain('.coral/exports/jobs');
-    expect(p.expansion.expansionRoot).toContain('.coral/data/expansion');
+    expect(p.engine.engineRoot).toContain('.coral/data/engines');
   });
 
   it('dev flavor has distinct segments from prod', () => {
@@ -24,7 +24,7 @@ describe('composeCoralPaths', () => {
     expect(dev.corpus.kbRoot).toContain('kb-dev');
     expect(dev.coordinator.runDir).toContain('run-dev');
     expect(dev.exports.jobsRoot).toContain('exports-dev');
-    expect(dev.expansion.expansionRoot).toContain('data-dev/expansion');
+    expect(dev.engine.engineRoot).toContain('data-dev/engines');
   });
 
   it('rejects mutation at compile time via readonly modifier', () => {
@@ -66,16 +66,16 @@ describe('composeCoralPaths', () => {
     });
   });
 
-  it('expansionPaths accepts an explicit baseDir and exposes per-name accessors', () => {
-    const eq = expansionPaths('prod', { baseDir: '/tmp/coral-root' });
-    expect(eq.expansionRoot).toBe(join('/tmp/coral-root', 'data', 'expansion'));
-    expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'expansion', 'needle'));
-    expect(eq.addonPath('needle')).toBe(
-      join('/tmp/coral-root', 'data', 'expansion', 'needle', 'coral-needle.node'),
+  it('enginePaths accepts an explicit baseDir and exposes per-name accessors', () => {
+    const eq = enginePaths('prod', { baseDir: '/tmp/coral-root' });
+    expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'data', 'engines'));
+    expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle'));
+    expect(eq.addonPath('needle', 'coral-needle.node')).toBe(
+      join('/tmp/coral-root', 'data', 'engines', 'needle', 'coral-needle.node'),
     );
-    expect(eq.addonPath('cgc')).toBe(join('/tmp/coral-root', 'data', 'expansion', 'cgc', 'cgc.node'));
+    expect(eq.addonPath('cgc', 'cgc.node')).toBe(join('/tmp/coral-root', 'data', 'engines', 'cgc', 'cgc.node'));
     expect(eq.installLockPath('needle')).toBe(
-      join('/tmp/coral-root', 'data', 'expansion', 'needle', 'install.lock'),
+      join('/tmp/coral-root', 'data', 'engines', 'needle', 'install.lock'),
     );
   });
 });

@@ -133,7 +133,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   expansion_install_path_unwritable: {
     userMessage: (context) =>
       `Cannot write to the Coral expansion install path for ${stringContextValue(context, 'name', 'this expansion')}.`,
-    remediation: 'Check filesystem permissions and free space under ~/.coral/data/expansion/, then retry.',
+    remediation: 'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
   },
   expansion_not_equipped: {
     userMessage: (context) =>

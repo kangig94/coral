@@ -1,8 +1,9 @@
 import type { ConsumerApplyError, CorpusConsumerRegistration } from '../../contract.js';
 import type { VectorRetrieval } from '../contract.js';
-import type { NeedleStore } from './store.js';
+import type { ChunkRecord, NeedleStore } from './store.js';
 
 export const NEEDLE_CONSUMER_ID = 'needle';
+export type { ChunkRecord };
 
 export interface NeedleBackendOptions {
   consumerId?: string;

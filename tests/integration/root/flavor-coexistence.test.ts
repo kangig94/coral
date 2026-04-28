@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { composeCoralPaths } from '#src/infra/path/compose.js';
-import { expansionPaths } from '#src/infra/path/expansion.js';
+import { enginePaths } from '#src/infra/path/engine.js';
 
 function assertDistinctPathPair(prodPath: string, devPath: string): void {
   expect(prodPath).not.toBe(devPath);
@@ -14,27 +14,27 @@ describe('flavor coexistence integration', () => {
     const prod = composeCoralPaths('prod');
     const dev = composeCoralPaths('dev');
 
-    expect(prod.expansion.expansionRoot).toContain('data/expansion');
-    expect(dev.expansion.expansionRoot).toContain('data-dev/expansion');
-    assertDistinctPathPair(prod.expansion.expansionRoot, dev.expansion.expansionRoot);
+    expect(prod.engine.engineRoot).toContain('data/engines');
+    expect(dev.engine.engineRoot).toContain('data-dev/engines');
+    assertDistinctPathPair(prod.engine.engineRoot, dev.engine.engineRoot);
   });
 
   it('routes expansion helpers to the flavor-specific install directories', () => {
     const baseDir = '/tmp/coral-flavor-coexistence';
-    const prodEq = expansionPaths('prod', { baseDir });
-    const devEq = expansionPaths('dev', { baseDir });
+    const prodEq = enginePaths('prod', { baseDir });
+    const devEq = enginePaths('dev', { baseDir });
 
-    expect(prodEq.dataDir('needle')).toBe(join(baseDir, 'data', 'expansion', 'needle'));
-    expect(devEq.dataDir('needle')).toBe(join(baseDir, 'data-dev', 'expansion', 'needle'));
-    expect(prodEq.addonPath('needle')).toBe(
-      join(baseDir, 'data', 'expansion', 'needle', 'coral-needle.node'),
+    expect(prodEq.dataDir('needle')).toBe(join(baseDir, 'data', 'engines', 'needle'));
+    expect(devEq.dataDir('needle')).toBe(join(baseDir, 'data-dev', 'engines', 'needle'));
+    expect(prodEq.addonPath('needle', 'coral-needle.node')).toBe(
+      join(baseDir, 'data', 'engines', 'needle', 'coral-needle.node'),
     );
-    expect(devEq.addonPath('needle')).toBe(
-      join(baseDir, 'data-dev', 'expansion', 'needle', 'coral-needle.node'),
+    expect(devEq.addonPath('needle', 'coral-needle.node')).toBe(
+      join(baseDir, 'data-dev', 'engines', 'needle', 'coral-needle.node'),
     );
-    expect(prodEq.installLockPath('needle')).toBe(join(baseDir, 'data', 'expansion', 'needle', 'install.lock'));
+    expect(prodEq.installLockPath('needle')).toBe(join(baseDir, 'data', 'engines', 'needle', 'install.lock'));
     expect(devEq.installLockPath('needle')).toBe(
-      join(baseDir, 'data-dev', 'expansion', 'needle', 'install.lock'),
+      join(baseDir, 'data-dev', 'engines', 'needle', 'install.lock'),
     );
   });
 });
