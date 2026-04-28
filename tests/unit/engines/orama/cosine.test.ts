@@ -38,7 +38,7 @@ vi.mock('#src/kb/read.js', () => ({
   },
 }));
 
-import { createOramaDb, OramaBaseProjection } from '#src/kb/search/orama/backend.js';
+import { createOramaDb, OramaBaseProjection } from '#src/engines/orama/backend.js';
 
 const RNG_SEED = 0xc05173;
 const DIMENSIONS = 32;

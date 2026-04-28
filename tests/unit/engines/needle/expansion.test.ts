@@ -6,7 +6,7 @@ import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 const NEEDLE_ENTRY = {
   id: 'needle',
   version: '0.2.0',
-  specifier: '#src/kb/search/needle/expansion.js',
+  specifier: '#src/engines/needle/expansion.js',
   metadata: {
     description: 'Needle vector backend',
     onboarding: 'optional' as const,

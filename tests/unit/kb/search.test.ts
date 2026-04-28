@@ -811,7 +811,7 @@ describe('kb search', () => {
     await reindex(kb);
     const [{ insertMultiple }, { createOramaDb }] = await Promise.all([
       import('@orama/orama'),
-      import('#src/kb/search/orama/backend.js'),
+      import('#src/engines/orama/backend.js'),
     ]);
     const { db } = await createOramaDb();
     await insertMultiple(db, [

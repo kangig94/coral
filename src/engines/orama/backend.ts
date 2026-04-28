@@ -8,29 +8,29 @@ import type {
   EmbeddingService,
   KbCorpusSnapshot,
   KbRuntime,
-} from '../../contract.js';
+} from '../../kb/contract.js';
 import {
   buildRetrievalAuthorityText,
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
-} from '../../corpus/snapshot.js';
-import { areCommunityDocumentsFresh } from '../../curate/community/freshness.js';
-import type { CommunityDocument } from '../../curate/community/detection.js';
-import { extractBody, parseCommunityFrontmatter } from '../../corpus/frontmatter.js';
-import { cloneKbIndex } from '../../corpus/index-records.js';
-import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
+} from '../../kb/corpus/snapshot.js';
+import { areCommunityDocumentsFresh } from '../../kb/curate/community/freshness.js';
+import type { CommunityDocument } from '../../kb/curate/community/detection.js';
+import { extractBody, parseCommunityFrontmatter } from '../../kb/corpus/frontmatter.js';
+import { cloneKbIndex } from '../../kb/corpus/index-records.js';
+import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
 import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
-import { loadKbNote, loadKbSource } from '../../read.js';
-import { isNoEntryError } from '../../../infra/fs-errors.js';
-import { CoralSetupError } from '../../../runtime/errors.js';
+import { loadKbNote, loadKbSource } from '../../kb/read.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import type {
   RetrievalScope,
   TextRetrieval,
   TextRetrievalResult,
   VectorRetrieval,
   VectorRetrievalResult,
-} from '../contract.js';
+} from '../../kb/search/contract.js';
 import {
   isCommunityEntry,
   isNoteEntry,
@@ -40,9 +40,18 @@ import {
   type KbIndex,
   type NoteEntry,
   type SourceEntry,
-} from '../../entry-types.js';
+} from '../../kb/entry-types.js';
 
-export { createOramaDb, normalizeHyphens, normalizeOramaTerm, normalizeWhitespace, tokenizeField, tokenizeQuery, toOramaDocument, type KbOramaDocument } from './document-builder.js';
+export {
+  createOramaDb,
+  normalizeHyphens,
+  normalizeOramaTerm,
+  normalizeWhitespace,
+  tokenizeField,
+  tokenizeQuery,
+  toOramaDocument,
+  type KbOramaDocument,
+} from './document-builder.js';
 export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
@@ -190,10 +199,12 @@ function siftWorseCandidateDown(heap: ScoredVectorCandidate[], startIndex: numbe
 
 function listStoredDocuments(db: KbOramaDb): KbOramaDocument[] {
   // Orama does not expose enumerate-all publicly; documentsStore is internal but stable across minor versions.
-  const store = (db as KbOramaDb & {
-    documentsStore: { getAll(docs: unknown): Record<number, KbOramaDocument> };
-    data: { docs: unknown };
-  }).documentsStore;
+  const store = (
+    db as KbOramaDb & {
+      documentsStore: { getAll(docs: unknown): Record<number, KbOramaDocument> };
+      data: { docs: unknown };
+    }
+  ).documentsStore;
   const docs = store.getAll((db as KbOramaDb & { data: { docs: unknown } }).data.docs);
 
   return Object.values(docs).sort((left, right) => left.entryId.localeCompare(right.entryId));
@@ -411,10 +422,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     };
   }
 
-  async installFullSnapshot(
-    snapshot: KbCorpusSnapshot,
-    preparedProjection: PreparedOramaProjection,
-  ): Promise<void> {
+  async installFullSnapshot(snapshot: KbCorpusSnapshot, preparedProjection: PreparedOramaProjection): Promise<void> {
     void snapshot;
 
     if (preparedProjection.documents.length > 0) {
@@ -445,7 +453,9 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     forceCommunityFresh?: boolean,
     includeEmbeddings = true,
   ): Promise<KbOramaDocument[]> {
-    const generatedCommunityDocsBySlug = new Map(generatedCommunityDocs.map((document) => [document.slug, document] as const));
+    const generatedCommunityDocsBySlug = new Map(
+      generatedCommunityDocs.map((document) => [document.slug, document] as const),
+    );
     const communityFresh = forceCommunityFresh ?? areCommunityDocumentsFresh(this.runtime, index);
 
     const records = Object.entries(index.entries)

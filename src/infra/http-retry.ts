@@ -1,8 +1,5 @@
-// Shared HTTP retry + record predicate for embedder Expansions.
-// Gemini and ONNX peer Expansions both need the same transient-retry policy
-// (HTTP 408/425/429/5xx with bounded exponential backoff) and the same
-// record predicate. Single canonical home so adding a third embedder
-// (OpenAI, Cohere, …) reuses the same primitive.
+// Shared HTTP retry + record predicate for callers that need the same
+// transient-retry policy (HTTP 408/425/429/5xx with bounded exponential backoff).
 
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_BASE_MS = 1_000;

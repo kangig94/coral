@@ -58,6 +58,9 @@ type ParsedEdge = EdgeAccumulator & {
 
 function classifySubsystem(canonicalPath: string): Subsystem {
   const sourceRelativePath = canonicalPath.slice('src/'.length);
+  if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {
+    return 'kb';
+  }
 
   for (const prefix of SUBSYSTEM_PREFIXES) {
     if (sourceRelativePath === prefix || sourceRelativePath.startsWith(`${prefix}/`)) {

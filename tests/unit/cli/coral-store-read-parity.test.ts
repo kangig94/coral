@@ -6,7 +6,7 @@ import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '#src/cli/program.js';
 
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openBackendStoreDb, openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
@@ -30,7 +30,7 @@ async function loadMainModule(): Promise<MainModule> {
 async function seedKbSearchSnapshot(): Promise<void> {
   const [{ reindex }, { closeNeedleBackend }, kbPaths, { createTestKbRuntime }] = await Promise.all([
     import('#src/kb/ops/reindex.js'),
-    import('#src/kb/search/needle/backend.js'),
+    import('#src/engines/needle/backend.js'),
     import('#src/kb/paths.js'),
     import('#tests/fixtures/test-runtime.js'),
   ]);

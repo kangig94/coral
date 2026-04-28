@@ -1,11 +1,11 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readCorpusState } from '../../state/corpus-state.js';
-import { backendLog } from '../../../infra/backend-log.js';
-import { errorMessage } from '../../../infra/error-format.js';
-import { isRecord } from '../../../infra/json.js';
-import { nowIsoString } from '../../../infra/time.js';
-import { CoralSetupError } from '../../../runtime/errors.js';
+import { readCorpusState } from '../../kb/state/corpus-state.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
+import { nowIsoString } from '../../infra/time.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import type {
   Backed,
   ConsumerApplyError,
@@ -13,22 +13,29 @@ import type {
   EmbeddingService,
   KbRuntime,
   VectorRetrieval as BoundVectorRetrieval,
-} from '../../contract.js';
-import { writeFileAtomic } from '../../corpus/file-atomic.js';
-import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../../entry-types.js';
-import { needleIndexDir, needleStagingDir } from '../../paths.js';
-import { loadKbNote, loadKbSource } from '../../read.js';
-import { chunkEntry, type ChunkSeed } from '../../chunking.js';
-import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../embedding/vector.js';
+} from '../../kb/contract.js';
+import { writeFileAtomic } from '../../kb/corpus/file-atomic.js';
+import {
+  getEntry,
+  isNoteEntry,
+  isSourceEntry,
+  parseKbEntryId,
+  type KbEntryId,
+  type KbIndex,
+} from '../../kb/entry-types.js';
+import { needleIndexDir, needleStagingDir } from './paths.js';
+import { loadKbNote, loadKbSource } from '../../kb/read.js';
+import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
+import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../kb/embedding-vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,
   type NeedleBackendOptions,
 } from './contract.js';
-import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../contract.js';
+import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../../kb/search/contract.js';
 import type { EmbeddingSpec } from './store.js';
-import type { Runtime } from '../../../runtime/ports.js';
+import type { Runtime } from '../../runtime/ports.js';
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';
@@ -291,12 +298,10 @@ function aggregateVectorHits(
     }
   }
 
-  return [...aggregated.values()]
-    .sort(compareScoreAndEntryId)
-    .map((hit, indexPosition) => ({
-      ...hit,
-      rank: indexPosition + 1,
-    }));
+  return [...aggregated.values()].sort(compareScoreAndEntryId).map((hit, indexPosition) => ({
+    ...hit,
+    rank: indexPosition + 1,
+  }));
 }
 
 export class NeedleBackend implements NeedleBackendContract {
@@ -409,7 +414,7 @@ export class NeedleBackend implements NeedleBackendContract {
       return;
     }
 
-    const embedder = this.boundEmbedder ?? await resolveRuntimeNeedleEmbedder(this.runtime);
+    const embedder = this.boundEmbedder ?? (await resolveRuntimeNeedleEmbedder(this.runtime));
     if (embedder === null) {
       throw new Error('KB needle backend requires an embedding provider configuration.');
     }
@@ -434,10 +439,9 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   async close(): Promise<void> {
-    const handles = [
-      this.activeHandle,
-      ...this.retiredHandles,
-    ].filter((handle): handle is ActiveNeedleHandle => handle !== null);
+    const handles = [this.activeHandle, ...this.retiredHandles].filter(
+      (handle): handle is ActiveNeedleHandle => handle !== null,
+    );
 
     this.activeHandle = null;
     this.retiredHandles.clear();
@@ -494,22 +498,29 @@ export class NeedleBackend implements NeedleBackendContract {
       .sort(([leftEntryId], [rightEntryId]) => leftEntryId.localeCompare(rightEntryId))
       .flatMap(([entryId, entry]) => {
         if (isNoteEntry(entry)) {
-          return [{
-            entryId: entryId as KbEntryId,
-            chunks: chunkEntry(entry, loadKbNote(this.runtime.notePath(entry.slug)).body),
-          }];
+          return [
+            {
+              entryId: entryId as KbEntryId,
+              chunks: chunkEntry(entry, loadKbNote(this.runtime.notePath(entry.slug)).body),
+            },
+          ];
         }
         if (isSourceEntry(entry)) {
-          return [{
-            entryId: entryId as KbEntryId,
-            chunks: chunkEntry(entry, loadKbSource(this.runtime.sourcePath(entry.slug)).body),
-          }];
+          return [
+            {
+              entryId: entryId as KbEntryId,
+              chunks: chunkEntry(entry, loadKbSource(this.runtime.sourcePath(entry.slug)).body),
+            },
+          ];
         }
         return [];
       });
   }
 
-  private async stageSnapshot(snapshot: NeedleApplyContext['snapshot'], embedder: ResolvedNeedleEmbedder): Promise<string> {
+  private async stageSnapshot(
+    snapshot: NeedleApplyContext['snapshot'],
+    embedder: ResolvedNeedleEmbedder,
+  ): Promise<string> {
     const desiredSpec = embedder.spec;
     const stagingDir = join(needleStagingDir(this.runtime.runtimeDir), snapshot.snapshotId);
     rmSync(stagingDir, { recursive: true, force: true });
@@ -638,7 +649,10 @@ export class NeedleBackend implements NeedleBackendContract {
     }
   }
 
-  private async loadHandleFromSnapshot(snapshotId: string, expectedSpecId?: string): Promise<ActiveNeedleHandle | null> {
+  private async loadHandleFromSnapshot(
+    snapshotId: string,
+    expectedSpecId?: string,
+  ): Promise<ActiveNeedleHandle | null> {
     const manifest = readSnapshotManifest(this.runtime.runtimeDir, snapshotId);
     if (manifest === null) {
       return null;

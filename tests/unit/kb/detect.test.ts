@@ -20,13 +20,17 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths] = await Promise.all([
+  const [runtime, paths, oramaPaths, needlePaths] = await Promise.all([
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
+    import('#src/engines/orama/paths.js'),
+    import('#src/engines/needle/paths.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
+    oramaPaths,
+    needlePaths,
     // kbRoot now lives alongside kbRuntimeDir in kb/paths.ts
     infraPaths: paths,
   };
@@ -77,23 +81,27 @@ describe('kb detection and paths', () => {
   });
 
   it('derives flavor-specific KB roots and runtime dirs', async () => {
-    const { paths, infraPaths } = await loadKbModules();
+    const { paths, infraPaths, oramaPaths, needlePaths } = await loadKbModules();
 
     expect(infraPaths.kbRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
     const prodRuntimeDir = paths.kbRuntimeDir('prod');
     expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
-    expect(paths.oramaSnapshotDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
-    expect(paths.needleIndexDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle'));
-    expect(paths.needleStagingDir(prodRuntimeDir)).toBe(
+    expect(oramaPaths.oramaSnapshotDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
+    expect(needlePaths.needleIndexDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle'));
+    expect(needlePaths.needleStagingDir(prodRuntimeDir)).toBe(
       join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle-staging'),
     );
 
     expect(infraPaths.kbRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
     const devRuntimeDir = paths.kbRuntimeDir('dev');
     expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
-    expect(paths.oramaSnapshotDir(devRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'));
-    expect(paths.needleIndexDir(devRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle'));
-    expect(paths.needleStagingDir(devRuntimeDir)).toBe(
+    expect(oramaPaths.oramaSnapshotDir(devRuntimeDir)).toBe(
+      join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'),
+    );
+    expect(needlePaths.needleIndexDir(devRuntimeDir)).toBe(
+      join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle'),
+    );
+    expect(needlePaths.needleStagingDir(devRuntimeDir)).toBe(
       join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'needle-staging'),
     );
   });
@@ -116,7 +124,7 @@ describe('kb detection and paths', () => {
 
   it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { paths } = await loadKbModules();
+    const { paths, oramaPaths, needlePaths } = await loadKbModules();
     const kb = createTestKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir('prod'),
@@ -127,9 +135,9 @@ describe('kb detection and paths', () => {
       const result = await kb.ensureOramaIndex();
 
       expect(result.warnings).toEqual(['orama_snapshot_stale']);
-      expect(existsSync(paths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
-      expect(existsSync(paths.needleIndexDir(kb.runtimeDir))).toBe(false);
-      expect(existsSync(paths.needleStagingDir(kb.runtimeDir))).toBe(false);
+      expect(existsSync(oramaPaths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
+      expect(existsSync(needlePaths.needleIndexDir(kb.runtimeDir))).toBe(false);
+      expect(existsSync(needlePaths.needleStagingDir(kb.runtimeDir))).toBe(false);
       expect(collectDirectoryPaths(join(mockState.tmpHome, '.coral')).some((path) => path.endsWith('/vec'))).toBe(
         false,
       );

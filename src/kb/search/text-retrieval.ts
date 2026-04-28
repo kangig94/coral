@@ -1,14 +1,9 @@
 import { search as oramaSearch } from '@orama/orama';
 
 import { denormalizeSlug } from './snippets.js';
-import type {
-  FusedRetrievalHit,
-  HybridFusion,
-  TextRetrievalResult,
-  VectorRetrievalHit,
-} from './contract.js';
-import type { KbOramaDocument } from './orama/document-builder.js';
-import type { KbOramaDb } from './orama/schema.js';
+import type { FusedRetrievalHit, HybridFusion, TextRetrievalResult, VectorRetrievalHit } from './contract.js';
+import type { KbOramaDocument } from '../../engines/orama/document-builder.js';
+import type { KbOramaDb } from '../../engines/orama/schema.js';
 import {
   getEntry,
   isCommunityEntry,
@@ -119,12 +114,10 @@ export function compareRetrievalRoleHits(
 export function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: number }>(
   hits: readonly T[],
 ): Array<T & { rank: number }> {
-  return [...hits]
-    .sort(compareRetrievalRoleHits)
-    .map((hit, index) => ({
-      ...hit,
-      rank: index + 1,
-    }));
+  return [...hits].sort(compareRetrievalRoleHits).map((hit, index) => ({
+    ...hit,
+    rank: index + 1,
+  }));
 }
 
 function toTextRetrievalResult(hits: readonly ResolvedKbSearchHit[]): TextRetrievalResult {

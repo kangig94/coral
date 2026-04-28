@@ -51,18 +51,6 @@ export function kbRuntimeDir(flavor: BuildFlavor): string {
   return join(coralRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
 }
 
-export function oramaSnapshotDir(runtimeRoot: string): string {
-  return join(runtimeRoot, 'orama');
-}
-
-export function needleIndexDir(runtimeRoot: string): string {
-  return join(runtimeRoot, 'needle');
-}
-
-export function needleStagingDir(runtimeRoot: string): string {
-  return join(runtimeRoot, 'needle-staging');
-}
-
 export function sourcesDir(root: string): string {
   return join(root, 'sources');
 }

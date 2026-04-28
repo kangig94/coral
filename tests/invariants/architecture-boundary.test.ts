@@ -152,7 +152,7 @@ const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
-const NEEDLE_BACKEND_TARGET = 'src/kb/search/needle/backend.ts';
+const NEEDLE_BACKEND_TARGET = 'src/engines/needle/backend.ts';
 const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal/materializer.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
@@ -409,12 +409,7 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // the function has no runtime in scope.
   // kb/paths.ts owns the CORAL_KB_PATH env override (vault root) — that env
   // read is the contract, not a leak.
-  const allowed = new Set([
-    'src/kb/env.ts',
-    'src/discuss/transcript.ts',
-    'src/providers/inject.ts',
-    'src/kb/paths.ts',
-  ]);
+  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/providers/inject.ts', 'src/kb/paths.ts']);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 
@@ -606,7 +601,7 @@ describe('architecture boundary guard', () => {
   it('needle backend is loaded only through the needle expansion module', () => {
     expect(PARSED_IMPORT_EDGES.filter((edge) => edge.target === NEEDLE_BACKEND_TARGET)).toEqual([
       {
-        source: 'src/kb/search/needle/expansion.ts',
+        source: 'src/engines/needle/expansion.ts',
         specifier: './backend.js',
         target: NEEDLE_BACKEND_TARGET,
         via: 'ImportDeclaration',
@@ -984,11 +979,7 @@ describe('architecture boundary guard', () => {
     // root.ts (cycle-break primitive needed for kbRuntimeDir).
     const COMPOSE_PUBLIC = 'src/infra/path/compose.ts';
     const ALLOWED_INTERNAL_IMPORTERS: Record<string, ReadonlySet<string>> = {
-      'src/infra/path/root.ts': new Set([
-        'src/kb/paths.ts',
-        'src/kb/env.ts',
-        'src/infra/project-source.ts',
-      ]),
+      'src/infra/path/root.ts': new Set(['src/kb/paths.ts', 'src/kb/env.ts', 'src/infra/project-source.ts']),
     };
     const offenders: string[] = [];
     for (const edge of PARSED_IMPORT_EDGES) {
@@ -1052,7 +1043,15 @@ describe('architecture boundary guard', () => {
     }
   });
   it('expansion implementation files keep the single-function contract shape', () => {
-    const forbiddenMembers = new Set(['install', 'uninstall', 'activate', 'deactivate', 'slots', 'priority', 'requires']);
+    const forbiddenMembers = new Set([
+      'install',
+      'uninstall',
+      'activate',
+      'deactivate',
+      'slots',
+      'priority',
+      'requires',
+    ]);
     const expansionFiles = listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('/expansion.ts'))
       .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
       .filter((filePath) => {
@@ -1101,10 +1100,7 @@ describe('architecture boundary guard', () => {
       return [];
     }
 
-    function isFunctionValueExpression(
-      expression: ts.Expression,
-      sourceFile: ts.SourceFile,
-    ): boolean {
+    function isFunctionValueExpression(expression: ts.Expression, sourceFile: ts.SourceFile): boolean {
       if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
         return true;
       }
@@ -1158,35 +1154,33 @@ describe('architecture boundary guard', () => {
     expect(violations).toEqual([]);
   });
   it('needle expansion keeps embedder access structural and free of captured concrete fallbacks', () => {
-    const source = readFileSync(resolve(REPO_ROOT, 'src/kb/search/needle/expansion.ts'), 'utf8');
+    const source = readFileSync(resolve(REPO_ROOT, 'src/engines/needle/expansion.ts'), 'utf8');
     const sourceFile = ts.createSourceFile(
-      resolve(REPO_ROOT, 'src/kb/search/needle/expansion.ts'),
+      resolve(REPO_ROOT, 'src/engines/needle/expansion.ts'),
       source,
       ts.ScriptTarget.Latest,
       true,
       ts.ScriptKind.TS,
     );
-    const importedNames = sourceFile.statements
-      .filter(ts.isImportDeclaration)
-      .flatMap((statement) => {
-        const clause = statement.importClause;
-        if (!clause) {
-          return [];
-        }
+    const importedNames = sourceFile.statements.filter(ts.isImportDeclaration).flatMap((statement) => {
+      const clause = statement.importClause;
+      if (!clause) {
+        return [];
+      }
 
-        const names: string[] = [];
-        if (clause.name) {
-          names.push(clause.name.text);
-        }
-        const bindings = clause.namedBindings;
-        if (bindings && ts.isNamedImports(bindings)) {
-          names.push(...bindings.elements.map((element) => element.name.text));
-        }
-        if (bindings && ts.isNamespaceImport(bindings)) {
-          names.push(bindings.name.text);
-        }
-        return names;
-      });
+      const names: string[] = [];
+      if (clause.name) {
+        names.push(clause.name.text);
+      }
+      const bindings = clause.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        names.push(...bindings.elements.map((element) => element.name.text));
+      }
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        names.push(bindings.name.text);
+      }
+      return names;
+    });
 
     expect(importedNames).not.toContain('createEmbeddingProvider');
     expect(importedNames).not.toContain('GeminiEmbeddingProvider');
@@ -1213,7 +1207,7 @@ describe('architecture boundary guard', () => {
   });
 
   it('keeps Orama as constructor-defaulted KB infrastructure instead of an Expansion', () => {
-    const oramaRoot = resolve(REPO_ROOT, 'src/kb/search/orama');
+    const oramaRoot = resolve(REPO_ROOT, 'src/engines/orama');
     const pending = [oramaRoot];
     const oramaFiles: string[] = [];
 
@@ -1229,7 +1223,7 @@ describe('architecture boundary guard', () => {
           pending.push(nextPath);
           continue;
         }
-        if (entry.isFile() && nextPath.endsWith('.ts')) {
+        if (entry.isFile() && nextPath.endsWith('.ts') && entry.name !== 'expansion.ts') {
           oramaFiles.push(nextPath);
         }
       }
@@ -1241,12 +1235,14 @@ describe('architecture boundary guard', () => {
     }
 
     const runtimeSource = readFileSync(resolve(REPO_ROOT, 'src/kb/runtime.ts'), 'utf8');
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<VectorRetrieval>>\(\s*'kb\.vector'\s*,\s*createOramaBacked\(/);
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<FtsRetrieval>>\(\s*'kb\.fts'\s*,\s*createOramaFtsBacked\(/);
-    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*\)/);
-    expect(runtimeSource).not.toMatch(
-      /createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*,/,
+    expect(runtimeSource).toMatch(
+      /createRuntimeBinding<Backed<VectorRetrieval>>\(\s*'kb\.vector'\s*,\s*createOramaBacked\(/,
     );
+    expect(runtimeSource).toMatch(
+      /createRuntimeBinding<Backed<FtsRetrieval>>\(\s*'kb\.fts'\s*,\s*createOramaFtsBacked\(/,
+    );
+    expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*\)/);
+    expect(runtimeSource).not.toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*,/);
   });
   it('keeps kb.embedding defaultless and aligns bundled slot metadata with declared KbRuntime bindings', () => {
     const runtimePath = resolve(REPO_ROOT, 'src/kb/runtime.ts');
@@ -1254,7 +1250,13 @@ describe('architecture boundary guard', () => {
     const runtimeSource = readFileSync(runtimePath, 'utf8');
     const contractSource = readFileSync(contractPath, 'utf8');
     const runtimeFile = ts.createSourceFile(runtimePath, runtimeSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const contractFile = ts.createSourceFile(contractPath, contractSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const contractFile = ts.createSourceFile(
+      contractPath,
+      contractSource,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
     const bindingNames = new Set<string>();
     let embeddingBindingArgs: number | null = null;
 
@@ -1262,13 +1264,13 @@ describe('architecture boundary guard', () => {
       if (ts.isInterfaceDeclaration(node) && node.name.text === 'KbRuntime') {
         for (const member of node.members) {
           if (
-            ts.isPropertySignature(member)
-            && member.type
-            && ts.isTypeReferenceNode(member.type)
-            && ts.isIdentifier(member.type.typeName)
-            && member.type.typeName.text === 'RuntimeBinding'
-            && member.name
-            && ts.isIdentifier(member.name)
+            ts.isPropertySignature(member) &&
+            member.type &&
+            ts.isTypeReferenceNode(member.type) &&
+            ts.isIdentifier(member.type.typeName) &&
+            member.type.typeName.text === 'RuntimeBinding' &&
+            member.name &&
+            ts.isIdentifier(member.name)
           ) {
             bindingNames.add(`kb.${member.name.text}`);
           }
@@ -1279,16 +1281,15 @@ describe('architecture boundary guard', () => {
     };
 
     const visitRuntime = (node: ts.Node): void => {
-
       if (
-        ts.isCallExpression(node)
-        && ts.isIdentifier(node.expression)
-        && node.expression.text === 'createRuntimeBinding'
-        && ts.isBinaryExpression(node.parent)
-        && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        && ts.isPropertyAccessExpression(node.parent.left)
-        && node.parent.left.expression.kind === ts.SyntaxKind.ThisKeyword
-        && node.parent.left.name.text === 'embedding'
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'createRuntimeBinding' &&
+        ts.isBinaryExpression(node.parent) &&
+        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(node.parent.left) &&
+        node.parent.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        node.parent.left.name.text === 'embedding'
       ) {
         embeddingBindingArgs = node.arguments.length;
       }
@@ -1306,8 +1307,7 @@ describe('architecture boundary guard', () => {
     expect(declaredBindings.length).toBeGreaterThan(0);
     expect(declaredBindings).toContain('kb.embedding');
     expect(
-      BUNDLED_EXPANSIONS
-        .map((entry) => entry.metadata.slot)
+      BUNDLED_EXPANSIONS.map((entry) => entry.metadata.slot)
         .filter((slot): slot is string => typeof slot === 'string')
         .every((slot) => bindingNames.has(slot)),
     ).toBe(true);
@@ -1486,10 +1486,14 @@ describe('architecture boundary guard', () => {
     const violations = BUNDLED_EXPANSIONS.flatMap((entry) => {
       const findings: string[] = [];
       if (oramaIds.has(entry.id)) {
-        findings.push(`BUNDLED_EXPANSIONS contains id="${entry.id}" — Orama must be a constructor-time default, not an Expansion.`);
+        findings.push(
+          `BUNDLED_EXPANSIONS contains id="${entry.id}" — Orama must be a constructor-time default, not an Expansion.`,
+        );
       }
       if (entry.specifier.includes('/orama/')) {
-        findings.push(`BUNDLED_EXPANSIONS specifier "${entry.specifier}" points at Orama — Orama must not load via the Expansion loader.`);
+        findings.push(
+          `BUNDLED_EXPANSIONS specifier "${entry.specifier}" points at Orama — Orama must not load via the Expansion loader.`,
+        );
       }
       return findings;
     });

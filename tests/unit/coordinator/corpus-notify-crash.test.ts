@@ -8,7 +8,7 @@ import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
-import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
+import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
@@ -86,7 +86,7 @@ async function seedIndexedNote(kb: ReturnType<typeof createKbRuntime>, vaultDir:
 function readCursor(db: InstanceType<typeof Database>, consumerId: string): CorpusStateSnapshot {
   const row = db
     .prepare(
-        `
+      `
         SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
           FROM consumer_cursors
          WHERE consumer_id = ?
@@ -244,8 +244,7 @@ describe('Corpus notify crash replay', () => {
       });
 
       await kb.retryPendingCorpusPublication();
-      await kb.withMutationLock(() => {
-      });
+      await kb.withMutationLock(() => {});
       await seedIndexedNote(kb, vaultDir);
 
       await update(kb, {
@@ -326,10 +325,7 @@ describe('Corpus notify crash replay', () => {
         { appliedBy: 'startup-replay', snapshotId: latest.snapshotId },
       ]);
 
-      expect(errorSpy).toHaveBeenCalledWith(
-        `ConsumerDriver apply failed (${NEEDLE_CONSUMER_ID})`,
-        expect.any(Error),
-      );
+      expect(errorSpy).toHaveBeenCalledWith(`ConsumerDriver apply failed (${NEEDLE_CONSUMER_ID})`, expect.any(Error));
     } finally {
       firstApplyGate.reject(new Error('test cleanup'));
       await replayDriver?.shutdown();

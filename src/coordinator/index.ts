@@ -10,9 +10,7 @@ import {
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
-import {
-  createCoordinatorCore,
-} from './composition/index.js';
+import { createCoordinatorCore } from './composition/index.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
@@ -35,7 +33,7 @@ import { workflowRecover } from '../workflow/recover.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { ORAMA_BASE_CONSUMER_ID } from '../kb/search/orama/index.js';
+import { ORAMA_BASE_CONSUMER_ID } from '../engines/orama/index.js';
 import type { KbRuntime } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';

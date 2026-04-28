@@ -1,4 +1,4 @@
-import { tokenizeField } from './orama/document-builder.js';
+import { tokenizeField } from '../../engines/orama/document-builder.js';
 import {
   isCommunityEntry,
   type KbEntryId,
@@ -7,11 +7,7 @@ import {
   type KbResult,
   type KbSearchResponse,
 } from '../entry-types.js';
-import {
-  extractSnippet,
-  hasTokenOverlap,
-  type QueryContext,
-} from './snippets.js';
+import { extractSnippet, hasTokenOverlap, type QueryContext } from './snippets.js';
 import {
   type HybridKbSearchHit,
   type ResolvedKbSearchEntry,

@@ -31,9 +31,9 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { jobsDir } from "#src/jobs/paths.js";
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
-import { projectDataDir, resolveProjectSource } from "#src/infra/project-source.js";
+import { jobsDir } from '#src/jobs/paths.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
+import { projectDataDir, resolveProjectSource } from '#src/infra/project-source.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
@@ -59,7 +59,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/index.js';
 import {
   LaunchCoordinator,
   TypedEventBus,
@@ -770,7 +770,12 @@ describe('execution backend server', () => {
       projectRoot: projectRootA,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(jobIdA, 'session-a', { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(
+      jobIdA,
+      'session-a',
+      { content: 'done-a', outcome: { kind: 'completed' } },
+      'completed',
+    );
 
     progressStore.initJob({
       jobId: jobIdB,
@@ -787,7 +792,12 @@ describe('execution backend server', () => {
       projectRoot: projectRootB,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(jobIdB, 'session-b', { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(
+      jobIdB,
+      'session-b',
+      { content: 'done-b', outcome: { kind: 'completed' } },
+      'completed',
+    );
 
     const services = new Map<string, InstanceType<typeof ExecutionService>>();
     const capturedManagers: unknown[] = [];
@@ -1340,7 +1350,7 @@ describe('execution backend server', () => {
         code: 'kb_unavailable',
         message: 'Knowledge base is not available. Check backend health for details.',
       };
-      const withKb = <T,>(
+      const withKb = <T>(
         run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
       ): T | typeof kbUnavailableResult => {
         const kbSubsystem = runtimeState.getKbSubsystem();
@@ -1349,7 +1359,7 @@ describe('execution backend server', () => {
         }
         return run(kbSubsystem);
       };
-      const withKbAsync = async <T,>(
+      const withKbAsync = async <T>(
         run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => Promise<T>,
       ): Promise<T | typeof kbUnavailableResult> => {
         const kbSubsystem = runtimeState.getKbSubsystem();
@@ -1452,32 +1462,39 @@ describe('execution backend server', () => {
           detail: () => null,
         },
         workflows: {
-          execute: options.workflowExecute ?? (async (request: any, ctx: any) => {
-            try {
-              const compiled = workflowCompiler.compile(request, providerRegistry);
-              if ('status' in compiled) {
-                return { kind: 'decision' as const, decision: compiled };
-              }
-              return {
-                kind: 'decision' as const,
-                decision: await workflowCommands.execute(service as never, compiled, ctx),
-              };
-            } catch (error: unknown) {
-              if (isWorkflowInputFailure(error)) {
-                if (error instanceof ZodError) {
-                  const first = error.issues[0];
-                  const path = first?.path.join('.') ?? '';
-                  const message = first ? (path.length > 0 ? `${path}: ${first.message}` : first.message) : error.message;
-                  return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
+          execute:
+            options.workflowExecute ??
+            (async (request: any, ctx: any) => {
+              try {
+                const compiled = workflowCompiler.compile(request, providerRegistry);
+                if ('status' in compiled) {
+                  return { kind: 'decision' as const, decision: compiled };
                 }
-                return { kind: 'invalid_request' as const, message: error.message };
+                return {
+                  kind: 'decision' as const,
+                  decision: await workflowCommands.execute(service as never, compiled, ctx),
+                };
+              } catch (error: unknown) {
+                if (isWorkflowInputFailure(error)) {
+                  if (error instanceof ZodError) {
+                    const first = error.issues[0];
+                    const path = first?.path.join('.') ?? '';
+                    const message = first
+                      ? path.length > 0
+                        ? `${path}: ${first.message}`
+                        : first.message
+                      : error.message;
+                    return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
+                  }
+                  return { kind: 'invalid_request' as const, message: error.message };
+                }
+                throw error;
               }
-              throw error;
-            }
-          }),
+            }),
         },
         kb: {
-          readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
+          readSearch: (args: Record<string, unknown>) =>
+            withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
           diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
           readNote: (slug: string) =>
             withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, deps.runtime, kbSubsystem)),
@@ -1488,7 +1505,8 @@ describe('execution backend server', () => {
           readPrinciple: (slug: string) =>
             withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, deps.runtime)),
           listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
-          listMemos: (args: Record<string, unknown>, ctx: unknown) => withKb(() => handleKbMemoList(args, ctx as never)),
+          listMemos: (args: Record<string, unknown>, ctx: unknown) =>
+            withKb(() => handleKbMemoList(args, ctx as never)),
           listPrinciples: (args: Record<string, unknown>) =>
             withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
           createNote: (args: Record<string, unknown>, ctx: unknown) =>
@@ -1501,8 +1519,7 @@ describe('execution backend server', () => {
               'source_import_requires_coordinator_service',
               'KB source import must run through the coordinator source-import job service.',
             ),
-          deleteSource: (slug: string) =>
-            withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
+          deleteSource: (slug: string) => withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
           createMemo: (args: Record<string, unknown>, ctx: unknown) => withKb(() => handleKbMemo(args, ctx as never)),
           deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
             withKb(() => handleKbMemoDeleteConsolidated(args, ctx as never)),
@@ -1530,10 +1547,7 @@ describe('execution backend server', () => {
       return { deps, runtimeState, executionService };
     }
 
-    async function startHttpHandlerServer(
-      deps: any,
-      createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler,
-    ) {
+    async function startHttpHandlerServer(deps: any, createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler) {
       const importedHandlerModule = await import('#src/transport/http/handler.js');
       const importedCreateHttpHandler = createHttpHandlerFn ?? importedHandlerModule.createHttpHandler;
       const handler = importedCreateHttpHandler(deps);
@@ -1619,7 +1633,7 @@ describe('execution backend server', () => {
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
       };
-      const withKb = <T,>(
+      const withKb = <T>(
         run: (kbSubsystem: NonNullable<ReturnType<typeof created.runtimeState.getKbSubsystem>>) => T,
       ): T | { ok: false; code: string; message: string } => {
         const kbSubsystem = created.runtimeState.getKbSubsystem();
@@ -1632,7 +1646,7 @@ describe('execution backend server', () => {
         }
         return run(kbSubsystem);
       };
-      const withKbAsync = async <T,>(
+      const withKbAsync = async <T>(
         run: (kbSubsystem: NonNullable<ReturnType<typeof created.runtimeState.getKbSubsystem>>) => Promise<T>,
       ): Promise<T | { ok: false; code: string; message: string }> => {
         const kbSubsystem = created.runtimeState.getKbSubsystem();
@@ -1662,7 +1676,8 @@ describe('execution backend server', () => {
           mockDiscussTools.handleDiscussAbort(args, ctx, { getDiscussContext: created.deps.getDiscussContext }),
       };
       created.deps.kb = {
-        readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => mockKbTools.handleKbSearch(args, kbSubsystem)),
+        readSearch: (args: Record<string, unknown>) =>
+          withKbAsync((kbSubsystem) => mockKbTools.handleKbSearch(args, kbSubsystem)),
         diagnose: () => withKb((kbSubsystem) => mockKbTools.handleKbDiagnose({}, kbSubsystem)),
         readNote: (slug: string) =>
           withKb((kbSubsystem) =>
@@ -1672,16 +1687,19 @@ describe('execution backend server', () => {
           withKb((kbSubsystem) => mockKbTools.handleKbSourceRead(slug, kbSubsystem, created.deps.runtime)),
         readCommunity: (slug: string) =>
           withKb((kbSubsystem) => mockKbTools.handleKbCommunityRead(slug, kbSubsystem, created.deps.runtime)),
-        readMemo: (slug: string, ctx: unknown) => withKb(() => mockKbTools.handleKbMemoRead(slug, ctx, created.deps.runtime)),
+        readMemo: (slug: string, ctx: unknown) =>
+          withKb(() => mockKbTools.handleKbMemoRead(slug, ctx, created.deps.runtime)),
         readPrinciple: (slug: string) =>
           withKb((kbSubsystem) => mockKbTools.handleKbPrincipleRead(slug, kbSubsystem, created.deps.runtime)),
         listSources: () => withKbAsync((kbSubsystem) => mockKbTools.handleKbSourceList({}, kbSubsystem)),
-        listMemos: (args: Record<string, unknown>, ctx: unknown) => withKb(() => mockKbTools.handleKbMemoList(args, ctx)),
+        listMemos: (args: Record<string, unknown>, ctx: unknown) =>
+          withKb(() => mockKbTools.handleKbMemoList(args, ctx)),
         listPrinciples: (args: Record<string, unknown>) =>
           withKbAsync((kbSubsystem) => mockKbTools.handleKbPrinciples(args, kbSubsystem)),
         createNote: (args: Record<string, unknown>, ctx: unknown) =>
           withKbAsync((kbSubsystem) => mockKbTools.handleKbPromote(args, kbSubsystem, ctx)),
-        updateNote: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => mockKbTools.handleKbUpdate(args, kbSubsystem)),
+        updateNote: (args: Record<string, unknown>) =>
+          withKbAsync((kbSubsystem) => mockKbTools.handleKbUpdate(args, kbSubsystem)),
         deleteNote: (slug: string) =>
           withKbAsync((kbSubsystem) => mockKbTools.handleKbDelete({ note: slug }, kbSubsystem)),
         createSource: (args: Record<string, unknown>) =>
@@ -1716,8 +1734,7 @@ describe('execution backend server', () => {
       }
     }
 
-    afterEach(() => {
-    });
+    afterEach(() => {});
 
     it('routes POST /discuss/persona-sets without requiring project context', async () => {
       const started = await startMockedRouteServer();
@@ -2001,7 +2018,8 @@ describe('execution backend server', () => {
             domainSuccess({
               results: [],
               mode: args.mode ?? 'text',
-            })),
+            }),
+          ),
         },
       });
       const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
@@ -2808,7 +2826,8 @@ describe('execution backend server', () => {
         name: 'GET /kb/entries scope',
         method: 'GET',
         path: '/kb/entries?q=contracts&scope=bogus',
-        expectedMessage: "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'all', received 'bogus'",
+        expectedMessage:
+          "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'all', received 'bogus'",
       },
       {
         name: 'GET /kb/memos projectRoot',
@@ -2822,29 +2841,32 @@ describe('execution backend server', () => {
         path: `/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&all=true`,
         expectedMessage: 'Exactly one of pattern or all=true must be provided',
       },
-    ])('returns flat invalid_request bodies for safeParse regressions on $name', async ({ method, path, expectedMessage }) => {
-      const started = await startMockedRouteServer();
+    ])(
+      'returns flat invalid_request bodies for safeParse regressions on $name',
+      async ({ method, path, expectedMessage }) => {
+        const started = await startMockedRouteServer();
 
-      try {
-        const response = await fetch(`${started.baseUrl}${path}`, {
-          method,
-          headers: { 'X-Coral-Backend-Token': 'test-token' },
-        });
+        try {
+          const response = await fetch(`${started.baseUrl}${path}`, {
+            method,
+            headers: { 'X-Coral-Backend-Token': 'test-token' },
+          });
 
-        expect(response.status).toBe(400);
-        const body = (await response.json()) as {
-          code: string;
-          message: string;
-          detail: { issues: unknown[] };
-        };
-        expect(body.code).toBe('invalid_request');
-        expect(body.message).toBe(expectedMessage);
-        expect(() => JSON.parse(body.message)).toThrow();
-        expect(body.detail.issues.length).toBeGreaterThan(0);
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
+          expect(response.status).toBe(400);
+          const body = (await response.json()) as {
+            code: string;
+            message: string;
+            detail: { issues: unknown[] };
+          };
+          expect(body.code).toBe('invalid_request');
+          expect(body.message).toBe(expectedMessage);
+          expect(() => JSON.parse(body.message)).toThrow();
+          expect(body.detail.issues.length).toBeGreaterThan(0);
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      },
+    );
 
     it('routes POST /sessions through service.start with accepted launch responses', async () => {
       await withBaseCoralEnv(async () => {
@@ -3684,7 +3706,12 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
     progressStore.appendProgress('job-1', 'session-1', 'working');
-    progressStore.appendTerminal('job-1', 'session-1', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(
+      'job-1',
+      'session-1',
+      { content: 'done', outcome: { kind: 'completed' } },
+      'completed',
+    );
     progressStore.initJob({
       jobId: 'job-2',
       sessionId: 'session-2',
@@ -3858,11 +3885,7 @@ describe('execution backend server', () => {
       };
 
       expect(allResponse.status).toBe(200);
-      expect(allBody.jobs.map((job) => job.jobId)).toEqual([
-        'job-foreign-project',
-        'job-queued',
-        'job-running',
-      ]);
+      expect(allBody.jobs.map((job) => job.jobId)).toEqual(['job-foreign-project', 'job-queued', 'job-running']);
 
       const projectScopedResponse = await fetch(
         `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}`,
@@ -4206,7 +4229,12 @@ describe('execution backend server', () => {
       projectRoot,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(jobId, session.sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+    progressStore.appendTerminal(
+      jobId,
+      session.sessionId,
+      { content: 'done', outcome: { kind: 'completed' } },
+      'completed',
+    );
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer({ progressStore });
@@ -4625,31 +4653,33 @@ describe('execution backend server', () => {
       }
       progressStore.appendEventsWithResult(terminalHistoryCreated.value.map((event) => toJournalInput(event)));
       const terminalCreatedSnapshot = readDiscussProjection('terminal-history');
-      progressStore.appendEventsWithResult([
-        makeEvent(
-          'terminal-history',
-          projectRoot,
-          topic,
-          terminalCreatedSnapshot.lastAppliedSeq + 1,
-          'session.ended',
-          '2026-03-11T00:05:01.000Z',
-          {
-            endReason: 'all_blocked',
-            endReasonContent: 'All blocked.',
-          },
-        ),
-        makeEvent(
-          'terminal-history',
-          projectRoot,
-          topic,
-          terminalCreatedSnapshot.lastAppliedSeq + 2,
-          'session.synthesized',
-          '2026-03-11T00:05:02.000Z',
-          {
-            synthesis: 'done',
-          },
-        ),
-      ].map((event) => toJournalInput(event)));
+      progressStore.appendEventsWithResult(
+        [
+          makeEvent(
+            'terminal-history',
+            projectRoot,
+            topic,
+            terminalCreatedSnapshot.lastAppliedSeq + 1,
+            'session.ended',
+            '2026-03-11T00:05:01.000Z',
+            {
+              endReason: 'all_blocked',
+              endReasonContent: 'All blocked.',
+            },
+          ),
+          makeEvent(
+            'terminal-history',
+            projectRoot,
+            topic,
+            terminalCreatedSnapshot.lastAppliedSeq + 2,
+            'session.synthesized',
+            '2026-03-11T00:05:02.000Z',
+            {
+              synthesis: 'done',
+            },
+          ),
+        ].map((event) => toJournalInput(event)),
+      );
 
       const startupBlocked = createDeferred();
       const releaseStartup = createDeferred();

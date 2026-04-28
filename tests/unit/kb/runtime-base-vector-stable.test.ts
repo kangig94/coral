@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { reindex } from '#src/kb/ops/reindex.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/index.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 

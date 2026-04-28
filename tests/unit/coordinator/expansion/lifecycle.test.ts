@@ -22,7 +22,7 @@ const FAKE_EMBEDDER_ENTRY = {
 const NEEDLE_ENTRY = {
   id: 'needle',
   version: '0.2.0',
-  specifier: '#src/kb/search/needle/expansion.js',
+  specifier: '#src/engines/needle/expansion.js',
   metadata: {
     description: 'Needle vector backend',
     onboarding: 'optional' as const,
@@ -49,10 +49,12 @@ function createMemoryState(rows: readonly ExpansionStateRow[] = []): MemoryState
   };
 }
 
-function createLifecycleHarness(options: {
-  manifest?: readonly typeof FAKE_EMBEDDER_ENTRY[];
-  rows?: readonly ExpansionStateRow[];
-} = {}) {
+function createLifecycleHarness(
+  options: {
+    manifest?: readonly (typeof FAKE_EMBEDDER_ENTRY)[];
+    rows?: readonly ExpansionStateRow[];
+  } = {},
+) {
   const { kb, makeHost } = createTestRuntime();
   const state = createMemoryState(options.rows);
   const lifecycle = new ExpansionLifecycleService({
@@ -129,7 +131,7 @@ describe('ExpansionLifecycleService', () => {
 
   it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness({
-      manifest: [NEEDLE_ENTRY] as unknown as readonly typeof FAKE_EMBEDDER_ENTRY[],
+      manifest: [NEEDLE_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
       rows: [{ id: 'needle', version: '0.2.0', installed_at: FIXED_NOW }],
     });
 
@@ -195,7 +197,7 @@ describe('ExpansionLifecycleService', () => {
 
     try {
       const { lifecycle } = createLifecycleHarness({
-        manifest: [SPY_ENTRY] as unknown as readonly typeof FAKE_EMBEDDER_ENTRY[],
+        manifest: [SPY_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
       });
 
       await lifecycle.equip('spy-embedder');

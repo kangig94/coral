@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { isRecord } from '../../../infra/json.js';
-import { needleIndexDir } from '../../paths.js';
-import type { ChunkSeed } from '../../chunking.js';
+import { isRecord } from '../../infra/json.js';
+import { needleIndexDir } from './paths.js';
+import type { ChunkSeed } from '../../kb/chunking.js';
 
 export const NEEDLE_STORE_SCHEMA_VERSION = 1;
 export const NEEDLE_STORE_MIN_NAPI_VERSION = 8;
@@ -53,7 +53,10 @@ type NativeNeedleAddon = {
   closeStore(): void;
   upsertChunks(chunks: ChunkRecord[]): void;
   removeByEntryId(entryId: string): void;
-  searchVector(query: Float32Array, candidateK: number): Array<{ chunkId: string; entryId: string; similarity: number }>;
+  searchVector(
+    query: Float32Array,
+    candidateK: number,
+  ): Array<{ chunkId: string; entryId: string; similarity: number }>;
   buildIndex(engineName?: string): void;
   getActiveSpec(): EmbeddingSpec | null;
   setActiveSpec(spec: EmbeddingSpec): void;
@@ -195,13 +198,8 @@ export function readNeedleBridgeManifest(pluginRoot: string): NeedleBridgeManife
   }
 }
 
-export function isNeedleAddonCompatible(
-  stats: Awaited<ReturnType<NeedleStore['stats']>>,
-): boolean {
-  return (
-    stats.schemaVersion === NEEDLE_STORE_SCHEMA_VERSION &&
-    stats.napiVersion >= NEEDLE_STORE_MIN_NAPI_VERSION
-  );
+export function isNeedleAddonCompatible(stats: Awaited<ReturnType<NeedleStore['stats']>>): boolean {
+  return stats.schemaVersion === NEEDLE_STORE_SCHEMA_VERSION && stats.napiVersion >= NEEDLE_STORE_MIN_NAPI_VERSION;
 }
 
 function loadNativeAddon(addonPath: string): NativeNeedleAddon | null {

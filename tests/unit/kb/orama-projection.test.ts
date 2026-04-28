@@ -4,13 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { writeCurateState } from '#src/kb/curate/state/index.js';
-import {
-  communityEntryId,
-  noteEntryId,
-  sourceEntryId,
-  type EntityGraph,
-  type KbIndex,
-} from '#src/kb/entry-types.js';
+import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph, type KbIndex } from '#src/kb/entry-types.js';
 import {
   buildCommunityIndexEntry,
   buildNoteIndexEntry,
@@ -18,7 +12,7 @@ import {
   cloneKbIndex,
 } from '#src/kb/corpus/index-records.js';
 import { type createKbRuntime } from '#src/kb/runtime.js';
-import { createOramaBaseProjection } from '#src/kb/search/orama/backend.js';
+import { createOramaBaseProjection } from '#src/engines/orama/backend.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -188,7 +182,9 @@ async function expectCanonicalEquivalent(
     expect(deltaTextHits.length).toBe(fullTextHits.length);
     for (let index = 0; index < deltaTextHits.length; index += 1) {
       expect(deltaTextHits[index]?.entryId).toBe(fullTextHits[index]?.entryId);
-      expect(Math.abs((deltaTextHits[index]?.score ?? 0) - (fullTextHits[index]?.score ?? 0))).toBeLessThanOrEqual(1e-9);
+      expect(Math.abs((deltaTextHits[index]?.score ?? 0) - (fullTextHits[index]?.score ?? 0))).toBeLessThanOrEqual(
+        1e-9,
+      );
     }
 
     const queryVector = Array.from(embedText(query));
@@ -197,7 +193,9 @@ async function expectCanonicalEquivalent(
     expect(deltaVectorHits.length).toBe(fullVectorHits.length);
     for (let index = 0; index < deltaVectorHits.length; index += 1) {
       expect(deltaVectorHits[index]?.entryId).toBe(fullVectorHits[index]?.entryId);
-      expect(Math.abs((deltaVectorHits[index]?.score ?? 0) - (fullVectorHits[index]?.score ?? 0))).toBeLessThanOrEqual(1e-9);
+      expect(Math.abs((deltaVectorHits[index]?.score ?? 0) - (fullVectorHits[index]?.score ?? 0))).toBeLessThanOrEqual(
+        1e-9,
+      );
     }
   }
 

@@ -1,9 +1,18 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  type Dirent,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type * as NeedleStoreModule from '#src/kb/search/needle/store.js';
+import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -13,7 +22,10 @@ import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
-  return async (publication: { snapshot: ReturnType<typeof readCorpusState>; changedLanes: readonly ('content' | 'metadata')[] }) => {
+  return async (publication: {
+    snapshot: ReturnType<typeof readCorpusState>;
+    changedLanes: readonly ('content' | 'metadata')[];
+  }) => {
     if (publication.changedLanes.length === 1) {
       driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
       return;
@@ -30,8 +42,8 @@ import {
   closeNeedleBackend,
   createNeedleBackend,
   NeedleBackendSimulatedCrashError,
-} from '#src/kb/search/needle/backend.js';
-import { NEEDLE_CONSUMER_ID } from '#src/kb/search/needle/contract.js';
+} from '#src/engines/needle/backend.js';
+import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
 
 const FIXED_NOW = new Date('2026-04-21T00:00:00.000Z');
 const tempRoots: string[] = [];
@@ -62,8 +74,8 @@ const mockState = vi.hoisted(() => ({
   openedDbPaths: [] as string[],
 }));
 
-vi.mock('#src/kb/search/needle/store.js', async () => {
-  const actual = await vi.importActual<typeof NeedleStoreModule>('#src/kb/search/needle/store.js');
+vi.mock('#src/engines/needle/store.js', async () => {
+  const actual = await vi.importActual<typeof NeedleStoreModule>('#src/engines/needle/store.js');
 
   function persistStore(dbPath: string, state: PersistedMockStore): void {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -103,16 +115,18 @@ vi.mock('#src/kb/search/needle/store.js', async () => {
             persistStore(dbPath, state);
           }
         },
-        async upsertChunks(chunks: Array<{
-          id: string;
-          entryId: string;
-          entryKind: string;
-          chunkIndex: number;
-          text: string;
-          contentHash: string;
-          specId: string;
-          vector: Float32Array;
-        }>) {
+        async upsertChunks(
+          chunks: Array<{
+            id: string;
+            entryId: string;
+            entryKind: string;
+            chunkIndex: number;
+            text: string;
+            contentHash: string;
+            specId: string;
+            vector: Float32Array;
+          }>,
+        ) {
           const byChunkId = new Map(state.chunks.map((chunk) => [chunk.id, chunk]));
           for (const chunk of chunks) {
             byChunkId.set(chunk.id, {
@@ -166,7 +180,11 @@ function createDb(): InstanceType<typeof Database> {
   return db;
 }
 
-function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: InstanceType<typeof Database>): {
+function createRuntimeHarness(
+  markdownRoot: string,
+  runtimeDir: string,
+  db: InstanceType<typeof Database>,
+): {
   kb: KbRuntime;
   equip(owner: VectorRetrieval, handle: ConsumerHandle): void;
 } {
@@ -256,7 +274,10 @@ ${body}
   );
 }
 
-function readCursor(db: InstanceType<typeof Database>, consumerId: string): {
+function readCursor(
+  db: InstanceType<typeof Database>,
+  consumerId: string,
+): {
   snapshotId: string;
   contentSeq: number;
   metadataSeq: number;
@@ -265,7 +286,7 @@ function readCursor(db: InstanceType<typeof Database>, consumerId: string): {
 } {
   const row = db
     .prepare(
-        `
+      `
         SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
           FROM consumer_cursors
          WHERE consumer_id = ?
@@ -429,10 +450,7 @@ describe('needle staging crash replay', () => {
       expect(finalManifest).toEqual(stagedManifest);
       expect(finalStore.activeSpec?.specId).toBe('mock-small:3:l2');
       expect(finalStore.buildCount).toBe(1);
-      expect(finalStore.chunks.map((chunk) => chunk.entryId)).toEqual([
-        'note:coral-alpha',
-        'source:sqlite-overview',
-      ]);
+      expect(finalStore.chunks.map((chunk) => chunk.entryId)).toEqual(['note:coral-alpha', 'source:sqlite-overview']);
       expect(finalStore.chunks.map((chunk) => chunk.text)).toEqual([
         '# Coral Alpha\n\nNeedle crash replay coverage.',
         '# SQLite Overview\n\nSource text for vector staging.',

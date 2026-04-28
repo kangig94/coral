@@ -25,22 +25,16 @@ import {
   type KbMutationLockContext,
   type KbMutationLockOptions,
 } from './corpus/mutation-lock.js';
-import {
-  captureEntityGraphManifestDelta,
-  createManifestAuthority,
-} from './corpus/manifest-authority.js';
+import { captureEntityGraphManifestDelta, createManifestAuthority } from './corpus/manifest-authority.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
 import { detectRescanInfo } from './corpus/rescan/drift.js';
 import { performRescan } from './corpus/rescan/index.js';
 import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
-import {
-  type EntityGraph,
-  type KbIndex,
-} from './entry-types.js';
-import { createOramaDb } from './search/orama/document-builder.js';
-import type { KbOramaDb, KbOramaTokenizer } from './search/orama/schema.js';
-import { createOramaBacked, createOramaBaseProjection, createOramaFtsBacked } from './search/orama/index.js';
+import { type EntityGraph, type KbIndex } from './entry-types.js';
+import { createOramaDb } from '../engines/orama/document-builder.js';
+import type { KbOramaDb, KbOramaTokenizer } from '../engines/orama/schema.js';
+import { createOramaBacked, createOramaBaseProjection, createOramaFtsBacked } from '../engines/orama/index.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
 import {
   applyMutationLane,
@@ -53,14 +47,10 @@ import {
   withoutTextStaleReason,
   type KbIndexStateSnapshot,
 } from './corpus/lanes.js';
-import {
-  emptyIndex,
-  isFreshTextSnapshot,
-  KbIndexStore,
-} from './corpus/index-store.js';
+import { emptyIndex, isFreshTextSnapshot, KbIndexStore } from './corpus/index-store.js';
 import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
-import { OramaSnapshotStore } from './search/orama/snapshot.js';
+import { OramaSnapshotStore } from '../engines/orama/snapshot.js';
 import {
   buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,
@@ -177,7 +167,10 @@ class KbRuntimeImpl implements KbRuntime {
     this.envPort = envPort;
     this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
-    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', createOramaBacked(this, this.baseProjection));
+    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>(
+      'kb.vector',
+      createOramaBacked(this, this.baseProjection),
+    );
     this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
     this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', createOramaFtsBacked(this, this.baseProjection));
     this.corpusStateMirror = createCorpusStateMirror(this.db);
@@ -305,7 +298,10 @@ class KbRuntimeImpl implements KbRuntime {
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
     if (this.activeMutationContext !== null) {
-      this.activeMutationContext.pendingMutationLane = mergeMutationLane(this.activeMutationContext.pendingMutationLane, lane);
+      this.activeMutationContext.pendingMutationLane = mergeMutationLane(
+        this.activeMutationContext.pendingMutationLane,
+        lane,
+      );
       if (reason !== undefined) {
         this.activeMutationContext.pendingMutationReason = reason;
       }
@@ -451,10 +447,7 @@ class KbRuntimeImpl implements KbRuntime {
     await this.publicationQueue.process();
   }
 
-  async runInboundSync<T>(
-    fn: () => Promise<T> | T,
-    options: KbInboundSyncOptions = {},
-  ): Promise<T> {
+  async runInboundSync<T>(fn: () => Promise<T> | T, options: KbInboundSyncOptions = {}): Promise<T> {
     let mutationDiff: InboundSyncMutationDiff | null = null;
 
     return this.withMutationLock(async () => {
@@ -505,7 +498,11 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
-    return buildInboundSyncIndexDelta(this.activeMutationContext?.startIndex ?? this.readIndex(), changedEntryIds, this);
+    return buildInboundSyncIndexDelta(
+      this.activeMutationContext?.startIndex ?? this.readIndex(),
+      changedEntryIds,
+      this,
+    );
   }
 
   private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): KbCorpusSnapshot {
@@ -638,7 +635,6 @@ class KbRuntimeImpl implements KbRuntime {
     const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
     return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild();
   }
-
 }
 
 export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {

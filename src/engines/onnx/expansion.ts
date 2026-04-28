@@ -8,8 +8,8 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { Expansion } from '#src/expansion/contract.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '../vector.js';
-import { fetchWithTransientRetry, isRecord } from '../fetch.js';
+import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '#src/kb/embedding-vector.js';
+import { fetchWithTransientRetry, isRecord } from '#src/infra/http-retry.js';
 
 const ONNX_DEFAULT_MODEL = 'nomic-embed-text';
 
@@ -236,7 +236,8 @@ class LocalOnnxProvider implements OnnxEmbeddingService {
 
 const onnxExpansion: Expansion = async (host) => {
   const dataDir = host.runtime.paths.coral.engine.dataDir(host.id);
-  const runtimeModule = onnxExpansionTestHooks?.resolveRuntimeModule?.(host.kb.runtimeDir) ?? resolveOnnxRuntime(host.kb.runtimeDir);
+  const runtimeModule =
+    onnxExpansionTestHooks?.resolveRuntimeModule?.(host.kb.runtimeDir) ?? resolveOnnxRuntime(host.kb.runtimeDir);
   if (runtimeModule === null) {
     throw new CoralSetupError({
       code: 'onnx-runtime-missing',

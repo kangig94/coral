@@ -7,7 +7,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 const GEMINI_ENTRY = {
   id: 'gemini',
   version: '0.5.2',
-  specifier: '#src/kb/embedding/gemini/expansion.js',
+  specifier: '#src/engines/gemini/expansion.js',
   metadata: {
     description: 'Google Gemini embedding API',
     onboarding: 'required' as const,

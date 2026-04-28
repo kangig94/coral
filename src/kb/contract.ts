@@ -10,7 +10,7 @@ import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { TextRetrievalResult, VectorRetrievalResult } from './search/contract.js';
-import type { KbOramaDb, KbOramaTokenizer } from './search/orama/schema.js';
+import type { KbOramaDb, KbOramaTokenizer } from '../engines/orama/schema.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,

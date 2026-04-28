@@ -1,7 +1,7 @@
 import type { Expansion } from '#src/expansion/contract.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
-import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '../vector.js';
-import { fetchWithTransientRetry, isRecord } from '../fetch.js';
+import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '#src/kb/embedding-vector.js';
+import { fetchWithTransientRetry, isRecord } from '#src/infra/http-retry.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 
 export const GEMINI_API_KEY_ENV = 'GEMINI_API_KEY';
@@ -41,7 +41,9 @@ function buildGeminiHeaders(apiKey: string): HeadersInit {
 
 async function parseJsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
-    throw new Error(`Gemini embedding request failed (${response.status} ${response.statusText}): ${await response.text()}`);
+    throw new Error(
+      `Gemini embedding request failed (${response.status} ${response.statusText}): ${await response.text()}`,
+    );
   }
   return response.json();
 }

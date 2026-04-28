@@ -1,4 +1,4 @@
-import type { Backed, FtsRetrieval, KbRuntime, VectorRetrieval } from '../../contract.js';
+import type { Backed, FtsRetrieval, KbRuntime, VectorRetrieval } from '../../kb/contract.js';
 import { createOramaBaseProjection, type OramaBaseProjection } from './backend.js';
 
 function asVectorRetrieval(projection: OramaBaseProjection): VectorRetrieval {

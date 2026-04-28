@@ -1,10 +1,5 @@
-import { normalizeWhitespace } from './orama/document-builder.js';
-import type {
-  EntityGraph,
-  KbIndex,
-  KbSearchScope,
-  RelationshipType,
-} from '../entry-types.js';
+import { normalizeWhitespace } from '../../engines/orama/document-builder.js';
+import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult } from './contract.js';
 import {
   compareRetrievalRoleHits,
@@ -118,7 +113,11 @@ function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): bool
 }
 
 export function isGraphSearchFresh(index: KbIndex, currentGraph: EntityGraph | null): currentGraph is EntityGraph {
-  return currentGraph !== null && Object.keys(currentGraph.entityMeta).length > 0 && graphStateMatchesIndex(index, currentGraph);
+  return (
+    currentGraph !== null &&
+    Object.keys(currentGraph.entityMeta).length > 0 &&
+    graphStateMatchesIndex(index, currentGraph)
+  );
 }
 
 export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGraph | null): GraphSearchContext | null {

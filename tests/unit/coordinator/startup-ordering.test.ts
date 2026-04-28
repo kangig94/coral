@@ -8,9 +8,15 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
-import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot, VectorRetrieval } from '#src/kb/contract.js';
+import type {
+  Backed,
+  EmbeddingService,
+  FtsRetrieval,
+  KbCorpusSnapshot as CorpusSnapshot,
+  VectorRetrieval,
+} from '#src/kb/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/kb/search/orama/index.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/index.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 
 const tempRoots: string[] = [];
@@ -146,7 +152,13 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       expect(waitFreshUntil).toHaveBeenCalledTimes(5);
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'corpus', expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), ORAMA_BASE_CONSUMER_ID, expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(
+        1,
+        'corpus',
+        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
+        ORAMA_BASE_CONSUMER_ID,
+        expect.any(Number),
+      );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));
@@ -192,10 +204,12 @@ describe('coordinator startup ordering', () => {
       }
       return result;
     });
-    const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async (...args: unknown[]) => {
-      const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
-      order.push(`waitFreshUntil:${consumerId}`);
-    });
+    const waitFreshUntil = vi
+      .spyOn(ConsumerDriver.prototype, 'waitFreshUntil')
+      .mockImplementation(async (...args: unknown[]) => {
+        const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
+        order.push(`waitFreshUntil:${consumerId}`);
+      });
     const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
       order.push('jobsReconcile.runStartup');
     });
@@ -252,7 +266,13 @@ describe('coordinator startup ordering', () => {
 
       expect(coordinator.getLifecycle()).toBe('running');
       expect(waitFreshUntil).toHaveBeenCalledTimes(5);
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'corpus', expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), ORAMA_BASE_CONSUMER_ID, expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(
+        1,
+        'corpus',
+        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
+        ORAMA_BASE_CONSUMER_ID,
+        expect.any(Number),
+      );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));

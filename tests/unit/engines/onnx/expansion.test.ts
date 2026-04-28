@@ -7,12 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadExpansions } from '#src/expansion/loader.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
-import { __setOnnxExpansionTestHooks } from '#src/kb/embedding/onnx/expansion.js';
+import { __setOnnxExpansionTestHooks } from '#src/engines/onnx/expansion.js';
 
 const ONNX_ENTRY = {
   id: 'onnx',
   version: '0.5.2',
-  specifier: '#src/kb/embedding/onnx/expansion.js',
+  specifier: '#src/engines/onnx/expansion.js',
   metadata: {
     description: 'Local ONNX embedding model',
     onboarding: 'required' as const,

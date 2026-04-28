@@ -8,13 +8,9 @@ import {
   RuntimeGraphRetrieval,
   type GraphSearchContext,
 } from '../search/graph-retrieval.js';
-import { ORAMA_BASE_CONSUMER_ID } from '../search/orama/index.js';
-import { normalizeOramaTerm, tokenizeQuery } from '../search/orama/document-builder.js';
-import {
-  buildHybridResponse,
-  buildTextResponse,
-  buildVectorResponse,
-} from '../search/responses.js';
+import { ORAMA_BASE_CONSUMER_ID } from '../../engines/orama/index.js';
+import { normalizeOramaTerm, tokenizeQuery } from '../../engines/orama/document-builder.js';
+import { buildHybridResponse, buildTextResponse, buildVectorResponse } from '../search/responses.js';
 import { createRouter } from '../search/router.js';
 import type { QueryContext } from '../search/snippets.js';
 import {
@@ -46,7 +42,11 @@ type TextGraphSearchState = TextSearchState & {
 };
 
 function rethrowMissingEmbedder(error: unknown): never {
-  if (!(error instanceof CoralSetupError) || error.code !== 'binding_empty' || error.context?.binding !== 'kb.embedding') {
+  if (
+    !(error instanceof CoralSetupError) ||
+    error.code !== 'binding_empty' ||
+    error.context?.binding !== 'kb.embedding'
+  ) {
     throw error;
   }
 
@@ -55,7 +55,7 @@ function rethrowMissingEmbedder(error: unknown): never {
       code: 'binding_empty',
       userMessage: 'Vector search needs an embedder.',
       remediation:
-        "Configure one via `coral-cli expansion list` (filter: `metadata.slot=kb.embedding`) and `coral-cli expansion equip <embedder>`. FTS-only search continues to work zero-config.",
+        'Configure one via `coral-cli expansion list` (filter: `metadata.slot=kb.embedding`) and `coral-cli expansion equip <embedder>`. FTS-only search continues to work zero-config.',
       context: { binding: 'kb.embedding' },
     }),
     { binding: 'kb.embedding', cause: error },
@@ -204,7 +204,12 @@ export async function searchKb(
         textHits:
           nextGraphResult.hits.length === 0
             ? textState.selectedHits
-            : fuseRetrievalRoles(router.hybrid, textState.selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, nextGraphResult),
+            : fuseRetrievalRoles(
+                router.hybrid,
+                textState.selectedHits,
+                EMPTY_VECTOR_RETRIEVAL_RESULT.hits,
+                nextGraphResult,
+              ),
       };
     })();
 

@@ -6,7 +6,7 @@ import { needleOnboarding } from '#src/cli/expansion/onboarding.js';
 const GEMINI_ENTRY: BundledExpansion = {
   id: 'gemini',
   version: '0.5.2',
-  specifier: '#src/kb/embedding/gemini/expansion.js',
+  specifier: '#src/engines/gemini/expansion.js',
   metadata: {
     description: 'Google Gemini embedding API',
     onboarding: 'required',
@@ -17,7 +17,7 @@ const GEMINI_ENTRY: BundledExpansion = {
 const ONNX_ENTRY: BundledExpansion = {
   id: 'onnx',
   version: '0.5.2',
-  specifier: '#src/kb/embedding/onnx/expansion.js',
+  specifier: '#src/engines/onnx/expansion.js',
   metadata: {
     description: 'Local ONNX embedding model',
     onboarding: 'required',
