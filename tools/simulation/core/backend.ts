@@ -38,6 +38,7 @@ import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../sr
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
+import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
@@ -600,6 +601,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         progressStore,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime,
+          progressStore,
+          coordinatorCommit: (cb) => progressStore.commit(cb),
+          log: identity.log,
+        }),
       });
       assertStartupStillActive();
 

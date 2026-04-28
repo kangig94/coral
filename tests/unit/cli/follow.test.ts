@@ -166,7 +166,23 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
       'workflow',
       'workflow-1',
       1,
-      Buffer.from(JSON.stringify({ outcome: 'failed' }), 'utf-8'),
+      Buffer.from(
+        JSON.stringify({
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
+          stepDetails: [],
+        }),
+        'utf-8',
+      ),
+    );
+    insertEvent.run(
+      2,
+      '2026-03-21T00:00:00.000Z',
+      'workflow.lifecycle_fault',
+      'workflow',
+      'workflow-1',
+      1,
+      Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
     );
   } finally {
     db.close();
@@ -504,7 +520,9 @@ describe('cli follow', () => {
 
       await expect(launchAndFollow(makeOptions({ pluginRoot: fixture.pluginRoot }))).resolves.toBe(1);
 
-      expect(stdout).toContain('Job job-1 failed: Failed: Workflow failed.');
+      expect(stdout).toContain(
+        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
+      );
       expect(stdout).not.toContain('workflow/workflow-1#1');
     } finally {
       if (originalHome === undefined) {

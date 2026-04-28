@@ -1359,7 +1359,10 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'job_fault',
+        kind: 'failed',
+        causeRef: {
+          stream: { kind: 'workflow', id: decision.job },
+        },
       },
     });
     expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
@@ -1374,7 +1377,12 @@ describe('ExecutionService', () => {
       phase: 'error',
       result: {
         content: '',
-        outcome: { kind: 'job_fault' },
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: { kind: 'workflow', id: decision.job },
+          },
+        },
       },
     });
     expect(session?.state).toBe('non_resumable');
@@ -1426,7 +1434,10 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'job_fault',
+        kind: 'failed',
+        causeRef: {
+          stream: { kind: 'workflow', id: decision.job },
+        },
       },
     });
     expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
@@ -1441,7 +1452,12 @@ describe('ExecutionService', () => {
       phase: 'error',
       result: {
         content: '',
-        outcome: { kind: 'job_fault' },
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: { kind: 'workflow', id: decision.job },
+          },
+        },
       },
     });
     expect(session?.state).toBe('non_resumable');
@@ -1513,7 +1529,7 @@ describe('ExecutionService', () => {
     });
     progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
-    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+    vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       throw new Error('disk full');
     });
 
@@ -1523,9 +1539,9 @@ describe('ExecutionService', () => {
           finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
         }
       ).finishQueuedAbort(jobId, session.sessionId, 'queue_shutdown'),
-    ).toThrow('Failed to append terminal event');
+    ).toThrow('disk full');
 
-    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
     expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
@@ -1547,7 +1563,7 @@ describe('ExecutionService', () => {
     });
     progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
-    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+    vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       throw new Error('disk full');
     });
 
@@ -1584,7 +1600,7 @@ describe('ExecutionService', () => {
           },
         },
       }),
-    ).toThrow('Failed to append terminal event');
+    ).toThrow('disk full');
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
     expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBe(jobId);
   });
@@ -1609,7 +1625,7 @@ describe('ExecutionService', () => {
       makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot, jobKind: 'workflow' }),
     );
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
-    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+    vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       throw new Error('disk full');
     });
     const result = { content: 'done', outcome: { kind: 'completed' as const } };
@@ -1626,7 +1642,7 @@ describe('ExecutionService', () => {
           ): void;
         }
       ).finishWorkflowJob(session.sessionId, jobId, 'completed', result, '# workflow\n'),
-    ).toThrow('Failed to append terminal event');
+    ).toThrow('disk full');
 
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'launching',
@@ -1696,9 +1712,10 @@ describe('ExecutionService', () => {
       expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
 
       const order: string[] = [];
-      const originalAppendTerminal = progressStore.appendTerminal.bind(progressStore);
+      const originalCommit = progressStore.commit.bind(progressStore);
       const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
       const originalWriteAtomic = runtime.storage.writeAtomicSync.bind(runtime.storage);
+      let terminalCommitObserved = false;
 
       vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((targetPath, content, options) => {
         if (targetPath === jobResultPath(jobId)) {
@@ -1706,20 +1723,35 @@ describe('ExecutionService', () => {
         }
         return originalWriteAtomic(targetPath, content, options);
       });
-      vi.spyOn(progressStore, 'appendTerminal').mockImplementation(
-        (targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions) => {
-          order.push('terminal');
-          expect(existsSync(jobResultPath(targetJobId))).toBe(false);
-          expect(new SessionManager(ctx.projectRoot, runtime).get('codex', targetSessionId)?.state).toBe('pending');
-          return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions);
+      vi.spyOn(progressStore, 'commit').mockImplementation(
+        (cb) => {
+          if (!terminalCommitObserved) {
+            terminalCommitObserved = true;
+            order.push('terminal');
+            expect(existsSync(jobResultPath(jobId))).toBe(false);
+            expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
+          }
+          return originalCommit(cb);
         },
       );
       vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
         order.push('non_resumable');
         const persistedPhase = result.outcome.kind === 'aborted' ? 'aborted' : phase;
+        const persistedResult =
+          result.outcome.kind === 'failed'
+            ? {
+                content: '',
+                outcome: {
+                  kind: 'failed',
+                  causeRef: {
+                    stream: { kind: 'workflow', id: jobId },
+                  },
+                },
+              }
+            : result;
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: persistedPhase,
-          result,
+          result: persistedResult,
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
         return originalSetNonResumable(targetSessionId);
@@ -1782,9 +1814,9 @@ describe('ExecutionService', () => {
       }
       return originalWriteAtomic(targetPath, content, options);
     });
-    vi.spyOn(progressStore, 'appendTerminal').mockImplementation((targetJobId) => {
+    vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       order.push('terminal');
-      expect(existsSync(jobResultPath(targetJobId))).toBe(false);
+      expect(existsSync(jobResultPath(jobId))).toBe(false);
       expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
       throw new Error('disk full');
     });
@@ -1803,7 +1835,7 @@ describe('ExecutionService', () => {
           ): void;
         }
       ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics),
-    ).toThrow('Failed to append terminal event');
+    ).toThrow('disk full');
 
     expect(order).toEqual(['terminal']);
     expect(existsSync(jobResultPath(jobId))).toBe(false);

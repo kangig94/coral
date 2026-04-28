@@ -15,7 +15,11 @@ import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './compositio
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
+import {
+  commit as commitJournalEvents,
+  type AppendEventsFn,
+  type CommitEventsFn,
+} from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
@@ -38,6 +42,7 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
+import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 
 export type CoordinatorServerOptions = Omit<CoordinatorCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
@@ -151,9 +156,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
   const getSessionLookup = () => createProjectionSessionLookup(getQueryDb());
 
-  const coordinatorAppendEvents: AppendEventsFn = (inputs) => {
+  const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();
-    const appended = appendJournalEvents(db, inputs, {
+    const appended = commitJournalEvents(db, cb, {
       now: () => nowDate(runtime.time),
       reducers,
       upcasters,
@@ -166,6 +171,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
     return appended;
   };
+  const coordinatorAppendEvents: AppendEventsFn = (inputs) =>
+    coordinatorCommit((c) => {
+      for (const input of inputs) c.append(input);
+      return undefined;
+    });
 
   const core = createCoordinatorCore({
     ...coreOptions,
@@ -229,6 +239,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const wiredDeps = {
         ...deps,
         appendEvents: coordinatorAppendEvents,
+        coordinatorCommit,
         loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
         readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, readCtx),
         subscribeJobEvents,
@@ -323,6 +334,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         progressStore,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime,
+          progressStore,
+          coordinatorCommit,
+          log: identity.log,
+        }),
         time: runtime.time,
       });
       assertStartupStillActive();

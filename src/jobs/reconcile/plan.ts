@@ -125,6 +125,10 @@ function planJobRecovery(facts: RecoveryJobFacts, currentNamespace: string): Pla
   }
 
   if (isLivePhase(status.phase) && !facts.hasLaunchRequest) {
+    if (status.jobKind === 'workflow') {
+      return null;
+    }
+
     return {
       bucket: 'missingLaunchRecord',
       action: {
@@ -146,6 +150,10 @@ function planJobRecovery(facts: RecoveryJobFacts, currentNamespace: string): Pla
         status,
       },
     };
+  }
+
+  if (isLivePhase(status.phase) && status.jobKind === 'workflow') {
+    return null;
   }
 
   if (

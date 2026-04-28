@@ -788,6 +788,57 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('foreign workflow parent jobs finalize as wrapper_lost before workflow resume ownership', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-foreign-workflow-parent');
+    const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-foreign-workflow-parent');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
+    const fakeService = createFakeExecutionAndRecoveryService();
+    const foreignNamespace = 'foreign-workflow-namespace';
+
+    stubLaunchRecord(progressStore, {
+      jobId: 'foreign-workflow-parent',
+      sessionId: 'foreign-workflow-parent-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: foreignNamespace,
+      jobKind: 'workflow',
+    });
+    stubRuntimeRecord(progressStore, {
+      jobId: 'foreign-workflow-parent',
+      pid: process.pid,
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+    });
+
+    try {
+      await controller.start();
+      expect(progressStore.readStatus('foreign-workflow-parent')).toMatchObject({
+        backendNamespace: foreignNamespace,
+        jobKind: 'workflow',
+        phase: 'error',
+        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+      });
+      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
+      expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+      expect(fakeService.waitStream).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('10. current-namespace queued jobs are not finalized by the cross-namespace scan', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-local-queued');

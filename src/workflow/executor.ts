@@ -16,7 +16,7 @@ import {
   type WorkflowExecutionPort,
 } from './command.js';
 import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
-import { workflowCompletedEvent, workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
+import { workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
 import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
 import { buildWorkflowPlan, maxStepIndex, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
@@ -260,38 +260,19 @@ export async function executePipeline(
     options.journal.append([workflowPlanDeclaredEvent(options.workflowJobId, plan)]);
   }
 
-  try {
-    const result = await executePlannedSteps(plan, initialPrompt, executionSvc, ctx, {
-      context: options.context,
-      workDir: options.workDir,
-      signal: options.signal,
-      onProgress,
-      time,
-      staleTimeoutMs,
-      staleCheckIntervalMs,
-      workflowJobId: options.workflowJobId,
-      journal: options.journal,
-    });
-    if (options.workflowJobId && options.journal) {
-      options.journal.append([workflowCompletedEvent(options.workflowJobId, { outcome: 'completed' })]);
-    }
-    return {
-      finalOutput: result.finalOutput,
-      stepDetails: result.stepDetails,
-    };
-  } catch (error) {
-    if (options.workflowJobId && options.journal) {
-      if (error instanceof WorkflowExecutionError) {
-        options.journal.append([
-          workflowCompletedEvent(options.workflowJobId, {
-            outcome: error.aborted ? 'aborted' : 'failed',
-            ...(error.aborted || !error.causeRef ? {} : { causeRef: error.causeRef }),
-          }),
-        ]);
-      } else {
-        options.journal.append([workflowCompletedEvent(options.workflowJobId, { outcome: 'failed' })]);
-      }
-    }
-    throw error;
-  }
+  const result = await executePlannedSteps(plan, initialPrompt, executionSvc, ctx, {
+    context: options.context,
+    workDir: options.workDir,
+    signal: options.signal,
+    onProgress,
+    time,
+    staleTimeoutMs,
+    staleCheckIntervalMs,
+    workflowJobId: options.workflowJobId,
+    journal: options.journal,
+  });
+  return {
+    finalOutput: result.finalOutput,
+    stepDetails: result.stepDetails,
+  };
 }

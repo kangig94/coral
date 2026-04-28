@@ -247,7 +247,10 @@ describe('journal commit primitive', () => {
         commit(
           db,
           (c) => {
-            const body: { outcome: 'failed'; causeRef?: unknown } = { outcome: 'failed' };
+            const body: { outcome: 'failed'; causeRef?: unknown; stepDetails: [] } = {
+              outcome: 'failed',
+              stepDetails: [],
+            };
             c.append({
               type: 'workflow.completed',
               stream: { kind: 'workflow', id: 'workflow-forward' },
@@ -317,6 +320,7 @@ describe('journal commit primitive', () => {
             body: {
               outcome: 'failed',
               causeRef: closed,
+              stepDetails: [],
             },
           });
           c.append(launchInput('job-chain', 'session-chain'));

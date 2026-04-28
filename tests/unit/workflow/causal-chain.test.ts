@@ -277,6 +277,7 @@ async function runChain(
           body: {
             outcome: 'failed',
             causeRef: { stream: { kind: 'job', id: 'c-1' }, seq: cTerminalSeq },
+            stepDetails: [],
           },
         },
       ],

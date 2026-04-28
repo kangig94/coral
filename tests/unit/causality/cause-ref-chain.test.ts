@@ -60,12 +60,22 @@ describe('describeCauseRef', () => {
     try {
       insertEvent(db, {
         seq: 1,
-        type: 'workflow.completed',
+        type: 'workflow.lifecycle_fault',
         stream: { kind: 'workflow', id: 'workflow-1' },
-        body: { outcome: 'failed' },
+        body: { kind: 'unknown', message: 'workflow cause recorded' },
       });
       insertEvent(db, {
         seq: 2,
+        type: 'workflow.completed',
+        stream: { kind: 'workflow', id: 'workflow-1' },
+        body: {
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 1 },
+          stepDetails: [],
+        },
+      });
+      insertEvent(db, {
+        seq: 3,
         type: 'job.progress.emitted',
         stream: { kind: 'job', id: 'job-2' },
         body: {
@@ -73,12 +83,12 @@ describe('describeCauseRef', () => {
           message: 'Recovered child job checkpoint.',
           causeRef: {
             stream: { kind: 'workflow', id: 'workflow-1' },
-            seq: 1,
+            seq: 2,
           },
         },
       });
       insertEvent(db, {
-        seq: 3,
+        seq: 4,
         type: 'session.provider_failed',
         stream: { kind: 'session', id: 'session-1' },
         body: {
@@ -87,12 +97,12 @@ describe('describeCauseRef', () => {
           message: 'transport reset',
           causeRef: {
             stream: { kind: 'job', id: 'job-2' },
-            seq: 2,
+            seq: 3,
           },
         },
       });
       insertEvent(db, {
-        seq: 4,
+        seq: 5,
         type: 'job.terminal.recorded',
         stream: { kind: 'job', id: 'job-1' },
         body: {
@@ -101,7 +111,7 @@ describe('describeCauseRef', () => {
               kind: 'failed',
               causeRef: {
                 stream: { kind: 'session', id: 'session-1' },
-                seq: 3,
+                seq: 4,
               },
             },
             content: '',
@@ -113,12 +123,12 @@ describe('describeCauseRef', () => {
       const description = renderer.describe(
         {
           stream: { kind: 'job', id: 'job-1' },
-          seq: 4,
+          seq: 5,
         },
         store,
       );
 
-      expect(description).toContain('Failed: session/session-1#3');
+      expect(description).toContain('Failed: session/session-1#4');
       expect(description).toContain('codex turn failed: transport reset.');
       expect(description).toContain('Recovered child job checkpoint.');
       expect(description).toContain('Workflow failed.');
@@ -183,12 +193,22 @@ describe('describeCauseRef', () => {
     try {
       insertEvent(db, {
         seq: 1,
-        type: 'workflow.completed',
+        type: 'workflow.lifecycle_fault',
         stream: { kind: 'workflow', id: 'workflow-session-close' },
-        body: { outcome: 'failed' },
+        body: { kind: 'unknown', message: 'workflow close cause' },
       });
       insertEvent(db, {
         seq: 2,
+        type: 'workflow.completed',
+        stream: { kind: 'workflow', id: 'workflow-session-close' },
+        body: {
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-session-close' }, seq: 1 },
+          stepDetails: [],
+        },
+      });
+      insertEvent(db, {
+        seq: 3,
         type: 'session.closed',
         stream: { kind: 'session', id: 'session-closed' },
         body: {
@@ -196,7 +216,7 @@ describe('describeCauseRef', () => {
             kind: 'failed',
             causeRef: {
               stream: { kind: 'workflow', id: 'workflow-session-close' },
-              seq: 1,
+              seq: 2,
             },
           },
         },
@@ -205,7 +225,7 @@ describe('describeCauseRef', () => {
       const description = renderer.describe(
         {
           stream: { kind: 'session', id: 'session-closed' },
-          seq: 2,
+          seq: 3,
         },
         store,
       );
@@ -222,9 +242,19 @@ describe('describeCauseRef', () => {
     try {
       insertEvent(db, {
         seq: 1,
+        type: 'workflow.lifecycle_fault',
+        stream: { kind: 'workflow', id: 'workflow-root' },
+        body: { kind: 'unknown', message: 'workflow root cause' },
+      });
+      insertEvent(db, {
+        seq: 2,
         type: 'workflow.completed',
         stream: { kind: 'workflow', id: 'workflow-root' },
-        body: { outcome: 'failed' },
+        body: {
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-root' }, seq: 1 },
+          stepDetails: [],
+        },
       });
       insertEvent(db, {
         seq: 3,

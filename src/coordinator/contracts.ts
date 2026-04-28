@@ -27,7 +27,7 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';
-import type { AppendEventsFn } from '../store/append.js';
+import type { AppendEventsFn, CommitEventsFn } from '../store/append.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
@@ -96,6 +96,7 @@ export type ExecutionServiceDeps = {
     discoverPluginRoot: (namespace: string) => string | null;
   };
   appendEvents?: AppendEventsFn;
+  coordinatorCommit?: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobProgress: (jobId: string) => JobProgress[];
   subscribeJobEvents: (options: {

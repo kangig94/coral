@@ -54,7 +54,11 @@ describe('workflow reducer equivalence', () => {
             drainDeadline: Date.parse('2026-04-19T00:00:15.000Z'),
           }),
           workflowPlanRevisedEvent('workflow-1', revisedPlan),
-          workflowCompletedEvent('workflow-1', { outcome: 'failed' }),
+          workflowCompletedEvent('workflow-1', {
+            outcome: 'failed',
+            causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
+            stepDetails: [],
+          }),
         ],
         { now: () => NOW, reducers, upcasters },
       );
@@ -166,7 +170,7 @@ describe('workflow reducer equivalence', () => {
               },
             },
           },
-          workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef }),
+          workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
         ],
         { now: () => NOW, reducers, upcasters },
       );

@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { appendEvents } from '#src/store/append.js';
+import { commit } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -37,8 +37,8 @@ describe('workflow consumer-driver notify', () => {
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
       const upcasters = createEmptyRegistry();
-      const coordinatorAppendEvents = (inputs: Parameters<typeof appendEvents>[1]) => {
-        const appended = appendEvents(db, inputs, {
+      const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
+        const appended = commit(db, cb, {
           now: () => new Date('2026-04-19T00:00:00.000Z'),
           reducers,
           upcasters,
@@ -48,7 +48,7 @@ describe('workflow consumer-driver notify', () => {
         }
       };
 
-      const journal = createWorkflowJournal({ appendEvents: coordinatorAppendEvents });
+      const journal = createWorkflowJournal({ commit: coordinatorCommit });
       journal.append([
         workflowPlanDeclaredEvent('workflow-1', {
           slots: [

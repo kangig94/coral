@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { errorMessage } from '../infra/error-format.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../runtime/ports.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
@@ -13,6 +14,7 @@ import { readLatestEvent } from '../store/event-queries.js';
 import { loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
+  WorkflowExecutionError,
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
   type LaunchedAtom,
@@ -23,21 +25,25 @@ import {
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import {
   workflowCompletedBodySchema,
-  workflowCompletedEvent,
   workflowDrainEnteredBodySchema,
 } from './events.js';
 import { executePlannedSteps } from './executor.js';
 import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
 import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
-import { appendWorkflowEvents } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
+import type { WorkflowFinalizationIntent } from './finalization.js';
 export { recoverStaleAtom } from './stale-recovery.js';
 
 type WorkflowSlotJobRow = {
   job_id: string;
   workflow_slot: string;
   last_seq: number;
+};
+
+type RecoveredWorkflowFinalization = {
+  intent: WorkflowFinalizationIntent;
+  error?: WorkflowExecutionError;
 };
 
 function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
@@ -204,6 +210,73 @@ function firstTerminalFailure(
   };
 }
 
+function completedRecoveryIntent(
+  workflowId: string,
+  result: PipelineResult,
+): WorkflowFinalizationIntent {
+  return {
+    outcome: 'completed',
+    workflowJobId: workflowId,
+    finalOutput: result.finalOutput,
+    stepDetails: result.stepDetails,
+  };
+}
+
+function stackFor(error: unknown): string | undefined {
+  return error instanceof Error && typeof error.stack === 'string' && error.stack.length > 0
+    ? error.stack
+    : undefined;
+}
+
+function recoveryIntentFromFailure(
+  workflowId: string,
+  failure: {
+    aborted: boolean;
+    message: string;
+    causeRef?: CauseRef;
+    terminalOutcome?: TerminalOutcome;
+  },
+  stepDetails: StepDetail[],
+): WorkflowFinalizationIntent {
+  if (failure.aborted && failure.causeRef === undefined) {
+    return {
+      outcome: 'aborted',
+      workflowJobId: workflowId,
+      reason: failure.terminalOutcome?.kind === 'aborted' ? failure.terminalOutcome.reason : 'signal_abort',
+      stepDetails,
+    };
+  }
+
+  return {
+    outcome: 'failed',
+    workflowJobId: workflowId,
+    ...(failure.causeRef === undefined ? {} : { causeRef: failure.causeRef }),
+    lifecycleFault: {
+      kind: 'recovery_failed',
+      message: failure.message,
+    },
+    stepDetails,
+  };
+}
+
+function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFinalizationIntent {
+  if (error instanceof WorkflowExecutionError) {
+    return recoveryIntentFromFailure(workflowId, error, error.stepDetails);
+  }
+
+  const stack = stackFor(error);
+  return {
+    outcome: 'failed',
+    workflowJobId: workflowId,
+    lifecycleFault: {
+      kind: 'recovery_failed',
+      message: errorMessage(error),
+      ...(stack === undefined ? {} : { stack }),
+    },
+    stepDetails: [],
+  };
+}
+
 async function resumeWorkflow(
   db: BetterSqlite3.Database,
   progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext,
@@ -217,7 +290,7 @@ async function resumeWorkflow(
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
   },
-): Promise<PipelineResult | null> {
+): Promise<RecoveredWorkflowFinalization | null> {
   const readCtx: StoreReadContext = progressStore;
   const completionRow = readLatestEvent(db, 'workflow', workflowId, 'workflow.completed');
   const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, readCtx) : null;
@@ -234,10 +307,11 @@ async function resumeWorkflow(
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
   const finalStepIndex = maxStepIndex(plan);
   if (summary.activeStepIndex > finalStepIndex) {
-    appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
     return {
-      finalOutput: summary.stepPrompt,
-      stepDetails: summary.stepDetails,
+      intent: completedRecoveryIntent(workflowId, {
+        finalOutput: summary.stepPrompt,
+        stepDetails: summary.stepDetails,
+      }),
     };
   }
 
@@ -260,11 +334,7 @@ async function resumeWorkflow(
       workflowJobId: workflowId,
       time: options.time,
     });
-    appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
-    return {
-      finalOutput: resumed.finalOutput,
-      stepDetails: resumed.stepDetails,
-    };
+    return { intent: completedRecoveryIntent(workflowId, resumed) };
   }
 
   const completedOutputs = new Map<string, string>();
@@ -310,17 +380,11 @@ async function resumeWorkflow(
 
   if (pendingPhases.some((phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed')) {
     if (failure) {
-      appendWorkflowEvents(
-        db,
-        [
-          workflowCompletedEvent(workflowId, {
-            outcome: failure.aborted ? 'aborted' : 'failed',
-            ...(failure.aborted || !failure.causeRef ? {} : { causeRef: failure.causeRef }),
-          }),
-        ],
-        options.time,
-      );
-      throw createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
+      const workflowError = createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
+      return {
+        intent: recoveryIntentFromFailure(workflowId, failure, summary.stepDetails),
+        error: workflowError,
+      };
     }
   }
 
@@ -359,11 +423,7 @@ async function resumeWorkflow(
     time: options.time,
   });
 
-  appendWorkflowEvents(db, [workflowCompletedEvent(workflowId, { outcome: 'completed' })], options.time);
-  return {
-    finalOutput: resumed.finalOutput,
-    stepDetails: resumed.stepDetails,
-  };
+  return { intent: completedRecoveryIntent(workflowId, resumed) };
 }
 
 export async function resumeAll(options: {
@@ -371,6 +431,7 @@ export async function resumeAll(options: {
   progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
+  finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
@@ -388,15 +449,50 @@ export async function resumeAll(options: {
     if (status.phase === 'completed' || status.phase === 'error' || status.phase === 'aborted') continue;
 
     const projection = readWorkflowProjection(options.db, jobId);
-    if (!projection) continue;
+    if (!projection) {
+      options.finalizeWorkflow({
+        outcome: 'failed',
+        workflowJobId: jobId,
+        lifecycleFault: {
+          kind: 'recovery_failed',
+          message: 'Workflow recovery could not find a workflow projection.',
+        },
+        stepDetails: [],
+      });
+      resumedWorkflowIds.push(jobId);
+      continue;
+    }
 
     const ctx = options.createInvocationContext(status.projectRoot);
-    await resumeWorkflow(options.db, options.progressStore, options.getExecutionService(ctx), ctx, jobId, projection.plan, {
-      onProgress,
-      staleTimeoutMs,
-      staleCheckIntervalMs,
-      time,
-    });
+    let recovered: RecoveredWorkflowFinalization | null;
+    try {
+      recovered = await resumeWorkflow(
+        options.db,
+        options.progressStore,
+        options.getExecutionService(ctx),
+        ctx,
+        jobId,
+        projection.plan,
+        {
+          onProgress,
+          staleTimeoutMs,
+          staleCheckIntervalMs,
+          time,
+        },
+      );
+    } catch (error: unknown) {
+      options.finalizeWorkflow(recoveryIntentFromError(jobId, error));
+      throw error;
+    }
+
+    if (recovered === null) {
+      continue;
+    }
+
+    options.finalizeWorkflow(recovered.intent);
+    if (recovered.error) {
+      throw recovered.error;
+    }
     resumedWorkflowIds.push(jobId);
   }
 

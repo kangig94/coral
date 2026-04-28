@@ -127,7 +127,7 @@ export function readWorkflowView(
     plan: projection.plan,
     slotOutcomes,
     outcome: completion?.outcome ?? 'running',
-    causeRef: completion?.causeRef ?? null,
+    causeRef: completion?.outcome === 'failed' ? completion.causeRef : null,
     lastSeq,
   };
 }

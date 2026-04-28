@@ -6,7 +6,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { SessionWorkflowPort } from '../../sessions/contracts.js';
-import type { AppendEventsFn } from '../../store/append.js';
+import type { CommitEventsFn } from '../../store/append.js';
 import {
   type WorkflowCommand,
 } from '../../workflow/input.js';
@@ -19,13 +19,13 @@ import {
   type WorkflowSessionHandle,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
-import {
-  type JobTerminalDiagnostics,
-  type JobTerminalInput,
+import type {
+  JobTerminalDiagnostics,
+  JobTerminalInput,
 } from '../../jobs/records.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
-import type { TerminalOutcome } from '../../jobs/outcome.js';
+import type { AbortReason } from '../../jobs/outcome.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
@@ -39,6 +39,9 @@ import {
   serializeWorkflowResult,
 } from './execution-policies.js';
 import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
+import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
+import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workflow/events.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
@@ -48,7 +51,7 @@ export interface WorkflowExecutionServiceDeps {
   bundleHash: string;
   progressStore: JobProgressStore;
   providerRegistry: ProviderCatalog;
-  appendEvents: AppendEventsFn;
+  coordinatorCommit: CommitEventsFn;
   launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
 }
@@ -148,15 +151,74 @@ export class WorkflowExecutionService {
     });
   }
 
-  finishWorkflowJob(
+  private commitWorkflowJobTerminal(sessionId: string, jobId: string, intent: WorkflowFinalizationIntent): void {
+    const status = this.deps.progressStore.readStatus(jobId);
+    const namespace = status?.backendNamespace ?? this.deps.backendNamespace;
+    const project = status?.projectRoot;
+
+    this.deps.coordinatorCommit((c) => {
+      if (intent.outcome === 'completed') {
+        c.append(workflowCompletedEvent(jobId, { outcome: 'completed', stepDetails: intent.stepDetails }));
+        appendJobTerminalRecorded(c, {
+          jobId,
+          sessionId,
+          namespace,
+          project,
+          terminal: {
+            content: intent.finalOutput,
+            outcome: { kind: 'completed' },
+          },
+          continuity: null,
+        });
+        return undefined;
+      }
+
+      if (intent.outcome === 'aborted') {
+        c.append(workflowCompletedEvent(jobId, { outcome: 'aborted', stepDetails: intent.stepDetails }));
+        appendJobTerminalRecorded(c, {
+          jobId,
+          sessionId,
+          namespace,
+          project,
+          terminal: {
+            content: '',
+            outcome: { kind: 'aborted', reason: intent.reason },
+          },
+          continuity: null,
+        });
+        return undefined;
+      }
+
+      const causeRef =
+        intent.causeRef ??
+        c.append(workflowLifecycleFaultEvent(jobId, intent.lifecycleFault));
+      const workflowCompleted = c.append(
+        workflowCompletedEvent(jobId, {
+          outcome: 'failed',
+          causeRef,
+          stepDetails: intent.stepDetails,
+        }),
+      );
+      appendJobTerminalRecorded(c, {
+        jobId,
+        sessionId,
+        namespace,
+        project,
+        terminal: {
+          content: '',
+          outcome: failedTerminalOutcome(workflowCompleted),
+        },
+        continuity: null,
+      });
+      return undefined;
+    });
+  }
+
+  private finishWorkflowJobPostCommit(
     sessionId: string,
     jobId: string,
-    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminalInput,
     markdown: string,
-    diagnostics: JobTerminalDiagnostics = {},
   ): void {
-    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, { diagnostics });
     try {
       writeResultArtifact(this.deps.runtime.storage, jobId, markdown);
     } catch (error: unknown) {
@@ -165,6 +227,19 @@ export class WorkflowExecutionService {
     this.deps.sessionManager.setNonResumable(sessionId);
     this.deps.abortRegistry.remove(jobId);
     this.deps.sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  finishWorkflowJob(
+    sessionId: string,
+    jobId: string,
+    _phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
+    result: JobTerminalInput,
+    markdown: string,
+    _diagnostics: JobTerminalDiagnostics = {},
+  ): void {
+    const intent = this.intentFromTerminalResult(jobId, result);
+    this.commitWorkflowJobTerminal(sessionId, jobId, intent);
+    this.finishWorkflowJobPostCommit(sessionId, jobId, markdown);
   }
 
   private runWorkflowAsync(
@@ -187,51 +262,103 @@ export class WorkflowExecutionService {
         this.deps.progressStore.appendProgress(jobId, sessionId, message);
       },
       workflowJobId: jobId,
-      journal: createWorkflowJournal({ appendEvents: this.deps.appendEvents }),
+      journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
     })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
         try {
-          this.finishWorkflowJob(
-            sessionId,
-            jobId,
-            'completed',
-            {
-              content: result.finalOutput,
-              outcome: { kind: 'completed' },
-            },
-            serialized.markdown,
-          );
+          this.commitWorkflowJobTerminal(sessionId, jobId, {
+            outcome: 'completed',
+            workflowJobId: jobId,
+            finalOutput: result.finalOutput,
+            stepDetails: result.stepDetails,
+          });
+          this.finishWorkflowJobPostCommit(sessionId, jobId, serialized.markdown);
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
       }, (err: unknown) => {
         try {
-          this.handleWorkflowError(err, signal, sessionId, jobId);
+          this.handleWorkflowError(err, sessionId, jobId);
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
       });
   }
 
-  private handleWorkflowError(err: unknown, signal: AbortSignal, sessionId: string, jobId: string): void {
+  private handleWorkflowError(err: unknown, sessionId: string, jobId: string): void {
     const message = errorMessage(err);
     const workflowError = err instanceof WorkflowExecutionError ? err : null;
-    const aborted = workflowError ? workflowError.aborted : signal.aborted;
     const stepDetails: StepDetail[] = err instanceof WorkflowExecutionError ? err.stepDetails : [];
-    const outcome: TerminalOutcome =
-      workflowError?.terminalOutcome ??
-      (aborted
-        ? { kind: 'aborted', reason: 'signal_abort' }
-        : { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message } } });
+    const intent: WorkflowFinalizationIntent =
+      workflowError?.aborted === true || workflowError?.terminalOutcome?.kind === 'aborted'
+        ? {
+            outcome: 'aborted',
+            workflowJobId: jobId,
+            reason: this.abortReasonForWorkflowError(workflowError),
+            stepDetails,
+          }
+        : {
+            outcome: 'failed',
+            workflowJobId: jobId,
+            ...(workflowError?.causeRef === undefined ? {} : { causeRef: workflowError.causeRef }),
+            lifecycleFault: {
+              kind: 'wrapper_crashed',
+              message,
+              ...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
+            },
+            stepDetails,
+          };
 
     const serialized = serializeWorkflowResult(stepDetails);
-    const terminalResult: JobTerminalInput = {
-      content: '',
-      outcome,
-    };
-    this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
+    this.commitWorkflowJobTerminal(sessionId, jobId, intent);
+    this.finishWorkflowJobPostCommit(sessionId, jobId, serialized.markdown);
+  }
+
+  private intentFromTerminalResult(jobId: string, result: JobTerminalInput): WorkflowFinalizationIntent {
+    switch (result.outcome.kind) {
+      case 'completed':
+        return {
+          outcome: 'completed',
+          workflowJobId: jobId,
+          finalOutput: result.content,
+          stepDetails: [],
+        };
+      case 'aborted':
+        return {
+          outcome: 'aborted',
+          workflowJobId: jobId,
+          reason: result.outcome.reason,
+          stepDetails: [],
+        };
+      case 'failed':
+        return {
+          outcome: 'failed',
+          workflowJobId: jobId,
+          causeRef: result.outcome.causeRef,
+          lifecycleFault: {
+            kind: 'wrapper_crashed',
+            message: 'Workflow failed.',
+          },
+          stepDetails: [],
+        };
+      case 'job_fault':
+      case 'provider_exit':
+        return {
+          outcome: 'failed',
+          workflowJobId: jobId,
+          lifecycleFault: {
+            kind: 'unknown',
+            message: 'Workflow terminal outcome could not be classified.',
+          },
+          stepDetails: [],
+        };
+    }
+  }
+
+  private abortReasonForWorkflowError(error: WorkflowExecutionError): AbortReason {
+    return error.terminalOutcome?.kind === 'aborted' ? error.terminalOutcome.reason : 'signal_abort';
   }
 
   private handleWorkflowFinalizationError(jobId: string, error: unknown): void {

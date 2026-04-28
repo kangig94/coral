@@ -170,6 +170,7 @@ describe('workflow recovery branch rules', () => {
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow: vi.fn(),
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -194,6 +195,7 @@ describe('workflow recovery branch rules', () => {
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow: vi.fn(),
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -218,6 +220,7 @@ describe('workflow recovery branch rules', () => {
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow: vi.fn(),
       });
 
       expect(resumed).toEqual(['workflow-1']);

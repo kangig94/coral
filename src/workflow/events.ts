@@ -4,15 +4,69 @@ import { z } from 'zod';
 import type { CoralEvent, CoralEventInput, ResolvableCoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
-import { causeRefSchema, type ResolvableCauseRef } from '../causality/cause-ref.js';
+import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
-export const workflowCompletedBodySchema = z
+export const workflowStepDetailSchema = z
   .object({
-    outcome: z.enum(['completed', 'failed', 'aborted']),
-    causeRef: causeRefSchema.optional(),
+    stepIndex: z.number().int().nonnegative(),
+    atomIndex: z.number().int().nonnegative(),
+    kind: z.enum(['agent', 'prompt']),
+    label: z.string(),
+    provider: z.string(),
+    tagName: z.string(),
+    output: z.string(),
   })
   .strict();
+
+const workflowStepDetailsField = {
+  stepDetails: z.array(workflowStepDetailSchema),
+} as const;
+
+export const workflowCompletedBodySchema = z.discriminatedUnion('outcome', [
+  z
+    .object({
+      outcome: z.literal('completed'),
+      ...workflowStepDetailsField,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal('aborted'),
+      ...workflowStepDetailsField,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal('failed'),
+      causeRef: causeRefSchema,
+      ...workflowStepDetailsField,
+    })
+    .strict(),
+]);
+
+export const workflowLifecycleFaultBodySchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('wrapper_crashed'),
+      message: z.string(),
+      stack: z.string().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('recovery_failed'),
+      message: z.string(),
+      stack: z.string().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('unknown'),
+      message: z.string(),
+    })
+    .strict(),
+]);
 
 /**
  * Stores only `firstFailureSlotId`; `jobId` and `stepIndex` are re-derivable
@@ -28,10 +82,12 @@ export const workflowDrainEnteredBodySchema = z
   .strict();
 
 export type WorkflowCompletedBody = z.infer<typeof workflowCompletedBodySchema>;
-export interface WorkflowCompletedInputBody<Scope = never> {
-  outcome: WorkflowCompletedBody['outcome'];
-  causeRef?: ResolvableCauseRef<Scope>;
-}
+export type WorkflowStepDetail = z.infer<typeof workflowStepDetailSchema>;
+export type WorkflowLifecycleFaultBody = z.infer<typeof workflowLifecycleFaultBodySchema>;
+export type WorkflowCompletedInputBody<Scope = never> =
+  | { outcome: 'completed'; stepDetails: WorkflowStepDetail[] }
+  | { outcome: 'aborted'; stepDetails: WorkflowStepDetail[] }
+  | { outcome: 'failed'; causeRef: CauseRef | CauseRefToken<Scope>; stepDetails: WorkflowStepDetail[] };
 export type WorkflowDrainEnteredBody = z.infer<typeof workflowDrainEnteredBodySchema>;
 
 function readProjectionWorkflow(db: Database, workflowId: string): { plan: WorkflowPlan; lastSeq: number } | null {
@@ -90,6 +146,11 @@ export const workflowRegistry: DomainEventRegistry = {
       schema: workflowCompletedBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
     }),
+    defineDomainEvent({
+      type: 'workflow.lifecycle_fault',
+      schema: workflowLifecycleFaultBodySchema,
+      reducer: (db, event) => upsertProjectionWorkflow(db, event),
+    }),
   ],
 };
 
@@ -140,6 +201,19 @@ export function workflowCompletedEvent<Scope>(
 ): ResolvableCoralEventInput<Scope, WorkflowCompletedInputBody<Scope>> {
   return {
     type: 'workflow.completed',
+    stream: { kind: 'workflow', id: workflowId },
+    refs: { workflowId },
+    bodyVersion: 1,
+    body,
+  };
+}
+
+export function workflowLifecycleFaultEvent(
+  workflowId: string,
+  body: WorkflowLifecycleFaultBody,
+): CoralEventInput<WorkflowLifecycleFaultBody> {
+  return {
+    type: 'workflow.lifecycle_fault',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
     bodyVersion: 1,

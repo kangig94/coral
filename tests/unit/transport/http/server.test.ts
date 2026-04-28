@@ -4297,9 +4297,9 @@ describe('execution backend server', () => {
       result: {
         content: '',
         outcome: {
-          kind: 'job_fault',
-          fault: {
-            kind: 'ghost_launch',
+          kind: 'failed',
+          causeRef: {
+            stream: { kind: 'workflow', id: jobId },
           },
         },
       },

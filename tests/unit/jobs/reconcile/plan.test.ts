@@ -346,6 +346,43 @@ describe('planRecovery', () => {
     ])
   })
 
+  it('leaves same-namespace live workflow parent jobs for workflow recovery', () => {
+    const missingLaunchStatus = makeStatus('workflow-missing-launch', 'running', {
+      jobKind: 'workflow',
+    })
+    const runningStatus = makeStatus('workflow-running', 'running', {
+      jobKind: 'workflow',
+    })
+    const queuedStatus = makeStatus('workflow-queued', 'queued', {
+      jobKind: 'workflow',
+    })
+    const snapshot = new InMemoryRecoverySnapshot()
+      .addJob({
+        jobId: 'workflow-missing-launch',
+        status: missingLaunchStatus,
+        hasLaunchRequest: false,
+      })
+      .addJob({
+        jobId: 'workflow-running',
+        status: runningStatus,
+        launch: makeLaunch('workflow-running', { jobKind: 'workflow' }),
+        runtime: makeRuntime('workflow-running'),
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
+      })
+      .addJob({
+        jobId: 'workflow-queued',
+        status: queuedStatus,
+        launch: makeLaunch('workflow-queued', { jobKind: 'workflow' }),
+        hasLaunchRequest: true,
+        hasRuntimeStart: false,
+      })
+
+    const plan = planRecovery(snapshot)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
+  })
+
   it('returns registerQueued for queued recoverable jobs', () => {
     const launchRecord = makeLaunch('queued-job', { enqueueSequence: 7 })
     const snapshot = new InMemoryRecoverySnapshot().addJob({

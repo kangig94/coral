@@ -76,6 +76,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.progressStore = deps.progressStore;
 
     const appendEvents = deps.appendEvents ?? noopAppendEvents;
+    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => this.progressStore.commit(cb));
     this.launchOrchestrator = new LaunchOrchestrator({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
@@ -151,7 +152,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
       providerRegistry: deps.providerRegistry,
-      appendEvents,
+      coordinatorCommit,
       launchOrchestrator: this.launchOrchestrator,
       executionPort: {
         coralDispatch: (providerName, coralName, input, requestCtx) =>
