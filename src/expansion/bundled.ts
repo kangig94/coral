@@ -11,6 +11,7 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = [
     tier: 'installed',
     description: 'Google Gemini embedding API (requires GEMINI_API_KEY; no local model)',
     fills: ['kb.embedding'],
+    onboarding: [{ kind: 'env-var', name: 'GEMINI_API_KEY' }],
   },
   {
     id: 'onnx',

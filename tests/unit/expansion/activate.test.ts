@@ -101,6 +101,53 @@ describe('expansion activation', () => {
     expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
   });
 
+  it('runs onboarding before needle install or activation and reports missing binding candidates', async () => {
+    const activation = createCliExpansionActivation();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'coordinator.readBinding') {
+        return { bound: false };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    mockState.ensure.mockResolvedValue({ request });
+
+    await expect(activation.equip('needle')).resolves.toMatchObject({
+      status: 'error',
+      code: 'binding_required',
+      context: {
+        binding: 'kb.embedding',
+        requiredBy: 'needle',
+        candidates: ['gemini', 'onnx'],
+      },
+      suggestions: ['gemini', 'onnx'],
+    });
+    expect(request).toHaveBeenCalledWith('coordinator.readBinding', { binding: 'kb.embedding' });
+    expect(request).not.toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
+  });
+
+  it('runs env-var onboarding before gemini activation', async () => {
+    const originalGeminiKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    const activation = createCliExpansionActivation();
+
+    try {
+      await expect(activation.equip('gemini')).resolves.toMatchObject({
+        status: 'error',
+        code: 'engine_env_var_missing',
+        userMessage: "Engine 'gemini' needs environment variable 'GEMINI_API_KEY'.",
+        remediation: 'Set GEMINI_API_KEY (e.g. add it to ~/.coral/.env) and rerun `coral-cli expansion equip gemini`.',
+        context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
+      });
+      expect(mockState.ensure).not.toHaveBeenCalled();
+    } finally {
+      if (originalGeminiKey === undefined) {
+        delete process.env.GEMINI_API_KEY;
+      } else {
+        process.env.GEMINI_API_KEY = originalGeminiKey;
+      }
+    }
+  });
+
   it('deactivates expansions through ensure-backed coordinator IPC', async () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({ status: 'uninstalled' });

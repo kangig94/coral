@@ -25,6 +25,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'unknown_expansion'
   | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
+  | 'engine_env_var_missing'
   | 'expansion_embedding_provider_missing'
   | 'expansion_not_equipped'
   | 'consumer_not_registered'
@@ -86,6 +87,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Expansion runtime is not available for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: (context) =>
       `Restart Coral or run 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}' to retry.`,
+  },
+  engine_env_var_missing: {
+    userMessage: (context) =>
+      `Engine '${stringContextValue(context, 'engine', 'this engine')}' needs environment variable '${stringContextValue(context, 'envVar', '<UNSET>')}'.`,
+    remediation: (context) =>
+      `Set ${stringContextValue(context, 'envVar', '<ENV>')} (e.g. add it to ~/.coral/.env) and rerun \`coral-cli expansion equip ${stringContextValue(context, 'engine', '<engine>')}\`.`,
   },
   expansion_embedding_provider_missing: {
     userMessage: (context) =>

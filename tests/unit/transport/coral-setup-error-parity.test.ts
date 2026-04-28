@@ -27,6 +27,7 @@ function makeSocketPath(): string {
 const ADDED_DOCUMENTED_SETUP_ERRORS = [
   { code: 'unknown_expansion', context: { name: 'needle' } },
   { code: 'expansion_runtime_unavailable', context: { name: 'needle' } },
+  { code: 'engine_env_var_missing', context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' } },
   { code: 'consumer_not_registered', context: { id: 'consumer-a' } },
   {
     code: 'consumer_authority_mismatch',

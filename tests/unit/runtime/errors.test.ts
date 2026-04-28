@@ -80,6 +80,12 @@ describe('CoralSetupError', () => {
       "Restart Coral or run 'coral-cli expansion equip needle' to retry.",
     ],
     [
+      'engine_env_var_missing',
+      { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
+      "Engine 'gemini' needs environment variable 'GEMINI_API_KEY'.",
+      'Set GEMINI_API_KEY (e.g. add it to ~/.coral/.env) and rerun `coral-cli expansion equip gemini`.',
+    ],
+    [
       'expansion_embedding_provider_missing',
       { name: 'Needle' },
       'Needle needs an embedding expansion before it can be equipped.',

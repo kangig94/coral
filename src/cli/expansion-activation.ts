@@ -17,13 +17,16 @@ import {
   catalogEntrySchema,
   catalogResultSchema,
   installResultSchema,
+  readBindingResultSchema,
   unequipExpansionResultSchema,
   type CatalogEntry,
   type InstallResponse,
   type InstallResult,
+  type ReadBindingResult,
 } from '../coordinator/expansion/rpc.js';
 import { encodeInstallError } from './expansion/contract.js';
 import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './expansion/install.js';
+import { runExpansionOnboarding, type OnboardingContext } from './expansion/onboarding.js';
 
 function resolvePluginRoot(): string | undefined {
   if (typeof process.env.CLAUDE_PLUGIN_ROOT === 'string' && process.env.CLAUDE_PLUGIN_ROOT.length > 0) {
@@ -54,6 +57,7 @@ export interface CliExpansionActivation {
   activateExpansion(name: string): Promise<InstallResult>;
   deactivateExpansion(name: string): Promise<InstallResult>;
   readExpansionStatus(name?: string): Promise<ExpansionStatus>;
+  readBinding(binding: string): Promise<ReadBindingResult>;
 }
 
 function requiresLocalInstall(entry: EngineManifest): boolean {
@@ -112,6 +116,31 @@ function toCatalogEntry(
   });
 }
 
+function createNonInteractiveOnboardingContext(
+  lowLevel: Pick<CliExpansionActivation, 'readBinding'>,
+): OnboardingContext {
+  const context: OnboardingContext = {
+    interactive: false,
+    readBinding: (binding) => lowLevel.readBinding(binding),
+    prompt: {
+      choose: async () => null,
+      confirm: async () => true,
+    },
+    runOnboarding: async (id) => {
+      await runExpansionOnboarding(id, context);
+    },
+    equip: async () => {
+      throw documentedCoralSetupError('binding_required', {
+        binding: 'unknown',
+        requiredBy: 'this expansion',
+        candidates: [],
+      });
+    },
+  };
+
+  return context;
+}
+
 export function createCliExpansionActivation(): CliExpansionActivation {
   const lowLevel = {
     async activateExpansion(name: string) {
@@ -162,7 +191,15 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         throw error;
       }
     },
-  } satisfies Pick<CliExpansionActivation, 'activateExpansion' | 'deactivateExpansion' | 'readExpansionStatus'>;
+
+    async readBinding(binding: string): Promise<ReadBindingResult> {
+      const client = await ensure(resolvePluginRoot());
+      return readBindingResultSchema.parse(await client.request('coordinator.readBinding', { binding }));
+    },
+  } satisfies Pick<
+    CliExpansionActivation,
+    'activateExpansion' | 'deactivateExpansion' | 'readExpansionStatus' | 'readBinding'
+  >;
 
   return {
     ...lowLevel,
@@ -211,6 +248,8 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         if (!entry) {
           return unknownExpansionResponse(name);
         }
+
+        await runExpansionOnboarding(name, createNonInteractiveOnboardingContext(lowLevel));
 
         if (requiresLocalInstall(entry)) {
           const installResult = await installExpansion(name);

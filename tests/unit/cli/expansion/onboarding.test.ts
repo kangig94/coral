@@ -75,6 +75,42 @@ describe('expansion onboarding', () => {
     expect(events).toEqual([]);
   });
 
+  it('throws binding_required with candidates instead of prompting in non-interactive contexts', async () => {
+    const choose = vi.fn(async () => GEMINI_ENTRY);
+    const ctx = {
+      interactive: false,
+      readBinding: vi.fn(async () => ({ bound: false })),
+      prompt: { choose },
+      runOnboarding: vi.fn(async () => {}),
+      equip: vi.fn(async () => {}),
+    };
+
+    await expect(runExpansionOnboarding('needle', ctx)).rejects.toMatchObject({
+      code: 'binding_required',
+      context: {
+        binding: 'kb.embedding',
+        requiredBy: 'needle',
+        candidates: ['gemini', 'onnx'],
+      },
+    });
+    expect(choose).not.toHaveBeenCalled();
+  });
+
+  it('throws engine_env_var_missing when a declared env-var step is unset', async () => {
+    const ctx = {
+      readBinding: vi.fn(async () => ({ bound: false })),
+      env: { get: vi.fn(() => undefined) },
+      prompt: { choose: vi.fn(async () => null) },
+      runOnboarding: vi.fn(async () => {}),
+      equip: vi.fn(async () => {}),
+    };
+
+    await expect(runExpansionOnboarding('gemini', ctx)).rejects.toMatchObject({
+      code: 'engine_env_var_missing',
+      context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
+    });
+  });
+
   it('leaves the chosen embedder equipped if outer cancellation happens before needle equip', async () => {
     const equipped: string[] = [];
     const ctx = {

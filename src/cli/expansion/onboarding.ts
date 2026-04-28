@@ -4,6 +4,7 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 
 export interface OnboardingContext {
   readBinding(id: string): Promise<{ bound: boolean; heldBy?: string }>;
+  readonly interactive?: boolean;
   readonly prompt: {
     choose<T>(message: string, options: readonly T[]): Promise<T | null>;
     confirm?(message: string): Promise<boolean>;
@@ -28,6 +29,14 @@ async function requireBinding(
   }
 
   const choices = BUNDLED_ENGINES.filter((entry) => entry.fills?.includes(step.binding));
+  if (ctx.interactive === false) {
+    throw documentedCoralSetupError('binding_required', {
+      binding: step.binding,
+      requiredBy: engine.id,
+      candidates: choices.map((entry) => entry.id),
+    });
+  }
+
   const chosen = await ctx.prompt.choose(`Expansion '${engine.id}' needs '${step.binding}':`, choices);
   if (!chosen) {
     throw documentedCoralSetupError('user_cancelled', { during: `${engine.id}-onboarding` });
@@ -47,9 +56,9 @@ async function requireEnv(
     return;
   }
 
-  throw documentedCoralSetupError('expansion_runtime_unavailable', {
-    name: engine.id,
-    env: step.name,
+  throw documentedCoralSetupError('engine_env_var_missing', {
+    engine: engine.id,
+    envVar: step.name,
     ...(step.message === undefined ? {} : { message: step.message }),
   });
 }
