@@ -1,15 +1,17 @@
 import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
+import type { CauseRefToken } from '../causality/cause-ref.js';
 import {
   commit as commitJournalEvents,
   type AppendedEvent,
+  type CommitAppendInput,
   type CommitClosureResult,
   type CommitContext,
   type CommitEventsFn,
 } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
-import type { UpcasterRegistry } from '../store/envelope.js';
+import type { ResolvableCoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
@@ -307,12 +309,15 @@ export class JobStore implements JobProgressStore {
     const previousByJob = new Map<string, JobStatus | null>();
     const appended =
       this.commitEvents(<Scope>(c: CommitContext<Scope>) => {
+        const appendCollected = c.append as <const Body>(
+          input: ResolvableCoralEventInput<Scope, Body>,
+        ) => CauseRefToken<Scope>;
         const tracked: CommitContext<Scope> = {
-          append: (input) => {
+          append: <const Body>(input: CommitAppendInput<Scope, Body>) => {
             if (input.stream.kind === 'job' && !previousByJob.has(input.stream.id)) {
               previousByJob.set(input.stream.id, this.readStatus(input.stream.id));
             }
-            return c.append(input);
+            return appendCollected(input);
           },
         };
 

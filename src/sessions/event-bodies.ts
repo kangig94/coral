@@ -70,3 +70,4 @@ export type SessionContinuityCheckpointedBody = z.infer<typeof sessionContinuity
 export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema>;
 export type SessionClosedBody = z.infer<typeof sessionClosedBodySchema>;
 export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
+export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;

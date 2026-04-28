@@ -15,7 +15,8 @@ import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import { type AbortReason, type JobLaunchRejected } from '../outcome.js';
+import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
+import type { JobProgressBody, JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
@@ -33,6 +34,7 @@ import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
+type LauncherJobEventBody = JobProgressBody | JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
 
 function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
@@ -115,7 +117,7 @@ export class LaunchOrchestrator {
     jobId: string,
     sessionId: string,
     type: CoralEventInput['type'],
-    body: unknown,
+    body: LauncherJobEventBody,
     options: {
       parentJobId?: string;
       workflowSlotId?: string;

@@ -34,8 +34,47 @@ export interface AppendedEvent extends CoralEvent {
 
 export type AppendInput = CoralEventInput;
 export type CommitClosureResult = undefined;
+
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type IsUnknown<T> =
+  IsAny<T> extends true ? false : unknown extends T ? ([keyof T] extends [never] ? true : false) : false;
+type SameTokenScope<Left, Right> = [CauseRefToken<Left>] extends [CauseRefToken<Right>]
+  ? [CauseRefToken<Right>] extends [CauseRefToken<Left>]
+    ? true
+    : false
+  : false;
+type TokenScanDepth = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+type PreviousTokenScanDepth = [0, 0, 1, 2, 3, 4, 5, 6, 7];
+type ContainsForeignCauseRefToken<Scope, T, Depth extends TokenScanDepth = 8> = Depth extends 0
+  ? false
+  : IsAny<T> extends true
+    ? false
+    : T extends CauseRefToken<infer TokenScope>
+      ? SameTokenScope<Scope, TokenScope> extends true
+        ? false
+        : true
+      : IsUnknown<T> extends true
+        ? false
+        : T extends readonly (infer Item)[]
+          ? ContainsForeignCauseRefToken<Scope, Item, PreviousTokenScanDepth[Depth]>
+          : T extends object
+            ? true extends {
+                [K in keyof T]-?: ContainsForeignCauseRefToken<Scope, T[K], PreviousTokenScanDepth[Depth]>;
+              }[keyof T]
+              ? true
+              : false
+            : false;
+type CommitAppendInputGuard<Scope, Body> =
+  IsUnknown<Body> extends true
+    ? { readonly body: never }
+    : ContainsForeignCauseRefToken<Scope, Body> extends true
+      ? { readonly body: never }
+      : unknown;
+export type CommitAppendInput<Scope, Body> = ResolvableCoralEventInput<Scope, Body> &
+  CommitAppendInputGuard<Scope, Body>;
+
 export interface CommitContext<Scope> {
-  append(input: ResolvableCoralEventInput<Scope>): CauseRefToken<Scope>;
+  append<const Body>(input: CommitAppendInput<Scope, Body>): CauseRefToken<Scope>;
 }
 export type CommitEventsFn = (
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
@@ -75,7 +114,7 @@ function resolveToken(
   token: CauseRefToken<unknown> & RuntimeCauseRefToken,
   ownerSlot: number,
   reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown>[],
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
 ): CauseRef {
   const tokenSlot = causeRefTokenSlot(token);
   if (tokenSlot >= ownerSlot) {
@@ -98,7 +137,7 @@ function resolveDirectCauseRef(
   body: unknown,
   ownerSlot: number,
   reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown>[],
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
 ): unknown {
   if (!isRecord(body) || !isCauseRefToken(body.causeRef)) {
     return body;
@@ -114,7 +153,7 @@ function resolveJobTerminalCauseRef(
   body: unknown,
   ownerSlot: number,
   reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown>[],
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
 ): unknown {
   if (!isRecord(body) || !isRecord(body.terminal) || !isRecord(body.terminal.outcome)) {
     return body;
@@ -141,7 +180,7 @@ function resolveSessionClosedCauseRef(
   body: unknown,
   ownerSlot: number,
   reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown>[],
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
 ): unknown {
   if (!isRecord(body) || !isRecord(body.reason)) {
     return body;
@@ -186,10 +225,10 @@ function rejectResidualTokens(value: unknown, path: readonly string[] = ['body']
 }
 
 function resolveTokensInInput(
-  input: ResolvableCoralEventInput<unknown>,
+  input: ResolvableCoralEventInput<unknown, unknown>,
   ownerSlot: number,
   reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown>[],
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
 ): CoralEventInput {
   let body = input.body;
   if (input.type === 'workflow.completed') {
@@ -236,7 +275,7 @@ export function commit(
   ctx: AppendContext,
 ): AppendedEvent[] {
   const txn = db.transaction((): AppendedEvent[] => {
-    const collectedInputs: Array<ResolvableCoralEventInput<unknown>> = [];
+    const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
     const c: CommitContext<unknown> = {
       append(input) {
         const slot = collectedInputs.length;

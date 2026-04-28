@@ -80,7 +80,7 @@ export interface CoralEventInput<T = unknown> extends Omit<CoralEvent<T>, 'seq' 
   tsOverride?: string;
 }
 
-export type ResolvableCoralEventInput<Scope, T = unknown> = CoralEventInput<T> & {
+export type ResolvableCoralEventInput<Scope, T = never> = CoralEventInput<T> & {
   readonly [RESOLVABLE_INPUT_SCOPE]?: {
     readonly consume: (scope: Scope) => void;
     readonly produce: () => Scope;

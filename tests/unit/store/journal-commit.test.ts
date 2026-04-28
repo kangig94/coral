@@ -163,6 +163,7 @@ describe('journal commit primitive', () => {
           db,
           (c) => {
             const cause = c.append(workflowPlanInput('workflow-hidden-token'));
+            const detail: unknown = { causeRef: cause };
             c.append({
               type: 'job.progress.emitted',
               stream: { kind: 'job', id: 'job-hidden-token' },
@@ -172,8 +173,41 @@ describe('journal commit primitive', () => {
                 kind: 'domain',
                 stage: 'hosted_kb_operation_failed',
                 message: 'hidden token',
-                detail: { causeRef: cause },
+                detail,
               },
+            });
+            return undefined;
+          },
+          ctx(),
+        ),
+      ).toThrow(/body\.detail\.causeRef/);
+
+      expect(countEvents(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects residual tokens hidden behind any casts at runtime', () => {
+    const db = createDb();
+    try {
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            const cause = c.append(workflowPlanInput('workflow-any-hidden-token'));
+            const body = {
+              kind: 'domain',
+              stage: 'hosted_kb_operation_failed',
+              message: 'hidden token',
+              detail: { causeRef: cause },
+            } as any;
+            c.append({
+              type: 'job.progress.emitted',
+              stream: { kind: 'job', id: 'job-any-hidden-token' },
+              refs: { jobId: 'job-any-hidden-token' },
+              bodyVersion: 1,
+              body,
             });
             return undefined;
           },

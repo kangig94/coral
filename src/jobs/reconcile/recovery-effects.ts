@@ -1,13 +1,11 @@
-import {
-  type JobLifecycleFault,
-  type JobProgressFault,
-  type TerminalOutcomeInput,
-} from '../outcome.js';
+import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInput } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobStatus } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
+import type { CoralEventInput } from '../../store/envelope.js';
+import type { ProviderJobLaunchRequestBody } from '../launch.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
@@ -35,23 +33,21 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 }
 
 export function markJobAsError(
-  progressStore: Pick<
-    ProgressStore,
-    'commit' | 'readLaunchProjection' | 'appendLaunchRequested'
-  >,
+  progressStore: Pick<ProgressStore, 'commit' | 'readLaunchProjection'>,
   status: JobStatus,
   fault: JobRecoveryError,
   _log: (message: string) => void,
 ): void {
-  if (
+  const needsSyntheticLaunch =
     status.jobKind !== 'kb' &&
     jobRecoveryNeedsDomainEvent(fault) &&
-    progressStore.readLaunchProjection(status.jobId) === null
-  ) {
-    progressStore.appendLaunchRequested(status.jobId, syntheticLaunchRecord(status));
-  }
+    progressStore.readLaunchProjection(status.jobId) === null;
 
   progressStore.commit((c) => {
+    if (needsSyntheticLaunch) {
+      c.append(syntheticLaunchRequestedEvent(status));
+    }
+
     const outcome = materializeJobRecoveryFaultInCommit(c, status, fault);
     appendJobTerminalRecorded(c, {
       jobId: status.jobId,
@@ -113,5 +109,45 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
       coralEnv: {},
     },
     createdAt: status.updatedAt,
+  };
+}
+
+function syntheticLaunchRequestedEvent(status: JobStatus): CoralEventInput<ProviderJobLaunchRequestBody> {
+  const launch = syntheticLaunchRecord(status);
+  if (launch.sessionId === null || launch.provider === null) {
+    throw new Error(`Provider job '${status.jobId}' requires sessionId and provider.`);
+  }
+  if (launch.jobKind === 'kb') {
+    throw new Error(`Synthetic recovery launch for '${status.jobId}' requires a provider or workflow job.`);
+  }
+
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: status.jobId },
+    namespace: launch.backendNamespace,
+    project: launch.projectRoot,
+    refs: {
+      jobId: status.jobId,
+      sessionId: launch.sessionId,
+    },
+    bodyVersion: 1,
+    body: {
+      sessionId: launch.sessionId,
+      provider: launch.provider,
+      projectRoot: launch.projectRoot,
+      backendNamespace: launch.backendNamespace,
+      bundleHash: launch.bundleHash,
+      jobKind: launch.jobKind,
+      pool: launch.pool,
+      enqueueSequence: launch.enqueueSequence,
+      providerAction: launch.providerAction ?? 'exec',
+      request: {
+        prompt: launch.request.prompt ?? '',
+        cwd: launch.request.cwd ?? launch.projectRoot,
+        bypassPermissions: launch.request.bypassPermissions ?? false,
+        coralEnv: { ...(launch.request.coralEnv ?? {}) },
+      },
+      createdAt: launch.createdAt,
+    },
   };
 }

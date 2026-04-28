@@ -19,6 +19,12 @@ import {
 } from '../entry.js';
 import type { SessionAllocateOptions } from '../contracts.js';
 import { sessionsRegistry } from '../events.js';
+import type {
+  SessionClaimedBody,
+  SessionClaimReleasedBody,
+  SessionContinuityCheckpointedBody,
+  SessionOpenedBody,
+} from '../event-bodies.js';
 import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
 import { listProjectionSessionEntries, readProjectionSession } from '../projections.js';
@@ -26,6 +32,11 @@ import { listProjectionSessionEntries, readProjectionSession } from '../projecti
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 type Database = BetterSqlite3.Database;
+type SessionStoreEventBody =
+  | SessionOpenedBody
+  | SessionContinuityCheckpointedBody
+  | SessionClaimedBody
+  | SessionClaimReleasedBody;
 
 export type SessionManagerOptions = {
   db?: Database;
@@ -66,7 +77,7 @@ function snapshotFromEntry(
   };
 }
 
-function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventInput {
+function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventInput<SessionOpenedBody> {
   return {
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
@@ -81,7 +92,10 @@ function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventIn
   };
 }
 
-function sessionCheckpointedEvent(entry: SessionEntry, snapshot: ContinuitySnapshot): CoralEventInput {
+function sessionCheckpointedEvent(
+  entry: SessionEntry,
+  snapshot: ContinuitySnapshot,
+): CoralEventInput<SessionContinuityCheckpointedBody> {
   return {
     type: 'session.continuity.checkpointed',
     stream: { kind: 'session', id: entry.sessionId },
@@ -94,7 +108,7 @@ function sessionCheckpointedEvent(entry: SessionEntry, snapshot: ContinuitySnaps
   };
 }
 
-function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput {
+function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimedBody> {
   return {
     type: 'session.claimed',
     stream: { kind: 'session', id: entry.sessionId },
@@ -107,7 +121,7 @@ function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInpu
   };
 }
 
-function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEventInput {
+function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimReleasedBody> {
   return {
     type: 'session.claim.released',
     stream: { kind: 'session', id: entry.sessionId },
@@ -200,14 +214,14 @@ export class SessionManager {
     return this.readEntry(sessionId, options);
   }
 
-  private appendSessionEvent(input: CoralEventInput): void {
+  private appendSessionEvent(input: CoralEventInput<SessionStoreEventBody>): void {
     this.commitEvents((c) => {
       c.append(input);
       return undefined;
     });
   }
 
-  private appendEntryEvent(nextEntry: SessionEntry, eventInput: CoralEventInput): SessionEntry {
+  private appendEntryEvent(nextEntry: SessionEntry, eventInput: CoralEventInput<SessionStoreEventBody>): SessionEntry {
     this.appendSessionEvent(eventInput);
     this.populateCache(nextEntry.sessionId, nextEntry);
     return normalizeEntry(nextEntry);

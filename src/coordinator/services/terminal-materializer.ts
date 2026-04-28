@@ -2,16 +2,8 @@ import type { CommitContext } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
-import type {
-  JobLifecycleFault,
-  JobProgressFault,
-  TerminalOutcome,
-  TerminalOutcomeInput,
-} from '../../jobs/outcome.js';
-import type {
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-} from '../../jobs/records.js';
+import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
+import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import {
@@ -40,6 +32,12 @@ export interface RuntimeIngestOptions {
   readonly workflowSlotId?: string;
 }
 
+type RuntimeIngestDomainBody =
+  | JobProgressFault
+  | SessionInterruptedFault
+  | SessionProviderFailedFault
+  | SessionAdapterUnparseableFault;
+
 export type RuntimeIngestPlan =
   | {
       readonly kind: 'immediate';
@@ -48,7 +46,7 @@ export type RuntimeIngestPlan =
     }
   | {
       readonly kind: 'failed_cause';
-      readonly domainEvents: readonly [CoralEventInput];
+      readonly domainEvents: readonly [CoralEventInput<RuntimeIngestDomainBody>];
       readonly immediateOutcome: null;
     };
 
@@ -86,8 +84,8 @@ export function baseEvent(
   options: RuntimeIngestOptions,
   stream: CoralEventInput['stream'],
   type: string,
-  body: unknown,
-): CoralEventInput {
+  body: RuntimeIngestDomainBody,
+): CoralEventInput<RuntimeIngestDomainBody> {
   return {
     type,
     stream,
@@ -100,7 +98,7 @@ export function baseEvent(
   };
 }
 
-function planFailed(event: CoralEventInput): RuntimeIngestPlan {
+function planFailed(event: CoralEventInput<RuntimeIngestDomainBody>): RuntimeIngestPlan {
   return {
     kind: 'failed_cause',
     domainEvents: [event],
@@ -108,10 +106,7 @@ function planFailed(event: CoralEventInput): RuntimeIngestPlan {
   };
 }
 
-function planJobRecoveryFault(
-  fault: JobRecoveryFault,
-  options: RuntimeIngestOptions,
-): RuntimeIngestPlan {
+function planJobRecoveryFault(fault: JobRecoveryFault, options: RuntimeIngestOptions): RuntimeIngestPlan {
   switch (fault.kind) {
     case 'ghost_launch':
     case 'wrapper_lost':
@@ -123,20 +118,13 @@ function planJobRecoveryFault(
       };
     case 'missing_launch_record':
     case 'recovery_parse_failed':
-      return planFailed(
-        baseEvent(options, { kind: 'job', id: options.jobId }, 'job.progress.emitted', fault),
-      );
+      return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.progress.emitted', fault));
   }
 }
 
-function planSessionInterrupted(
-  fault: SessionInterruptedFault,
-  options: RuntimeIngestOptions,
-): RuntimeIngestPlan {
+function planSessionInterrupted(fault: SessionInterruptedFault, options: RuntimeIngestOptions): RuntimeIngestPlan {
   const sessionId = requireSessionId(options, 'session.interrupted');
-  return planFailed(
-    sessionInterruptedEvent(fault, { ...options, sessionId }),
-  );
+  return planFailed(sessionInterruptedEvent(fault, { ...options, sessionId }));
 }
 
 function planSessionProviderFailed(
@@ -144,9 +132,7 @@ function planSessionProviderFailed(
   options: RuntimeIngestOptions,
 ): RuntimeIngestPlan {
   const sessionId = requireSessionId(options, 'session.provider_failed');
-  return planFailed(
-    sessionProviderFailedEvent(fault, { ...options, sessionId }),
-  );
+  return planFailed(sessionProviderFailedEvent(fault, { ...options, sessionId }));
 }
 
 function planSessionAdapterUnparseable(
@@ -154,15 +140,10 @@ function planSessionAdapterUnparseable(
   options: RuntimeIngestOptions,
 ): RuntimeIngestPlan {
   const sessionId = requireSessionId(options, 'session.adapter_unparseable');
-  return planFailed(
-    sessionAdapterUnparseableEvent(fault, { ...options, sessionId }),
-  );
+  return planFailed(sessionAdapterUnparseableEvent(fault, { ...options, sessionId }));
 }
 
-function planProviderFailureCause(
-  failure: ProviderFailureCause,
-  options: RuntimeIngestOptions,
-): RuntimeIngestPlan {
+function planProviderFailureCause(failure: ProviderFailureCause, options: RuntimeIngestOptions): RuntimeIngestPlan {
   switch (failure.type) {
     case 'session.adapter_unparseable':
       return planSessionAdapterUnparseable(failure.body, options);
@@ -171,10 +152,7 @@ function planProviderFailureCause(
   }
 }
 
-function planProviderOutcome(
-  terminal: ProviderTerminalEventBody,
-  options: RuntimeIngestOptions,
-): RuntimeIngestPlan {
+function planProviderOutcome(terminal: ProviderTerminalEventBody, options: RuntimeIngestOptions): RuntimeIngestPlan {
   const { outcome } = terminal.terminal;
   switch (outcome.kind) {
     case 'completed':
@@ -233,10 +211,7 @@ export function materializeProviderTerminal(
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
 ): MaterializedProviderTerminalRecipe {
-  const warnings = [
-    ...(terminal.terminal.warnings ?? []),
-    ...(terminal.diagnostics.warnings ?? []),
-  ];
+  const warnings = [...(terminal.terminal.warnings ?? []), ...(terminal.diagnostics.warnings ?? [])];
   return {
     terminal: {
       content: terminal.terminal.content,
