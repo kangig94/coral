@@ -140,7 +140,13 @@ export class ExpansionLifecycleService {
       }
     }
 
-    await this.applyBundledFallback();
+    const fallback = await this.applyBundledFallback();
+    if (fallback.failed.size > 0) {
+      const detail = [...fallback.failed.entries()]
+        .map(([id, err]) => `${id}: ${err.message}`)
+        .join('; ');
+      throw new Error(`Bundled-engine equip failed: ${detail}`);
+    }
   }
 
   /**
