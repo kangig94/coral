@@ -20,13 +20,11 @@ import {
   type LaunchedAtom,
   type PipelineResult,
   type StepDetail,
+  type WaitInternalState,
   type WorkflowExecutionPort,
 } from './command.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
-import {
-  workflowCompletedBodySchema,
-  workflowDrainEnteredBodySchema,
-} from './events.js';
+import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
 import { executePlannedSteps } from './executor.js';
 import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_STALE_CHECK_INTERVAL_MS } from './execution-constants.js';
 import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
@@ -44,6 +42,53 @@ type WorkflowSlotJobRow = {
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
   error?: WorkflowExecutionError;
+};
+
+type ResumeWorkflowDeps = {
+  db: BetterSqlite3.Database;
+  progressStore: Pick<ProgressStore, 'readStatus'> & StoreReadContext;
+  executionSvc: WorkflowExecutionPort;
+  ctx: InvocationContext;
+  workflowId: string;
+  plan: WorkflowPlan;
+  time: Pick<TimePort, 'now'>;
+  onProgress: (workflowId: string, message: string) => void;
+  staleTimeoutMs: number;
+  staleCheckIntervalMs: number;
+};
+
+type RecoverySummary = {
+  activeStepIndex: number;
+  stepPrompt: string;
+  stepDetails: StepDetail[];
+};
+
+type RecoveryTerminalFailure = {
+  aborted: boolean;
+  message: string;
+  failedStep?: number;
+  failedAtom?: string;
+  failedJobId?: string;
+  failedSlotId?: string;
+  causeRef?: CauseRef;
+  terminalOutcome?: TerminalOutcome;
+  drainDeadline?: number;
+};
+
+type RecoverySnapshot = {
+  readCtx: StoreReadContext;
+  compiledSlots: CompiledPlanSlot[];
+  slotDetailsByJob: Map<string, JobProjectionDetail>;
+  summary: RecoverySummary;
+  stepSlots: CompiledPlanSlot[];
+  activeAtoms: LaunchedAtom[];
+};
+
+type WaitRecoveryPlan = {
+  activeAtoms: LaunchedAtom[];
+  completedOutputs: Map<string, string>;
+  initialState: Partial<WaitInternalState>;
+  blockingFailure: RecoveryTerminalFailure | null;
 };
 
 function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
@@ -69,7 +114,11 @@ function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: Wo
   return selected;
 }
 
-function compileSlotsForRecovery(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): CompiledPlanSlot[] {
+function compileSlotsForRecovery(
+  db: BetterSqlite3.Database,
+  workflowId: string,
+  plan: WorkflowPlan,
+): CompiledPlanSlot[] {
   return compileWorkflowPlan(plan, { jobIds: readSlotJobIds(db, workflowId, plan) });
 }
 
@@ -115,11 +164,7 @@ function completedOutputForSlot(slot: CompiledPlanSlot, detailsByJob: Map<string
 function summarizeCompletedSteps(
   slots: readonly CompiledPlanSlot[],
   detailsByJob: Map<string, JobProjectionDetail>,
-): {
-  activeStepIndex: number;
-  stepPrompt: string;
-  stepDetails: StepDetail[];
-} {
+): RecoverySummary {
   const stepDetails: StepDetail[] = [];
   let stepPrompt = '';
   const finalStepIndex = slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
@@ -162,17 +207,7 @@ function firstTerminalFailure(
   slots: readonly CompiledPlanSlot[],
   drain: { firstFailureSlotId: string; drainDeadline: number } | null,
   detailsByJob: Map<string, JobProjectionDetail>,
-): {
-  aborted: boolean;
-  message: string;
-  failedStep?: number;
-  failedAtom?: string;
-  failedJobId?: string;
-  failedSlotId?: string;
-  causeRef?: CauseRef;
-  terminalOutcome?: TerminalOutcome;
-  drainDeadline?: number;
-} | null {
+): RecoveryTerminalFailure | null {
   const targetSlot =
     (drain ? slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined) ??
     slots.find((slot) => {
@@ -210,10 +245,7 @@ function firstTerminalFailure(
   };
 }
 
-function completedRecoveryIntent(
-  workflowId: string,
-  result: PipelineResult,
-): WorkflowFinalizationIntent {
+function completedRecoveryIntent(workflowId: string, result: PipelineResult): WorkflowFinalizationIntent {
   return {
     outcome: 'completed',
     workflowJobId: workflowId,
@@ -223,9 +255,7 @@ function completedRecoveryIntent(
 }
 
 function stackFor(error: unknown): string | undefined {
-  return error instanceof Error && typeof error.stack === 'string' && error.stack.length > 0
-    ? error.stack
-    : undefined;
+  return error instanceof Error && typeof error.stack === 'string' && error.stack.length > 0 ? error.stack : undefined;
 }
 
 function recoveryIntentFromFailure(
@@ -277,86 +307,90 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
   };
 }
 
-async function resumeWorkflow(
-  db: BetterSqlite3.Database,
-  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext,
-  executionSvc: WorkflowExecutionPort,
-  ctx: InvocationContext,
-  workflowId: string,
-  plan: WorkflowPlan,
-  options: {
-    time: Pick<TimePort, 'now'>;
-    onProgress: (workflowId: string, message: string) => void;
-    staleTimeoutMs: number;
-    staleCheckIntervalMs: number;
-  },
-): Promise<RecoveredWorkflowFinalization | null> {
-  const readCtx: StoreReadContext = progressStore;
-  const completionRow = readLatestEvent(db, 'workflow', workflowId, 'workflow.completed');
-  const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, readCtx) : null;
-  if (completion) {
-    return null;
-  }
+function detectExistingCompletion(deps: ResumeWorkflowDeps): boolean {
+  const completionRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.completed');
+  const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, deps.progressStore) : null;
+  return completion !== null;
+}
 
-  const compiledSlots = compileSlotsForRecovery(db, workflowId, plan);
+function loadRecoverySnapshot(deps: ResumeWorkflowDeps): RecoverySnapshot {
+  const readCtx: StoreReadContext = deps.progressStore;
+  const compiledSlots = compileSlotsForRecovery(deps.db, deps.workflowId, deps.plan);
   const slotDetailsByJob = loadJobProjectionDetails(
-    db,
+    deps.db,
     compiledSlots.map((slot) => slot.jobId),
     readCtx,
   );
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
-  const finalStepIndex = maxStepIndex(plan);
-  if (summary.activeStepIndex > finalStepIndex) {
-    return {
-      intent: completedRecoveryIntent(workflowId, {
-        finalOutput: summary.stepPrompt,
-        stepDetails: summary.stepDetails,
-      }),
-    };
-  }
-
   const stepSlots = compiledSlots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
   const activeAtoms = buildLaunchedAtomsForStep(compiledSlots, summary.activeStepIndex, slotDetailsByJob);
-  const missingProjection = stepSlots.some((slot) => {
-    const projection = readProjectionJob(db, slot.jobId);
-    const detail = detailForJob(slotDetailsByJob, slot.jobId);
+  return { readCtx, compiledSlots, slotDetailsByJob, summary, stepSlots, activeAtoms };
+}
+
+function completedFinalization(deps: ResumeWorkflowDeps, summary: RecoverySummary): RecoveredWorkflowFinalization {
+  return {
+    intent: completedRecoveryIntent(deps.workflowId, {
+      finalOutput: summary.stepPrompt,
+      stepDetails: summary.stepDetails,
+    }),
+  };
+}
+
+function shouldRelaunchActiveStep(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): boolean {
+  return snapshot.stepSlots.some((slot) => {
+    const projection = readProjectionJob(deps.db, slot.jobId);
+    const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
     return projection === null && detail.status === null;
   });
+}
 
-  if (missingProjection) {
-    options.onProgress(workflowId, `relaunching step ${summary.activeStepIndex}`);
-    const resumed = await executePlannedSteps(plan, summary.stepPrompt, executionSvc, ctx, {
-      startStepIndex: summary.activeStepIndex,
-      completedStepDetails: summary.stepDetails,
-      onProgress: (message) => options.onProgress(workflowId, message),
-      staleTimeoutMs: options.staleTimeoutMs,
-      staleCheckIntervalMs: options.staleCheckIntervalMs,
-      workflowJobId: workflowId,
-      time: options.time,
-    });
-    return { intent: completedRecoveryIntent(workflowId, resumed) };
-  }
+async function executeRemainingSteps(
+  deps: ResumeWorkflowDeps,
+  initialPrompt: string,
+  startStepIndex: number,
+  completedStepDetails: StepDetail[],
+): Promise<PipelineResult> {
+  return executePlannedSteps(deps.plan, initialPrompt, deps.executionSvc, deps.ctx, {
+    startStepIndex,
+    completedStepDetails,
+    onProgress: (message) => deps.onProgress(deps.workflowId, message),
+    staleTimeoutMs: deps.staleTimeoutMs,
+    staleCheckIntervalMs: deps.staleCheckIntervalMs,
+    workflowJobId: deps.workflowId,
+    time: deps.time,
+  });
+}
 
+async function assembleRelaunch(
+  deps: ResumeWorkflowDeps,
+  summary: RecoverySummary,
+): Promise<RecoveredWorkflowFinalization> {
+  deps.onProgress(deps.workflowId, `relaunching step ${summary.activeStepIndex}`);
+  const resumed = await executeRemainingSteps(deps, summary.stepPrompt, summary.activeStepIndex, summary.stepDetails);
+  return { intent: completedRecoveryIntent(deps.workflowId, resumed) };
+}
+
+function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
   const pendingCursorSeqs: number[] = [];
-  const drainRow = readLatestEvent(db, 'workflow', workflowId, 'workflow.drain.entered');
-  const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, readCtx) : null;
+  const drainRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.drain.entered');
+  const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, snapshot.readCtx) : null;
 
-  for (const slot of stepSlots) {
-    const detail = detailForJob(slotDetailsByJob, slot.jobId);
+  for (const slot of snapshot.stepSlots) {
+    const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
     if (detail.exit?.outcome.kind === 'completed') {
       completedOutputs.set(slot.atomKey, detail.exit.content);
       continue;
     }
 
-    const projection = readProjectionJob(db, slot.jobId);
+    const projection = readProjectionJob(deps.db, slot.jobId);
     if (projection) {
       pendingCursorSeqs.push(projection.lastSeq);
     }
   }
 
-  const failure = firstTerminalFailure(compiledSlots, drain, slotDetailsByJob);
-  const waitState = {
+  const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
+  const initialState: Partial<WaitInternalState> = {
     completedOutputs,
     cursor: { afterSeq: pendingCursorSeqs.length === 0 ? 0 : Math.min(...pendingCursorSeqs) },
     lastActivityAt: new Map<string, number>(),
@@ -372,58 +406,91 @@ async function resumeWorkflow(
           },
         }),
   };
-
-  const pendingPhases = stepSlots.flatMap((slot) => {
-    const phase = detailForJob(slotDetailsByJob, slot.jobId).status?.phase;
+  const pendingPhases = snapshot.stepSlots.flatMap((slot) => {
+    const phase = detailForJob(snapshot.slotDetailsByJob, slot.jobId).status?.phase;
     return phase === null || phase === undefined ? [] : [phase];
   });
+  const blockingFailure = pendingPhases.some(
+    (phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed',
+  )
+    ? failure
+    : null;
 
-  if (pendingPhases.some((phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed')) {
-    if (failure) {
-      const workflowError = createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
-      return {
-        intent: recoveryIntentFromFailure(workflowId, failure, summary.stepDetails),
-        error: workflowError,
-      };
-    }
-  }
+  return { activeAtoms: snapshot.activeAtoms, completedOutputs, initialState, blockingFailure };
+}
 
-  options.onProgress(workflowId, `resuming step ${summary.activeStepIndex}`);
-  const stepResults = await waitForAtoms(activeAtoms, executionSvc, ctx, {
-    staleTimeoutMs: options.staleTimeoutMs,
-    staleCheckIntervalMs: options.staleCheckIntervalMs,
-    initialState: waitState,
-    completedStepDetails: summary.stepDetails,
-    workflowJobId: workflowId,
-    onProgress: (message) => options.onProgress(workflowId, message),
-    time: options.time,
-    recoverStaleAtom,
-  });
+function blockingFailureFinalization(
+  workflowId: string,
+  summary: RecoverySummary,
+  failure: RecoveryTerminalFailure | null,
+): RecoveredWorkflowFinalization | null {
+  if (failure === null) return null;
+  const workflowError = createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
+  return {
+    intent: recoveryIntentFromFailure(workflowId, failure, summary.stepDetails),
+    error: workflowError,
+  };
+}
 
-  const mergedResults = new Map(completedOutputs);
+async function continueAfterRecoveredStep(
+  deps: ResumeWorkflowDeps,
+  summary: RecoverySummary,
+  plan: WaitRecoveryPlan,
+  stepResults: Map<string, string>,
+): Promise<RecoveredWorkflowFinalization> {
+  const mergedResults = new Map(plan.completedOutputs);
   for (const [key, value] of stepResults) {
     mergedResults.set(key, value);
   }
 
-  const stepDetails = [...summary.stepDetails, ...buildStepDetailsForAtoms(activeAtoms, mergedResults)];
+  const stepDetails = [...summary.stepDetails, ...buildStepDetailsForAtoms(plan.activeAtoms, mergedResults)];
   const stepPrompt = formatStepOutput(
-    activeAtoms.map((atom) => ({
+    plan.activeAtoms.map((atom) => ({
       tagName: atom.tagName,
       output: mergedResults.get(atom.atomKey) ?? '',
     })),
   );
+  const resumed = await executeRemainingSteps(deps, stepPrompt, summary.activeStepIndex + 1, stepDetails);
+  return { intent: completedRecoveryIntent(deps.workflowId, resumed) };
+}
 
-  const resumed = await executePlannedSteps(plan, stepPrompt, executionSvc, ctx, {
-    startStepIndex: summary.activeStepIndex + 1,
-    completedStepDetails: stepDetails,
-    onProgress: (message) => options.onProgress(workflowId, message),
-    staleTimeoutMs: options.staleTimeoutMs,
-    staleCheckIntervalMs: options.staleCheckIntervalMs,
-    workflowJobId: workflowId,
-    time: options.time,
+async function waitAndFinalize(
+  deps: ResumeWorkflowDeps,
+  snapshot: RecoverySnapshot,
+): Promise<RecoveredWorkflowFinalization> {
+  const plan = buildWaitRecoveryPlan(deps, snapshot);
+  const blocked = blockingFailureFinalization(deps.workflowId, snapshot.summary, plan.blockingFailure);
+  if (blocked !== null) return blocked;
+
+  deps.onProgress(deps.workflowId, `resuming step ${snapshot.summary.activeStepIndex}`);
+  const stepResults = await waitForAtoms(plan.activeAtoms, deps.executionSvc, deps.ctx, {
+    staleTimeoutMs: deps.staleTimeoutMs,
+    staleCheckIntervalMs: deps.staleCheckIntervalMs,
+    initialState: plan.initialState,
+    completedStepDetails: snapshot.summary.stepDetails,
+    workflowJobId: deps.workflowId,
+    onProgress: (message) => deps.onProgress(deps.workflowId, message),
+    time: deps.time,
+    recoverStaleAtom,
   });
+  return continueAfterRecoveredStep(deps, snapshot.summary, plan, stepResults);
+}
 
-  return { intent: completedRecoveryIntent(workflowId, resumed) };
+async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkflowFinalization | null> {
+  if (detectExistingCompletion(deps)) {
+    return null;
+  }
+
+  const snapshot = loadRecoverySnapshot(deps);
+  if (snapshot.summary.activeStepIndex > maxStepIndex(deps.plan)) {
+    return completedFinalization(deps, snapshot.summary);
+  }
+
+  if (shouldRelaunchActiveStep(deps, snapshot)) {
+    return assembleRelaunch(deps, snapshot.summary);
+  }
+
+  return waitAndFinalize(deps, snapshot);
 }
 
 export async function resumeAll(options: {
@@ -466,20 +533,18 @@ export async function resumeAll(options: {
     const ctx = options.createInvocationContext(status.projectRoot);
     let recovered: RecoveredWorkflowFinalization | null;
     try {
-      recovered = await resumeWorkflow(
-        options.db,
-        options.progressStore,
-        options.getExecutionService(ctx),
+      recovered = await resumeWorkflow({
+        db: options.db,
+        progressStore: options.progressStore,
+        executionSvc: options.getExecutionService(ctx),
         ctx,
-        jobId,
-        projection.plan,
-        {
-          onProgress,
-          staleTimeoutMs,
-          staleCheckIntervalMs,
-          time,
-        },
-      );
+        workflowId: jobId,
+        plan: projection.plan,
+        onProgress,
+        staleTimeoutMs,
+        staleCheckIntervalMs,
+        time,
+      });
     } catch (error: unknown) {
       options.finalizeWorkflow(recoveryIntentFromError(jobId, error));
       throw error;

@@ -29,10 +29,9 @@ import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
+import { composeWorkflowFinalization } from './workflow-finalization-helper.js';
 import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
-import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workflow/events.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
@@ -151,57 +150,7 @@ export class WorkflowExecutionService {
     const project = status?.projectRoot;
 
     this.deps.coordinatorCommit((c) => {
-      if (intent.outcome === 'completed') {
-        c.append(workflowCompletedEvent(jobId, { outcome: 'completed', stepDetails: intent.stepDetails }));
-        appendJobTerminalRecorded(c, {
-          jobId,
-          sessionId,
-          namespace,
-          project,
-          terminal: {
-            content: intent.finalOutput,
-            outcome: { kind: 'completed' },
-          },
-          continuity: null,
-        });
-        return undefined;
-      }
-
-      if (intent.outcome === 'aborted') {
-        c.append(workflowCompletedEvent(jobId, { outcome: 'aborted', stepDetails: intent.stepDetails }));
-        appendJobTerminalRecorded(c, {
-          jobId,
-          sessionId,
-          namespace,
-          project,
-          terminal: {
-            content: '',
-            outcome: { kind: 'aborted', reason: intent.reason },
-          },
-          continuity: null,
-        });
-        return undefined;
-      }
-
-      const causeRef = intent.causeRef ?? c.append(workflowLifecycleFaultEvent(jobId, intent.lifecycleFault));
-      const workflowCompleted = c.append(
-        workflowCompletedEvent(jobId, {
-          outcome: 'failed',
-          causeRef,
-          stepDetails: intent.stepDetails,
-        }),
-      );
-      appendJobTerminalRecorded(c, {
-        jobId,
-        sessionId,
-        namespace,
-        project,
-        terminal: {
-          content: '',
-          outcome: failedTerminalOutcome(workflowCompleted),
-        },
-        continuity: null,
-      });
+      composeWorkflowFinalization(c, jobId, intent, { sessionId, namespace, project });
       return undefined;
     });
   }

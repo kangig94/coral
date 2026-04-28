@@ -25,6 +25,7 @@ const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb-reindex-service.ts'
 const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
 const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
 const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution-service.ts';
+const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization-helper.ts';
 const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-recovery-finalizer.ts';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
@@ -526,18 +527,18 @@ describe('journal commit atomicity invariant', () => {
     const executorSource = readSource(WORKFLOW_EXECUTOR_PATH);
     const recoverSource = readSource(WORKFLOW_RECOVER_PATH);
     const serviceSource = readSource(WORKFLOW_EXECUTION_SERVICE_PATH);
+    const helperSource = readSource(WORKFLOW_FINALIZATION_HELPER_PATH);
     const recoveryFinalizerSource = readSource(WORKFLOW_RECOVERY_FINALIZER_PATH);
 
     expect(executorSource).not.toContain('workflowCompletedEvent');
     expect(recoverSource).not.toContain('append' + 'WorkflowEvents');
     expect(recoverSource).not.toContain('workflowCompletedEvent');
     expect(serviceSource).toContain('this.deps.coordinatorCommit((c) =>');
-    expect(serviceSource).toMatch(
-      /workflowLifecycleFaultEvent\(jobId,[\s\S]*workflowCompletedEvent\(jobId,[\s\S]*appendJobTerminalRecorded\(c,/u,
-    );
+    expect(serviceSource).toContain('composeWorkflowFinalization(c, jobId, intent');
     expect(recoveryFinalizerSource).toContain('options.coordinatorCommit((c) =>');
-    expect(recoveryFinalizerSource).toMatch(
-      /workflowLifecycleFaultEvent\(intent\.workflowJobId,[\s\S]*workflowCompletedEvent\(intent\.workflowJobId,[\s\S]*appendJobTerminalRecorded\(c,/u,
+    expect(recoveryFinalizerSource).toContain('composeWorkflowFinalization(c, intent.workflowJobId, intent');
+    expect(helperSource).toMatch(
+      /workflowLifecycleFaultEvent\(workflowJobId,[\s\S]*workflowCompletedEvent\(workflowJobId,[\s\S]*appendJobTerminalRecorded\(c,/u,
     );
   });
 });
