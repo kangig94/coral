@@ -62,7 +62,7 @@ export class KbReindexService {
       return { ok: true, data: result };
     } catch (error: unknown) {
       const detail = normalizeKbFailureDetail(error);
-      const causeRef = this.recorder.appendKbOperationFailureCause({
+      this.recorder.appendOperationFailureWithTerminal({
         jobId,
         projectRoot,
         operation: 'reindex',
@@ -71,8 +71,8 @@ export class KbReindexService {
           operation: 'reindex',
           cause: detail,
         },
+        startedAtMs,
       });
-      this.recorder.appendFailed(jobId, startedAtMs, causeRef);
       return {
         ok: false,
         message: detail.message,

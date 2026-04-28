@@ -1,6 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
@@ -102,39 +101,51 @@ export class KbJobRecorder {
     });
   }
 
-  appendKbOperationFailureCause(params: {
+  appendOperationFailureWithTerminal(params: {
     jobId: string;
     projectRoot: string;
     operation: string;
     message: string;
     detail: unknown;
-  }): CauseRef {
-    const [event] = this.deps.progressStore.appendEventsWithResult([
-      {
-        type: 'job.progress.emitted',
+    startedAtMs: number;
+  }): void {
+    const durationMs = Math.max(0, this.deps.runtime.time.now() - params.startedAtMs);
+    const causeEvent = {
+      type: 'job.progress.emitted',
+      stream: { kind: 'job', id: params.jobId },
+      namespace: this.deps.backendNamespace,
+      project: params.projectRoot,
+      refs: { jobId: params.jobId },
+      bodyVersion: 1,
+      body: {
+        kind: 'domain',
+        stage: 'kb_operation_failed',
+        message: params.message,
+        ts: nowIsoString(this.deps.runtime.time),
+        detail: params.detail,
+      },
+    } as const;
+
+    this.deps.progressStore.commit((c) => {
+      const cause = c.append(causeEvent);
+      c.append({
+        type: 'job.terminal.recorded',
         stream: { kind: 'job', id: params.jobId },
         namespace: this.deps.backendNamespace,
         project: params.projectRoot,
         refs: { jobId: params.jobId },
         bodyVersion: 1,
         body: {
-          kind: 'domain',
-          stage: 'kb_operation_failed',
-          message: params.message,
-          ts: nowIsoString(this.deps.runtime.time),
-          detail: params.detail,
+          terminal: {
+            outcome: { kind: 'failed', causeRef: cause },
+            durationMs,
+            content: '',
+          },
+          continuity: null,
         },
-      },
-    ]);
-
-    if (event === undefined) {
-      throw new Error(`Failed to append KB operation failure cause for ${params.jobId}`);
-    }
-
-    return {
-      stream: { kind: 'job', id: params.jobId },
-      seq: event.seq,
-    };
+      });
+      return undefined;
+    });
   }
 
   appendHostedKbOperationFailure(params: {
@@ -161,7 +172,7 @@ export class KbJobRecorder {
       bodyVersion: 1,
       body: {
         kind: 'domain',
-        stage: 'kb_operation_failed',
+        stage: 'hosted_kb_operation_failed',
         message: `KB ${params.operation} failed: ${params.message}`,
         ts: nowIsoString(this.deps.runtime.time),
         detail: {
@@ -176,10 +187,6 @@ export class KbJobRecorder {
 
   appendCompleted(jobId: string, startedAtMs: number, content: string): void {
     this.appendTerminal(jobId, startedAtMs, { kind: 'completed' }, content);
-  }
-
-  appendFailed(jobId: string, startedAtMs: number, causeRef: CauseRef): void {
-    this.appendTerminal(jobId, startedAtMs, { kind: 'failed', causeRef }, '');
   }
 
   private appendTerminal(jobId: string, startedAtMs: number, outcome: TerminalOutcome, content: string): void {

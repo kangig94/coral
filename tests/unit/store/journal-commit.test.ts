@@ -170,7 +170,7 @@ describe('journal commit primitive', () => {
               bodyVersion: 1,
               body: {
                 kind: 'domain',
-                stage: 'kb_operation_failed',
+                stage: 'hosted_kb_operation_failed',
                 message: 'hidden token',
                 detail: { causeRef: cause },
               },

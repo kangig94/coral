@@ -531,8 +531,8 @@ describe('architecture boundary guard', () => {
     assertNoViolations(violations);
     expect(forbiddenRuntimeTokens).toEqual([]);
   });
-  it('raw job.terminal.recorded writes stay owned by the job store', () => {
-    expect(collectRawTerminalRecordedWriters()).toEqual(['src/jobs/job-store.ts']);
+  it('raw job.terminal.recorded writes stay owned by the job store and atomic KB recorder', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual([KB_JOB_RECORDER, 'src/jobs/job-store.ts']);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/launch.ts']);

@@ -87,7 +87,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
             bodyVersion: 1,
             body: {
               kind: 'domain',
-              stage: 'kb_operation_failed',
+              stage: 'hosted_kb_operation_failed',
               message: 'KB promote failed: index unavailable',
               detail: { operation: 'promote', code: 'kb_error' },
             },

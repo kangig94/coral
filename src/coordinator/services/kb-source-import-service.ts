@@ -178,7 +178,7 @@ export class KbSourceImportService {
       };
     } catch (error: unknown) {
       const detail = normalizeKbFailureDetail(error);
-      const causeRef = this.recorder.appendKbOperationFailureCause({
+      this.recorder.appendOperationFailureWithTerminal({
         jobId,
         projectRoot: ctx.projectRoot,
         operation: 'source_import',
@@ -189,8 +189,8 @@ export class KbSourceImportService {
           readiness: request.readiness,
           cause: detail,
         },
+        startedAtMs,
       });
-      this.recorder.appendFailed(jobId, startedAtMs, causeRef);
       return {
         ok: false,
         message: detail.message,
