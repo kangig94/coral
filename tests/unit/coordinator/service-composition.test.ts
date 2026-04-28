@@ -1431,29 +1431,26 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'failed',
-        causeRef: {
-          stream: { kind: 'workflow', id: decision.job },
-        },
+        kind: 'aborted',
+        reason: 'signal_abort',
       },
     });
     expect(progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics).not.toHaveProperty('workflow');
     expect(workflow).toMatchObject({
       workflowId: decision.job,
-      outcome: 'failed',
+      outcome: 'aborted',
+      causeRef: null,
       slotOutcomes: {
         [`${decision.job}:0:0`]: { phase: 'completed', causeRef: null },
       },
     });
     expect(status).toMatchObject({
-      phase: 'error',
+      phase: 'aborted',
       result: {
         content: '',
         outcome: {
-          kind: 'failed',
-          causeRef: {
-            stream: { kind: 'workflow', id: decision.job },
-          },
+          kind: 'aborted',
+          reason: 'signal_abort',
         },
       },
     });

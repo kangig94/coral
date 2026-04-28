@@ -6,6 +6,7 @@ import {
   failureMetadata,
   type LaunchedAtom,
   type StepDetail,
+  type WaitFailure,
   type WorkflowExecutionPort,
 } from './command.js';
 import { describeTerminalFailure } from './command.js';
@@ -30,8 +31,31 @@ type StepLaunchResult = {
   launchError: unknown | null;
 };
 
+type LaunchFailure = Pick<WaitFailure, 'aborted' | 'message'> &
+  Partial<Pick<WaitFailure, 'causeRef' | 'terminalOutcome'>>;
+
 function isPromptSlot(slot: CompiledPlanSlot): boolean {
   return slot.kind === 'prompt';
+}
+
+export async function readLaunchFailure(
+  jobId: string,
+  executionSvc: WorkflowExecutionPort,
+  signal?: AbortSignal,
+): Promise<LaunchFailure | null> {
+  if (signal?.aborted) return { message: 'aborted during bootstrap', aborted: true };
+
+  for await (const event of executionSvc.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) {
+    if (event.type !== 'terminal') continue;
+    return {
+      message: describeTerminalFailure(event.result),
+      aborted: event.result.outcome.kind === 'aborted',
+      ...(event.result.outcome.kind === 'failed' ? { causeRef: event.result.outcome.causeRef } : {}),
+      terminalOutcome: event.result.outcome,
+    };
+  }
+
+  return null;
 }
 
 export async function readLaunchFailureMessage(
@@ -39,14 +63,7 @@ export async function readLaunchFailureMessage(
   executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  if (signal?.aborted) return 'aborted during bootstrap';
-
-  for await (const event of executionSvc.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) {
-    if (event.type !== 'terminal') continue;
-    return describeTerminalFailure(event.result);
-  }
-
-  return null;
+  return (await readLaunchFailure(jobId, executionSvc, signal))?.message ?? null;
 }
 
 export async function launchAtomWithRetry(context: LaunchContext): Promise<LaunchedAtom> {
@@ -103,16 +120,18 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
   if (launchState === 'error') {
-    const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);
+    const failure = await readLaunchFailure(decision.job, executionSvc, signal);
     throw createWorkflowExecutionError(
-      `Step ${slot.stepIndex}, atom '${slot.label}' failed: ${message ?? 'unknown error'}`,
-      false,
+      `Step ${slot.stepIndex}, atom '${slot.label}' failed: ${failure?.message ?? 'unknown error'}`,
+      failure?.aborted ?? false,
       completedStepDetails,
       {
         failedStep: slot.stepIndex,
         failedAtom: slot.label,
         failedJobId: decision.job,
         failedSlotId: slot.slotId,
+        ...(failure?.causeRef === undefined ? {} : { causeRef: failure.causeRef }),
+        ...(failure?.terminalOutcome === undefined ? {} : { terminalOutcome: failure.terminalOutcome }),
       },
     );
   }
