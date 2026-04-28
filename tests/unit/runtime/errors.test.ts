@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  CoralSetupError,
-  documentedCoralSetupError,
-  type DocumentedCoralSetupErrorCode,
-} from '#src/runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '#src/runtime/errors.js';
 
 function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
   userMessage: string;
@@ -70,6 +66,12 @@ describe('CoralSetupError', () => {
       { name: 'needle' },
       'The expansion needle is not registered in the Coral catalog.',
       "Run 'coral-cli expansion list' to see available expansions.",
+    ],
+    [
+      'expansion_bundled_immutable',
+      { name: 'orama' },
+      "Bundled engine 'orama' cannot be equipped or unequipped (it auto-equips at boot).",
+      "Bundled engines are managed by the coordinator's fallback pass. Use 'coral-cli expansion list' to view their status.",
     ],
     [
       'expansion_runtime_unavailable',
@@ -143,6 +145,12 @@ describe('CoralSetupError', () => {
       'Cannot write to the Coral expansion install path for needle.',
       'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
     ],
+    [
+      'binding_required_by_active_engine',
+      { binding: 'kb.embedding', requiredBy: 'needle' },
+      "Binding 'kb.embedding' is required by active engine 'needle'.",
+      "Unequip 'needle' before unequipping the engine that fills 'kb.embedding'.",
+    ],
   ] satisfies Array<[DocumentedCoralSetupErrorCode, Record<string, unknown>, string, string]>)(
     'renders documented setup error %s through CoralSetupError',
     (code, context, userMessage, remediation) => {
@@ -160,8 +168,7 @@ describe('CoralSetupError', () => {
   it('exposes stable documented specs for known setup codes', () => {
     expect(documentedCoralSetupErrorSpec('expansion_binary_corrupt')).toEqual({
       userMessage: 'The installed binary for this expansion could not be activated.',
-      remediation:
-        "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
+      remediation: "Run 'coral-cli expansion unequip <name>' before retrying 'coral-cli expansion equip <name>'.",
     });
   });
 });

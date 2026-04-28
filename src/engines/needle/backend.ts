@@ -23,7 +23,7 @@ import {
   type KbEntryId,
   type KbIndex,
 } from '../../kb/entry-types.js';
-import { needleIndexDir, needleStagingDir } from './paths.js';
+import { needleAddonPath, needleIndexDir, needleStagingDir } from './paths.js';
 import { loadKbNote, loadKbSource } from '../../kb/read.js';
 import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../kb/embedding-vector.js';
@@ -766,7 +766,7 @@ export async function createNeedleBacked(
   embedder: Backed<EmbeddingService>,
 ): Promise<Backed<BoundVectorRetrieval>> {
   const backend = new NeedleBackend(kbRuntime, {
-    addonPath: runtime.paths.coral.engine.addonPath('needle', 'coral-needle.node'),
+    addonPath: needleAddonPath(runtime),
     embedder: resolveBoundNeedleEmbedder(embedder),
   });
   const retrieval: BoundVectorRetrieval = {

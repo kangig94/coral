@@ -26,15 +26,7 @@ describe('flavor coexistence integration', () => {
 
     expect(prodEq.dataDir('needle')).toBe(join(baseDir, 'data', 'engines', 'needle'));
     expect(devEq.dataDir('needle')).toBe(join(baseDir, 'data-dev', 'engines', 'needle'));
-    expect(prodEq.addonPath('needle', 'coral-needle.node')).toBe(
-      join(baseDir, 'data', 'engines', 'needle', 'coral-needle.node'),
-    );
-    expect(devEq.addonPath('needle', 'coral-needle.node')).toBe(
-      join(baseDir, 'data-dev', 'engines', 'needle', 'coral-needle.node'),
-    );
     expect(prodEq.installLockPath('needle')).toBe(join(baseDir, 'data', 'engines', 'needle', 'install.lock'));
-    expect(devEq.installLockPath('needle')).toBe(
-      join(baseDir, 'data-dev', 'engines', 'needle', 'install.lock'),
-    );
+    expect(devEq.installLockPath('needle')).toBe(join(baseDir, 'data-dev', 'engines', 'needle', 'install.lock'));
   });
 });

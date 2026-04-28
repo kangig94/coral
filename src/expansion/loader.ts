@@ -1,5 +1,5 @@
 import type { Disposable } from '../runtime/ports.js';
-import type { BundledExpansion, Expansion, ExpansionHost } from './contract.js';
+import type { EngineManifest, Expansion, ExpansionHost } from './contract.js';
 import { createScope } from './scope.js';
 
 type ExpansionModule = {
@@ -16,7 +16,7 @@ function disposeQuietly(scope: Disposable): void {
 
 export async function loadExpansions(
   makeHost: (id: string, scope: Disposable) => ExpansionHost,
-  manifest: readonly BundledExpansion[],
+  manifest: readonly EngineManifest[],
 ): Promise<readonly Disposable[]> {
   const scopes: Disposable[] = [];
 

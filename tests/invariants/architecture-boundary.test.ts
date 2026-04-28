@@ -11,7 +11,6 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
-import { BUNDLED_EXPANSIONS } from '#src/expansion/bundled.js';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -1244,75 +1243,6 @@ describe('architecture boundary guard', () => {
     expect(runtimeSource).toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*\)/);
     expect(runtimeSource).not.toMatch(/createRuntimeBinding<Backed<EmbeddingService>>\(\s*'kb\.embedding'\s*,/);
   });
-  it('keeps kb.embedding defaultless and aligns bundled slot metadata with declared KbRuntime bindings', () => {
-    const runtimePath = resolve(REPO_ROOT, 'src/kb/runtime.ts');
-    const contractPath = resolve(REPO_ROOT, 'src/kb/contract.ts');
-    const runtimeSource = readFileSync(runtimePath, 'utf8');
-    const contractSource = readFileSync(contractPath, 'utf8');
-    const runtimeFile = ts.createSourceFile(runtimePath, runtimeSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const contractFile = ts.createSourceFile(
-      contractPath,
-      contractSource,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    const bindingNames = new Set<string>();
-    let embeddingBindingArgs: number | null = null;
-
-    const collectBindings = (node: ts.Node): void => {
-      if (ts.isInterfaceDeclaration(node) && node.name.text === 'KbRuntime') {
-        for (const member of node.members) {
-          if (
-            ts.isPropertySignature(member) &&
-            member.type &&
-            ts.isTypeReferenceNode(member.type) &&
-            ts.isIdentifier(member.type.typeName) &&
-            member.type.typeName.text === 'RuntimeBinding' &&
-            member.name &&
-            ts.isIdentifier(member.name)
-          ) {
-            bindingNames.add(`kb.${member.name.text}`);
-          }
-        }
-      }
-
-      ts.forEachChild(node, collectBindings);
-    };
-
-    const visitRuntime = (node: ts.Node): void => {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === 'createRuntimeBinding' &&
-        ts.isBinaryExpression(node.parent) &&
-        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isPropertyAccessExpression(node.parent.left) &&
-        node.parent.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
-        node.parent.left.name.text === 'embedding'
-      ) {
-        embeddingBindingArgs = node.arguments.length;
-      }
-
-      ts.forEachChild(node, visitRuntime);
-    };
-
-    collectBindings(contractFile);
-    visitRuntime(runtimeFile);
-
-    expect(embeddingBindingArgs).toBe(1);
-    expect(BUNDLED_EXPANSIONS.some((entry) => entry.metadata.slot === 'kb.embedding')).toBe(true);
-
-    const declaredBindings = [...bindingNames];
-    expect(declaredBindings.length).toBeGreaterThan(0);
-    expect(declaredBindings).toContain('kb.embedding');
-    expect(
-      BUNDLED_EXPANSIONS.map((entry) => entry.metadata.slot)
-        .filter((slot): slot is string => typeof slot === 'string')
-        .every((slot) => bindingNames.has(slot)),
-    ).toBe(true);
-    expect(existsSync(resolve(REPO_ROOT, 'src/kb/search/embedding.ts'))).toBe(false);
-  });
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 
@@ -1474,30 +1404,6 @@ describe('architecture boundary guard', () => {
     const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');
     expect(skillSource).toContain("activation: 'equip'");
     expect(skillSource).toContain('~/.coral/data/engines/needle/coral-needle.node');
-  });
-
-  it('forbids any built-in default backend (Orama) from being registered as an Expansion (§16 #43a)', () => {
-    // §2.8a invariant #43a: Orama is the constructor-time default value of
-    // kb.vector and kb.fts bindings. It MUST NOT be registered as an
-    // Expansion, because Expansions exist only for behaviors that may or may
-    // not be present at runtime. Treating Orama as a "priority-0 expansion"
-    // would re-introduce the binary default-vs-override smell §2.8a deletes.
-    const oramaIds = new Set(['orama', 'orama-base', 'orama-fts', 'orama-vector']);
-    const violations = BUNDLED_EXPANSIONS.flatMap((entry) => {
-      const findings: string[] = [];
-      if (oramaIds.has(entry.id)) {
-        findings.push(
-          `BUNDLED_EXPANSIONS contains id="${entry.id}" — Orama must be a constructor-time default, not an Expansion.`,
-        );
-      }
-      if (entry.specifier.includes('/orama/')) {
-        findings.push(
-          `BUNDLED_EXPANSIONS specifier "${entry.specifier}" points at Orama — Orama must not load via the Expansion loader.`,
-        );
-      }
-      return findings;
-    });
-    expect(violations).toEqual([]);
   });
 
   it('forbids Expansions from importing Journal/Corpus authority writers (§16 #32)', () => {

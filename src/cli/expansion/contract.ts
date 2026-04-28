@@ -16,9 +16,9 @@ import {
   type InstallResponse,
   type InstallResult,
   type Onboarding,
-  type OnboardingStep,
+  type OnboardingChoice,
 } from '../../coordinator/expansion/rpc.js';
-import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
+import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
 
@@ -37,7 +37,7 @@ export {
   type InstallResponse,
   type InstallResult,
   type Onboarding,
-  type OnboardingStep,
+  type OnboardingChoice,
 };
 
 export const expansionArgsSchema = z
@@ -128,21 +128,16 @@ function bindingRequiredInstallError(
   }
 
   const binding = typeof structured.context?.binding === 'string' ? structured.context.binding : 'unknown-binding';
-  const requiredBy = typeof structured.context?.requiredBy === 'string' ? structured.context.requiredBy : 'this expansion';
-  if (binding !== 'kb.embedding') {
-    return null;
-  }
-
-  const peers = BUNDLED_EXPANSIONS
-    .filter((entry) => entry.metadata.slot === 'kb.embedding')
-    .map((entry) => entry.id);
+  const requiredBy =
+    typeof structured.context?.requiredBy === 'string' ? structured.context.requiredBy : 'this expansion';
+  const peers = BUNDLED_ENGINES.filter((entry) => entry.fills?.includes(binding)).map((entry) => entry.id);
   const availablePeers = peers.length > 0 ? peers.join(', ') : 'none';
 
   return finalizeInstallError({
     status: 'error',
     code: structured.code,
-    userMessage: `Cannot equip '${requiredBy}' — it requires '${binding}' to be bound. Available embedder Expansions: ${availablePeers}.`,
-    remediation: "Run 'coral-cli expansion equip <embedder>' first, then retry.",
+    userMessage: `Cannot equip '${requiredBy}' — it requires '${binding}' to be bound. Available Expansions for '${binding}': ${availablePeers}.`,
+    remediation: `Run 'coral-cli expansion equip <name>' for an engine that fills '${binding}', then retry.`,
     ...(structured.context === undefined ? {} : { context: structured.context }),
     ...(peers.length === 0 ? {} : { suggestions: peers }),
   });

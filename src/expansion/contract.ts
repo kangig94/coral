@@ -15,16 +15,49 @@ export interface ExpansionHost {
   readonly id: string;
 }
 
-export type BundledExpansionSlot = 'kb.vector' | 'kb.embedding' | 'kb.fts';
+export type EngineInstallLoggerEvent = {
+  readonly kind: string;
+  readonly message: string;
+};
 
-export interface BundledExpansion {
+export type LocalExpansionInstallState = {
+  readonly targetDir: string;
+  readonly addonPath?: string | null;
+  readonly installLockPath: string;
+  readonly version: string | null;
+  readonly method: string | null;
+  readonly installed: boolean;
+  readonly installLocked: boolean;
+  readonly durableState: boolean;
+};
+
+export interface EngineInstallerOptions {
+  readonly name: string;
+  readonly version: string;
+  readonly runtime: Runtime;
+  readonly logger?: (event: EngineInstallLoggerEvent) => void;
+  readonly lockTimeoutMs?: number;
+  readonly update?: boolean;
+}
+
+export interface EngineInstaller {
+  install(opts: EngineInstallerOptions): Promise<unknown>;
+  uninstall(opts: EngineInstallerOptions): Promise<unknown>;
+  inspect(runtime: Runtime, name: string): LocalExpansionInstallState;
+}
+
+export type OnboardingStep =
+  | { readonly kind: 'require-binding'; readonly binding: string }
+  | { readonly kind: 'env-var'; readonly name: string; readonly message?: string }
+  | { readonly kind: 'confirm-download'; readonly message: string };
+
+export interface EngineManifest {
   readonly id: string;
   readonly version: string;
   readonly specifier: string;
-  readonly metadata: {
-    readonly description: string;
-    readonly repo?: string;
-    readonly onboarding?: 'optional' | 'required';
-    readonly slot?: BundledExpansionSlot;
-  };
+  readonly tier: 'bundled' | 'installed';
+  readonly description: string;
+  readonly installer?: EngineInstaller;
+  readonly onboarding?: readonly OnboardingStep[];
+  readonly fills?: readonly string[];
 }

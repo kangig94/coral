@@ -404,6 +404,7 @@ describe('cli main routing', () => {
             id: 'needle',
             name: 'Needle',
             description: 'Needle vector expansion',
+            tier: 'installed',
             activation: 'equip',
             status: 'not_equipped',
             statusDescription: 'Needle is not installed.',

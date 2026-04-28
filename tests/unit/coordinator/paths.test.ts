@@ -70,12 +70,6 @@ describe('composeCoralPaths', () => {
     const eq = enginePaths('prod', { baseDir: '/tmp/coral-root' });
     expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'data', 'engines'));
     expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle'));
-    expect(eq.addonPath('needle', 'coral-needle.node')).toBe(
-      join('/tmp/coral-root', 'data', 'engines', 'needle', 'coral-needle.node'),
-    );
-    expect(eq.addonPath('cgc', 'cgc.node')).toBe(join('/tmp/coral-root', 'data', 'engines', 'cgc', 'cgc.node'));
-    expect(eq.installLockPath('needle')).toBe(
-      join('/tmp/coral-root', 'data', 'engines', 'needle', 'install.lock'),
-    );
+    expect(eq.installLockPath('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle', 'install.lock'));
   });
 });

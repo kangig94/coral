@@ -1,34 +1,87 @@
-import type { BundledExpansion } from '../../expansion/contract.js';
+import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import type { EngineManifest, OnboardingStep } from '../../expansion/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
-
-export interface OnboardingFlow {
-  readonly id: string;
-  run(ctx: OnboardingContext): Promise<void>;
-}
 
 export interface OnboardingContext {
   readBinding(id: string): Promise<{ bound: boolean; heldBy?: string }>;
-  readonly catalog: readonly BundledExpansion[];
-  readonly prompt: { choose<T>(message: string, options: readonly T[]): Promise<T | null> };
+  readonly prompt: {
+    choose<T>(message: string, options: readonly T[]): Promise<T | null>;
+    confirm?(message: string): Promise<boolean>;
+  };
+  readonly env?: { get(name: string): string | undefined };
   runOnboarding(id: string): Promise<void>;
   equip(id: string): Promise<void>;
 }
 
-export const needleOnboarding: OnboardingFlow = {
-  id: 'needle',
-  async run(ctx) {
-    const kbEmbedding = await ctx.readBinding('kb.embedding');
-    if (kbEmbedding.bound) {
-      return;
-    }
+function resolveEngine(id: string): EngineManifest | null {
+  return BUNDLED_ENGINES.find((entry) => entry.id === id) ?? null;
+}
 
-    const choices = ctx.catalog.filter((entry) => entry.metadata.slot === 'kb.embedding');
-    const chosen = await ctx.prompt.choose('Vector search needs an embedder:', choices);
-    if (!chosen) {
-      throw documentedCoralSetupError('user_cancelled', { during: 'needle-onboarding' });
-    }
+async function requireBinding(
+  engine: EngineManifest,
+  step: Extract<OnboardingStep, { kind: 'require-binding' }>,
+  ctx: OnboardingContext,
+): Promise<void> {
+  const current = await ctx.readBinding(step.binding);
+  if (current.bound) {
+    return;
+  }
 
-    await ctx.runOnboarding(chosen.id);
-    await ctx.equip(chosen.id);
-  },
-};
+  const choices = BUNDLED_ENGINES.filter((entry) => entry.fills?.includes(step.binding));
+  const chosen = await ctx.prompt.choose(`Expansion '${engine.id}' needs '${step.binding}':`, choices);
+  if (!chosen) {
+    throw documentedCoralSetupError('user_cancelled', { during: `${engine.id}-onboarding` });
+  }
+
+  await ctx.runOnboarding(chosen.id);
+  await ctx.equip(chosen.id);
+}
+
+async function requireEnv(
+  engine: EngineManifest,
+  step: Extract<OnboardingStep, { kind: 'env-var' }>,
+  ctx: OnboardingContext,
+): Promise<void> {
+  const value = ctx.env?.get(step.name) ?? process.env[step.name];
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return;
+  }
+
+  throw documentedCoralSetupError('expansion_runtime_unavailable', {
+    name: engine.id,
+    env: step.name,
+    ...(step.message === undefined ? {} : { message: step.message }),
+  });
+}
+
+async function confirmDownload(
+  engine: EngineManifest,
+  step: Extract<OnboardingStep, { kind: 'confirm-download' }>,
+  ctx: OnboardingContext,
+): Promise<void> {
+  const confirmed = await (ctx.prompt.confirm?.(step.message) ?? Promise.resolve(true));
+  if (!confirmed) {
+    throw documentedCoralSetupError('user_cancelled', { during: `${engine.id}-onboarding` });
+  }
+}
+
+async function runStep(engine: EngineManifest, step: OnboardingStep, ctx: OnboardingContext): Promise<void> {
+  if (step.kind === 'require-binding') {
+    await requireBinding(engine, step, ctx);
+  } else if (step.kind === 'env-var') {
+    await requireEnv(engine, step, ctx);
+  } else {
+    await confirmDownload(engine, step, ctx);
+  }
+}
+
+export async function runExpansionOnboarding(id: string, ctx: OnboardingContext): Promise<void> {
+  const engine = resolveEngine(id);
+  if (!engine) {
+    throw documentedCoralSetupError('unknown_expansion', { name: id });
+  }
+
+  for (const step of engine.onboarding ?? []) {
+    await runStep(engine, step, ctx);
+  }
+}

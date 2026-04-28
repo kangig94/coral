@@ -51,7 +51,7 @@ const onboardingChoiceSchema = z
     dims: z.number().int().positive().nullable(),
   })
   .strict();
-export type OnboardingStep = z.infer<typeof onboardingChoiceSchema>;
+export type OnboardingChoice = z.infer<typeof onboardingChoiceSchema>;
 
 const postInstallSchema = z.array(z.enum(postInstallActionLiterals)).min(1);
 
@@ -72,6 +72,7 @@ export type Onboarding = z.infer<typeof onboardingSchema>;
 const expansionEntrySchema = z
   .object({
     ...catalogEntryCommonShape,
+    tier: z.enum(['bundled', 'installed']),
     activation: z.literal('equip'),
     status: z.enum(expansionCatalogStatusLiterals),
     addonPath: z.string().min(1).optional(),
@@ -134,6 +135,7 @@ export const expansionStatusSchema = z.enum([
 export const expansionViewSchema = z
   .object({
     name: z.string().min(1),
+    tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
     lastError: z.string().min(1).optional(),
   })
@@ -142,8 +144,9 @@ export type ExpansionView = z.infer<typeof expansionViewSchema>;
 
 const installExpansionViewSchema = z
   .object({
-    slot: z.string().min(1),
+    slot: z.string().min(1).optional(),
     name: z.string().min(1),
+    tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
   })
   .strict();
@@ -292,11 +295,10 @@ export type InstallError = z.infer<typeof installErrorSchema>;
 export const installResponseSchema = z.union([installResultSchema, installErrorSchema]);
 export type InstallResponse = z.infer<typeof installResponseSchema>;
 
-function toExpansionView(
-  view: ReturnType<ExpansionLifecycleService['info']>,
-): ExpansionView {
+function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): ExpansionView {
   return {
     name: view.id,
+    tier: view.tier,
     status: view.status === 'active' ? 'equipped' : view.status,
     ...(view.lastError === undefined ? {} : { lastError: view.lastError }),
   };

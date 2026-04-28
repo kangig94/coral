@@ -73,6 +73,7 @@ describe('expansion activation', () => {
       status: 'equipped',
       expansion: {
         name: 'needle',
+        tier: 'installed',
         status: 'equipped',
       },
     });
@@ -83,6 +84,7 @@ describe('expansion activation', () => {
       expansion: {
         slot: 'kb.vector',
         name: 'needle',
+        tier: 'installed',
         status: 'equipped',
       },
     });

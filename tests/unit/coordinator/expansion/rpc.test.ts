@@ -17,10 +17,29 @@ describe('createExpansionRpc', () => {
       }),
       info: vi.fn((name: string) =>
         name === 'failed'
-          ? { id: 'failed', version: '0.2.0', status: 'installed-not-active' as const, lastError: 'boom' }
-          : { id: name, version: '0.2.0', status: (active ? 'active' : 'inactive') as const },
+          ? {
+              id: 'failed',
+              version: '0.2.0',
+              tier: 'installed' as const,
+              status: 'installed-not-active' as const,
+              lastError: 'boom',
+            }
+          : {
+              id: name,
+              version: '0.2.0',
+              tier: 'installed' as const,
+              status: (active ? 'active' : 'inactive') as const,
+            },
       ),
-      list: vi.fn(() => [{ id: 'failed', version: '0.2.0', status: 'installed-not-active' as const, lastError: 'boom' }]),
+      list: vi.fn(() => [
+        {
+          id: 'failed',
+          version: '0.2.0',
+          tier: 'installed' as const,
+          status: 'installed-not-active' as const,
+          lastError: 'boom',
+        },
+      ]),
       readBinding: vi.fn(() => ({ bound: true, heldBy: 'needle' })),
     } as unknown as ExpansionLifecycleService;
 
@@ -30,6 +49,7 @@ describe('createExpansionRpc', () => {
       status: 'equipped',
       expansion: {
         name: 'needle',
+        tier: 'installed',
         status: 'equipped',
       },
     });
@@ -37,13 +57,14 @@ describe('createExpansionRpc', () => {
       status: 'already_equipped',
       expansion: {
         name: 'needle',
+        tier: 'installed',
         status: 'equipped',
       },
     });
     await expect(rpc.unequipExpansion({ name: 'needle' })).resolves.toEqual({ status: 'uninstalled' });
     await expect(rpc.unequipExpansion({ name: 'missing' })).resolves.toEqual({ status: 'not_equipped' });
     await expect(rpc.listExpansion({})).resolves.toEqual({
-      expansions: [{ name: 'failed', status: 'installed-not-active', lastError: 'boom' }],
+      expansions: [{ name: 'failed', tier: 'installed', status: 'installed-not-active', lastError: 'boom' }],
     });
     await expect(rpc.readBinding({ binding: 'kb.vector' })).resolves.toEqual({ bound: true, heldBy: 'needle' });
   });

@@ -1,7 +1,7 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import type { BundledExpansion } from '../expansion/contract.js';
-import { BUNDLED_EXPANSIONS } from '../expansion/bundled.js';
+import type { EngineManifest } from '../expansion/contract.js';
+import { BUNDLED_ENGINES } from '../expansion/bundled.js';
 import { readDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -42,7 +42,7 @@ function isIpcConnectFailed(error: unknown): boolean {
 }
 
 export type ExpansionStatus =
-  | { status: 'available'; expansions: Array<ExpansionView & { slot: string }> }
+  | { status: 'available'; expansions: Array<ExpansionView & { slot?: string }> }
   | { status: 'unavailable' };
 
 export interface CliExpansionActivation {
@@ -56,18 +56,19 @@ export interface CliExpansionActivation {
   readExpansionStatus(name?: string): Promise<ExpansionStatus>;
 }
 
-function requiresLocalInstall(entry: BundledExpansion): boolean {
-  return entry.metadata.repo !== undefined;
+function requiresLocalInstall(entry: EngineManifest): boolean {
+  return entry.tier === 'installed' && entry.installer !== undefined;
 }
 
-function resolveManifestSlot(name: string): string {
-  return resolveBundledExpansion(name)?.metadata.slot ?? 'kb.vector';
+function resolveManifestSlot(name: string): string | undefined {
+  return resolveEngineManifest(name)?.fills?.[0];
 }
 
-function withManifestSlot<T extends { name: string; status: string }>(view: T): T & { slot: string } {
+function withManifestSlot<T extends { name: string; status: string }>(view: T): T & { slot?: string } {
+  const slot = resolveManifestSlot(view.name);
   return {
-    slot: resolveManifestSlot(view.name),
     ...view,
+    ...(slot === undefined ? {} : { slot }),
   };
 }
 
@@ -75,8 +76,8 @@ function resolveRuntime(): Runtime {
   return createRealRuntime(resolveBuildFlavor(process.env));
 }
 
-function resolveBundledExpansion(name: string): BundledExpansion | null {
-  return BUNDLED_EXPANSIONS.find((entry) => entry.id === name) ?? null;
+function resolveEngineManifest(name: string): EngineManifest | null {
+  return BUNDLED_ENGINES.find((entry) => entry.id === name) ?? null;
 }
 
 function unknownExpansionResponse(name: string) {
@@ -84,23 +85,28 @@ function unknownExpansionResponse(name: string) {
 }
 
 function toCatalogEntry(
-  entry: BundledExpansion,
+  entry: EngineManifest,
   runtime: Runtime,
-  passive: (ExpansionView & { slot: string }) | null,
+  passive: (ExpansionView & { slot?: string }) | null,
 ): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
   const status =
-    passive?.status
-    ?? (requiresLocalInstall(entry)
-      ? (local.installLocked ? 'installing' : local.installed ? 'inactive' : 'not_equipped')
+    passive?.status ??
+    (requiresLocalInstall(entry)
+      ? local.installLocked
+        ? 'installing'
+        : local.installed
+          ? 'inactive'
+          : 'not_equipped'
       : 'inactive');
   return catalogEntrySchema.parse({
     id: entry.id,
     name: entry.id,
-    description: entry.metadata.description,
+    tier: entry.tier,
+    description: entry.description,
     activation: 'equip',
     status,
-    ...(requiresLocalInstall(entry) ? { addonPath: local.addonPath } : {}),
+    ...(requiresLocalInstall(entry) && typeof local.addonPath === 'string' ? { addonPath: local.addonPath } : {}),
     version: local.version ?? entry.version,
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
   });
@@ -169,7 +175,9 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
         return catalogResultSchema.parse({
           status: 'catalog',
-          packages: BUNDLED_EXPANSIONS.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
+          packages: BUNDLED_ENGINES.map((entry) =>
+            toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null),
+          ),
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -178,7 +186,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async info(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveBundledExpansion(name);
+        const entry = resolveEngineManifest(name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
@@ -186,7 +194,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const passive = await lowLevel.readExpansionStatus(name);
         return infoResultSchema.parse({
           status: 'info',
-          package: toCatalogEntry(entry, resolveRuntime(), passive.status === 'available' ? (passive.expansions[0] ?? null) : null),
+          package: toCatalogEntry(
+            entry,
+            resolveRuntime(),
+            passive.status === 'available' ? (passive.expansions[0] ?? null) : null,
+          ),
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -195,7 +207,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async equip(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveBundledExpansion(name);
+        const entry = resolveEngineManifest(name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
@@ -215,7 +227,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async unequip(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveBundledExpansion(name);
+        const entry = resolveEngineManifest(name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
@@ -238,7 +250,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async update(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveBundledExpansion(name);
+        const entry = resolveEngineManifest(name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }

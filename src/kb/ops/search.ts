@@ -55,7 +55,7 @@ function rethrowMissingEmbedder(error: unknown): never {
       code: 'binding_empty',
       userMessage: 'Vector search needs an embedder.',
       remediation:
-        'Configure one via `coral-cli expansion list` (filter: `metadata.slot=kb.embedding`) and `coral-cli expansion equip <embedder>`. FTS-only search continues to work zero-config.',
+        'Run `coral-cli expansion list` to find an engine that fills the missing binding, then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.',
       context: { binding: 'kb.embedding' },
     }),
     { binding: 'kb.embedding', cause: error },

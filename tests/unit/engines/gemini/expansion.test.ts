@@ -8,11 +8,9 @@ const GEMINI_ENTRY = {
   id: 'gemini',
   version: '0.5.2',
   specifier: '#src/engines/gemini/expansion.js',
-  metadata: {
-    description: 'Google Gemini embedding API',
-    onboarding: 'required' as const,
-    slot: 'kb.embedding',
-  },
+  tier: 'installed' as const,
+  description: 'Google Gemini embedding API',
+  fills: ['kb.embedding'],
 };
 
 describe('gemini expansion', () => {

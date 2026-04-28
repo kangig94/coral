@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { Runtime, StoragePort } from '../../runtime/ports.js';
+import type { Runtime, StoragePort } from '../runtime/ports.js';
+export { acquireDirectoryLock, isDirectoryLockTimeoutError } from './fs-lock.js';
 
 const COMMAND_TIMEOUT_MS = 120_000;
 
@@ -30,7 +31,10 @@ export function findCommand(runtime: Runtime, command: string): string | null {
   return result.stdout.trim().split(/\r?\n/, 1)[0] ?? null;
 }
 
-export function ensureExecSucceeded(command: string, result: Awaited<ReturnType<Runtime['process']['execSync']>>): void {
+export function ensureExecSucceeded(
+  command: string,
+  result: Awaited<ReturnType<Runtime['process']['execSync']>>,
+): void {
   if (result.status === 0 && !result.error) {
     return;
   }

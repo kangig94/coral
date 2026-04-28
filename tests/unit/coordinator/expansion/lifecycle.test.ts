@@ -13,21 +13,19 @@ const FAKE_EMBEDDER_ENTRY = {
   id: 'test-embedder',
   version: '0.0.0',
   specifier: '#tests/fakes/fake-embedder.js',
-  metadata: {
-    description: 'fake embedder',
-    slot: 'kb.embedding',
-  },
+  tier: 'installed',
+  description: 'fake embedder',
+  fills: ['kb.embedding'],
 } as const;
 
 const NEEDLE_ENTRY = {
   id: 'needle',
   version: '0.2.0',
   specifier: '#src/engines/needle/expansion.js',
-  metadata: {
-    description: 'Needle vector backend',
-    onboarding: 'optional' as const,
-    slot: 'kb.vector',
-  },
+  tier: 'installed',
+  description: 'Needle vector backend',
+  onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
+  fills: ['kb.vector'],
 } as const;
 
 type MemoryStateStore = Pick<ExpansionStateStore, 'insert' | 'delete' | 'list' | 'get'> & {
@@ -124,9 +122,7 @@ describe('ExpansionLifecycleService', () => {
     await lifecycle.recoverOnBoot();
 
     expect(state.snapshot()).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      "Orphan expansion row 'ghost' deleted; expansion no longer in BUNDLED_EXPANSIONS",
-    );
+    expect(warn).toHaveBeenCalledWith("Orphan expansion row 'ghost' deleted; expansion no longer in BUNDLED_ENGINES");
   });
 
   it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
@@ -192,7 +188,9 @@ describe('ExpansionLifecycleService', () => {
       id: 'spy-embedder',
       version: '0.0.0',
       specifier,
-      metadata: { description: 'dispose spy', slot: 'kb.embedding' },
+      tier: 'installed',
+      description: 'dispose spy',
+      fills: ['kb.embedding'],
     } as const;
 
     try {
@@ -216,7 +214,9 @@ describe('ExpansionLifecycleService', () => {
       id: 'second-embedder',
       version: '0.0.0',
       specifier: '#tests/fakes/fake-embedder.js',
-      metadata: { description: 'second fake embedder', slot: 'kb.embedding' },
+      tier: 'installed',
+      description: 'second fake embedder',
+      fills: ['kb.embedding'],
     } as const;
     const { kb, lifecycle } = createLifecycleHarness({
       manifest: [FAKE_EMBEDDER_ENTRY, SECOND_EMBEDDER],
@@ -238,11 +238,13 @@ describe('ExpansionLifecycleService', () => {
     expect(
       expansionViewSchema.parse({
         name: 'needle',
+        tier: 'installed',
         status: 'installed-not-active',
         lastError: 'binding missing',
       }),
     ).toEqual({
       name: 'needle',
+      tier: 'installed',
       status: 'installed-not-active',
       lastError: 'binding missing',
     });

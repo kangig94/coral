@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
-import type * as InstallSupportModule from '#src/cli/expansion/install-support.js';
+import type * as InstallHelpersModule from '#src/infra/install-helpers.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/cli/expansion/contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -17,8 +17,8 @@ const mockState = vi.hoisted(() => ({
   downloadBuffer: vi.fn(),
 }));
 
-vi.mock('#src/cli/expansion/install-support.js', async () => {
-  const actual = await vi.importActual<typeof InstallSupportModule>('#src/cli/expansion/install-support.js');
+vi.mock('#src/infra/install-helpers.js', async () => {
+  const actual = await vi.importActual<typeof InstallHelpersModule>('#src/infra/install-helpers.js');
   return {
     ...actual,
     downloadBuffer: mockState.downloadBuffer,
@@ -73,6 +73,10 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
   };
 }
 
+function needleAddonPath(baseDir: string): string {
+  return join(enginePaths('prod', { baseDir }).dataDir('needle'), 'coral-needle.node');
+}
+
 function writeTarString(header: Buffer, value: string, offset: number, length: number): void {
   Buffer.from(value, 'utf-8').copy(header, offset, 0, length);
 }
@@ -121,9 +125,14 @@ describe('installExpansion', () => {
       targetDir: enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
       postInstall: ['register_expansion'],
     });
-    expect(readFileSync(enginePaths('prod', { baseDir: fixture.baseDir }).addonPath('needle', 'coral-needle.node'))).toEqual(addonBytes);
+    expect(readFileSync(needleAddonPath(fixture.baseDir))).toEqual(addonBytes);
     expect(
-      JSON.parse(readFileSync(join(enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'), '.needle-meta.json'), 'utf-8')),
+      JSON.parse(
+        readFileSync(
+          join(enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'), '.needle-meta.json'),
+          'utf-8',
+        ),
+      ),
     ).toEqual({ version: '0.2.0', method: 'prebuild' });
     expect(pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(false);
   });
@@ -146,8 +155,12 @@ describe('installExpansion', () => {
     const runtime = createRuntimeForFixture(fixture);
     const targetDir = enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
-    writeFileSync(enginePaths('prod', { baseDir: fixture.baseDir }).addonPath('needle', 'coral-needle.node'), Buffer.from('addon'));
-    writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
+    writeFileSync(needleAddonPath(fixture.baseDir), Buffer.from('addon'));
+    writeFileSync(
+      join(targetDir, '.needle-meta.json'),
+      JSON.stringify({ version: '0.2.0', method: 'prebuild' }),
+      'utf-8',
+    );
 
     const result = await installExpansion('needle', { runtime, update: true });
 
@@ -171,7 +184,9 @@ describe('installExpansion', () => {
     });
 
     const firstInstall = installExpansion('needle', { runtime, lockTimeoutMs: 25 });
-    await waitForCondition(() => pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle')));
+    await waitForCondition(() =>
+      pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle')),
+    );
 
     const secondInstall = await installExpansion('needle', { runtime, lockTimeoutMs: 25 });
     blocker.resolve();
@@ -192,7 +207,11 @@ describe('removeInstallArtifacts', () => {
     const targetDir = runtime.paths.coral.engine.dataDir('needle');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'coral-needle.node'), Buffer.from('addon'));
-    writeFileSync(join(targetDir, '.needle-meta.json'), JSON.stringify({ version: '0.2.0', method: 'prebuild' }), 'utf-8');
+    writeFileSync(
+      join(targetDir, '.needle-meta.json'),
+      JSON.stringify({ version: '0.2.0', method: 'prebuild' }),
+      'utf-8',
+    );
 
     await removeInstallArtifacts(runtime, 'needle');
 

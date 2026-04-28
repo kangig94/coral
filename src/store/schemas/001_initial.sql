@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
 -- §6.4: one Orama consumer (`orama-base`), not split into FTS/vector. Splitting would force
 -- two parallel apply() paths over one shared Orama snapshot, racing the atomic snapshot swap.
 CREATE TABLE IF NOT EXISTS consumer_cursors (
-  consumer_id            TEXT PRIMARY KEY,      -- 'orama-base', 'needle-vector'
+  consumer_id            TEXT PRIMARY KEY,      -- projection/service consumer id
   authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
   lane                   TEXT,                  -- lane hint; NULL for journal and 'both' corpus consumers
   corpus_interest        TEXT,                  -- NULL for journal, 'content' | 'metadata' | 'both' for corpus

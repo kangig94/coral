@@ -6,7 +6,6 @@ export interface EnginePaths {
   readonly engineRoot: string;
   dataDir(name: string): string;
   installLockPath(name: string): string;
-  addonPath(name: string, filename: string): string;
 }
 
 export interface EnginePathOptions {
@@ -21,6 +20,5 @@ export function enginePaths(flavor: BuildFlavor, opts?: EnginePathOptions): Engi
     engineRoot,
     dataDir,
     installLockPath: (name) => join(dataDir(name), 'install.lock'),
-    addonPath: (name, filename) => join(dataDir(name), filename),
   };
 }

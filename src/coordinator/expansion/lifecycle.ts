@@ -1,6 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
-import type { BundledExpansion, BundledExpansionSlot, ExpansionHost } from '../../expansion/contract.js';
-import { BUNDLED_EXPANSIONS } from '../../expansion/bundled.js';
+import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
+import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { registeredConsumerHandles } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
@@ -15,6 +15,7 @@ type ExpansionModule = {
 export type ExpansionLifecycleView = {
   id: string;
   version: string;
+  tier: 'bundled' | 'installed';
   status: 'active' | 'inactive' | 'installed-not-active';
   lastError?: string;
 };
@@ -22,7 +23,7 @@ export type ExpansionLifecycleView = {
 export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (id: string, scope: Disposable) => ExpansionHost;
   readonly state: ExpansionStateStore;
-  readonly manifest?: readonly BundledExpansion[];
+  readonly manifest?: readonly EngineManifest[];
   readonly now?: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
 }
@@ -31,27 +32,27 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-const KB_BINDING_BY_SLOT: Record<BundledExpansionSlot, keyof Pick<KbRuntime, 'vector' | 'embedding' | 'fts'>> = {
-  'kb.vector': 'vector',
-  'kb.embedding': 'embedding',
-  'kb.fts': 'fts',
-};
-
 function bindingOf(kb: KbRuntime, slot: string) {
-  if (slot in KB_BINDING_BY_SLOT) {
-    return kb[KB_BINDING_BY_SLOT[slot as BundledExpansionSlot]];
+  if (slot === 'kb.vector') {
+    return kb.vector;
+  }
+  if (slot === 'kb.embedding') {
+    return kb.embedding;
+  }
+  if (slot === 'kb.fts') {
+    return kb.fts;
   }
   return null;
 }
 
 export class ExpansionLifecycleService {
-  private readonly manifest: readonly BundledExpansion[];
+  private readonly manifest: readonly EngineManifest[];
   private readonly now: () => string;
   private readonly scopes = new Map<string, Disposable>();
   private readonly failedRecovery = new Map<string, Error>();
 
   constructor(private readonly options: ExpansionLifecycleServiceOptions) {
-    this.manifest = options.manifest ?? BUNDLED_EXPANSIONS;
+    this.manifest = options.manifest ?? BUNDLED_ENGINES;
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -100,7 +101,11 @@ export class ExpansionLifecycleService {
     const manifestOrder = new Map(this.manifest.map((entry, index) => [entry.id, index]));
     const orderedRows = this.options.state
       .list()
-      .sort((left, right) => (manifestOrder.get(left.id) ?? Number.POSITIVE_INFINITY) - (manifestOrder.get(right.id) ?? Number.POSITIVE_INFINITY));
+      .sort(
+        (left, right) =>
+          (manifestOrder.get(left.id) ?? Number.POSITIVE_INFINITY) -
+          (manifestOrder.get(right.id) ?? Number.POSITIVE_INFINITY),
+      );
 
     // Bundled expansions replay only when expansion_state already contains a row.
     // First-time bootstrap on an empty table loads nothing automatically.
@@ -109,7 +114,7 @@ export class ExpansionLifecycleService {
       if (!entry) {
         this.options.state.delete(row.id);
         this.failedRecovery.delete(row.id);
-        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in BUNDLED_EXPANSIONS`);
+        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in BUNDLED_ENGINES`);
         continue;
       }
 
@@ -124,10 +129,12 @@ export class ExpansionLifecycleService {
   info(name: string): ExpansionLifecycleView {
     const row = this.options.state.get(name);
     const failed = this.failedRecovery.get(name);
+    const manifest = this.manifest.find((entry) => entry.id === name);
     return {
       id: name,
       version: row?.version ?? 'unknown',
-      status: failed ? 'installed-not-active' : (this.scopes.has(name) ? 'active' : 'inactive'),
+      tier: manifest?.tier ?? 'installed',
+      status: failed ? 'installed-not-active' : this.scopes.has(name) ? 'active' : 'inactive',
       ...(failed === undefined ? {} : { lastError: failed.message }),
     };
   }
@@ -136,7 +143,11 @@ export class ExpansionLifecycleService {
     const manifestOrder = new Map(this.manifest.map((entry, index) => [entry.id, index]));
     return this.options.state
       .list()
-      .sort((left, right) => (manifestOrder.get(left.id) ?? Number.POSITIVE_INFINITY) - (manifestOrder.get(right.id) ?? Number.POSITIVE_INFINITY))
+      .sort(
+        (left, right) =>
+          (manifestOrder.get(left.id) ?? Number.POSITIVE_INFINITY) -
+          (manifestOrder.get(right.id) ?? Number.POSITIVE_INFINITY),
+      )
       .map((row) => this.info(row.id));
   }
 

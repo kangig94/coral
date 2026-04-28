@@ -1,37 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { BundledExpansion } from '#src/expansion/contract.js';
-import { needleOnboarding } from '#src/cli/expansion/onboarding.js';
+import { runExpansionOnboarding } from '#src/cli/expansion/onboarding.js';
+import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 
-const GEMINI_ENTRY: BundledExpansion = {
-  id: 'gemini',
-  version: '0.5.2',
-  specifier: '#src/engines/gemini/expansion.js',
-  metadata: {
-    description: 'Google Gemini embedding API',
-    onboarding: 'required',
-    slot: 'kb.embedding',
-  },
-};
+const GEMINI_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'gemini');
+const ONNX_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'onnx');
 
-const ONNX_ENTRY: BundledExpansion = {
-  id: 'onnx',
-  version: '0.5.2',
-  specifier: '#src/engines/onnx/expansion.js',
-  metadata: {
-    description: 'Local ONNX embedding model',
-    onboarding: 'required',
-    slot: 'kb.embedding',
-  },
-};
+if (!GEMINI_ENTRY || !ONNX_ENTRY) {
+  throw new Error('test requires gemini and onnx bundled engine entries');
+}
 
-describe('needle onboarding', () => {
+describe('expansion onboarding', () => {
   it('skips the choice prompt when kb.embedding is already bound and leaves needle equip to the outer caller', async () => {
     const events: string[] = [];
     const choose = vi.fn(async () => GEMINI_ENTRY);
     const ctx = {
       readBinding: vi.fn(async () => ({ bound: true })),
-      catalog: [GEMINI_ENTRY, ONNX_ENTRY],
       prompt: { choose },
       runOnboarding: vi.fn(async (id: string) => {
         events.push(`onboard:${id}`);
@@ -41,7 +25,7 @@ describe('needle onboarding', () => {
       }),
     };
 
-    await needleOnboarding.run(ctx);
+    await runExpansionOnboarding('needle', ctx);
     await ctx.equip('needle');
 
     expect(choose).not.toHaveBeenCalled();
@@ -53,7 +37,6 @@ describe('needle onboarding', () => {
     const choose = vi.fn(async () => GEMINI_ENTRY);
     const ctx = {
       readBinding: vi.fn(async () => ({ bound: false })),
-      catalog: [GEMINI_ENTRY, ONNX_ENTRY],
       prompt: { choose },
       runOnboarding: vi.fn(async (id: string) => {
         events.push(`onboard:${id}`);
@@ -63,10 +46,10 @@ describe('needle onboarding', () => {
       }),
     };
 
-    await needleOnboarding.run(ctx);
+    await runExpansionOnboarding('needle', ctx);
     await ctx.equip('needle');
 
-    expect(choose).toHaveBeenCalledWith('Vector search needs an embedder:', [GEMINI_ENTRY, ONNX_ENTRY]);
+    expect(choose).toHaveBeenCalledWith("Expansion 'needle' needs 'kb.embedding':", [GEMINI_ENTRY, ONNX_ENTRY]);
     expect(events).toEqual(['onboard:gemini', 'equip:gemini', 'equip:needle']);
   });
 
@@ -74,7 +57,6 @@ describe('needle onboarding', () => {
     const events: string[] = [];
     const ctx = {
       readBinding: vi.fn(async () => ({ bound: false })),
-      catalog: [GEMINI_ENTRY, ONNX_ENTRY],
       prompt: {
         choose: vi.fn(async () => null),
       },
@@ -86,7 +68,7 @@ describe('needle onboarding', () => {
       }),
     };
 
-    await expect(needleOnboarding.run(ctx)).rejects.toMatchObject({
+    await expect(runExpansionOnboarding('needle', ctx)).rejects.toMatchObject({
       code: 'user_cancelled',
       context: { during: 'needle-onboarding' },
     });
@@ -97,7 +79,6 @@ describe('needle onboarding', () => {
     const equipped: string[] = [];
     const ctx = {
       readBinding: vi.fn(async () => ({ bound: false })),
-      catalog: [GEMINI_ENTRY, ONNX_ENTRY],
       prompt: {
         choose: vi.fn(async () => GEMINI_ENTRY),
       },
@@ -107,7 +88,7 @@ describe('needle onboarding', () => {
       }),
     };
 
-    await needleOnboarding.run(ctx);
+    await runExpansionOnboarding('needle', ctx);
 
     expect(equipped).toEqual(['gemini']);
     expect(equipped).not.toContain('needle');

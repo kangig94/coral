@@ -7,21 +7,19 @@ const NEEDLE_ENTRY = {
   id: 'needle',
   version: '0.2.0',
   specifier: '#src/engines/needle/expansion.js',
-  metadata: {
-    description: 'Needle vector backend',
-    onboarding: 'optional' as const,
-    slot: 'kb.vector',
-  },
+  tier: 'installed' as const,
+  description: 'Needle vector backend',
+  onboarding: [{ kind: 'require-binding' as const, binding: 'kb.embedding' }],
+  fills: ['kb.vector'],
 };
 
 const FAKE_EMBEDDER_ENTRY = {
   id: 'test-embedder',
   version: '0.0.0',
   specifier: '#tests/fakes/fake-embedder.js',
-  metadata: {
-    description: 'fake embedder',
-    slot: 'kb.embedding',
-  },
+  tier: 'installed' as const,
+  description: 'fake embedder',
+  fills: ['kb.embedding'],
 };
 
 function disposeScopes(scopes: readonly { [Symbol.dispose](): void }[]): void {

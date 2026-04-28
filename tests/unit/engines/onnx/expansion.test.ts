@@ -13,11 +13,9 @@ const ONNX_ENTRY = {
   id: 'onnx',
   version: '0.5.2',
   specifier: '#src/engines/onnx/expansion.js',
-  metadata: {
-    description: 'Local ONNX embedding model',
-    onboarding: 'required' as const,
-    slot: 'kb.embedding',
-  },
+  tier: 'installed' as const,
+  description: 'Local ONNX embedding model',
+  fills: ['kb.embedding'],
 };
 
 const createdHomes: string[] = [];

@@ -23,6 +23,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'unknown_expansion'
+  | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
   | 'expansion_embedding_provider_missing'
   | 'expansion_not_equipped'
@@ -39,6 +40,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'binding_empty'
   | 'binding_occupied'
   | 'binding_required'
+  | 'binding_required_by_active_engine'
   | 'user_cancelled';
 
 type DocumentedCoralSetupErrorSpec = {
@@ -61,28 +63,35 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `The installed binary for ${stringContextValue(context, 'name', 'this expansion')} could not be activated.`,
     remediation: (context) =>
-      `Run 'coral-cli expansion unequip ${stringContextValue(context, 'name', 'needle')}' before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}'.`,
+      `Run 'coral-cli expansion unequip ${stringContextValue(context, 'name', '<name>')}' before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}'.`,
   },
   installer_payload_invalid: {
     userMessage: 'Expansion installer returned an invalid payload.',
-    remediation: 'Retry the command. If this persists, report the code because the installer response failed internal validation.',
+    remediation:
+      'Retry the command. If this persists, report the code because the installer response failed internal validation.',
   },
   unknown_expansion: {
     userMessage: (context) =>
       `The expansion ${stringContextValue(context, 'name', 'this expansion')} is not registered in the Coral catalog.`,
     remediation: "Run 'coral-cli expansion list' to see available expansions.",
   },
+  expansion_bundled_immutable: {
+    userMessage: (context) =>
+      `Bundled engine '${stringContextValue(context, 'name', 'this engine')}' cannot be equipped or unequipped (it auto-equips at boot).`,
+    remediation:
+      "Bundled engines are managed by the coordinator's fallback pass. Use 'coral-cli expansion list' to view their status.",
+  },
   expansion_runtime_unavailable: {
     userMessage: (context) =>
       `Expansion runtime is not available for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: (context) =>
-      `Restart Coral or run 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}' to retry.`,
+      `Restart Coral or run 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}' to retry.`,
   },
   expansion_embedding_provider_missing: {
     userMessage: (context) =>
       `${stringContextValue(context, 'name', 'This expansion')} needs an embedding expansion before it can be equipped.`,
     remediation: (context) =>
-      `Equip an embedding expansion before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}'.`,
+      `Equip an embedding expansion before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}'.`,
   },
   consumer_not_registered: {
     userMessage: (context) =>
@@ -95,8 +104,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: 'Verify consumer registration ordering and authority.',
   },
   consumer_interest_mismatch: {
-    userMessage: (context) =>
-      `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest mismatch.`,
+    userMessage: (context) => `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest mismatch.`,
     remediation: 'Verify consumer interest declaration matches the registration.',
   },
   consumer_registration_kind_mismatch: {
@@ -105,13 +113,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: 'Check that registration kind (base vs expansion) is consistent.',
   },
   consumer_lane_invalid: {
-    userMessage: (context) =>
-      `Consumer ${stringContextValue(context, 'id', 'this consumer')} lane is invalid.`,
+    userMessage: (context) => `Consumer ${stringContextValue(context, 'id', 'this consumer')} lane is invalid.`,
     remediation: 'Verify lane configuration against registration.',
   },
   consumer_wait_unsupported: {
-    userMessage: (context) =>
-      `Consumer ${stringContextValue(context, 'id', 'this consumer')} does not support wait.`,
+    userMessage: (context) => `Consumer ${stringContextValue(context, 'id', 'this consumer')} does not support wait.`,
     remediation: 'Consumer does not support fresh-wait; use status polling.',
   },
   consumer_unregister_requires_stop: {
@@ -121,8 +127,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       'Consumer must be stopped before unregister; this is an internal sequencing error. Report it with the code if persistent.',
   },
   consumer_interest_invalid: {
-    userMessage: (context) =>
-      `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest is invalid.`,
+    userMessage: (context) => `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest is invalid.`,
     remediation: 'Verify consumer interest declaration structure.',
   },
   consumer_registration_kind_invalid: {
@@ -136,13 +141,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: 'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
   },
   expansion_not_equipped: {
-    userMessage: (context) =>
-      `Expansion '${stringContextValue(context, 'name', 'this expansion')}' is not equipped.`,
+    userMessage: (context) => `Expansion '${stringContextValue(context, 'name', 'this expansion')}' is not equipped.`,
     remediation: "Check 'coral-cli expansion list' before unequipping.",
   },
   binding_empty: {
-    userMessage: (context) =>
-      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is empty.`,
+    userMessage: (context) => `Binding '${stringContextValue(context, 'binding', 'unknown')}' is empty.`,
     remediation: 'Bind the required runtime capability before reading it.',
   },
   binding_occupied: {
@@ -159,13 +162,18 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: (context) =>
       `Bind '${stringContextValue(context, 'binding', 'unknown')}' before loading '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
   },
-  user_cancelled: {
+  binding_required_by_active_engine: {
     userMessage: (context) =>
-      `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,
+      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is required by active engine '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
+    remediation: (context) =>
+      `Unequip '${stringContextValue(context, 'requiredBy', 'this expansion')}' before unequipping the engine that fills '${stringContextValue(context, 'binding', 'unknown')}'.`,
+  },
+  user_cancelled: {
+    userMessage: (context) => `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,
     remediation: (context) => {
       const alreadyEquipped = context?.alreadyEquipped;
       if (typeof alreadyEquipped === 'string' && alreadyEquipped.length > 0) {
-        return `An embedder ('${alreadyEquipped}') is already configured. Run '/equip needle' again to continue, or '/equip uninstall ${alreadyEquipped}' to clean up.`;
+        return `An embedder ('${alreadyEquipped}') is already configured. Run the requested equip command again to continue, or '/equip uninstall ${alreadyEquipped}' to clean up.`;
       }
       return 'Retry the operation when ready.';
     },
@@ -213,10 +221,10 @@ export class CoralSetupError extends Error {
 
 function isSerializedCoralSetupError(error: unknown): error is SerializedCoralSetupError {
   return (
-    isRecord(error)
-    && typeof error.code === 'string'
-    && typeof error.userMessage === 'string'
-    && typeof error.remediation === 'string'
+    isRecord(error) &&
+    typeof error.code === 'string' &&
+    typeof error.userMessage === 'string' &&
+    typeof error.remediation === 'string'
   );
 }
 
