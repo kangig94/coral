@@ -7,10 +7,86 @@ import { expansionStatusSchema, expansionViewSchema } from '#src/coordinator/exp
 import { decorateDispose } from '#src/expansion/scope.js';
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import type { EngineManifest } from '#src/expansion/contract.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
+
+function javascriptDataUrl(source: string): string {
+  return `data:application/javascript,${encodeURIComponent(source)}`;
+}
+
+const SYNTHETIC_EMBEDDER_SOURCE = `
+  export default (host) => {
+    host.bind(host.kb.embedding, {
+      read: () => ({
+        name: 'synthetic-embedding',
+        model: 'synthetic',
+        dims: 1,
+        normalization: 'l2',
+        specId: 'synthetic:1:l2',
+        embedDocuments: async (texts) => texts.map(() => new Float32Array([0])),
+        embedQuery: async () => new Float32Array([0]),
+      }),
+      consumer: {
+        id: 'gemini-embedding',
+        authority: 'journal',
+      },
+    });
+  };
+`;
+
+const SYNTHETIC_VECTOR_SOURCE = `
+  export default (host) => {
+    host.require(host.kb.embedding);
+    host.bind(host.kb.vector, {
+      read: () => ({
+        search: async () => ({ hits: [] }),
+      }),
+      consumer: {
+        id: 'needle-vector',
+        authority: 'corpus',
+        corpusInterest: 'content',
+        apply: async () => {},
+      },
+    });
+  };
+`;
+
+const SYNTHETIC_FTS_SOURCE = `
+  export default (host) => {
+    host.bind(host.kb.fts, {
+      read: () => ({
+        search: async () => ({ hits: [], exhausted: true }),
+        tokenize: () => [],
+        warnings: () => [],
+      }),
+      consumer: {
+        id: 'orama-fts-only-base',
+        authority: 'corpus',
+        corpusInterest: 'content',
+        apply: async () => {},
+      },
+    });
+  };
+`;
+
+const SYNTHETIC_BUNDLED_VECTOR_SOURCE = `
+  export default (host) => {
+    host.bind(host.kb.vector, {
+      read: () => ({
+        search: async () => ({ hits: [] }),
+      }),
+      consumer: {
+        id: 'bundled-vector-base',
+        authority: 'corpus',
+        corpusInterest: 'content',
+        apply: async () => {},
+      },
+    });
+  };
+`;
 
 const FAKE_EMBEDDER_ENTRY = {
   id: 'test-embedder',
@@ -28,6 +104,43 @@ const NEEDLE_ENTRY = {
   tier: 'installed',
   description: 'Needle vector backend',
   onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
+  fills: ['kb.vector'],
+} as const;
+
+const GEMINI_SYNTHETIC_ENTRY = {
+  id: 'gemini',
+  version: '0.0.0',
+  specifier: javascriptDataUrl(SYNTHETIC_EMBEDDER_SOURCE),
+  tier: 'installed',
+  description: 'synthetic installed embedder',
+  fills: ['kb.embedding'],
+} as const;
+
+const NEEDLE_SYNTHETIC_ENTRY = {
+  id: 'needle',
+  version: '0.0.0',
+  specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
+  tier: 'installed',
+  description: 'synthetic installed vector backend',
+  onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
+  fills: ['kb.vector'],
+} as const;
+
+const BUNDLED_FTS_SYNTHETIC_ENTRY = {
+  id: 'orama-fts-only',
+  version: '0.0.0',
+  specifier: javascriptDataUrl(SYNTHETIC_FTS_SOURCE),
+  tier: 'bundled',
+  description: 'synthetic bundled FTS backend',
+  fills: ['kb.fts'],
+} as const;
+
+const BUNDLED_VECTOR_SYNTHETIC_ENTRY = {
+  id: 'bundled-vector',
+  version: '0.0.0',
+  specifier: javascriptDataUrl(SYNTHETIC_BUNDLED_VECTOR_SOURCE),
+  tier: 'bundled',
+  description: 'synthetic bundled vector backend',
   fills: ['kb.vector'],
 } as const;
 
@@ -82,7 +195,7 @@ afterEach(() => {
 });
 
 describe('ExpansionLifecycleService', () => {
-  it('equips and unequips a bundled expansion through expansion_state', async () => {
+  it('equips and unequips an installed expansion through expansion_state', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness();
 
     await lifecycle.equip('test-embedder');
@@ -197,6 +310,57 @@ describe('ExpansionLifecycleService', () => {
     expect(afterUnrelatedUnequip.failed.size).toBe(0);
     expect(kb.fts.heldBy).toBe('orama');
     expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
+  });
+
+  it('rejects unequipping a binding provider required by an active engine', async () => {
+    const expected = documentedCoralSetupError('binding_required_by_active_engine', {
+      binding: 'kb.embedding',
+      requiredBy: 'needle',
+    });
+    const { kb, lifecycle } = createLifecycleHarness({
+      manifest: [GEMINI_SYNTHETIC_ENTRY, NEEDLE_SYNTHETIC_ENTRY],
+    });
+
+    await lifecycle.equip('gemini');
+    await lifecycle.equip('needle');
+
+    await expect(lifecycle.unequip('gemini')).rejects.toMatchObject({
+      code: expected.code,
+      message: expected.message,
+      context: expected.context,
+    });
+    expect(kb.embedding.heldBy).toBe('gemini');
+    expect(kb.vector.heldBy).toBe('needle');
+  });
+
+  it('re-runs bundled fallback after unequipping an installed engine and refills an empty slot', async () => {
+    const { kb, state, lifecycle } = createLifecycleHarness({
+      manifest: [
+        GEMINI_SYNTHETIC_ENTRY,
+        NEEDLE_SYNTHETIC_ENTRY,
+        BUNDLED_FTS_SYNTHETIC_ENTRY,
+        BUNDLED_VECTOR_SYNTHETIC_ENTRY,
+      ],
+      rows: [
+        { id: 'gemini', version: '0.0.0', installed_at: FIXED_NOW },
+        { id: 'needle', version: '0.0.0', installed_at: FIXED_NOW },
+      ],
+    });
+
+    await lifecycle.recoverOnBoot();
+
+    expect(kb.embedding.heldBy).toBe('gemini');
+    expect(kb.vector.heldBy).toBe('needle');
+    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
+
+    await lifecycle.unequip('needle');
+
+    expect(kb.embedding.heldBy).toBe('gemini');
+    expect(kb.vector.heldBy).toBe('bundled-vector');
+    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(lifecycleScopes(lifecycle).get('bundled-vector')).toHaveLength(1);
+    expect(state.snapshot()).toEqual([{ id: 'gemini', version: '0.0.0', installed_at: FIXED_NOW }]);
   });
 
   it('runs the expansion-installed dispose hook before tearing down the scope on unequip', async () => {

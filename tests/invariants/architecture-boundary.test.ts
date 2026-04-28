@@ -1427,21 +1427,53 @@ describe('architecture boundary guard', () => {
       'src/coordinator/expansion/lifecycle.ts',
     ]);
 
-    const relativeViolations = PARSED_IMPORT_EDGES.filter(
-      (edge) =>
-        edge.target.startsWith('src/engines/') &&
-        !edge.source.startsWith('src/engines/') &&
-        !allowedEngineImporters.has(edge.source),
-    ).map((edge) => `${edge.source} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+    type EngineImportEdge = {
+      source: string;
+      target: string;
+      specifier: string;
+      via: string;
+    };
 
-    const subpathViolations = PARSED_SUBPATH_IMPORT_EDGES.filter(
-      (edge) =>
-        edge.target.startsWith('src/engines/') &&
-        !edge.source.startsWith('src/engines/') &&
-        !allowedEngineImporters.has(edge.source),
-    ).map((edge) => `${edge.source} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+    const engineIdFromPath = (path: string): string | null => {
+      const [root, engines, id] = path.split('/');
+      return root === 'src' && engines === 'engines' && id ? id : null;
+    };
 
-    expect([...relativeViolations, ...subpathViolations]).toEqual([]);
+    const collectEngineImportViolations = (edges: readonly EngineImportEdge[]): string[] =>
+      edges
+        .filter((edge) => {
+          const targetEngineId = engineIdFromPath(edge.target);
+          if (targetEngineId === null || allowedEngineImporters.has(edge.source)) {
+            return false;
+          }
+
+          const sourceEngineId = engineIdFromPath(edge.source);
+          return sourceEngineId === null || sourceEngineId !== targetEngineId;
+        })
+        .map((edge) => `${edge.source} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+
+    expect(
+      collectEngineImportViolations([
+        {
+          source: 'src/engines/orama/foo.ts',
+          target: 'src/engines/needle/bar.ts',
+          via: 'ImportDeclaration',
+          specifier: '../needle/bar.js',
+        },
+      ]),
+    ).toEqual(['src/engines/orama/foo.ts -> src/engines/needle/bar.ts (ImportDeclaration ../needle/bar.js)']);
+    expect(
+      collectEngineImportViolations([
+        {
+          source: 'src/engines/orama/foo.ts',
+          target: 'src/engines/orama/bar.ts',
+          via: 'ImportDeclaration',
+          specifier: './bar.js',
+        },
+      ]),
+    ).toEqual([]);
+
+    expect(collectEngineImportViolations([...PARSED_IMPORT_EDGES, ...PARSED_SUBPATH_IMPORT_EDGES])).toEqual([]);
   });
 
   it('src/kb/** and src/coordinator/** carry no engine-id string literals (AC7.2)', () => {
