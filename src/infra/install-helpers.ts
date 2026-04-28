@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { Runtime, StoragePort } from '../runtime/ports.js';
+import type { ExecResult, Runtime, StoragePort } from '../runtime/ports.js';
 export { acquireDirectoryLock, isDirectoryLockTimeoutError } from './fs-lock.js';
 
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -16,9 +16,9 @@ export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function findCommand(runtime: Runtime, command: string): string | null {
+export async function findCommand(runtime: Runtime, command: string): Promise<string | null> {
   const locator = runtime.env.platform() === 'win32' ? 'where' : 'which';
-  const result = runtime.process.execSync(locator, [command], {
+  const result = await runtime.process.exec(locator, [command], {
     encoding: 'utf-8',
     inheritEnv: true,
     timeout: 10_000,
@@ -33,7 +33,7 @@ export function findCommand(runtime: Runtime, command: string): string | null {
 
 export function ensureExecSucceeded(
   command: string,
-  result: Awaited<ReturnType<Runtime['process']['execSync']>>,
+  result: ExecResult,
 ): void {
   if (result.status === 0 && !result.error) {
     return;
@@ -49,12 +49,12 @@ export function ensureExecSucceeded(
 }
 
 export async function downloadBuffer(runtime: Runtime, url: string): Promise<Buffer> {
-  const curl = findCommand(runtime, 'curl');
+  const curl = await findCommand(runtime, 'curl');
   if (curl) {
     return downloadBufferWithCommand(runtime, curl, ['-fsSL', '-o'], url);
   }
 
-  const wget = findCommand(runtime, 'wget');
+  const wget = await findCommand(runtime, 'wget');
   if (wget) {
     return downloadBufferWithCommand(runtime, wget, ['-q', '-O'], url);
   }
@@ -80,7 +80,7 @@ async function downloadBufferWithCommand(
   const destination = join(tempDir, 'download.bin');
 
   try {
-    const result = runtime.process.execSync(command, [outputFlags[0], outputFlags[1], destination, url], {
+    const result = await runtime.process.exec(command, [outputFlags[0], outputFlags[1], destination, url], {
       inheritEnv: true,
       timeout: COMMAND_TIMEOUT_MS,
     });

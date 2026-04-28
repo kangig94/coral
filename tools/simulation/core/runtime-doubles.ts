@@ -21,6 +21,7 @@ const DEFAULT_PATH = '/usr/bin';
 const DEFAULT_CWD = '/tmp/sim';
 const DEFAULT_PID = 12_345;
 const DEFAULT_PLATFORM = 'linux';
+const DEFAULT_ARCH = 'x64';
 
 export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
@@ -168,6 +169,10 @@ export class SealedEnv implements EnvPort {
 
   platform(): string {
     return DEFAULT_PLATFORM;
+  }
+
+  arch(): string {
+    return DEFAULT_ARCH;
   }
 
   cwd(): string {

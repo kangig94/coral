@@ -45,13 +45,18 @@ function createFixture() {
   return { root, homeDir, baseDir };
 }
 
-function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Runtime {
+function createRuntimeForFixture(
+  fixture: ReturnType<typeof createFixture>,
+  options: { platform?: string; arch?: string } = {},
+): Runtime {
   const realRuntime = createRealRuntime('prod');
   const envRecord: Record<string, string> = {
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
   const fixtureEngine = enginePaths('prod', { baseDir: fixture.baseDir });
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
 
   return {
     ...realRuntime,
@@ -59,7 +64,8 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
       ...realRuntime.env,
       get: (key) => envRecord[key],
       homedir: () => fixture.homeDir,
-      platform: () => process.platform,
+      platform: () => platform,
+      arch: () => arch,
       cwd: () => fixture.root,
       fullSnapshot: () => envRecord,
       coralSnapshot: () => ({}),
@@ -112,7 +118,7 @@ function createPrebuildArchive(content: Buffer): Buffer {
 describe('installExpansion', () => {
   it('installs needle into the expansion path and writes install metadata', async () => {
     const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
+    const runtime = createRuntimeForFixture(fixture, { platform: 'linux', arch: 'arm64' });
     const addonBytes = Buffer.from('needle-addon');
     mockState.downloadBuffer.mockResolvedValue(createPrebuildArchive(addonBytes));
 
@@ -126,6 +132,10 @@ describe('installExpansion', () => {
       postInstall: ['register_expansion'],
     });
     expect(readFileSync(needleAddonPath(fixture.baseDir))).toEqual(addonBytes);
+    expect(mockState.downloadBuffer).toHaveBeenCalledWith(
+      runtime,
+      'https://github.com/kangig94/coral-needle/releases/download/v0.2.0/coral-needle-v0.2.0-linux-arm64.tar.gz',
+    );
     expect(
       JSON.parse(
         readFileSync(
@@ -135,6 +145,62 @@ describe('installExpansion', () => {
       ),
     ).toEqual({ version: '0.2.0', method: 'prebuild' });
     expect(pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath('needle'))).toBe(false);
+  });
+
+  it('falls back to source build through tracked async exec when the prebuild is unavailable', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture, { platform: 'linux', arch: 'x64' });
+    const builtAddon = Buffer.from('source-built-addon');
+    mockState.downloadBuffer.mockRejectedValue(new Error('prebuild missing'));
+    const execSyncSpy = vi.spyOn(runtime.process, 'execSync').mockImplementation(() => {
+      throw new Error('execSync should not be used by needle install.');
+    });
+    const execSpy = vi.spyOn(runtime.process, 'exec').mockImplementation(async (command, args, options) => {
+      if (command === 'which' && args[0] === 'cmake') {
+        return { stdout: '/usr/bin/cmake\n', stderr: '', status: 0 };
+      }
+      if (command === 'git' && args[0] === 'clone') {
+        mkdirSync(join(options?.cwd ?? '', 'src'), { recursive: true });
+        return { stdout: '', stderr: '', status: 0 };
+      }
+      if (command === '/usr/bin/cmake' && args.join(' ') === '-B build .') {
+        return { stdout: '', stderr: '', status: 0 };
+      }
+      if (command === '/usr/bin/cmake' && args.join(' ') === '--build build --config Release') {
+        const buildDir = join(options?.cwd ?? '', 'build');
+        mkdirSync(buildDir, { recursive: true });
+        writeFileSync(join(buildDir, 'coral-needle.node'), builtAddon);
+        return { stdout: '', stderr: '', status: 0 };
+      }
+      throw new Error(`unexpected exec ${command} ${JSON.stringify(args)}`);
+    });
+
+    const result = await installExpansion('needle', { runtime });
+
+    expect(result).toEqual({
+      status: 'installed',
+      method: 'source-build',
+      version: '0.2.0',
+      targetDir: enginePaths('prod', { baseDir: fixture.baseDir }).dataDir('needle'),
+      postInstall: ['register_expansion'],
+    });
+    expect(readFileSync(needleAddonPath(fixture.baseDir))).toEqual(builtAddon);
+    expect(execSyncSpy).not.toHaveBeenCalled();
+    expect(execSpy).toHaveBeenCalledWith(
+      'git',
+      ['clone', '--depth', '1', '--branch', 'v0.2.0', 'https://github.com/kangig94/coral-needle.git', 'src'],
+      expect.objectContaining({ inheritEnv: true, timeout: 120_000 }),
+    );
+    expect(execSpy).toHaveBeenCalledWith(
+      '/usr/bin/cmake',
+      ['-B', 'build', '.'],
+      expect.objectContaining({ inheritEnv: true, timeout: 900_000 }),
+    );
+    expect(execSpy).toHaveBeenCalledWith(
+      '/usr/bin/cmake',
+      ['--build', 'build', '--config', 'Release'],
+      expect.objectContaining({ inheritEnv: true, timeout: 900_000 }),
+    );
   });
 
   it('returns a structured unknown_expansion error for names outside the bundled manifest', async () => {

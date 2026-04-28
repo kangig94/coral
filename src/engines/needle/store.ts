@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { isRecord } from '../../infra/json.js';
-import { needleIndexDir } from './paths.js';
 import type { ChunkSeed } from '../../kb/chunking.js';
 
 export const NEEDLE_STORE_SCHEMA_VERSION = 1;
@@ -74,7 +73,7 @@ type NativeNeedleAddon = {
 export type NeedleStoreFactoryOptions = {
   pluginRoot?: string;
   runtimeDir: string;
-  addonPath?: string;
+  addonPath: string;
 };
 
 export class NeedleAddonLoadError extends Error {
@@ -183,10 +182,6 @@ function parseSearchResults(value: unknown): Array<{ chunkId: string; entryId: s
 
     return { chunkId, entryId, score: similarity };
   });
-}
-
-export function needleAddonPath(runtimeDir: string): string {
-  return join(needleIndexDir(runtimeDir), 'coral-needle.node');
 }
 
 export function readNeedleBridgeManifest(pluginRoot: string): NeedleBridgeManifest | null {
@@ -310,7 +305,7 @@ export function createNeedleStore(options: NeedleStoreFactoryOptions): NativeNee
     return null;
   }
 
-  const resolvedAddonPath = options.addonPath ?? needleAddonPath(options.runtimeDir);
+  const resolvedAddonPath = options.addonPath;
   const addon = loadNativeAddon(resolvedAddonPath);
   if (addon === null) {
     return null;

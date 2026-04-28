@@ -196,29 +196,29 @@ function writeAddonAtomic(ctx: NeedleInstallContext, dest: string, content: Buff
   }
 }
 
-function ensureCmake(runtime: Runtime): string {
-  const existing = findCommand(runtime, 'cmake');
+async function ensureCmake(runtime: Runtime): Promise<string> {
+  const existing = await findCommand(runtime, 'cmake');
   if (existing) return existing;
-  const uv = findCommand(runtime, 'uv');
+  const uv = await findCommand(runtime, 'uv');
   if (!uv) throw new Error('cmake is required for the source-build fallback, and uv is not installed to bootstrap it.');
   ensureExecSucceeded(
     uv,
-    runtime.process.execSync(uv, ['tool', 'install', 'cmake'], { inheritEnv: true, timeout: 120_000 }),
+    await runtime.process.exec(uv, ['tool', 'install', 'cmake'], { inheritEnv: true, timeout: 120_000 }),
   );
-  const installed = findCommand(runtime, 'cmake');
+  const installed = await findCommand(runtime, 'cmake');
   if (!installed) throw new Error('uv reported cmake installed, but cmake is still unavailable on PATH.');
   return installed;
 }
 
 async function buildNeedleFromSource(ctx: NeedleInstallContext): Promise<Buffer> {
-  const cmake = ensureCmake(ctx.runtime);
+  const cmake = await ensureCmake(ctx.runtime);
   const buildDir = mkdtempSync(join(tmpdir(), 'coral-needle-build-'));
   try {
     const repoUrl = `https://github.com/${NEEDLE_GITHUB_REPO}.git`;
     const tag = `v${ctx.version}`;
     ensureExecSucceeded(
       'git',
-      ctx.runtime.process.execSync('git', ['clone', '--depth', '1', '--branch', tag, repoUrl, 'src'], {
+      await ctx.runtime.process.exec('git', ['clone', '--depth', '1', '--branch', tag, repoUrl, 'src'], {
         cwd: buildDir,
         inheritEnv: true,
         timeout: 120_000,
@@ -227,11 +227,11 @@ async function buildNeedleFromSource(ctx: NeedleInstallContext): Promise<Buffer>
     const srcDir = join(buildDir, 'src');
     ensureExecSucceeded(
       cmake,
-      ctx.runtime.process.execSync(cmake, ['-B', 'build', '.'], { cwd: srcDir, inheritEnv: true, timeout: 900_000 }),
+      await ctx.runtime.process.exec(cmake, ['-B', 'build', '.'], { cwd: srcDir, inheritEnv: true, timeout: 900_000 }),
     );
     ensureExecSucceeded(
       cmake,
-      ctx.runtime.process.execSync(cmake, ['--build', 'build', '--config', 'Release'], {
+      await ctx.runtime.process.exec(cmake, ['--build', 'build', '--config', 'Release'], {
         cwd: srcDir,
         inheritEnv: true,
         timeout: 900_000,
@@ -250,7 +250,7 @@ async function buildNeedleFromSource(ctx: NeedleInstallContext): Promise<Buffer>
 
 async function installNeedlePrebuild(ctx: NeedleInstallContext): Promise<Buffer> {
   const releaseTag = `v${ctx.version}`;
-  const assetName = `coral-needle-${releaseTag}-${needlePlatformKey(ctx.runtime.env.platform(), process.arch)}.tar.gz`;
+  const assetName = `coral-needle-${releaseTag}-${needlePlatformKey(ctx.runtime.env.platform(), ctx.runtime.env.arch())}.tar.gz`;
   const url = `https://github.com/${NEEDLE_GITHUB_REPO}/releases/download/${releaseTag}/${assetName}`;
   logInstallEvent(ctx, 'expansion.install.download', `Downloading ${url}`);
   return extractTarEntry(await downloadBuffer(ctx.runtime, url), NEEDLE_ADDON_FILENAME);

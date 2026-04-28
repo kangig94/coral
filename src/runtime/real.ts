@@ -101,6 +101,7 @@ type CapturedEnvState = {
   coralEnv: Readonly<Record<string, string>>;
   pid: number;
   platform: NodeJS.Platform;
+  arch: NodeJS.Architecture;
   cwd: string;
 };
 
@@ -410,6 +411,7 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     homedir: () => osHomedir(),
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,
+    arch: () => capturedEnv.arch,
     cwd: () => capturedEnv.cwd,
     fullSnapshot: () => capturedEnv.fullEnv,
     coralSnapshot: () => capturedEnv.coralEnv,
@@ -445,6 +447,7 @@ function captureEnvState(): CapturedEnvState {
     coralEnv: Object.freeze(coralEnv),
     pid: process.pid,
     platform: process.platform,
+    arch: process.arch,
     cwd: process.cwd(),
   };
 }

@@ -50,6 +50,7 @@ export interface EnvPort {
   homedir(): string;
   pid(): number;
   platform(): string;
+  arch(): string;
   cwd(): string;
   fullSnapshot(): Readonly<Record<string, string>>;
   coralSnapshot(): Readonly<Record<string, string>>;
