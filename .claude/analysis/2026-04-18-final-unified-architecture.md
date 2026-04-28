@@ -71,8 +71,8 @@ Five of eight fields are either redundant, off-topic, or evidence of polymorphis
 ### 1.3 Provider layer has three overlapping paths
 The same "provider call" is implemented three ways: exec adapter (`claude/adapter.ts`), session driver (`claude/session-driver.ts`), and app-server runner (`providers/app-server/runner.ts`). `runner.ts:66-83` overwrites the driver's outcome — architectural hint that two layers compete for failure-mapping ownership.
 
-### 1.4 Six files per job
-Per `<os-tmpdir>/coral-jobs/<jobId>/`: `status.json`, `progress.jsonl`, `launch.json`, `runtime.json`, `exit.json`, `result.md`. `recovery-core.ts` has a 10+ row classifier table because each file-presence combination carries different meaning. The classifier is a symptom of fragmentation.
+### 1.4 Fragmented job files
+Durable `result.md` materialization belongs under the exports root. Per `<OS temp>/coral-jobs/<jobId>/`: scratch status/progress/launch/runtime/exit files and live intermediates. `recovery-core.ts` has a 10+ row classifier table because each file-presence combination carries different meaning. The classifier is a symptom of fragmentation.
 
 ### 1.5 `src/shared/` is a catch-all
 `types.ts` alone is 600+ lines mixing `TerminalResult`, `PersistedStatusRecord`, `WaitStreamEvent`, `JobPhase`, `LaunchState`, across multiple domains. Anything that did not fit elsewhere ended up here.
@@ -606,7 +606,7 @@ journal.commit((c) => {
 });
 ```
 
-Either all appended facts land and all projections update, or none do. Replay never sees partial truth — this is the atomicity commit groups need (§12.3).
+Either all appended facts land and all projections update, or none do. Replay never sees partial truth — this is the atomicity commit groups need (§16 #6).
 
 ### 3.4 Journal-domain exports
 
@@ -617,7 +617,7 @@ Materialized files for Journal domains (e.g., `result.md` per job) live outside 
 ~/.coral/exports/jobs/                      (prod; dev uses ~/.coral/exports-dev/jobs/)
   <jobId>/result.md                  (durable export materialized from job.terminal.recorded)
 
-<os-tmpdir>/coral-jobs/
+<OS temp>/coral-jobs/
   <jobId>/stdout|stderr|...          (live scratch artifacts and intermediates)
 ```
 
@@ -962,7 +962,14 @@ Both surfaces converge at `kb_curate_retry_queue` — the SQL table that tracks 
 workflow.plan.declared  { plan: WorkflowPlan }
 workflow.plan.revised   { plan: WorkflowPlan }
 workflow.drain.entered  { firstFailureSlotId, drainDeadline }
-workflow.completed      { outcome: 'completed' | 'failed' | 'aborted'; causeRef? }
+workflow.completed
+  | { outcome: 'completed'; stepDetails: WorkflowStepDetail[] }
+  | { outcome: 'aborted'; stepDetails: WorkflowStepDetail[] }
+  | { outcome: 'failed'; causeRef: CauseRef; stepDetails: WorkflowStepDetail[] }
+workflow.lifecycle_fault
+  | { kind: 'wrapper_crashed'; message: string; stack?: string }
+  | { kind: 'recovery_failed'; message: string; stack?: string }
+  | { kind: 'unknown'; message: string }
 ```
 
 ```ts
@@ -979,6 +986,16 @@ type WorkflowSlot = {
   instruction: string;
   agent?: string;
 };
+
+type WorkflowStepDetail = {
+  stepIndex: number;
+  atomIndex: number;
+  kind: 'agent' | 'prompt';
+  label: string;
+  provider: string;
+  tagName: string;
+  output: string;
+};
 ```
 
 **Plan body owns no `workflowId` field** — the workflow stream identity (`event.stream.id`) is the truth. Storing it inside the body would be a duplicate that can drift from the stream id; helpers receive `workflowId` separately when they need it. This is the same "stream identity is truth" principle that keeps `stepIndex`/`atomIndex`/`label` off the launch event.
@@ -989,7 +1006,7 @@ type WorkflowSlot = {
 - Plan is a durable aggregate with semantics (dependencies, slot IDs) independent of any single job execution.
 - Child jobs reference `refs.workflowSlotId` and `refs.workflowId`; the plan lives ONCE on the workflow stream, not duplicated on every child launch.
 - `workflow.plan.revised` (future) can add/modify slots without touching child events — plans evolve without rewriting history.
-- Syntax-shaped metadata (`stepIndex`, `atomIndex`, label) is encoded in `slotId` and `agent`, not stored as separate fields. `slotId` is truth; everything visible to a user is derived.
+- Launch-time syntax-shaped metadata (`stepIndex`, `atomIndex`, label) is encoded in `slotId` and `agent`, not duplicated on child launches. Completion `stepDetails` separately records execution summaries for completed atoms, including step/atom indices and label alongside output.
 - Workflow completion is a stream-level fact. The `causeRef` on `workflow.completed` points to the failing child's terminal event when relevant — no wrapped fault variant needed.
 
 **Why a workflow job still exists as a `job/<id>` stream**:
@@ -1059,7 +1076,7 @@ Three variants. All three represent failures of the **coordinator's own wrapper 
 
 **Removed from the previous composable-union design**:
 - `workflow_child_failed` — replaced by `failed { causeRef: { stream: {kind:'job', id: childJobId}, seq } }`. The "failing child" is a reference, not a variant.
-- `workflow_aborted` — replaced by `workflow.completed { outcome: 'aborted', causeRef? }` on the workflow stream; job terminal uses `aborted { reason: 'user_abort' }` or `failed { causeRef }` to the workflow completion event.
+- `workflow_aborted` — replaced by `workflow.completed { outcome: 'aborted', stepDetails }` on the workflow stream; job terminal uses `aborted { reason: 'user_abort' }` or `failed { causeRef }` to the workflow completion event.
 - `launch_rejected` — `job.launch.rejected` event on the job's own stream; `job.terminal.recorded` on the same stream uses `failed { causeRef }` pointing backward to the rejected event (self-stream causeRef is fine and common).
 - `app_server_interrupted` — `session.interrupted` event on the `session/<id>` stream; job terminal uses `failed { causeRef }`.
 - `adapter_output_unparseable`, `provider_session_unavailable`, `provider_request_failed` — each emitted on the `session/<id>` stream as `session.adapter_unparseable`, `session.provider_failed`, etc. Job terminal uses `failed { causeRef }`.
@@ -1082,7 +1099,8 @@ session/<id>              session.interrupted              { trigger, continuity
 session/<id>              session.provider_failed          { provider, reason, message }
 session/<id>              session.adapter_unparseable      { provider, stdout, stderr, parseError }
 discuss/<id>              discuss.agent.job.finished       { agent, jobId, outcome, attempt }
-workflow/<id>             workflow.completed               { outcome: 'failed' | 'aborted', causeRef? }
+workflow/<id>             workflow.completed               { outcome: 'completed' | 'aborted', stepDetails }
+workflow/<id>             workflow.completed               { outcome: 'failed', causeRef, stepDetails }
 ```
 
 KB failures have no dedicated Journal stream. Slow process-like KB attempts (source import, explicit reindex/curation jobs) record terminal-causing failures on the internal KB job's own stream as rich progress events (`kind: 'domain'`, `stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event.
@@ -1133,8 +1151,19 @@ Each fault-bearing event type has one producer:
 | `session.adapter_unparseable` | `session/<id>` | `providers/middleware/adapter-parse-guard.ts` |
 | `discuss.agent.job.finished` (failed/recovery outcomes) | `discuss/<id>` | `discuss/shell/` |
 | `workflow.lifecycle_fault` | `workflow/<id>` | the workflow lifecycle finalizer (covering both launch-time `executor.ts` finalization and recovery-time `resumeAll` finalization) |
-| `workflow.completed { outcome: 'failed' | 'aborted' }` | `workflow/<id>` | the workflow lifecycle finalizer (a single conceptual producer enacted at two coordinator-owned call sites) |
+| `workflow.completed { outcome: 'aborted', stepDetails }` or `{ outcome: 'failed', causeRef, stepDetails }` | `workflow/<id>` | the workflow lifecycle finalizer (a single conceptual producer enacted at two coordinator-owned call sites) |
 | `job.terminal.recorded { outcome: { kind: 'job_fault', ... } }` | `job/<id>` | `jobs/reconcile/` (for ghost/lost) or job wrapper (for crashed) |
+
+`workflow.lifecycle_fault` has exactly three body variants:
+
+```ts
+workflow.lifecycle_fault {
+  body:
+    | { kind: 'wrapper_crashed'; message: string; stack?: string }
+    | { kind: 'recovery_failed'; message: string; stack?: string }
+    | { kind: 'unknown'; message: string }
+}
+```
 
 KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `kb_curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, retrieval artifacts reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — auto-fix where safe, queue manual cases, log unrecoverable.
 
@@ -1156,9 +1185,21 @@ progressStore.commit((c) => {
     terminal: { content: '', outcome: failedTerminalOutcome(kbFailure) },
     continuity: null,
   });
+  const workflowStepDetails: WorkflowStepDetail[] = [
+    {
+      stepIndex: 0,
+      atomIndex: 0,
+      kind: 'agent',
+      label: 'KB import',
+      provider: 'codex',
+      tagName: 'agent',
+      output: 'PDF conversion failed before usable content was produced.',
+    },
+  ];
   const workflowFailure = c.append(workflowCompletedEvent('wf-1', {
     outcome: 'failed',
     causeRef: kbTerminal,
+    stepDetails: workflowStepDetails,
   }));
   appendJobTerminalRecorded(c, {
     jobId: 'wf-1',
@@ -1188,7 +1229,16 @@ seq=102  job/kb-1      job.terminal.recorded
 
 seq=103  workflow/wf-1 workflow.completed
                        { outcome: 'failed',
-                         causeRef: { stream: {kind: 'job', id: 'kb-1'}, seq: 102 } }
+                         causeRef: { stream: {kind: 'job', id: 'kb-1'}, seq: 102 },
+                         stepDetails: [
+                           { stepIndex: 0,
+                             atomIndex: 0,
+                             kind: 'agent',
+                             label: 'KB import',
+                             provider: 'codex',
+                             tagName: 'agent',
+                             output: 'PDF conversion failed before usable content was produced.' }
+                         ] }
 
 seq=104  job/wf-1      job.terminal.recorded
                        terminal: { content: '',
@@ -1215,7 +1265,7 @@ Job wf-1 failed
 
 The renderer:
 1. Reads `JobView(wf-1).terminal.outcome` → `failed` with `causeRef` to `workflow/wf-1@103`.
-2. Reads event at `workflow/wf-1@103` → `workflow.completed { outcome: 'failed', causeRef: job/kb-1@102 }`.
+2. Reads event at `workflow/wf-1@103` → `workflow.completed { outcome: 'failed', causeRef: job/kb-1@102, stepDetails }`.
 3. Reads event at `job/kb-1@102` → terminal with `causeRef: job/kb-1@101` (self-stream progress event).
 4. Reads event at `job/kb-1@101` → `job.progress.emitted { kind: 'domain', stage: 'kb_operation_failed', detail: { entryId: 'entry-x', cause: {...} } }` — the origin fact.
 5. Dispatches each event type to its registered describer through the injected `EventDescriberMap` (§7.3); concatenates the rendered chain.
@@ -1469,7 +1519,11 @@ governs how each domain shapes itself internally.
 
 ### Top-level layout
 
+The tree is rooted at the plugin/repository root:
+
 ```
+hooks/           ← plugin-root hook scripts; self-contained Node ESM that may
+                   duplicate stable path formulas but never import from `src/`
 src/
   coordinator/   ← single-writer daemon; live state, cross-domain composition,
                    warm-start lock, projection consumer driver, expansion
@@ -1487,8 +1541,6 @@ src/
   infra/         ← flat low-level helpers with no domain knowledge
                    (paths, errors, fs locks, env sanitizers, identifiers,
                    build-flavor, plugin registry, backend discovery format)
-hooks/           ← plugin-root hook scripts; self-contained Node ESM that may
-                   duplicate stable path formulas but never import from `src/`
   jobs/          ← domain: job lifecycle events + projections + reconcile +
                    imperative shell (launch/wait/abort)
   sessions/      ← domain: session events + projections + resolve + shell
@@ -1499,7 +1551,7 @@ hooks/           ← plugin-root hook scripts; self-contained Node ESM that may
   kb/            ← Corpus authority — Corpus I/O, curate scheduler,
                    capability surfaces and KB-tier search helpers,
                    user-facing ops (memo/promote/source-import/reindex)
-  engines/        ← per-engine source trees (orama, needle, gemini, onnx) under <id>/
+  engines/       ← per-engine source trees (orama, needle, gemini, onnx) under <id>/
   providers/     ← provider plugin boundary (contract, registry, catalog,
                    per-provider adapters: claude/codex/claude-appserver)
   expansion/     ← uniform Expansion contract + bundled-engine manifest
@@ -1507,8 +1559,6 @@ hooks/           ← plugin-root hook scripts; self-contained Node ESM that may
   cli/           ← Commander CLI client (one-shot process); resolves plugin
                    root, classifies command, dispatches to coordinator IPC
                    or library-direct read paths
-  hooks/         ← Node.js ESM hook scripts (read stdin, fail open, never
-                   import from src/)
 
 tools/
   simulation/    ← debug-only executable harness; never bundled into the
@@ -1637,7 +1687,7 @@ When subdividing:
 - The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a *minimum* shape — `events.ts` (event vocabulary + DomainEventRegistry) and `read-queries.ts` (query API) at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
   - `projections.ts` exists when the domain projects events to SQL tables and owns DB-write reducers (sessions/discuss/workflow). When it exists, it ALSO holds view builders and projection reads.
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (a state-machine pattern — currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
-  - `paths.ts` exists when the domain owns filesystem paths (currently only `jobs/` for tmpdir job artifacts being phased out).
+  - `paths.ts` exists when the domain owns filesystem paths (currently only `jobs/` for scratch job artifacts being phased out).
   Don't gratuitously add files just to mirror discuss/'s shape across domains that don't have the same concerns. Don't subdivide one domain differently from the others *for its core projection surface* — but the per-domain extras above (parser/, recover/, etc.) are fine when they reflect actual responsibility, not invented uniformity.
 - "Pure label" subdirs (e.g., grouping unrelated files into `gateway/` or `io/` because they "feel related") add navigation cost without scope clarity.
 
@@ -1808,7 +1858,7 @@ Middleware composition wraps it unchanged, exercising the full stack without rea
 
 All events for this workflow land in the SQLite `events` table. Transactions group causally-related appends.
 
-Slot ids in this section follow the production format `${workflowId}:${stepIndex}:${atomIndex}` — `wf-1:0:0` for "A", `wf-1:1:0` for "B", `wf-1:1:1` for "C". The slotId encodes step+atom position so renderers can reconstruct presentation without storing it. Slot labels (e.g. "A", "B", "C") are derived from `slot.agent ?? prompt#${atomIndex}(${truncated instruction})` at render time, never stored on the plan or its events.
+Slot ids in this section follow the production format `${workflowId}:${stepIndex}:${atomIndex}` — `wf-1:0:0` for "A", `wf-1:1:0` for "B", `wf-1:1:1` for "C". The slotId encodes step+atom position so renderers can reconstruct presentation without storing it. Slot labels (e.g. "A", "B", "C") are derived from `slot.agent ?? prompt#${atomIndex}(${truncated instruction})` at render time, not stored on the plan as a separate labels map or on child launch events; completion `stepDetails` records the label with the completed atom output.
 
 **Transaction 1** — workflow plan declared + workflow job launched:
 ```
@@ -1849,7 +1899,15 @@ seq=55  job/b-1  job.terminal.recorded  outcome={kind:'completed'}
 ```
 seq=56  job/c-1         job.terminal.recorded    outcome={kind:'provider_exit', code:1}
 seq=57  workflow/wf-1   workflow.completed       outcome:'failed',
-                                                 causeRef:{stream:{kind:'job',id:'c-1'}, seq:56}
+                                                 causeRef:{stream:{kind:'job',id:'c-1'}, seq:56},
+                                                 stepDetails:[
+                                                   {stepIndex:0, atomIndex:0, kind:'agent',
+                                                    label:'A', provider:'codex', tagName:'agent',
+                                                    output:'A result'},
+                                                   {stepIndex:1, atomIndex:0, kind:'agent',
+                                                    label:'B', provider:'codex', tagName:'agent',
+                                                    output:'B result'}
+                                                 ]
 seq=58  job/wf-1        job.terminal.recorded    outcome={kind:'failed',
                                                           causeRef:{stream:{kind:'workflow',id:'wf-1'}, seq:57}}
 ```
@@ -1886,7 +1944,7 @@ lastSeq: 58
 
 `WorkflowView(wf-1)` at `seq=58`:
 ```
-plan: { slots: [wf-1:0:0, wf-1:1:0, wf-1:1:1] }   // labels are derived at render time, not stored
+plan: { slots: [wf-1:0:0, wf-1:1:0, wf-1:1:1] }   // plan stores agent/instruction, not a labels map
 slotOutcomes: {
   'wf-1:0:0': { jobId: 'a-1', phase: 'completed', causeRef: null },
   'wf-1:1:0': { jobId: 'b-1', phase: 'completed', causeRef: null },
@@ -1914,7 +1972,7 @@ Job wf-1 failed
 
 Traversal:
 1. `JobView(wf-1).terminal.outcome` = `failed` with `causeRef → workflow/wf-1@57`.
-2. Event at `workflow/wf-1@57` is `workflow.completed { outcome:'failed', causeRef → job/c-1@56 }`.
+2. Event at `workflow/wf-1@57` is `workflow.completed { outcome:'failed', causeRef → job/c-1@56, stepDetails }`.
 3. Event at `job/c-1@56` is `job.terminal.recorded { outcome: provider_exit(1) }`.
 4. Chain terminates at a non-`failed` outcome; render the chain.
 5. Slot labels (`"A"`, `"B"`, `"C"`) are derived from each slot's `agent` field (or a truncated `instruction`) at render time — the plan stores no `labels` map, the slot is the single source of truth.
@@ -1947,7 +2005,7 @@ This section documents the **design delta** between today's codebase and the end
 | `src/bridge/` transport | `transport/` |
 | `status.json`, `launch.json`, `runtime.json`, `exit.json`, `progress.jsonl` | SQLite `events` + `projection_*` tables |
 | Custom segment rotation, checkpoint files, Journal writer lockfile | SQLite WAL + `BEGIN IMMEDIATE` transactions |
-| `result.md` (authority) | `<os-tmpdir>/coral-jobs/<id>/result.md` (materialized view; job-directory contract) |
+| `result.md` (authority) | `~/.coral/exports/jobs/<id>/result.md` in prod; `~/.coral/exports-dev/jobs/<id>/result.md` in dev. Tmp job dirs are scratch only (stdout/stderr/intermediates). |
 | `TerminalResult` (single struct) | `JobTerminal` + `JobDiagnostics` + `JobView` (three concerns) |
 | `TerminalResult.exitCode` | `outcome.provider_exit.code` |
 | `TerminalResult.nonResumable` | `SessionView.resumable` |
@@ -2226,7 +2284,7 @@ Six pioneers + All-6 unifier + B-v2 reëxamination + Pioneer-final + KB-pioneer 
 - **CoralCoordinator** is the single writer across both authorities — not for gatekeeping but because live-state ownership (admission, host pool, subscriptions) naturally pools there.
 - **Cross-authority references** use `KbRef = { entryId, contentHash? }` — the only admitted asymmetry, honest about Corpus mutability.
 - **Canonical event bodies** are the provider contract for Journal writes.
-- **WorkflowPlan on `workflow/<id>`** is the durable composition aggregate. Child launches reference slots by `slotId`; labels and step/atom indices are derived from the slot at render time, never stored.
+- **WorkflowPlan on `workflow/<id>`** is the durable composition aggregate. Child launches reference slots by `slotId`; labels and step/atom indices are derived from the slot for launch/render identity. Completion `stepDetails` stores execution summaries for completed atoms.
 - **Causal graph** (CauseRef pointers) is the fault model within Journal. Failures live once on the originating stream; terminals dereference, never wrap.
 - **Three-variant `JobLifecycleFault`** is the only fault ADT — reserved for wrapper-local failures with no domain origin.
 - **Two consumer interfaces** match the two authorities: `JournalConsumer` (range replay) + `CorpusConsumer` (snapshot content-hash diff). Both share `ConsumerDriver` mechanics (cursor, idempotent apply, condition-var wake).
