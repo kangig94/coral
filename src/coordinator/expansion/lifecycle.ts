@@ -142,25 +142,30 @@ export class ExpansionLifecycleService {
 
     const fallback = await this.applyBundledFallback();
     if (fallback.failed.size > 0) {
-      const detail = [...fallback.failed.entries()]
-        .map(([id, err]) => `${id}: ${err.message}`)
-        .join('; ');
+      const detail = [...fallback.failed.entries()].map(([id, err]) => `${id}: ${err.message}`).join('; ');
       throw new Error(`Bundled-engine equip failed: ${detail}`);
     }
   }
 
   /**
-   * Walks bundled-tier engines in manifest order. For each, creates a fresh
-   * scope and invokes the Expansion body. The body's `if (binding.heldBy === undefined)`
-   * guard ensures the bundled engine fills only currently-empty bindings.
-   * Per-engine failures are collected; the method itself does not throw.
+   * Walks bundled-tier engines in manifest order. Engines with declared fills
+   * that are already fully held are skipped before import. For invoked engines,
+   * the body's `if (binding.heldBy === undefined)` guard ensures the bundled
+   * engine fills only currently-empty bindings. Per-engine failures are
+   * collected; the method itself does not throw.
    */
   async applyBundledFallback(): Promise<{ equipped: string[]; failed: Map<string, Error> }> {
     const equipped: string[] = [];
     const failed = new Map<string, Error>();
+    const kb = this.options.resolveKbRuntime?.() ?? null;
 
     for (const entry of this.manifest) {
       if (entry.tier !== 'bundled') {
+        continue;
+      }
+
+      const before = this.captureFallbackBindingHolders(entry, kb);
+      if (this.hasAllDeclaredFillsHeld(entry, before)) {
         continue;
       }
 
@@ -170,9 +175,13 @@ export class ExpansionLifecycleService {
       try {
         const module = (await import(entry.specifier)) as ExpansionModule;
         await module.default(host);
-        this.appendScope(entry.id, scope);
-        this.failedRecovery.delete(entry.id);
-        equipped.push(entry.id);
+        if (this.didFillFallbackBinding(entry, before, kb)) {
+          this.appendScope(entry.id, scope);
+          this.failedRecovery.delete(entry.id);
+          equipped.push(entry.id);
+        } else {
+          await this.disposeScope(scope);
+        }
       } catch (error) {
         await this.disposeScope(scope);
         const recordedError = asError(error);
@@ -254,9 +263,7 @@ export class ExpansionLifecycleService {
       return kb.vector.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.vector.heldBy };
     }
     if (name === 'kb.embedding') {
-      return kb.embedding.heldBy === undefined
-        ? { bound: false }
-        : { bound: true, heldBy: kb.embedding.heldBy };
+      return kb.embedding.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.embedding.heldBy };
     }
     if (name === 'kb.fts') {
       return kb.fts.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.fts.heldBy };
@@ -282,11 +289,59 @@ export class ExpansionLifecycleService {
     this.scopes.set(id, existing);
   }
 
+  private captureFallbackBindingHolders(
+    entry: EngineManifest,
+    kb: KbRuntime | null,
+  ): Map<string, string | undefined> | null {
+    if (kb === null) {
+      return null;
+    }
+
+    const names = entry.fills && entry.fills.length > 0 ? entry.fills : ['kb.embedding', 'kb.vector', 'kb.fts'];
+    const holders = new Map<string, string | undefined>();
+    for (const name of names) {
+      holders.set(name, this.readKnownBindingHolder(kb, name));
+    }
+    return holders;
+  }
+
+  private hasAllDeclaredFillsHeld(entry: EngineManifest, holders: Map<string, string | undefined> | null): boolean {
+    if (!entry.fills || entry.fills.length === 0 || holders === null) {
+      return false;
+    }
+    return entry.fills.every((name) => holders.get(name) !== undefined);
+  }
+
+  private didFillFallbackBinding(
+    entry: EngineManifest,
+    before: Map<string, string | undefined> | null,
+    kb: KbRuntime | null,
+  ): boolean {
+    if (before === null || kb === null) {
+      return true;
+    }
+
+    const names = entry.fills && entry.fills.length > 0 ? entry.fills : [...before.keys()];
+    return names.some((name) => before.get(name) === undefined && this.readKnownBindingHolder(kb, name) === entry.id);
+  }
+
+  private readKnownBindingHolder(kb: KbRuntime, name: string): string | undefined {
+    if (name === 'kb.vector') {
+      return kb.vector.heldBy;
+    }
+    if (name === 'kb.embedding') {
+      return kb.embedding.heldBy;
+    }
+    if (name === 'kb.fts') {
+      return kb.fts.heldBy;
+    }
+    return undefined;
+  }
+
   /**
    * Refuse to unequip an engine that fills a binding another active engine
    * declared as a `require-binding` onboarding step (R11). Avoids stale
-   * cross-binding captures (e.g., needle holding a stale embedder reference
-   * after the user unequips gemini).
+   * cross-binding captures after the user unequips a binding holder.
    */
   private assertNoActiveDependents(entry: EngineManifest): void {
     const fillsSet = new Set(entry.fills ?? []);

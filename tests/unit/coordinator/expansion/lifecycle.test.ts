@@ -5,6 +5,9 @@ import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/coordinator/expansion/rpc.js';
 import { decorateDispose } from '#src/expansion/scope.js';
+import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
+import type { EngineManifest } from '#src/expansion/contract.js';
+import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
@@ -28,6 +31,11 @@ const NEEDLE_ENTRY = {
   fills: ['kb.vector'],
 } as const;
 
+const ORAMA_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'orama');
+if (ORAMA_ENTRY === undefined) {
+  throw new Error('test requires the bundled FTS engine entry');
+}
+
 type MemoryStateStore = Pick<ExpansionStateStore, 'insert' | 'delete' | 'list' | 'get'> & {
   snapshot(): ExpansionStateRow[];
 };
@@ -49,7 +57,7 @@ function createMemoryState(rows: readonly ExpansionStateRow[] = []): MemoryState
 
 function createLifecycleHarness(
   options: {
-    manifest?: readonly (typeof FAKE_EMBEDDER_ENTRY)[];
+    manifest?: readonly EngineManifest[];
     rows?: readonly ExpansionStateRow[];
   } = {},
 ) {
@@ -63,6 +71,10 @@ function createLifecycleHarness(
     resolveKbRuntime: () => kb,
   });
   return { kb, state, lifecycle };
+}
+
+function lifecycleScopes(lifecycle: ExpansionLifecycleService): Map<string, Disposable[]> {
+  return (lifecycle as unknown as { scopes: Map<string, Disposable[]> }).scopes;
 }
 
 afterEach(() => {
@@ -150,6 +162,41 @@ describe('ExpansionLifecycleService', () => {
 
     expect(kb.embedding.heldBy).toBeUndefined();
     expect(lifecycle.list()).toEqual([]);
+  });
+
+  it('skips bundled fallback when declared fills are already held', async () => {
+    const { kb, lifecycle } = createLifecycleHarness({
+      manifest: [FAKE_EMBEDDER_ENTRY, ORAMA_ENTRY],
+    });
+
+    const first = await lifecycle.applyBundledFallback();
+
+    expect(first.equipped).toEqual(['orama']);
+    expect(first.failed.size).toBe(0);
+    expect(kb.fts.heldBy).toBe('orama');
+    expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
+
+    const second = await lifecycle.applyBundledFallback();
+
+    expect(second.equipped).toEqual([]);
+    expect(second.failed.size).toBe(0);
+    expect(kb.fts.heldBy).toBe('orama');
+    expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
+
+    await lifecycle.equip('test-embedder');
+    expect(kb.embedding.heldBy).toBe('test-embedder');
+
+    await lifecycle.unequip('test-embedder');
+    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(kb.fts.heldBy).toBe('orama');
+    expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
+
+    const afterUnrelatedUnequip = await lifecycle.applyBundledFallback();
+
+    expect(afterUnrelatedUnequip.equipped).toEqual([]);
+    expect(afterUnrelatedUnequip.failed.size).toBe(0);
+    expect(kb.fts.heldBy).toBe('orama');
+    expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
   });
 
   it('runs the expansion-installed dispose hook before tearing down the scope on unequip', async () => {

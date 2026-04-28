@@ -107,10 +107,10 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
 }
 
 /**
- * Loads the bundled engines (e.g., orama's `kb.fts`) onto a read-only KB
- * runtime — once per `kb` instance. Read-side CLI does not run the
- * coordinator's bundled fallback, so this is the dual; without it
- * `kb.fts.read()` throws `binding_empty` and the search degrades silently.
+ * Loads bundled read-side capabilities onto a read-only KB runtime once per
+ * `kb` instance. Read-side CLI does not run the coordinator's bundled
+ * fallback, so this is the dual; without it `kb.fts.read()` throws
+ * `binding_empty` and the search degrades silently.
  */
 export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQueryContext): Promise<void> {
   if (defaultRegistry.hasLoadedBundled(kb)) {

@@ -40,18 +40,19 @@ function createMockKb(order?: string[]) {
   const vectorRetrieval: VectorRetrieval = {
     search: vi.fn(async () => ({ hits: [] })),
   };
-  const ftsRetrieval: FtsRetrieval = {
-    search: vi.fn(async () => ({ hits: [], exhausted: true })),
-    tokenize: vi.fn(() => []),
-    warnings: vi.fn(() => []),
-  };
   const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-  vector.bind({ read: () => vectorRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
+  vector.bind(
+    { read: () => vectorRetrieval, consumer: baseConsumer },
+    { [Symbol.dispose]() {} },
+    MOCK_BASE_CONSUMER_ID,
+  );
   const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
-  fts.bind({ read: () => ftsRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
   const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-kb-runtime-'));
+  tempRoots.push(runtimeDir);
 
   return {
+    runtimeDir,
     vector,
     fts,
     embedding,

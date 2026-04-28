@@ -59,10 +59,8 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
-// Use the orama projection's id so the bundled fallback's registration matches
-// the consumer.id exposed by the mocked fts binding. (Production: orama Expansion
-// equip path registers 'orama-base'; tests mock fts but rely on the same id for
-// waitFreshUntil resolution.)
+// Use the bundled FTS projection id so the fallback registration matches the
+// consumer.id exposed by mocked bindings that rely on waitFreshUntil resolution.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
 import {
   LaunchCoordinator,
@@ -506,18 +504,19 @@ describe('execution backend server', () => {
     const vectorRetrieval: VectorRetrieval = {
       search: vi.fn(async () => ({ hits: [] })),
     };
-    const ftsRetrieval: FtsRetrieval = {
-      search: vi.fn(async () => ({ hits: [], exhausted: true })),
-      tokenize: vi.fn(() => []),
-      warnings: vi.fn(() => []),
-    };
     const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-    vector.bind({ read: () => vectorRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
+    vector.bind(
+      { read: () => vectorRetrieval, consumer: baseConsumer },
+      { [Symbol.dispose]() {} },
+      MOCK_BASE_CONSUMER_ID,
+    );
     const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
-    fts.bind({ read: () => ftsRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
     const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    const runtimeDir = join(mockState.tmpHome, 'kb-runtime');
+    mkdirSync(runtimeDir, { recursive: true });
     return {
       kb: {
+        runtimeDir,
         vector,
         fts,
         embedding,
