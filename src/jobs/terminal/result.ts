@@ -5,9 +5,10 @@ import {
   terminalOutcomeSchema,
   type JobProgressFault,
   type TerminalOutcome,
+  type TerminalOutcomeInput,
 } from '../outcome.js';
 import { usageSummarySchema, type UsageSummary } from '../../providers/contract.js';
-import { jobContinuitySnapshotSchema } from '../continuity.js';
+import { jobContinuitySnapshotSchema, type JobContinuitySnapshot } from '../continuity.js';
 
 export interface JobTerminal {
   content: string;
@@ -15,7 +16,11 @@ export interface JobTerminal {
   durationMs?: number;
 }
 
-export type JobTerminalInput = JobTerminal;
+export interface JobTerminalInput<Scope = never> {
+  content: string;
+  outcome: TerminalOutcomeInput<Scope>;
+  durationMs?: number;
+}
 
 export interface JobTerminalDiagnostics {
   warnings?: string[];
@@ -58,7 +63,9 @@ export const jobDiagnosticsSchema = jobTerminalDiagnosticsSchema
   })
   .strict();
 
-export function normalizeJobTerminal(input: JobTerminalInput): JobTerminal {
+export function normalizeJobTerminal(input: JobTerminal): JobTerminal;
+export function normalizeJobTerminal<Scope>(input: JobTerminalInput<Scope>): JobTerminalInput<Scope>;
+export function normalizeJobTerminal<Scope>(input: JobTerminalInput<Scope>): JobTerminalInput<Scope> {
   return {
     content: input.content,
     outcome: input.outcome,
@@ -75,3 +82,9 @@ export const jobTerminalRecordedBodySchema = z
   .strict();
 
 export type JobTerminaledBody = z.infer<typeof jobTerminalRecordedBodySchema>;
+
+export interface JobTerminalRecordedInputBody<Scope = never> {
+  terminal: JobTerminalInput<Scope>;
+  diagnostics?: JobTerminalDiagnostics;
+  continuity?: JobContinuitySnapshot | null;
+}

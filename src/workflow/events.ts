@@ -1,10 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
-import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
+import type { CoralEvent, CoralEventInput, ResolvableCoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
-import { causeRefSchema } from '../causality/cause-ref.js';
+import { causeRefSchema, type ResolvableCauseRef } from '../causality/cause-ref.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
 export const workflowCompletedBodySchema = z
@@ -28,6 +28,10 @@ export const workflowDrainEnteredBodySchema = z
   .strict();
 
 export type WorkflowCompletedBody = z.infer<typeof workflowCompletedBodySchema>;
+export interface WorkflowCompletedInputBody<Scope = never> {
+  outcome: WorkflowCompletedBody['outcome'];
+  causeRef?: ResolvableCauseRef<Scope>;
+}
 export type WorkflowDrainEnteredBody = z.infer<typeof workflowDrainEnteredBodySchema>;
 
 function readProjectionWorkflow(db: Database, workflowId: string): { plan: WorkflowPlan; lastSeq: number } | null {
@@ -125,7 +129,15 @@ export function workflowDrainEnteredEvent(
 export function workflowCompletedEvent(
   workflowId: string,
   body: WorkflowCompletedBody,
-): CoralEventInput<WorkflowCompletedBody> {
+): CoralEventInput<WorkflowCompletedBody>;
+export function workflowCompletedEvent<Scope>(
+  workflowId: string,
+  body: WorkflowCompletedInputBody<Scope>,
+): ResolvableCoralEventInput<Scope, WorkflowCompletedInputBody<Scope>>;
+export function workflowCompletedEvent<Scope>(
+  workflowId: string,
+  body: WorkflowCompletedInputBody<Scope>,
+): ResolvableCoralEventInput<Scope, WorkflowCompletedInputBody<Scope>> {
   return {
     type: 'workflow.completed',
     stream: { kind: 'workflow', id: workflowId },

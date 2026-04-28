@@ -100,6 +100,9 @@ function extractCauseRef(event: CoralEvent): CauseRef | null {
   if (!isRecord(event.body)) return null;
   const direct = parseCauseRef(event.body.causeRef);
   if (direct) return direct;
+  if (isRecord(event.body.reason) && event.body.reason.kind === 'failed') {
+    return parseCauseRef(event.body.reason.causeRef);
+  }
   if (!isRecord(event.body.terminal) || !isRecord(event.body.terminal.outcome)) return null;
   return event.body.terminal.outcome.kind === 'failed'
     ? parseCauseRef(event.body.terminal.outcome.causeRef)

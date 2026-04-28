@@ -11,9 +11,11 @@ import { sessionEntrySchema } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
   sessionCloseReasonSchema,
+  type SessionCloseReasonInput,
   sessionInterruptedFaultSchema,
   sessionProviderFailedFaultSchema,
 } from './fault.js';
+import type { SessionEntry } from './entry.js';
 
 export const sessionOpenedBodySchema = z
   .object({
@@ -69,4 +71,8 @@ export type SessionOpenedBody = z.infer<typeof sessionOpenedBodySchema>;
 export type SessionContinuityCheckpointedBody = z.infer<typeof sessionContinuityCheckpointedBodySchema>;
 export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema>;
 export type SessionClosedBody = z.infer<typeof sessionClosedBodySchema>;
+export interface SessionClosedInputBody<Scope = never> {
+  entry?: SessionEntry;
+  reason: SessionCloseReasonInput<Scope>;
+}
 export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;

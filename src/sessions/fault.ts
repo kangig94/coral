@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
+import { causeRefSchema, type CauseRef, type ResolvableCauseRef } from '../causality/cause-ref.js';
 import { assertNever } from '../infra/error-format.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
@@ -60,6 +60,12 @@ export type SessionCloseReason =
   | 'interrupted'
   | { kind: 'failed'; causeRef: CauseRef };
 
+export type SessionCloseReasonInput<Scope = never> =
+  | 'completed'
+  | 'non_resumable'
+  | 'interrupted'
+  | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> };
+
 export function continuitySentenceFragment(continuity: SessionContinuityState): string {
   switch (continuity) {
     case 'verified':
@@ -84,4 +90,3 @@ export function describeSessionInterrupted(fault: SessionInterruptedFault): stri
       : 'App-server handoff occurred during the turn';
   return `${triggerText}; ${continuitySentenceFragment(fault.continuity)}.`;
 }
-

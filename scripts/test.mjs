@@ -9,6 +9,7 @@ function runAsync(cmd) {
 }
 
 const commands = [];
+commands.push('npx tsc -p tests/types/tsconfig.json');
 commands.push('npx vitest run');
 commands.push('npx vitest run --config vitest.simulation.config.ts');
 

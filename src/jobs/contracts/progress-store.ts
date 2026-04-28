@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import type { AppendedEvent } from '../../store/append.js';
+import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobPhase } from '../phase.js';
@@ -40,6 +40,7 @@ export interface JobProgressStore {
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
   readJobProgress(jobId: string): JobProgress[];
   ensureResultArtifact(jobId: string): string;
+  commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[];
   appendEvent(input: CoralEventInput): void;
   initJob(opts: InitJobOptions): void;

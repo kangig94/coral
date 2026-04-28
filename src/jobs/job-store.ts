@@ -1,9 +1,16 @@
 import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
-import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEventsFn } from '../store/append.js';
+import {
+  commit as commitJournalEvents,
+  type AppendedEvent,
+  type AppendEventsFn,
+  type CommitClosureResult,
+  type CommitContext,
+  type CommitEventsFn,
+} from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
-import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
+import type { CoralEventInput, ResolvableCoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
@@ -67,7 +74,7 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
 export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
-  private readonly appendEvents: AppendEventsFn;
+  private readonly commitEvents: CommitEventsFn;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
@@ -89,15 +96,29 @@ export class JobStore implements JobProgressStore {
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
     this.db = db ?? this.openDefaultStoreDatabase();
-    this.appendEvents =
-      appendEvents ??
-      ((inputs) => {
-        return appendJournalEvents(this.db, inputs, {
-          now: () => nowDate(this.runtime.time),
-          reducers,
-          upcasters: this.upcasters,
-        });
-      });
+    this.commitEvents =
+      appendEvents === undefined
+        ? (cb) =>
+            commitJournalEvents(
+              this.db,
+              cb,
+              {
+                now: () => nowDate(this.runtime.time),
+                reducers,
+                upcasters: this.upcasters,
+              },
+            )
+        : (cb) => {
+            const collectedInputs: ResolvableCoralEventInput<unknown>[] = [];
+            const c: CommitContext<unknown> = {
+              append(input) {
+                collectedInputs.push(input);
+                return {} as ReturnType<CommitContext<unknown>['append']>;
+              },
+            };
+            cb(c);
+            return appendEvents(collectedInputs as readonly CoralEventInput[]) ?? [];
+          };
   }
 
   private resolveDefaultDbPath(): string {
@@ -252,21 +273,10 @@ export class JobStore implements JobProgressStore {
     }));
   }
 
-  appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[] {
-    if (inputs.length === 0) {
-      return [];
-    }
-
-    const previousByJob = new Map<string, JobStatus | null>();
-    for (const input of inputs) {
-      if (input.stream.kind !== 'job' || previousByJob.has(input.stream.id)) {
-        continue;
-      }
-      previousByJob.set(input.stream.id, this.readStatus(input.stream.id));
-    }
-
-    const appended = this.appendEvents(inputs) ?? [];
-
+  private publishAppendedEvents(
+    appended: readonly AppendedEvent[],
+    previousByJob: ReadonlyMap<string, JobStatus | null>,
+  ): AppendedEvent[] {
     for (const event of appended) {
       if (event.stream.kind !== 'job') {
         continue;
@@ -314,8 +324,37 @@ export class JobStore implements JobProgressStore {
     return [...appended];
   }
 
+  commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[] {
+    const previousByJob = new Map<string, JobStatus | null>();
+    const appended =
+      this.commitEvents(<Scope>(c: CommitContext<Scope>) => {
+        const tracked: CommitContext<Scope> = {
+          append: (input) => {
+            if (input.stream.kind === 'job' && !previousByJob.has(input.stream.id)) {
+              previousByJob.set(input.stream.id, this.readStatus(input.stream.id));
+            }
+            return c.append(input);
+          },
+        };
+
+        return cb(tracked);
+      }) ?? [];
+
+    return this.publishAppendedEvents(appended, previousByJob);
+  }
+
+  appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[] {
+    return this.commit((c) => {
+      for (const input of inputs) c.append(input);
+      return undefined;
+    });
+  }
+
   appendEvent(input: CoralEventInput): void {
-    this.appendEventsWithResult([input]);
+    this.commit((c) => {
+      c.append(input);
+      return undefined;
+    });
   }
 
   initJob(opts: InitJobOptions): void {
@@ -594,22 +633,25 @@ export class JobStore implements JobProgressStore {
     const continuity = options.continuity ?? null;
     const terminal = normalizeJobTerminal(result);
     const diagnostics = options.diagnostics;
-    const [appended] = this.appendEventsWithResult([{
-      type: 'job.terminal.recorded',
-      stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
-      project: status?.projectRoot,
-      refs: {
-        jobId,
-        ...(sessionId === null ? {} : { sessionId }),
-      },
-      bodyVersion: 1,
-      body: {
-        terminal,
-        diagnostics,
-        continuity,
-      },
-    }]);
+    const [appended] = this.commit((c) => {
+      c.append({
+        type: 'job.terminal.recorded',
+        stream: { kind: 'job', id: jobId },
+        namespace: status?.backendNamespace ?? this.namespace,
+        project: status?.projectRoot,
+        refs: {
+          jobId,
+          ...(sessionId === null ? {} : { sessionId }),
+        },
+        bodyVersion: 1,
+        body: {
+          terminal,
+          diagnostics,
+          continuity,
+        },
+      });
+      return undefined;
+    });
     return appended?.seq ?? 0;
   }
 

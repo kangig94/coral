@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { CoralSetupError } from '../runtime/errors.js';
 import { decodeEventBody } from './body-codec.js';
 import type { EventsRow } from './schema.js';
+import type { CauseRefToken } from '../causality/cause-ref.js';
 export { UpcasterRegistry, createEmptyRegistry } from './upcaster-registry.js';
+
+declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 
 /**
  * Cross-authority reference shape.
@@ -76,6 +79,14 @@ export interface CoralEvent<T = unknown> extends Omit<EventEnvelopeShape, 'body'
 export interface CoralEventInput<T = unknown> extends Omit<CoralEvent<T>, 'seq' | 'ts'> {
   tsOverride?: string;
 }
+
+export type ResolvableCoralEventInput<Scope, T = unknown> = CoralEventInput<T> & {
+  readonly [RESOLVABLE_INPUT_SCOPE]?: {
+    readonly consume: (scope: Scope) => void;
+    readonly produce: () => Scope;
+    readonly token: CauseRefToken<Scope>;
+  };
+};
 
 export const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
 

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const CAUSE_REF_TOKEN: unique symbol = Symbol('CauseRefToken');
+
 export interface CauseRef {
   stream: {
     kind: 'job' | 'session' | 'discuss' | 'workflow';
@@ -7,6 +9,16 @@ export interface CauseRef {
   };
   seq: number;
 }
+
+export type CauseRefToken<Scope> = {
+  readonly [CAUSE_REF_TOKEN]: {
+    readonly slot: number;
+    readonly consume: (scope: Scope) => void;
+    readonly produce: () => Scope;
+  };
+};
+
+export type ResolvableCauseRef<Scope> = [Scope] extends [never] ? CauseRef : CauseRef | CauseRefToken<Scope>;
 
 export const causeRefSchema = z
   .object({

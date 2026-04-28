@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
-import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
+import { causeRefSchema, type CauseRef, type ResolvableCauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
@@ -42,6 +42,13 @@ export type TerminalOutcome =
   | { kind: 'aborted'; reason: AbortReason }
   | { kind: 'provider_exit'; code: number; note?: string }
   | { kind: 'failed'; causeRef: CauseRef }
+  | { kind: 'job_fault'; fault: JobLifecycleFault };
+
+export type TerminalOutcomeInput<Scope = never> =
+  | { kind: 'completed' }
+  | { kind: 'aborted'; reason: AbortReason }
+  | { kind: 'provider_exit'; code: number; note?: string }
+  | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> }
   | { kind: 'job_fault'; fault: JobLifecycleFault };
 
 export const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
