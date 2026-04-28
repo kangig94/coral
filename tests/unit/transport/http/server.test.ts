@@ -25,7 +25,8 @@ import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
@@ -97,7 +98,7 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function jobResultPath(jobId: string): string {
-  return join(JOBS_DIR, jobId, 'result.md');
+  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
 function createProgressStore(
@@ -415,7 +416,7 @@ function stubSessionProjection(
 ): void {
   const scopeKey = pluginRootNamespace(overrides.projectRoot);
 
-  appendEvents(
+  commitInputs(
     progressStore.getDb(),
     [
       {
@@ -770,7 +771,8 @@ describe('execution backend server', () => {
       projectRoot: projectRootA,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(
+    commitJobTerminal(
+      progressStore,
       jobIdA,
       'session-a',
       { content: 'done-a', outcome: { kind: 'completed' } },
@@ -792,7 +794,8 @@ describe('execution backend server', () => {
       projectRoot: projectRootB,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(
+    commitJobTerminal(
+      progressStore,
       jobIdB,
       'session-b',
       { content: 'done-b', outcome: { kind: 'completed' } },
@@ -1051,7 +1054,10 @@ describe('execution backend server', () => {
     if (!created.ok) {
       throw new Error(created.error);
     }
-    progressStore.appendEventsWithResult(created.value.map((event) => toJournalInput(event)));
+    commitJobInputs(
+      progressStore,
+      created.value.map((event) => toJournalInput(event)),
+    );
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -3706,7 +3712,8 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
     progressStore.appendProgress('job-1', 'session-1', 'working');
-    progressStore.appendTerminal(
+    commitJobTerminal(
+      progressStore,
       'job-1',
       'session-1',
       { content: 'done', outcome: { kind: 'completed' } },
@@ -3855,7 +3862,8 @@ describe('execution backend server', () => {
         projectRoot: '/tmp/project',
         backendNamespace: testBackendNamespace,
       });
-      progressStore.appendTerminal(
+      commitJobTerminal(
+        progressStore,
         'job-completed',
         'session-completed',
         { content: 'done', outcome: { kind: 'completed' } },
@@ -4229,7 +4237,8 @@ describe('execution backend server', () => {
       projectRoot,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.appendTerminal(
+    commitJobTerminal(
+      progressStore,
       jobId,
       session.sessionId,
       { content: 'done', outcome: { kind: 'completed' } },
@@ -4633,7 +4642,10 @@ describe('execution backend server', () => {
       if (!startupCandidateCreated.ok) {
         throw new Error(startupCandidateCreated.error);
       }
-      progressStore.appendEventsWithResult(startupCandidateCreated.value.map((event) => toJournalInput(event)));
+      commitJobInputs(
+        progressStore,
+        startupCandidateCreated.value.map((event) => toJournalInput(event)),
+      );
 
       const terminalHistoryCreated = decideSessionCreate(
         {
@@ -4651,9 +4663,13 @@ describe('execution backend server', () => {
       if (!terminalHistoryCreated.ok) {
         throw new Error(terminalHistoryCreated.error);
       }
-      progressStore.appendEventsWithResult(terminalHistoryCreated.value.map((event) => toJournalInput(event)));
+      commitJobInputs(
+        progressStore,
+        terminalHistoryCreated.value.map((event) => toJournalInput(event)),
+      );
       const terminalCreatedSnapshot = readDiscussProjection('terminal-history');
-      progressStore.appendEventsWithResult(
+      commitJobInputs(
+        progressStore,
         [
           makeEvent(
             'terminal-history',

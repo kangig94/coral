@@ -3,9 +3,15 @@ declare const __PLUGIN_ROOT__: string;
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
-import { pluginRootNamespace } from "../../infra/plugin-identity.js";
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
+import {
+  acquireLock,
+  releaseLock,
+  type BackendOwnershipState,
+  type LockRecord,
+  type VerifyBackendOwnershipFn,
+} from '../lock.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
 import { createKbSubsystem as defaultCreateKbSubsystem } from '../../kb/subsystem.js';
@@ -162,8 +168,7 @@ export function resolveCoordinatorDefaults(
       });
     });
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
-  const writeBackendInfoFn =
-    options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
+  const writeBackendInfoFn = options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
   const removeBackendInfoIfOwnerFn =
     options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
   const removeLockIfOwnerFn =
@@ -223,7 +228,13 @@ export function resolveCoordinatorDefaults(
       const markJobsAsErrorFn =
         options.markJobsAsErrorFn ??
         ((currentNamespace: string, message: string) => {
-          markJobsAsError(bindings.progressStore, currentNamespace, message, runtime.storage);
+          markJobsAsError(
+            bindings.progressStore,
+            currentNamespace,
+            message,
+            runtime.storage,
+            runtime.paths.coral.exports.jobsRoot,
+          );
         });
       const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());
 

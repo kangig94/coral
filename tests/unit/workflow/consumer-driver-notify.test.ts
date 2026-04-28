@@ -49,19 +49,22 @@ describe('workflow consumer-driver notify', () => {
       };
 
       const journal = createWorkflowJournal({ commit: coordinatorCommit });
-      journal.append([
-        workflowPlanDeclaredEvent('workflow-1', {
-          slots: [
-            {
-              slotId: 'workflow-1:0:0',
-              dependencies: [],
-              provider: 'codex',
-              instruction: 'architect',
-              agent: 'architect',
-            },
-          ],
-        }),
-      ]);
+      journal.commit((c) => {
+        c.append(
+          workflowPlanDeclaredEvent('workflow-1', {
+            slots: [
+              {
+                slotId: 'workflow-1:0:0',
+                dependencies: [],
+                provider: 'codex',
+                instruction: 'architect',
+                agent: 'architect',
+              },
+            ],
+          }),
+        );
+        return undefined;
+      });
 
       await driver.drainAll();
       expect(readWorkflowProjection(db, 'workflow-1')).toMatchObject({

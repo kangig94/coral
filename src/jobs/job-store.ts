@@ -4,39 +4,29 @@ import { join } from 'node:path';
 import {
   commit as commitJournalEvents,
   type AppendedEvent,
-  type AppendEventsFn,
   type CommitClosureResult,
   type CommitContext,
   type CommitEventsFn,
 } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
-import type { CoralEventInput, ResolvableCoralEventInput, UpcasterRegistry } from '../store/envelope.js';
+import type { UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
-import { jobsDir } from "./paths.js";
+import { jobsDir } from './paths.js';
 import { ensureResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
-import type { JobPhase } from './phase.js';
-import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './contracts/progress-store.js';
-import {
-  normalizeJobTerminal,
-  type JobLaunch,
-  type JobRuntime,
-  type JobStatus,
-  type JobTerminal,
-  type JobTerminalInput,
-} from './records.js';
+import type { InitJobOptions, JobProgressStore } from './contracts/progress-store.js';
+import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
 
 export type ProgressStoreOptions = {
   eventBus?: JobEventBus;
   db?: Database;
-  appendEvents?: AppendEventsFn;
   reducers?: ComposedReducers;
 };
 
@@ -90,35 +80,18 @@ export class JobStore implements JobProgressStore {
     upcasters: UpcasterRegistry,
     options: ProgressStoreOptions = {},
   ) {
-    const { eventBus = createNoopJobEventBus(), db, appendEvents, reducers = composeReducers(jobsRegistry) } = options;
+    const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
     this.db = db ?? this.openDefaultStoreDatabase();
-    this.commitEvents =
-      appendEvents === undefined
-        ? (cb) =>
-            commitJournalEvents(
-              this.db,
-              cb,
-              {
-                now: () => nowDate(this.runtime.time),
-                reducers,
-                upcasters: this.upcasters,
-              },
-            )
-        : (cb) => {
-            const collectedInputs: ResolvableCoralEventInput<unknown>[] = [];
-            const c: CommitContext<unknown> = {
-              append(input) {
-                collectedInputs.push(input);
-                return {} as ReturnType<CommitContext<unknown>['append']>;
-              },
-            };
-            cb(c);
-            return appendEvents(collectedInputs as readonly CoralEventInput[]) ?? [];
-          };
+    this.commitEvents = (cb) =>
+      commitJournalEvents(this.db, cb, {
+        now: () => nowDate(this.runtime.time),
+        reducers,
+        upcasters: this.upcasters,
+      });
   }
 
   private resolveDefaultDbPath(): string {
@@ -263,7 +236,13 @@ export class JobStore implements JobProgressStore {
   }
 
   ensureResultArtifact(jobId: string): string {
-    return ensureResultMarkdownArtifact(this.db, jobId, this.runtime.storage, this);
+    return ensureResultMarkdownArtifact(
+      this.db,
+      jobId,
+      this.runtime.paths.coral.exports.jobsRoot,
+      this.runtime.storage,
+      this,
+    );
   }
 
   listJobProjections() {
@@ -343,20 +322,6 @@ export class JobStore implements JobProgressStore {
     return this.publishAppendedEvents(appended, previousByJob);
   }
 
-  appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[] {
-    return this.commit((c) => {
-      for (const input of inputs) c.append(input);
-      return undefined;
-    });
-  }
-
-  appendEvent(input: CoralEventInput): void {
-    this.commit((c) => {
-      c.append(input);
-      return undefined;
-    });
-  }
-
   initJob(opts: InitJobOptions): void {
     const dir = this.jobDir(opts.jobId);
     this.runtime.storage.mkdirSync(dir, { recursive: true });
@@ -383,32 +348,38 @@ export class JobStore implements JobProgressStore {
     });
 
     if (opts.initialPhase === 'queued') {
-      this.appendEvent({
-        type: 'job.queue.queued',
-        stream: { kind: 'job', id: opts.jobId },
-        namespace: opts.backendNamespace,
-        project: opts.projectRoot,
-        refs: { jobId: opts.jobId, sessionId: opts.sessionId },
-        bodyVersion: 1,
-        body: {
-          queuePosition: 0,
-          runningJobIds: [],
-        },
+      this.commit((c) => {
+        c.append({
+          type: 'job.queue.queued',
+          stream: { kind: 'job', id: opts.jobId },
+          namespace: opts.backendNamespace,
+          project: opts.projectRoot,
+          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          bodyVersion: 1,
+          body: {
+            queuePosition: 0,
+            runningJobIds: [],
+          },
+        });
+        return undefined;
       });
       return;
     }
 
     if (opts.initialPhase === 'running') {
-      this.appendEvent({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: opts.jobId },
-        namespace: opts.backendNamespace,
-        project: opts.projectRoot,
-        refs: { jobId: opts.jobId, sessionId: opts.sessionId },
-        bodyVersion: 1,
-        body: {
-          startedAt: createdAt,
-        },
+      this.commit((c) => {
+        c.append({
+          type: 'job.runtime.started',
+          stream: { kind: 'job', id: opts.jobId },
+          namespace: opts.backendNamespace,
+          project: opts.projectRoot,
+          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          bodyVersion: 1,
+          body: {
+            startedAt: createdAt,
+          },
+        });
+        return undefined;
       });
     }
   }
@@ -447,51 +418,55 @@ export class JobStore implements JobProgressStore {
       ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
       ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
     };
-    const body = launch.jobKind === 'kb'
-      ? {
-          projectRoot: launch.projectRoot,
-          backendNamespace: launch.backendNamespace,
-          bundleHash: launch.bundleHash,
-          jobKind: launch.jobKind,
-          pool: launch.pool,
-          enqueueSequence: launch.enqueueSequence,
-          operation: launch.operation ?? 'kb.source_import',
-          request: { ...launch.request },
-          createdAt: launch.createdAt,
-        }
-      : (() => {
-          if (launch.sessionId === null || launch.provider === null) {
-            throw new Error(`Provider job '${jobId}' requires sessionId and provider.`);
-          }
-          return {
-            sessionId: launch.sessionId,
-            provider: launch.provider,
+    const body =
+      launch.jobKind === 'kb'
+        ? {
             projectRoot: launch.projectRoot,
             backendNamespace: launch.backendNamespace,
             bundleHash: launch.bundleHash,
             jobKind: launch.jobKind,
             pool: launch.pool,
             enqueueSequence: launch.enqueueSequence,
-            providerAction: launch.providerAction ?? 'exec',
-            request: {
-              ...launch.request,
-              prompt: launch.request.prompt ?? '',
-              cwd: launch.request.cwd ?? launch.projectRoot,
-              bypassPermissions: launch.request.bypassPermissions ?? false,
-              coralEnv: { ...(launch.request.coralEnv ?? {}) },
-            },
+            operation: launch.operation ?? 'kb.source_import',
+            request: { ...launch.request },
             createdAt: launch.createdAt,
-          };
-        })();
+          }
+        : (() => {
+            if (launch.sessionId === null || launch.provider === null) {
+              throw new Error(`Provider job '${jobId}' requires sessionId and provider.`);
+            }
+            return {
+              sessionId: launch.sessionId,
+              provider: launch.provider,
+              projectRoot: launch.projectRoot,
+              backendNamespace: launch.backendNamespace,
+              bundleHash: launch.bundleHash,
+              jobKind: launch.jobKind,
+              pool: launch.pool,
+              enqueueSequence: launch.enqueueSequence,
+              providerAction: launch.providerAction ?? 'exec',
+              request: {
+                ...launch.request,
+                prompt: launch.request.prompt ?? '',
+                cwd: launch.request.cwd ?? launch.projectRoot,
+                bypassPermissions: launch.request.bypassPermissions ?? false,
+                coralEnv: { ...(launch.request.coralEnv ?? {}) },
+              },
+              createdAt: launch.createdAt,
+            };
+          })();
 
-    this.appendEvent({
-      type: 'job.launch.requested',
-      stream: { kind: 'job', id: jobId },
-      namespace: launch.backendNamespace,
-      project: launch.projectRoot,
-      refs,
-      bodyVersion: 1,
-      body,
+    this.commit((c) => {
+      c.append({
+        type: 'job.launch.requested',
+        stream: { kind: 'job', id: jobId },
+        namespace: launch.backendNamespace,
+        project: launch.projectRoot,
+        refs,
+        bodyVersion: 1,
+        body,
+      });
+      return undefined;
     });
   }
 
@@ -502,38 +477,41 @@ export class JobStore implements JobProgressStore {
   appendRuntimeStarted(jobId: string, runtime: JobRuntime): void {
     const detail = this.detail(jobId);
     const status = detail.status;
-    this.appendEvent({
-      type: 'job.runtime.started',
-      stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
-      project: status?.projectRoot,
-      refs: {
-        jobId,
-        ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
-      },
-      bodyVersion: 1,
-      body:
-        runtime.transport === 'internal'
-          ? {
-              transport: 'internal',
-              operation: runtime.operation,
-              startedAt: runtime.startTime,
-            }
-          : runtime.transport === 'app-server'
-          ? {
-              transport: 'app-server',
-              startedAt: runtime.startTime,
-              providerMeta: runtime.providerMeta,
-            }
-          : {
-              transport: runtime.transport,
-              pid: runtime.pid,
-              stdoutPath: runtime.stdoutPath,
-              stderrPath: runtime.stderrPath,
-              startedAt: runtime.startTime,
-              providerMeta: runtime.providerMeta,
-              tailWatermark: runtime.tailWatermark,
-            },
+    this.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: jobId },
+        namespace: status?.backendNamespace ?? this.namespace,
+        project: status?.projectRoot,
+        refs: {
+          jobId,
+          ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
+        },
+        bodyVersion: 1,
+        body:
+          runtime.transport === 'internal'
+            ? {
+                transport: 'internal',
+                operation: runtime.operation,
+                startedAt: runtime.startTime,
+              }
+            : runtime.transport === 'app-server'
+              ? {
+                  transport: 'app-server',
+                  startedAt: runtime.startTime,
+                  providerMeta: runtime.providerMeta,
+                }
+              : {
+                  transport: runtime.transport,
+                  pid: runtime.pid,
+                  stdoutPath: runtime.stdoutPath,
+                  stderrPath: runtime.stderrPath,
+                  startedAt: runtime.startTime,
+                  providerMeta: runtime.providerMeta,
+                  tailWatermark: runtime.tailWatermark,
+                },
+      });
+      return undefined;
     });
   }
 
@@ -602,40 +580,9 @@ export class JobStore implements JobProgressStore {
     const stamped = formatProgressMessage(this.jobStartedAt.get(jobId), this.runtime.time.now(), message);
     const detail = this.detail(jobId);
     const status = detail.status;
-    const [appended] = this.appendEventsWithResult([{
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
-      namespace: status?.backendNamespace ?? this.namespace,
-      project: status?.projectRoot,
-      refs: {
-        jobId,
-        ...(sessionId === null ? {} : { sessionId }),
-      },
-      bodyVersion: 1,
-      body: {
-        kind: 'message',
-        message: stamped,
-        ts: nowIsoString(this.runtime.time),
-      },
-    }]);
-    return appended?.seq ?? 0;
-  }
-
-  appendTerminal(
-    jobId: string,
-    sessionId: string | null,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions = {},
-  ): number {
-    const detail = this.detail(jobId);
-    const status = detail.status;
-    const continuity = options.continuity ?? null;
-    const terminal = normalizeJobTerminal(result);
-    const diagnostics = options.diagnostics;
     const [appended] = this.commit((c) => {
       c.append({
-        type: 'job.terminal.recorded',
+        type: 'job.progress.emitted',
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
@@ -645,9 +592,9 @@ export class JobStore implements JobProgressStore {
         },
         bodyVersion: 1,
         body: {
-          terminal,
-          diagnostics,
-          continuity,
+          kind: 'message',
+          message: stamped,
+          ts: nowIsoString(this.runtime.time),
         },
       });
       return undefined;
@@ -716,7 +663,6 @@ export class JobStore implements JobProgressStore {
 
     return row?.count ?? 0;
   }
-
 }
 
 export { JobStore as ProgressStore };

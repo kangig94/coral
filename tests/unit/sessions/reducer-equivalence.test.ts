@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { rebuildProjections } from '#src/store/rebuild.js';
+import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 
@@ -73,7 +73,7 @@ describe('sessions reducer equivalence', () => {
         version: 3,
       });
 
-      const appended = appendEvents(
+      const appended = commitInputs(
         db,
         [
           {
@@ -241,7 +241,7 @@ describe('sessions reducer equivalence', () => {
         version: 2,
       });
 
-      const appended = appendEvents(
+      const appended = commitInputs(
         db,
         [
           {

@@ -44,7 +44,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   try {
     const storePath = argv[pathIdx + 1];
     const { openStoreDatabase } = await import('../store/db.js');
-    const { appendEvents } = await import('../store/append.js');
+    const { commit } = await import('../store/append.js');
     const { composeReducers } = await import('../store/reducers.js');
     const { createEmptyRegistry } = await import('../store/envelope.js');
     const { getEvent } = await import('../store/event-queries.js');
@@ -59,16 +59,17 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
       const reducers = composeReducers();
       const upcasters = createEmptyRegistry();
       const readCtx = { schemas: reducers.schemas, upcasters };
-      const [event] = appendEvents(
+      const [event] = commit(
         db,
-        [
-          {
+        (c) => {
+          c.append({
             type: 'smoke.ping',
             stream: { kind: 'job', id: 'smoke' },
             bodyVersion: 1,
             body: { ok: true },
-          },
-        ],
+          });
+          return undefined;
+        },
         { now: () => nowDate(), reducers, upcasters },
       );
 

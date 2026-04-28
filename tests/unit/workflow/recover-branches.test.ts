@@ -14,7 +14,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
-import { appendWorkflowEvents } from '#src/workflow/projections.js';
+import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/command.js';
 
@@ -45,7 +45,7 @@ function terminal(jobId: string, content: string): WaitStreamEvent {
     type: 'terminal',
     jobId,
     remainingJobIds: [],
-    resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
+    resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result,
   };
 }
@@ -74,7 +74,14 @@ function createHarness(options: {
   const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
   const atomJobId = plan.slots[0].slotId;
-  appendWorkflowEvents(db, [workflowPlanDeclaredEvent('workflow-1', plan)], runtime.time);
+  commitWorkflowEvents(
+    db,
+    (c) => {
+      c.append(workflowPlanDeclaredEvent('workflow-1', plan));
+      return undefined;
+    },
+    runtime.time,
+  );
 
   progressStore.initJob({
     jobId: 'workflow-1',

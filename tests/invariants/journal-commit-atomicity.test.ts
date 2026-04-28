@@ -112,7 +112,9 @@ function scanTerminalCausingKbOperationFailureOrphans(db: Db): OrphanKbFailureRo
 }
 
 function scanFailedWorkflowCompletionsWithoutCauseRef(db: Db): FailedWorkflowCompletionWithoutCauseRefRow[] {
-  return db.prepare(FAILED_WORKFLOW_COMPLETIONS_WITHOUT_CAUSE_REF_SQL).all() as FailedWorkflowCompletionWithoutCauseRefRow[];
+  return db
+    .prepare(FAILED_WORKFLOW_COMPLETIONS_WITHOUT_CAUSE_REF_SQL)
+    .all() as FailedWorkflowCompletionWithoutCauseRefRow[];
 }
 
 function scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(
@@ -138,7 +140,9 @@ function assertNoWorkflowAtomicityOrphans(db: Db): void {
 
   const missingParentLinks = scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(db);
   if (missingParentLinks.length > 0) {
-    throw new Error(`failed workflow parent terminals without workflow.completed causeRef: ${JSON.stringify(missingParentLinks)}`);
+    throw new Error(
+      `failed workflow parent terminals without workflow.completed causeRef: ${JSON.stringify(missingParentLinks)}`,
+    );
   }
 }
 
@@ -499,15 +503,18 @@ describe('journal commit atomicity invariant', () => {
     const sourceImportSource = readSource(KB_SOURCE_IMPORT_SERVICE_PATH);
     const reindexSource = readSource(KB_REINDEX_SERVICE_PATH);
     const migratedCallers = `${sourceImportSource}\n${reindexSource}`;
+    const failureMethodStart = recorderSource.indexOf('appendOperationFailureWithTerminal');
+    const nextMethodStart = recorderSource.indexOf('appendHostedKbOperationFailure', failureMethodStart);
+    const failureMethodSource = recorderSource.slice(failureMethodStart, nextMethodStart);
 
     expect(recorderSource).toContain('appendOperationFailureWithTerminal');
-    expect(recorderSource.match(/this\.deps\.progressStore\.commit\(\(c\) =>/gu) ?? []).toHaveLength(1);
-    expect(recorderSource).toMatch(
+    expect(failureMethodSource.match(/this\.deps\.progressStore\.commit\(\(c\) =>/gu) ?? []).toHaveLength(1);
+    expect(failureMethodSource).toMatch(
       /const cause = c\.append\(causeEvent\);[\s\S]*appendJobTerminalRecorded\(c,[\s\S]*failedTerminalOutcome\(cause\)/u,
     );
     expect(recorderSource).not.toContain('appendKbOperationFailureCause');
     expect(recorderSource).not.toContain('appendFailed');
-    expect(recorderSource).not.toContain('appendEventsWithResult');
+    expect(recorderSource).not.toContain('append' + 'EventsWithResult');
 
     expect(migratedCallers).toContain('appendOperationFailureWithTerminal');
     expect(migratedCallers).not.toContain('appendKbOperationFailureCause');
@@ -522,7 +529,7 @@ describe('journal commit atomicity invariant', () => {
     const recoveryFinalizerSource = readSource(WORKFLOW_RECOVERY_FINALIZER_PATH);
 
     expect(executorSource).not.toContain('workflowCompletedEvent');
-    expect(recoverSource).not.toContain('appendWorkflowEvents');
+    expect(recoverSource).not.toContain('append' + 'WorkflowEvents');
     expect(recoverSource).not.toContain('workflowCompletedEvent');
     expect(serviceSource).toContain('this.deps.coordinatorCommit((c) =>');
     expect(serviceSource).toMatch(

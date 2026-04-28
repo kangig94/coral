@@ -596,18 +596,17 @@ No segment rotation. No standalone checkpoint files. No advisory lockfile. SQLit
 
 ### 3.3 Commit semantics
 
-Every coordinator-side operation that touches multiple streams runs as **one SQL transaction**:
+`commit(cb)` is the Journal substrate primitive. The callback runs inside SQLite `BEGIN IMMEDIATE`; `c.append(input)` records a commit-local event and returns an opaque `CauseRefToken` that later events in the same closure may use at explicit `causeRef` paths. The substrate reserves contiguous `seq` values, resolves tokens to durable `CauseRef { stream, seq }` pointers, validates/upcasts, inserts events, and applies reducers before the transaction commits.
 
-```sql
-BEGIN IMMEDIATE;
-  INSERT INTO events (...) VALUES (...);    -- e.g. session.provider_failed on session/s-1
-  INSERT INTO events (...) VALUES (...);    -- e.g. job.terminal.recorded on job/kb-1 with causeRef
-  UPDATE projection_jobs SET ... WHERE job_id = 'kb-1';
-  UPDATE projection_sessions SET ... WHERE session_id = 's-1';
-COMMIT;
+```ts
+journal.commit((c) => {
+  const cause = c.append(sessionProviderFailedEvent(...));
+  c.append(jobTerminalRecordedEvent({ ..., terminal: { outcome: failedTerminalOutcome(cause) } }));
+  return undefined;
+});
 ```
 
-Either all appends land and all projections update, or none do. Replay never sees partial truth — this is the atomicity commit groups need (§12.3).
+Either all appended facts land and all projections update, or none do. Replay never sees partial truth — this is the atomicity commit groups need (§12.3).
 
 ### 3.4 Journal-domain exports
 
@@ -615,19 +614,20 @@ Materialized files for Journal domains (e.g., `result.md` per job) live outside 
 
 ```
 ~/.coral/data/store/store.db                    (Journal substrate)
+~/.coral/exports/jobs/                      (prod; dev uses ~/.coral/exports-dev/jobs/)
+  <jobId>/result.md                  (durable export materialized from job.terminal.recorded)
+
 <os-tmpdir>/coral-jobs/
-  <jobId>/result.md                  (materialized from job.terminal.recorded)
+  <jobId>/stdout|stderr|...          (live scratch artifacts and intermediates)
 ```
 
-Deleting `<os-tmpdir>/coral-jobs/<jobId>/result.md` never loses truth — rebuild from Journal events. The
-`~/.coral/exports/jobs/<jobId>/` path remains reserved for future tooling, but it is not the durable wait/follow
-artifact.
+Deleting `~/.coral/exports/jobs/<jobId>/result.md` never loses truth — rebuild from Journal events. Tmp job directories remain live-runtime scratch only; they are not the durable wait/follow result contract.
 
 Note: KB markdown files at `~/.coral/kb/` are **not exports**. They are the Corpus authority itself (§2.2, §6.4). Derived KB indexes (Orama, needle) live at `~/.coral/data/kb/` and are rebuildable from the Corpus.
 
 ### 3.5 Replay identity
 
-Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by replaying events `[1..seq_cutoff]` are byte-identical to the projection rows SQLite would hold after committing those events. This is why `DROP TABLE projection_*` + full rebuild is a valid recovery path.
+Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by replaying events `[1..seq_cutoff]` are byte-identical to the projection rows SQLite would hold after committing those events. This is exercised by regression tests through `tests/helpers/rebuild-projections.ts`; production keeps projections current inside `commit(cb)`.
 
 ### 3.6 What this buys
 
@@ -734,7 +734,7 @@ Richer launch/runtime/terminal payloads remain event-backed; projection is deriv
 
 Domain registries own the full write-time contract for their events: schemas, reducers, and append validators. Each event type is declared as a `DomainEventEntry` that pairs the schema with its (optional) reducer in one place, so the schema-reducer pairing is structural rather than two parallel maps that happen to share keys. The `defineDomainEvent({type, schema, reducer})` helper uses `z.output<S>` to infer the reducer's body type from the schema, so reducers receive a fully-typed body without per-call `schema.parse()` and without `as Reducer<unknown>` casts at the registration site.
 
-`store.appendEvents()` remains a domain-neutral transaction substrate; it runs any composed append validators inside the same `BEGIN IMMEDIATE` transaction before the first insert, parses each input body through the registry schema before assigning a `seq`, and only then calls reducers. Reducers therefore can rely on `event.body` matching the registered schema, which is why a reducer never re-parses; the rebuild and consumer-apply paths route bodies through the same upcaster + schema before dispatch.
+`store.commit()` is the domain-neutral transaction substrate; it runs the closure, reserves seqs, resolves cause-ref tokens, parses bodies, validates, inserts, and dispatches reducers in one `BEGIN IMMEDIATE` block. Reducers therefore can rely on `event.body` matching the registered schema, which is why a reducer never re-parses; rebuild and consumer-apply paths route bodies through the same upcaster + schema before dispatch.
 
 ---
 
@@ -1132,7 +1132,8 @@ Each fault-bearing event type has one producer:
 | `session.provider_failed` | `session/<id>` | provider leaf kernel |
 | `session.adapter_unparseable` | `session/<id>` | `providers/middleware/adapter-parse-guard.ts` |
 | `discuss.agent.job.finished` (failed/recovery outcomes) | `discuss/<id>` | `discuss/shell/` |
-| `workflow.completed { outcome: 'failed' | 'aborted' }` | `workflow/<id>` | `workflow/executor.ts` |
+| `workflow.lifecycle_fault` | `workflow/<id>` | the workflow lifecycle finalizer (covering both launch-time `executor.ts` finalization and recovery-time `resumeAll` finalization) |
+| `workflow.completed { outcome: 'failed' | 'aborted' }` | `workflow/<id>` | the workflow lifecycle finalizer (a single conceptual producer enacted at two coordinator-owned call sites) |
 | `job.terminal.recorded { outcome: { kind: 'job_fault', ... } }` | `job/<id>` | `jobs/reconcile/` (for ghost/lost) or job wrapper (for crashed) |
 
 KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `kb_curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, retrieval artifacts reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — auto-fix where safe, queue manual cases, log unrecoverable.
@@ -1145,7 +1146,30 @@ Any subsystem fault reaches any end consumer uniformly by walking the causal gra
 
 **End-to-end example — KB source import failure inside a workflow**:
 
-All events land in ONE transaction (SQLite `BEGIN IMMEDIATE..COMMIT`):
+The coordinator writes the chain as one closure; the closure scope is the transaction scope:
+
+```ts
+progressStore.commit((c) => {
+  const kbFailure = c.append(kbOperationFailedProgressEvent(...));
+  const kbTerminal = appendJobTerminalRecorded(c, {
+    jobId: 'kb-1',
+    terminal: { content: '', outcome: failedTerminalOutcome(kbFailure) },
+    continuity: null,
+  });
+  const workflowFailure = c.append(workflowCompletedEvent('wf-1', {
+    outcome: 'failed',
+    causeRef: kbTerminal,
+  }));
+  appendJobTerminalRecorded(c, {
+    jobId: 'wf-1',
+    terminal: { content: '', outcome: failedTerminalOutcome(workflowFailure) },
+    continuity: null,
+  });
+  return undefined;
+});
+```
+
+Persisted events after token resolution:
 
 ```
 seq=101  job/kb-1      job.progress.emitted
@@ -1463,6 +1487,8 @@ src/
   infra/         ← flat low-level helpers with no domain knowledge
                    (paths, errors, fs locks, env sanitizers, identifiers,
                    build-flavor, plugin registry, backend discovery format)
+hooks/           ← plugin-root hook scripts; self-contained Node ESM that may
+                   duplicate stable path formulas but never import from `src/`
   jobs/          ← domain: job lifecycle events + projections + reconcile +
                    imperative shell (launch/wait/abort)
   sessions/      ← domain: session events + projections + resolve + shell
@@ -1661,11 +1687,11 @@ Interactive/live subscriptions use the same transport primitive in both carriage
 
 Two authorities, two recovery paths. Each authority recovers from its own truth.
 
-### 12.1 Journal recovery — projection rebuild + reconciliation
+### 12.1 Journal recovery — co-transactional projections + reconciliation
 
-**Step 1: projection rebuild (pure replay over events table)**
+**Step 1: projection alignment (co-transactional during normal operation)**
 
-Journal-domain projections (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) live in SQL tables alongside events. They are maintained incrementally during live writes (§3.3), but they are **derivative** — rebuildable at any time from the events table alone:
+Journal-domain projections (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) live in SQL tables alongside events. They are maintained incrementally inside every `commit(cb)` transaction (§3.3), so production recovery never invokes rebuild as a startup step. The rebuild utility exists solely as a regression-test tool at `tests/helpers/rebuild-projections.ts`, where it verifies reducer equivalence (`live append = DROP + replay-from-events`).
 
 ```sql
 DELETE FROM projection_jobs;
@@ -1684,17 +1710,17 @@ Invariants:
 
 **Step 2: imperative reconciliation (live world vs. projected state)**
 
-After rebuild, compare projected state to the observed world:
+During reconciliation, compare projected state to the observed world:
 
 ```ts
 type ReconciliationPlan = {
   register: JobIdentity[];     // jobs to re-register in live state
   cleanup: Orphan[];           // processes without projected jobs
-  appendEvents: CoralEvent[];  // new facts to durably record divergence
+  commitFacts: CoralEvent[];   // new facts to durably record divergence
 };
 ```
 
-When reality disagrees (e.g., a projected `running` job whose process is gone), reconciliation **appends new events** in one transaction:
+When reality disagrees (e.g., a projected `running` job whose process is gone), reconciliation commits new events in one transaction:
 
 ```sql
 BEGIN IMMEDIATE;
@@ -1990,8 +2016,8 @@ Tag for future reference: resolves during step 5 of derivation order (see §15) 
 The rewrite changes paths and output shapes that external surfaces (hooks, skills) currently parse. Flagged here so they are not forgotten during the rewrite — they update in lockstep with the source changes (same plugin artifact).
 
 **Hook scripts** (`~/.claude/plugins/cache/coral/coral/.../hooks/*.mjs`):
-- `hooks/post-compact.mjs` reads `<JOBS_DIR>/<jobId>/result.md`. The `result.md` path stays under the job directory contract; the prior dependency on `status.json` is gone (replaced by Journal `events` + `projection_jobs`, which the coordinator materializes `result.md` from).
-- `hooks/pre-compact.mjs` reads `<JOBS_DIR>/<jobId>/result.md` for the same reason — `status.json` is no longer parsed by any hook.
+- `hooks/post-compact.mjs` reads the exports-root result path (`~/.coral/exports/jobs/<jobId>/result.md` for prod, `~/.coral/exports-dev/jobs/<jobId>/result.md` for dev). The prior dependency on `status.json` is gone (replaced by Journal `events` + `projection_jobs`, which the coordinator materializes `result.md` from).
+- `hooks/pre-compact.mjs` reads the same exports-root result path for the same reason — `status.json` is no longer parsed by any hook.
 - `hooks/cli-resolve.mjs` rewrites bare `coral-cli` invocations. CLI bundle path is unaffected; the rewrite regex stays valid.
 
 Mitigation: this update landed alongside the rewrite; hooks ship as part of the plugin artifact, so a first deploy includes hooks matching the materialized-export contract.
@@ -2075,18 +2101,18 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 4. Exports (`result.md`) live outside any authority; deleting them never loses truth. KB markdown files are NOT exports — they are the Corpus authority itself.
 
 **Journal invariants**:
-5. Every Journal fact is a row in the `events` table. Journal writes use SQLite `BEGIN IMMEDIATE`.
-6. Multi-event Journal operations commit atomically in one SQLite transaction. Replay never sees partial truth.
-7. Journal recovery = projection rebuild (pure replay) + reconciliation (imperative, append-only).
+5. Every Journal fact is a row in the `events` table. All Journal facts append via `commit(cb)`, and the substrate uses SQLite `BEGIN IMMEDIATE`.
+6. Multi-event Journal commits commit atomically by construction; the closure scope IS the transaction scope. Replay never sees partial truth.
+7. Journal recovery = co-transactional projection state + reconciliation (imperative, append-only); rebuild is a regression-test replay tool, not a production recovery step.
 8. Every provider stream emits exactly one terminal body, and it is last.
 9. `continuity` bodies are full snapshots, never patches.
 10. Child jobs are independent top-level streams; parents reference via `refs.parentJobId` + `refs.workflowSlotId`, never embed.
-11. Fault truth lives on the originating stream as a domain event; job terminals point via `causeRef`, never duplicate payload.
+11. Fault truth lives on the originating stream as a domain event; job terminals point via `causeRef`, never duplicate payload. `CauseRefToken` resolution preserves the renderer chain-walk contract — the renderer at `src/causality/render.ts` never sees a token; it walks fully-resolved `CauseRef { stream, seq }` pointers identical to today's vocabulary.
 12. Labels, step indices, atom indices live on `workflow.plan.declared`; launches carry only `slotId`. Labels are presentation.
 13. `WaitCursor` is a single global `afterSeq` (Journal).
 14. Every fault-bearing event type has exactly one producer.
 15. Journal schema evolution is per-`type` via `bodyVersion` + upcaster chain. Upcasters are pure and kept forever.
-16. Every Journal event type has exactly one definition; no re-declaration across domains.
+16. Every Journal event type has exactly one definition; no re-declaration across domains. `workflow.lifecycle_fault` is a single workflow event definition, defined once in `src/workflow/events.ts`.
 
 **Corpus invariants**:
 17. KB markdown corpus is authoritative. No synthetic events reconstruct KB content.
@@ -2129,9 +2155,9 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 43c. `Backed<T>` readiness is a comparison: `backed.consumer.cursor ≥ <authority version>`. No `Backed<T>` exposes a boolean `isReady()` or `waitForReady()` method on its public contract. The only readiness primitive in the system is the coordinator-owned `ConsumerDriver.waitFreshUntil(authority, version, consumerId)` from §9.4 (see invariants #41a/#41b). Routing the wait through ConsumerDriver — rather than a per-authority accessor on `Runtime` — keeps freshness coordination a single-writer concern owned by the layer that already owns `notify(authority, version)` fan-out; expansion-tier consumers receive the same primitive without a parallel access path.
 43d. `kb.embedding` is a peer-category slot. All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) start empty; embedders are bundled or installed engines like any other. Switching embedders requires `coral-cli expansion unequip <current>` then `coral-cli expansion equip <new>` (structural single-occupancy via `binding-occupied`). `BUNDLED_ENGINES` carries ≥1 entry whose Expansion body fills `kb.embedding` so the binding is fillable.
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
-45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
+45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `tests/helpers/rebuild-projections.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
-47. Raw `job.terminal.recorded` object construction is owned by `jobs/job-store.ts`. All other producers finalize through jobs-owned append/materialization APIs.
+47. Raw `job.terminal.recorded` object construction is owned by `src/jobs/terminal/recording.ts`. Other producers finalize through that builder.
 48. `coordinator/services/**` consumes domain ports/contracts, not domain shell implementation classes. Shell implementations are wired at composition roots.
 49. Launch/admission vocabulary is jobs-owned. `LaunchPool`, admission handles, queue read ports, and recovery launch ports are defined under `src/jobs/*`; coordinator contracts may compose those ports but must not redefine `ExecutionLaunch*` mirrors.
 50. Domain/provider modules do not read host time, environment, or randomness directly. Current time, env, and ids enter through runtime/domain ports; direct ambient access is restricted to infra/runtime/CLI/bootstrap adapters and explicit parsers.

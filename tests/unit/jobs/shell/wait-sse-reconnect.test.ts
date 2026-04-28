@@ -8,7 +8,7 @@ import { ProgressStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobProgress, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
@@ -37,8 +37,8 @@ function createJournalAppender(db: InstanceType<typeof Database>) {
   const reducers = composeReducers(jobsRegistry);
   const upcasters = createDefaultUpcasterRegistry();
 
-  return (inputs: Parameters<typeof appendEvents>[1]) => {
-    const appended = appendEvents(db, inputs, {
+  return (inputs: Parameters<typeof commitInputs>[1]) => {
+    const appended = commitInputs(db, inputs, {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers,
       upcasters,
@@ -130,7 +130,7 @@ describe('wait SSE reconnect', () => {
         },
       ]);
 
-    const appendTerminal = () =>
+    const commitTerminal = () =>
       append([
         {
           type: 'job.terminal.recorded',
@@ -166,6 +166,7 @@ describe('wait SSE reconnect', () => {
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
+      resultJobsRoot: '/tmp/coral-exports/jobs',
     });
 
     const firstIterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
@@ -181,11 +182,13 @@ describe('wait SSE reconnect', () => {
 
     appendProgress('progress-2');
 
-    const reconnectIterator = coordinator.waitForJobs({
-      jobIds: [jobId],
-      timeoutSeconds: 5,
-      cursor: { afterSeq: 3 },
-    })[Symbol.asyncIterator]();
+    const reconnectIterator = coordinator
+      .waitForJobs({
+        jobIds: [jobId],
+        timeoutSeconds: 5,
+        cursor: { afterSeq: 3 },
+      })
+      [Symbol.asyncIterator]();
 
     const replayed = await reconnectIterator.next();
     expect(replayed.done).toBe(false);
@@ -208,7 +211,7 @@ describe('wait SSE reconnect', () => {
     });
 
     const terminalPromise = reconnectIterator.next();
-    appendTerminal();
+    commitTerminal();
     const terminal = await terminalPromise;
     expect(terminal.done).toBe(false);
     expect(terminal.value).toMatchObject({
@@ -306,7 +309,7 @@ describe('wait SSE reconnect', () => {
         },
       ]);
 
-    const appendTerminal = () =>
+    const commitTerminal = () =>
       append([
         {
           type: 'job.terminal.recorded',
@@ -343,13 +346,14 @@ describe('wait SSE reconnect', () => {
         const events = readJobProgress(db, targetJobId, progressStore);
         if (!terminalInjected) {
           terminalInjected = true;
-          appendTerminal();
+          commitTerminal();
         }
         return events;
       },
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
+      resultJobsRoot: '/tmp/coral-exports/jobs',
     });
 
     const iterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();

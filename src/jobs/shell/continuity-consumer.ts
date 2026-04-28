@@ -1,8 +1,5 @@
 import type { JobContinuitySnapshot } from '../continuity.js';
-import type {
-  ProviderEventBody,
-  ProviderTerminalEventBody,
-} from '../../providers/contract.js';
+import type { ProviderEventBody, ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { backendLog } from '../../infra/backend-log.js';
 
@@ -13,7 +10,7 @@ export async function consumeJobStream(options: {
   stream: AsyncIterable<ProviderEventBody>;
   sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic'>;
   appendProgress(message: string): void;
-  appendTerminal(event: ProviderTerminalEventBody): void;
+  recordTerminal(event: ProviderTerminalEventBody): void;
 }): Promise<{
   terminal: ProviderTerminalEventBody['terminal'];
   diagnostics: ProviderTerminalEventBody['diagnostics'];
@@ -52,7 +49,7 @@ export async function consumeJobStream(options: {
       continue;
     }
 
-    options.appendTerminal(event);
+    options.recordTerminal(event);
     return {
       terminal: event.terminal,
       diagnostics: event.diagnostics,

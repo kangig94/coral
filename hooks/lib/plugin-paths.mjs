@@ -3,11 +3,16 @@
 // can copy-paste them into its Bash tool — so commands returned here are
 // already shell-quoted.
 
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const BRIDGE_SUFFIX = '/bridge/coral-cli.cjs';
 export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+
+export function exportsJobsDir(flavor) {
+  const base = flavor === 'dev' ? 'exports-dev' : 'exports';
+  return join(homedir(), '.coral', base, 'jobs');
+}
 
 export function activeBridgePath(pluginRoot) {
   return `${pluginRoot}${BRIDGE_SUFFIX}`;

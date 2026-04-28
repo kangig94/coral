@@ -165,8 +165,9 @@ function discoveryFilePath(home: string, flavor: 'prod' | 'dev'): string {
   return coordinatorPaths(flavor, { HOME: home, TMPDIR: home }, { baseDir: join(home, '.coral') }).infoFile;
 }
 
-function resultArtifactPath(home: string, jobId: string): string {
-  return join(home, 'coral-jobs', jobId, 'result.md');
+function resultArtifactPath(home: string, flavor: 'prod' | 'dev', jobId: string): string {
+  const exportsDir = flavor === 'dev' ? 'exports-dev' : 'exports';
+  return join(home, '.coral', exportsDir, 'jobs', jobId, 'result.md');
 }
 
 function readDiscoveryRecord(home: string, flavor: 'prod' | 'dev'): CoordinatorDiscoveryRecord | null {
@@ -291,7 +292,7 @@ describe('mutating commands via IPC', () => {
         const jobId = jobs[0]?.jobId;
         const detail = jobId ? store.jobs.detail(jobId) : null;
         const sessionId = detail?.status.sessionId;
-        const resultPath = jobId ? resultArtifactPath(fixture.home, jobId) : null;
+        const resultPath = jobId ? resultArtifactPath(fixture.home, fixture.flavor, jobId) : null;
 
         expect(detail?.status.phase).toBe('completed');
         expect(detail?.status.sessionId).toBe(sessionId);

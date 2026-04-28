@@ -29,7 +29,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import type { StoragePort } from '#src/runtime/ports.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -154,12 +154,9 @@ function setup(): {
   return { db, driver, store };
 }
 
-async function runChain(
-  db: InstanceType<typeof Database>,
-  driver: ConsumerDriver,
-): Promise<number> {
+async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDriver): Promise<number> {
   const append = (events: CoralEventInput[]): number => {
-    const result = appendEvents(db, events, {
+    const result = commitInputs(db, events, {
       now: () => NOW,
       reducers: composeReducers(),
       upcasters: createDefaultUpcasterRegistry(),
@@ -244,8 +241,8 @@ async function runChain(
 
   // Transaction 5 — C fails, workflow fails, workflow-job fails.
   // All three events commit atomically (BEGIN IMMEDIATE..COMMIT).
-  const cTerminalSeq = (
-    appendEvents(
+  const cTerminalSeq =
+    commitInputs(
       db,
       [
         {
@@ -263,10 +260,9 @@ async function runChain(
         },
       ],
       { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
-    ).at(-1)?.seq ?? 0
-  );
-  const workflowCompletedSeq = (
-    appendEvents(
+    ).at(-1)?.seq ?? 0;
+  const workflowCompletedSeq =
+    commitInputs(
       db,
       [
         {
@@ -282,10 +278,9 @@ async function runChain(
         },
       ],
       { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
-    ).at(-1)?.seq ?? 0
-  );
-  const workflowJobTerminalSeq = (
-    appendEvents(
+    ).at(-1)?.seq ?? 0;
+  const workflowJobTerminalSeq =
+    commitInputs(
       db,
       [
         {
@@ -306,8 +301,7 @@ async function runChain(
         },
       ],
       { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
-    ).at(-1)?.seq ?? 0
-  );
+    ).at(-1)?.seq ?? 0;
 
   driver.notify('journal', workflowJobTerminalSeq);
   await driver.waitFreshUntil('journal', workflowJobTerminalSeq, 'jobs');
@@ -384,11 +378,9 @@ describe('worked example — [A] | [B, C] where C fails', () => {
     try {
       await runChain(db, driver);
 
-      const row = db
-        .prepare(
-          `SELECT terminal FROM projection_jobs WHERE job_id = ?`,
-        )
-        .get(WORKFLOW_ID) as { terminal: string } | undefined;
+      const row = db.prepare(`SELECT terminal FROM projection_jobs WHERE job_id = ?`).get(WORKFLOW_ID) as
+        | { terminal: string }
+        | undefined;
       const terminal = JSON.parse(row?.terminal ?? 'null');
       const description = renderer.describe(terminal.outcome.causeRef, store);
 

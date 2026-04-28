@@ -1,10 +1,6 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type {
-  ExecutionServiceDeps,
-  ListResult,
-  ProjectRequestPort,
-} from './contracts.js';
+import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/launch.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { LaunchDecision } from '../jobs/launch.js';
@@ -29,7 +25,6 @@ import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
-import { noopAppendEvents } from '../store/append.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { CoralIntent, ExecIntent, ForkIntent, ResumeIntent } from './services/execution-policies.js';
 import { JobLaunchService } from './services/job-launch-service.js';
@@ -61,10 +56,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
+    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => this.progressStore.commit(cb));
     this.sessionManager = SessionManager.forProduction(
       ctx.projectRoot,
       deps.runtime,
-      deps.appendEvents,
+      coordinatorCommit,
       (payload) => {
         this.eventBus.emit('session:released', payload);
       },
@@ -75,8 +71,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.bundleHash = deps.bundleHash ?? 'unknown';
     this.progressStore = deps.progressStore;
 
-    const appendEvents = deps.appendEvents ?? noopAppendEvents;
-    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => this.progressStore.commit(cb));
     this.launchOrchestrator = new LaunchOrchestrator({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
@@ -87,7 +81,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
-      appendEvents,
       getEventMetadata: () => {
         try {
           return currentEventMetadata();
@@ -108,6 +101,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       readJobProgress: deps.readJobProgress,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
+      resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       ensureResultArtifact: (jobId) => this.progressStore.ensureResultArtifact(jobId),
     });
 
@@ -218,7 +212,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: CoralIntent,
     ctx: InvocationContext,
   ): Promise<LaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () => this.launchService.coralDispatch(providerName, coralName, input, ctx));
+    return this.runWithInvocationScope(ctx, async () =>
+      this.launchService.coralDispatch(providerName, coralName, input, ctx),
+    );
   }
 
   async executeWorkflow(
@@ -276,11 +272,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.acquireServer(spec, options);
   }
 
-  private finishQueuedAbort(
-    jobId: string,
-    sessionId: string,
-    reason: AbortReason,
-  ): void {
+  private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
     this.abortService.finishQueuedAbort(jobId, sessionId, reason);
   }
 

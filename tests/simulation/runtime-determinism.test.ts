@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
-import { appendEvents, type AppendInput } from '#src/store/append.js';
+import { type AppendInput } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -103,7 +104,12 @@ function registerConsumer(driver: ConsumerDriver): void {
   });
 }
 
-function buildPlannedEvent(runtime: SimulationRuntime, index: number, streamIds: readonly string[], counterIds: readonly string[]): PlannedEvent {
+function buildPlannedEvent(
+  runtime: SimulationRuntime,
+  index: number,
+  streamIds: readonly string[],
+  counterIds: readonly string[],
+): PlannedEvent {
   return {
     type: 'test.counter.ticked',
     stream: { kind: 'job', id: streamIds[index % streamIds.length] ?? streamIds[0] },
@@ -155,7 +161,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
 
     for (let index = 0; index < EVENT_COUNT; index += 1) {
       const { ts: expectedTs, ...input } = buildPlannedEvent(runtime, index, streamIds, counterIds);
-      const appended = appendEvents(db, [input], {
+      const appended = commitInputs(db, [input], {
         now: () => new Date(runtime.time.now()),
         reducers,
         upcasters,
@@ -195,10 +201,7 @@ function createSequencePlan(): SequencePlan {
   };
 }
 
-async function runPlannedSequence(
-  runtime: { storage: SchemaStorage },
-  plan: SequencePlan,
-): Promise<Snapshot> {
+async function runPlannedSequence(runtime: { storage: SchemaStorage }, plan: SequencePlan): Promise<Snapshot> {
   const { storage, schemasDir } = createSchemaStorage(runtime);
   const db = openMemoryDatabase(storage, schemasDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(plan.equippedAt) });
@@ -214,15 +217,11 @@ async function runPlannedSequence(
 
     for (const event of plan.events) {
       const { ts, ...input } = event;
-      const appended = appendEvents(
-        db,
-        [{ ...input, tsOverride: ts }],
-        {
-          now: () => new Date(0),
-          reducers,
-          upcasters,
-        },
-      );
+      const appended = commitInputs(db, [{ ...input, tsOverride: ts }], {
+        now: () => new Date(0),
+        reducers,
+        upcasters,
+      });
 
       lastSeq = appended[0]?.seq ?? lastSeq;
     }
@@ -258,7 +257,10 @@ describe('SimulationRuntime determinism', () => {
 
   it('matches createRealRuntime on the same deterministic event plan', async () => {
     const plan = createSequencePlan();
-    const simulated = await runPlannedSequence(new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } }), plan);
+    const simulated = await runPlannedSequence(
+      new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } }),
+      plan,
+    );
     const production = await runPlannedSequence(createRealRuntime('prod'), plan);
 
     expect(simulated.serialized).toBe(production.serialized);

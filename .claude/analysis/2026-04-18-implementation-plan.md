@@ -158,13 +158,13 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 **Deliverables**:
 
 - `src/store/db.ts` — `better-sqlite3` connection factory. WAL mode, FK enforcement, prepared-statement cache.
-- `src/store/append.ts` — transactional append. `appendEvents(events: CoralEventInput[]): CoralEvent[]` assigns `seq`, returns events.
+- `src/store/append.ts` — transactional commit primitive. `commit(cb)` assigns `seq`, resolves commit-local cause refs, returns events.
 - `src/store/envelope.ts` — Zod schema for event envelope + `bodyVersion` validation + upcaster registry (`registerUpcaster(type, fromVersion, toVersion, fn)`).
 - `src/store/queries/events.ts` — `getEvent(stream, seq)`, `getEventsSince(afterSeq, filter?)`.
 - `src/store/schema-loader.ts` — idempotent schema loader described in Phase 0.
 - `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil(authority, version, consumerId)`, cursor persistence in `consumer_cursors`.
 - `src/simulation/runtime.ts` — `SimulationRuntime` implementing all 6 `Runtime` ports. **Substrate decision**: `:memory:` SQLite instance for journal, virtual filesystem for Corpus. `SimulationRuntime` is the reference deterministic implementation for all subsequent phase tests.
-- `src/store/index.ts` — public barrel: `CoralStore` (query-only handle). Write-side uses the `appendEvents` primitive in `src/store/append.ts`; there is no separate `CoralWriter` class.
+- `src/store/index.ts` — public barrel: `CoralStore` (query-only handle). Write-side uses the `commit(cb)` primitive in `src/store/append.ts`; there is no separate `CoralWriter` class.
 
 **Acceptance criteria**:
 

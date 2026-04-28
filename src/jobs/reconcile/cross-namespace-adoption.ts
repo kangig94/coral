@@ -1,6 +1,7 @@
 import { formatError } from '../../infra/error-format.js';
-import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
+import type { TerminalOutcome } from '../outcome.js';
 import type { ProgressStore } from '../job-store.js';
+import { appendJobTerminalRecorded } from '../terminal/recording.js';
 
 /**
  * Finalize foreign-namespace live jobs by scanning projections plus the origin
@@ -14,7 +15,7 @@ import type { ProgressStore } from '../job-store.js';
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  progressStore: Pick<ProgressStore, 'appendTerminal' | 'getDb' | 'loadJobProjectionDetail'>,
+  progressStore: Pick<ProgressStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'>,
   log: (message: string) => void,
 ): number {
   const db = progressStore.getDb();
@@ -55,11 +56,21 @@ export function adoptOrphanedCrossNamespaceJobs(
         kind: 'job_fault',
         fault: { kind: 'wrapper_lost' },
       } satisfies TerminalOutcome;
-      progressStore.appendTerminal(row.job_id, launch.sessionId, {
-        outcome,
-        durationMs: 0,
-        content: '',
-      }, phaseForOutcome(outcome));
+      progressStore.commit((c) => {
+        appendJobTerminalRecorded(c, {
+          jobId: row.job_id,
+          sessionId: launch.sessionId,
+          namespace: status.backendNamespace,
+          project: status.projectRoot,
+          terminal: {
+            outcome,
+            durationMs: 0,
+            content: '',
+          },
+          continuity: null,
+        });
+        return undefined;
+      });
       adopted += 1;
       log(`Finalized foreign-namespace job ${row.job_id} from ${row.origin_namespace}\n`);
     } catch (error: unknown) {

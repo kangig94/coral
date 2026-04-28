@@ -69,8 +69,7 @@ export function createWorkflowRecoveryFinalizer(options: {
       }
 
       const workflowCauseRef =
-        intent.causeRef ??
-        c.append(workflowLifecycleFaultEvent(intent.workflowJobId, intent.lifecycleFault));
+        intent.causeRef ?? c.append(workflowLifecycleFaultEvent(intent.workflowJobId, intent.lifecycleFault));
       const workflowCompleted = c.append(
         workflowCompletedEvent(intent.workflowJobId, {
           outcome: 'failed',
@@ -94,7 +93,12 @@ export function createWorkflowRecoveryFinalizer(options: {
 
     try {
       const serialized = serializeWorkflowResult(intent.stepDetails);
-      writeResultArtifact(options.runtime.storage, intent.workflowJobId, serialized.markdown);
+      writeResultArtifact(
+        options.runtime.storage,
+        options.runtime.paths.coral.exports.jobsRoot,
+        intent.workflowJobId,
+        serialized.markdown,
+      );
     } catch (error: unknown) {
       const message = `Writing recovered workflow artifact failed for ${intent.workflowJobId}: ${errorMessage(error)}`;
       if (options.log) {

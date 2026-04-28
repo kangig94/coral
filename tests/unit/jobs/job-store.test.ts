@@ -12,6 +12,7 @@ import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
+import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -90,10 +91,15 @@ function launchRecord(jobId: string, sessionId: string, backendNamespace: string
 }
 
 function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatus }>, bundleHash?: string): number {
-  return statuses.filter(({ status }) => isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash)).length;
+  return statuses.filter(
+    ({ status }) => isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash),
+  ).length;
 }
 
-function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: JobStatus }>, namespace: string): number {
+function referenceLiveCountByNamespace(
+  statuses: Array<{ jobId: string; status: JobStatus }>,
+  namespace: string,
+): number {
   if (!namespace) {
     return 0;
   }
@@ -172,11 +178,9 @@ describe('JobStore', () => {
 
     preparedSql.length = 0;
 
-    const tails = Array.from({ length: 5 }, (_, index) =>
-      store.appendProgress(jobId, sessionId, `step-${index + 1}`),
-    );
+    const tails = Array.from({ length: 5 }, (_, index) => store.appendProgress(jobId, sessionId, `step-${index + 1}`));
 
-    store.appendEvent({
+    commitJobInput(store, {
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
       namespace: 'test-ns',
@@ -195,7 +199,7 @@ describe('JobStore', () => {
     };
 
     expect(tails).toEqual([3, 4, 5, 6, 7]);
-    expect(store.appendTerminal(jobId, sessionId, terminalResult, 'completed')).toBe(9);
+    expect(commitJobTerminal(store, jobId, sessionId, terminalResult)).toBe(9);
     expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER'))).toEqual([]);
   });
 
@@ -242,7 +246,7 @@ describe('JobStore', () => {
       bundleHash: 'bundle-a',
     });
     store.appendLaunchRequested('job-done', launchRecord('job-done', 'session-done', 'alpha', 'bundle-a'));
-    store.appendTerminal('job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+    commitJobTerminal(store, 'job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } });
 
     store.initJob({
       jobId: 'job-draft',
@@ -271,10 +275,10 @@ describe('JobStore', () => {
     const sessionId = 'session-duplicate-terminal';
     initProviderJob(store, jobId, sessionId);
 
-    store.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
 
     expectTerminalOrderViolation(
-      () => store.appendTerminal(jobId, sessionId, { content: 'again', outcome: { kind: 'completed' } }, 'completed'),
+      () => commitJobTerminal(store, jobId, sessionId, { content: 'again', outcome: { kind: 'completed' } }),
       jobId,
       'job.terminal.recorded',
     );
@@ -286,7 +290,7 @@ describe('JobStore', () => {
     const sessionId = 'session-late-progress';
     initProviderJob(store, jobId, sessionId);
 
-    store.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
 
     expectTerminalOrderViolation(
       () => store.appendProgress(jobId, sessionId, 'too late'),
@@ -302,7 +306,7 @@ describe('JobStore', () => {
     initProviderJob(store, jobId, sessionId);
 
     expectTerminalOrderViolation(
-      () => store.appendEventsWithResult([terminalInput(jobId, sessionId), progressInput(jobId, sessionId)]),
+      () => commitJobInputs(store, [terminalInput(jobId, sessionId), progressInput(jobId, sessionId)]),
       jobId,
       'job.progress.emitted',
     );
@@ -315,7 +319,7 @@ describe('JobStore', () => {
     initProviderJob(store, jobId, sessionId);
 
     expectTerminalOrderViolation(
-      () => store.appendEventsWithResult([terminalInput(jobId, sessionId), terminalInput(jobId, sessionId)]),
+      () => commitJobInputs(store, [terminalInput(jobId, sessionId), terminalInput(jobId, sessionId)]),
       jobId,
       'job.terminal.recorded',
     );
@@ -327,7 +331,7 @@ describe('JobStore', () => {
     const sessionId = 'session-rejected-terminal';
     initProviderJob(store, jobId, sessionId);
 
-    const [rejected] = store.appendEventsWithResult([
+    const [rejected] = commitJobInputs(store, [
       {
         type: 'job.launch.rejected',
         stream: { kind: 'job', id: jobId },
@@ -349,21 +353,16 @@ describe('JobStore', () => {
     expect(store.readStatus(jobId)?.phase).toBe('error');
 
     expect(
-      store.appendTerminal(
-        jobId,
-        sessionId,
-        {
-          content: 'failed',
-          outcome: {
-            kind: 'failed',
-            causeRef: {
-              stream: { kind: 'job', id: jobId },
-              seq: rejected.seq,
-            },
+      commitJobTerminal(store, jobId, sessionId, {
+        content: 'failed',
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: { kind: 'job', id: jobId },
+            seq: rejected.seq,
           },
         },
-        'error',
-      ),
+      }),
     ).toBeGreaterThan(rejected.seq);
   });
 
@@ -373,7 +372,7 @@ describe('JobStore', () => {
     const sessionId = 'session-aborted-terminal';
     initProviderJob(store, jobId, sessionId);
 
-    const [aborted] = store.appendEventsWithResult([
+    const [aborted] = commitJobInputs(store, [
       {
         type: 'job.aborted',
         stream: { kind: 'job', id: jobId },
@@ -388,12 +387,7 @@ describe('JobStore', () => {
     expect(aborted?.type).toBe('job.aborted');
     expect(store.readStatus(jobId)?.phase).toBe('aborted');
     expect(
-      store.appendTerminal(
-        jobId,
-        sessionId,
-        { content: '', outcome: { kind: 'aborted', reason: 'user_abort' } },
-        'aborted',
-      ),
+      commitJobTerminal(store, jobId, sessionId, { content: '', outcome: { kind: 'aborted', reason: 'user_abort' } }),
     ).toBeGreaterThan(aborted.seq);
   });
 });

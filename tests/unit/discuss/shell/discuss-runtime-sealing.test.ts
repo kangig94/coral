@@ -8,7 +8,7 @@ import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#s
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
@@ -25,6 +25,7 @@ import { knownDiscussSources } from '#src/discuss/shell/session-read-service.js'
 import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
 import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
+import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
@@ -36,7 +37,9 @@ const PLUGIN_ROOT = '/virtual/ac7/plugin';
 
 function resolveBackendNamespace(runtime: SimulationRuntime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
-  return typeof paths.pluginRootNamespace === 'function' ? paths.pluginRootNamespace(pluginRoot) : pluginRootNamespace(pluginRoot);
+  return typeof paths.pluginRootNamespace === 'function'
+    ? paths.pluginRootNamespace(pluginRoot)
+    : pluginRootNamespace(pluginRoot);
 }
 const START_TS = '2035-04-15T01:02:03.000Z';
 
@@ -330,9 +333,13 @@ describe('runtime-sealed discuss behavior', () => {
         '2035-04-15T01:02:03.000Z',
       ),
     );
-    const created = world.progressStore.appendEventsWithResult(createdEvents.map((event) => toJournalInput(event)));
+    const created = commitJobInputs(
+      world.progressStore,
+      createdEvents.map((event) => toJournalInput(event)),
+    );
     expect(created).toHaveLength(createdEvents.length);
-    const createdSnapshot = world.progressStore.getDb()
+    const createdSnapshot = world.progressStore
+      .getDb()
       .prepare(`SELECT state FROM projection_discuss WHERE discuss_id = ?`)
       .get('backend-recovered-discuss') as { state: string } | undefined;
     if (!createdSnapshot) {
@@ -350,7 +357,10 @@ describe('runtime-sealed discuss behavior', () => {
         '2035-04-15T01:02:04.000Z',
       ),
     );
-    world.progressStore.appendEventsWithResult(bid.map((event) => toJournalInput(event)));
+    commitJobInputs(
+      world.progressStore,
+      bid.map((event) => toJournalInput(event)),
+    );
 
     const info = await world.backend.start();
     expect(world.hooks.recoverPersistedDiscussCalls).toBe(1);
@@ -417,15 +427,10 @@ describe('runtime-sealed discuss behavior', () => {
       },
       createdAt: '2035-04-15T01:02:05.000Z',
     });
-    harness.progressStore.appendTerminal(
-      jobId,
-      'execution-session-1',
-      {
-        content: 'Recovered content from runtime storage',
-        outcome: { kind: 'completed' },
-      },
-      'completed',
-    );
+    commitJobTerminal(harness.progressStore, jobId, 'execution-session-1', {
+      content: 'Recovered content from runtime storage',
+      outcome: { kind: 'completed' },
+    });
     expect(harness.progressStore.readStatus(jobId)).toMatchObject({
       phase: 'completed',
       result: { content: 'Recovered content from runtime storage' },
@@ -452,7 +457,14 @@ describe('runtime-sealed discuss behavior', () => {
     const epochMs = Date.parse('2044-05-06T07:08:09.000Z');
     const harness = createHarness({ epochMs });
 
-    await startDiscussSession(harness.context, 'virtual-time-session', TOPIC, manualAgents(), {}, harness.invocationCtx);
+    await startDiscussSession(
+      harness.context,
+      'virtual-time-session',
+      TOPIC,
+      manualAgents(),
+      {},
+      harness.invocationCtx,
+    );
     harness.runtime.time.tick(1_234);
     await submitManualBid(
       harness.context,

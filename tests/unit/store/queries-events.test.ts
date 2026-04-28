@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { appendEvents, type AppendInput } from '#src/store/append.js';
+import { type AppendInput } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
@@ -18,7 +19,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 
 describe('events queries', () => {
   let db: Database.Database;
-  let appended: ReturnType<typeof appendEvents>;
+  let appended: ReturnType<typeof commitInputs>;
   let readCtx: StoreReadContext;
 
   beforeEach(() => {
@@ -83,7 +84,7 @@ describe('events queries', () => {
       },
     ];
 
-    appended = appendEvents(db, inputs, {
+    appended = commitInputs(db, inputs, {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
       reducers: composeReducers(testCounterRegistry),
       upcasters: createEmptyRegistry(),
@@ -103,9 +104,7 @@ describe('events queries', () => {
 
     expect(page.events.map((event) => event.seq)).toEqual(appended.map((event) => event.seq));
     expect(page.events).toEqual(appended);
-    expect(page.events.map((event) => event.body)).toEqual(
-      appended.map(() => ({ id: 'x', delta: 1 })),
-    );
+    expect(page.events.map((event) => event.body)).toEqual(appended.map(() => ({ id: 'x', delta: 1 })));
     expect(page.nextCursor).toBe(appended[appended.length - 1].seq);
   });
 

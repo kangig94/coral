@@ -15,13 +15,13 @@ vi.mock('node:os', async () => {
 });
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
@@ -208,7 +208,7 @@ describe('sessions shell resolve', () => {
 
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      appendEvents(
+      commitInputs(
         db,
         [
           {

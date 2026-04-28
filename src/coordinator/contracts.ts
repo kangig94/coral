@@ -1,33 +1,19 @@
-import type {
-  JobForkRequest,
-  JobLaunchRequest,
-  JobResumeRequest,
-  LaunchDecision,
-} from '../jobs/launch.js';
-import type {
-  LaunchCoordinatorPort,
-  LaunchPool,
-} from '../jobs/contracts/admission.js';
+import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
+import type { LaunchCoordinatorPort, LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/progress-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
-import type {
-  JobProgress,
-} from '../jobs/records.js';
+import type { JobProgress } from '../jobs/records.js';
 import type { LaunchReadiness } from '../jobs/launch-readiness.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type {
-  ProviderServerLease,
-  ProviderServerSpec,
-  ProviderSpec,
-} from '../providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec, ProviderSpec } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { EffortLevel } from '../providers/request-policy.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';
-import type { AppendEventsFn, CommitEventsFn } from '../store/append.js';
+import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
@@ -95,7 +81,6 @@ export type ExecutionServiceDeps = {
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };
-  appendEvents?: AppendEventsFn;
   coordinatorCommit?: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobProgress: (jobId: string) => JobProgress[];

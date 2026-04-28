@@ -22,7 +22,7 @@ export interface JobTerminalRecordedOptions<Scope = never> {
   readonly correlationId?: string;
   readonly parentJobId?: string;
   readonly workflowSlotId?: string;
-  readonly terminal: JobTerminalInput<Scope>;
+  readonly terminal: JobTerminalInput<Scope> | JobTerminalInput;
   readonly diagnostics?: JobTerminalDiagnostics;
   readonly continuity?: JobContinuitySnapshot | null;
 }
@@ -34,7 +34,7 @@ export function jobTerminalRecordedEvent<Scope = never>(
     type: 'job.terminal.recorded',
     bodyVersion: 1,
     body: {
-      terminal: normalizeJobTerminal(options.terminal),
+      terminal: normalizeJobTerminal(options.terminal as JobTerminalInput<Scope>),
       diagnostics: options.diagnostics,
       continuity: options.continuity ?? null,
     },

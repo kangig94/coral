@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { rebuildProjections } from '#src/store/rebuild.js';
+import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import {
   workflowCompletedEvent,
@@ -43,7 +43,7 @@ describe('workflow reducer equivalence', () => {
         provider: 'claude',
       });
 
-      const appended = appendEvents(
+      const appended = commitInputs(
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', declaredPlan),
@@ -117,7 +117,7 @@ describe('workflow reducer equivalence', () => {
       });
       const causeRef = { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 };
 
-      appendEvents(
+      commitInputs(
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', plan),

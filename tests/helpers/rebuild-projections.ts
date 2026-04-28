@@ -1,10 +1,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { decodeEventBody } from './body-codec.js';
-import type { ComposedReducers } from './reducers.js';
-import { applyReducer } from './reducers.js';
-import { rowToCoralEvent, type UpcasterRegistry } from './envelope.js';
-import type { EventsRow } from './schema.js';
+import { decodeEventBody } from '#src/store/body-codec.js';
+import type { ComposedReducers } from '#src/store/reducers.js';
+import { applyReducer } from '#src/store/reducers.js';
+import { rowToCoralEvent, type UpcasterRegistry } from '#src/store/envelope.js';
+import type { EventsRow } from '#src/store/schema.js';
 
 type Database = BetterSqlite3.Database;
 

@@ -23,9 +23,10 @@ import { isAbortEnded, readSessionEvents } from '#src/discuss/shell/persistence.
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
+import { commitJobInputs } from '#tests/helpers/job-commits.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -35,7 +36,9 @@ import { workflowRegistry } from '#src/workflow/events.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
-  return typeof paths.pluginRootNamespace === 'function' ? paths.pluginRootNamespace(pluginRoot) : pluginRootNamespace(pluginRoot);
+  return typeof paths.pluginRootNamespace === 'function'
+    ? paths.pluginRootNamespace(pluginRoot)
+    : pluginRootNamespace(pluginRoot);
 }
 import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
@@ -133,7 +136,10 @@ function createProgressStoreDiscussJournal(
 
   return {
     append(_source, _snapshot, events) {
-      progressStore.appendEventsWithResult(events.map((event) => toJournalInput(event)));
+      commitJobInputs(
+        progressStore,
+        events.map((event) => toJournalInput(event)),
+      );
     },
     readSnapshot(sessionId) {
       return readProjectionDiscuss(progressStore.getDb(), sessionId)?.state ?? null;
@@ -321,7 +327,6 @@ export async function persistSession(
       snapshot = await harness.store.append(sessionId, snapshot.lastAppliedSeq, tailEvents);
     }
   }
-
 
   if (options.recover ?? false) {
     const attached = harness.store.load(sessionId) ?? snapshot;

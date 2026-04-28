@@ -35,7 +35,7 @@ function terminal(
     type: 'terminal',
     jobId,
     remainingJobIds: [],
-    resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
+    resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result:
       result.outcome === undefined
         ? { ...result, outcome: { kind: 'completed' } }
@@ -64,15 +64,9 @@ function createExecutionService(): WorkflowExecutionPort & {
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
     waitStream: vi.fn((req: WaitRequest) => {
       if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
-        return emit([
-          terminal('job-1', { content: 'ARCH' }),
-          terminal('job-2', { content: 'LIT A' }),
-        ]);
+        return emit([terminal('job-1', { content: 'ARCH' }), terminal('job-2', { content: 'LIT A' })]);
       }
-      return emit([
-        terminal('job-3', { content: 'FINAL' }),
-        terminal('job-4', { content: 'LIT B' }),
-      ]);
+      return emit([terminal('job-3', { content: 'FINAL' }), terminal('job-4', { content: 'LIT B' })]);
     }),
     waitForJobTerminal: vi.fn(async () => {}),
     cleanupWorkflowSessions: vi.fn(),
@@ -84,12 +78,14 @@ describe('workflow cascade equivalence golden master', () => {
     const executionSvc = createExecutionService();
     const prompts: string[] = [];
 
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    executionSvc.coralDispatch.mockImplementation(async (_provider: string, _name: string, input: { prompt: string }) => {
-      prompts.push(String(input.prompt));
-      const jobNumber = prompts.length;
-      return running(`job-${jobNumber}`, `session-${jobNumber}`);
-    });
+    executionSvc.coralDispatch.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
+      async (_provider: string, _name: string, input: { prompt: string }) => {
+        prompts.push(String(input.prompt));
+        const jobNumber = prompts.length;
+        return running(`job-${jobNumber}`, `session-${jobNumber}`);
+      },
+    );
 
     const result = await executePipeline(
       parseExpression('(architect, "Use A") -> (resolver, "Use B")'),

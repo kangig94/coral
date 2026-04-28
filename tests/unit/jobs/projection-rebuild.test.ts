@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
@@ -32,7 +32,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
     registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
 
     try {
-      const appended = appendEvents(
+      const appended = commitInputs(
         db,
         [
           {

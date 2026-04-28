@@ -15,11 +15,7 @@ import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './compositio
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import {
-  commit as commitJournalEvents,
-  type AppendEventsFn,
-  type CommitEventsFn,
-} from '../store/append.js';
+import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
@@ -171,12 +167,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
     return appended;
   };
-  const coordinatorAppendEvents: AppendEventsFn = (inputs) =>
-    coordinatorCommit((c) => {
-      for (const input of inputs) c.append(input);
-      return undefined;
-    });
-
   const core = createCoordinatorCore({
     ...coreOptions,
     runtime,
@@ -238,7 +228,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     createExecutionService: (ctx, deps) => {
       const wiredDeps = {
         ...deps,
-        appendEvents: coordinatorAppendEvents,
         coordinatorCommit,
         loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
         readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, readCtx),

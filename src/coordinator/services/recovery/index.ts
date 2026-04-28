@@ -363,7 +363,7 @@ export function createRecoveryCoordinator({
               );
               if (status.jobKind === 'workflow') {
                 try {
-                  writeResultArtifact(runtime.storage, status.jobId, '');
+                  writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, status.jobId, '');
                 } catch (artifactError: unknown) {
                   log(`Failed to write result artifact for ${status.jobId}: ${formatError(artifactError)}\n`);
                 }

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -27,7 +27,7 @@ function createDb(): Database.Database {
 }
 
 function appendJobEvents(db: Database.Database, inputs: readonly CoralEventInput[]) {
-  return appendEvents(db, inputs, {
+  return commitInputs(db, inputs, {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry),
     upcasters: createDefaultUpcasterRegistry(),
@@ -103,13 +103,17 @@ function expectTerminalOrderViolation(run: () => unknown, jobId: string, type: s
 }
 
 describe('jobs append invariants', () => {
-  it('rejects duplicate terminal events through raw appendEvents', () => {
+  it('rejects duplicate terminal events through raw commitInputs', () => {
     const db = createDb();
     try {
       const jobId = 'job-duplicate-terminal';
       appendJobEvents(db, [launchInput(jobId), terminalInput(jobId)]);
 
-      expectTerminalOrderViolation(() => appendJobEvents(db, [terminalInput(jobId, 'again')]), jobId, 'job.terminal.recorded');
+      expectTerminalOrderViolation(
+        () => appendJobEvents(db, [terminalInput(jobId, 'again')]),
+        jobId,
+        'job.terminal.recorded',
+      );
     } finally {
       db.close();
     }

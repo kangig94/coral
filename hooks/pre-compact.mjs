@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { buildFlavor, failOpen, logHookLine, readStdin, sweepStale } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
-import { JOBS_DIR, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 
 function storeDbPath() {
   const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
@@ -59,17 +59,19 @@ await failOpen(async () => {
         return [];
       }
 
-      const resultPath = join(JOBS_DIR, row.jobId, 'result.md');
+      const resultPath = join(exportsJobsDir(buildFlavor()), row.jobId, 'result.md');
       const hasArtifact = existsSync(resultPath);
       if (!isLivePhase(row.phase) && !hasArtifact) {
         return [];
       }
 
-      return [{
-        jobId: row.jobId,
-        phase: row.phase,
-        ...(hasArtifact ? { resultPath } : {}),
-      }];
+      return [
+        {
+          jobId: row.jobId,
+          phase: row.phase,
+          ...(hasArtifact ? { resultPath } : {}),
+        },
+      ];
     });
 
     if (jobs.length === 0) {
@@ -82,12 +84,16 @@ await failOpen(async () => {
     const snapshotPath = join(snapshotDir, snapshotFileName(capturedAtMs, String(process.pid)));
     writeFileSync(
       snapshotPath,
-      `${JSON.stringify({
-        version: 1,
-        projectDir,
-        capturedAtMs,
-        jobs,
-      }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          version: 1,
+          projectDir,
+          capturedAtMs,
+          jobs,
+        },
+        null,
+        2,
+      )}\n`,
       'utf8',
     );
     logHookLine('pre-compact', 'captured job snapshot', {

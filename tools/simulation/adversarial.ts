@@ -281,9 +281,7 @@ export class SimulationWorld {
 
   getProgress(jobId: string): string[] {
     return this.replay(jobId)
-      .filter(
-        (event): event is JobProgress & { type: 'progress'; message: string } => event.type === 'progress',
-      )
+      .filter((event): event is JobProgress & { type: 'progress'; message: string } => event.type === 'progress')
       .map((event) => event.message);
   }
 
@@ -432,7 +430,9 @@ export class SimulationWorld {
 
   backendInfoExists(): boolean {
     this.assertUsable();
-    return this.current.backend.runtime.storage.existsSync(this.current.backend.runtime.paths.coral.coordinator.infoFile);
+    return this.current.backend.runtime.storage.existsSync(
+      this.current.backend.runtime.paths.coral.coordinator.infoFile,
+    );
   }
 
   hasProjectSourceCache(projectRoot: string): boolean {
@@ -516,10 +516,7 @@ export class SimulationWorld {
         Boolean(status?.result) ||
         (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
       progress: replay
-        .filter(
-          (event): event is JobProgress & { type: 'progress'; message: string } =>
-            event.type === 'progress',
-        )
+        .filter((event): event is JobProgress & { type: 'progress'; message: string } => event.type === 'progress')
         .map((event) => event.message),
       result: status?.result ?? null,
     };
@@ -573,7 +570,7 @@ export class SimulationWorld {
   }
 
   private resolveResultArtifactPath(jobId: string): string {
-    return join(this.current.backend.progressStore.jobDir(jobId), RESULT_FILE);
+    return join(this.current.backend.runtime.paths.coral.exports.jobsRoot, jobId, RESULT_FILE);
   }
 
   private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr'): string {

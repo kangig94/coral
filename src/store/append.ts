@@ -33,13 +33,13 @@ export interface AppendedEvent extends CoralEvent {
 }
 
 export type AppendInput = CoralEventInput;
-export type AppendEventsFn = (inputs: readonly AppendInput[]) => readonly AppendedEvent[] | void;
 export type CommitClosureResult = undefined;
 export interface CommitContext<Scope> {
   append(input: ResolvableCoralEventInput<Scope>): CauseRefToken<Scope>;
 }
-export type CommitEventsFn = (cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult) => readonly AppendedEvent[] | void;
-export const noopAppendEvents: AppendEventsFn = () => [];
+export type CommitEventsFn = (
+  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+) => readonly AppendedEvent[] | void;
 
 function toTimestamp(value: Date): string {
   return value.toISOString();
@@ -208,7 +208,10 @@ function resolveTokensInInput(
   };
 }
 
-function prepareInput(input: CoralEventInput, ctx: AppendContext): {
+function prepareInput(
+  input: CoralEventInput,
+  ctx: AppendContext,
+): {
   input: AppendInput;
   parsedBody: unknown;
   bodyBytes: Buffer;
@@ -333,19 +336,4 @@ export function commit(
   });
 
   return txn.immediate();
-}
-
-export function appendEvents(
-  db: Database,
-  inputs: readonly AppendInput[],
-  ctx: AppendContext,
-): AppendedEvent[] {
-  return commit(
-    db,
-    (c) => {
-      for (const input of inputs) c.append(input);
-      return undefined;
-    },
-    ctx,
-  );
 }

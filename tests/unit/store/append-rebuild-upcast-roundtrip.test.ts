@@ -5,12 +5,12 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
-import { rebuildProjections } from '#src/store/rebuild.js';
+import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -52,7 +52,7 @@ describe('append/rebuild upcaster round-trip', () => {
         return { count: v1.n };
       });
 
-      appendEvents(db, [{ type: 'test.upcasted', stream: { kind: 'job', id: 'x' }, bodyVersion: 1, body: { n: 7 } }], {
+      commitInputs(db, [{ type: 'test.upcasted', stream: { kind: 'job', id: 'x' }, bodyVersion: 1, body: { n: 7 } }], {
         now: () => new Date(0),
         reducers,
         upcasters,

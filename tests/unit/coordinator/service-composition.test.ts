@@ -19,8 +19,8 @@ import { providerRequestFailed, providerSessionUnavailable } from '#src/provider
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { jobsDir } from "#src/jobs/paths.js";
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { jobsDir } from '#src/jobs/paths.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { type AgentRef } from '#src/jobs/agent-resolution.js';
@@ -105,7 +105,7 @@ function createProgressStore(namespace = 'test-ns'): ProgressStore {
 }
 
 function jobResultPath(jobId: string): string {
-  return join(JOBS_DIR, jobId, 'result.md');
+  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
@@ -179,7 +179,11 @@ function createService(
         continue;
       }
       const seq = progressStore.getChangeSeq();
-      await Promise.race([progressStore.waitForChange(seq), runtime.time.sleep(100, { signal: abortSignal }), waitForAbort()]);
+      await Promise.race([
+        progressStore.waitForChange(seq),
+        runtime.time.sleep(100, { signal: abortSignal }),
+        waitForAbort(),
+      ]);
     }
   };
   return new ExecutionService(ctx, {
@@ -195,7 +199,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    appendEvents: (inputs) => progressStore.appendEventsWithResult(inputs),
+    coordinatorCommit: (cb) => progressStore.commit(cb),
     sessionLookup: createSessionLookup(runtime),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
@@ -255,9 +259,7 @@ function trackAllJobDirs(): void {
   }
 }
 
-function makeLaunchRecord(
-  overrides: Partial<JobLaunch> & { jobId: string; sessionId: string },
-): JobLaunch {
+function makeLaunchRecord(overrides: Partial<JobLaunch> & { jobId: string; sessionId: string }): JobLaunch {
   return {
     provider: 'codex',
     projectRoot: '/tmp/project',
@@ -379,7 +381,8 @@ function makeProvider(options?: {
   preflight?: ReturnType<typeof vi.fn>;
 } {
   const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })));
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+  );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -500,21 +503,15 @@ function _makeSharedClaudeAppServerProvider(spec: {
             ? {
                 type: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
-                ...(probeResult.updatedContinuity
-                  ? { providerContinuity: probeResult.updatedContinuity }
-                  : {}),
+                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
             : {
                 type: 'preserve' as const,
-                ...(probeResult.updatedContinuity
-                  ? { providerContinuity: probeResult.updatedContinuity }
-                  : {}),
+                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
           : {
               type: 'clear_non_resumable' as const,
-              ...(probeResult.updatedContinuity
-                ? { providerContinuity: probeResult.updatedContinuity }
-                : {}),
+              ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
             };
       },
     },
@@ -1527,7 +1524,10 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    progressStore.appendLaunchRequested(
+      jobId,
+      makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }),
+    );
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       throw new Error('disk full');
@@ -1561,7 +1561,10 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
     });
-    progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }));
+    progressStore.appendLaunchRequested(
+      jobId,
+      makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot }),
+    );
     expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       throw new Error('disk full');
@@ -1723,17 +1726,15 @@ describe('ExecutionService', () => {
         }
         return originalWriteAtomic(targetPath, content, options);
       });
-      vi.spyOn(progressStore, 'commit').mockImplementation(
-        (cb) => {
-          if (!terminalCommitObserved) {
-            terminalCommitObserved = true;
-            order.push('terminal');
-            expect(existsSync(jobResultPath(jobId))).toBe(false);
-            expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
-          }
-          return originalCommit(cb);
-        },
-      );
+      vi.spyOn(progressStore, 'commit').mockImplementation((cb) => {
+        if (!terminalCommitObserved) {
+          terminalCommitObserved = true;
+          order.push('terminal');
+          expect(existsSync(jobResultPath(jobId))).toBe(false);
+          expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
+        }
+        return originalCommit(cb);
+      });
       vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
         order.push('non_resumable');
         const persistedPhase = result.outcome.kind === 'aborted' ? 'aborted' : phase;
@@ -1855,9 +1856,7 @@ describe('ExecutionService', () => {
       };
     }
 
-    function makeAppServerRuntimeRecord(
-      overrides?: Partial<AppServerRuntime['providerMeta']>,
-    ): AppServerRuntime {
+    function makeAppServerRuntimeRecord(overrides?: Partial<AppServerRuntime['providerMeta']>): AppServerRuntime {
       return {
         transport: 'app-server',
         startTime: new Date().toISOString(),
@@ -2414,17 +2413,17 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({
-            jobId,
-            sessionId: session.sessionId,
-            projectRoot: ctx.projectRoot,
-            request: {
-              prompt: 'recover me',
-              cwd: '/tmp/project',
-              bypassPermissions: false,
-              conversationRef: 'thread-stale',
-              coralEnv: {},
-            },
-          });
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+          request: {
+            prompt: 'recover me',
+            cwd: '/tmp/project',
+            bypassPermissions: false,
+            conversationRef: 'thread-stale',
+            coralEnv: {},
+          },
+        });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
         await service.finalizeInterruptedAppServerJob(
@@ -2507,17 +2506,17 @@ describe('ExecutionService', () => {
         });
 
         const launchRecord = makeLaunchRecord({
-            jobId,
-            sessionId: session.sessionId,
-            projectRoot: ctx.projectRoot,
-            request: {
-              prompt: 'recover me',
-              cwd: '/tmp/project',
-              bypassPermissions: false,
-              conversationRef: 'thread-unverified',
-              coralEnv: {},
-            },
-          });
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+          request: {
+            prompt: 'recover me',
+            cwd: '/tmp/project',
+            bypassPermissions: false,
+            conversationRef: 'thread-unverified',
+            coralEnv: {},
+          },
+        });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
         await service.finalizeInterruptedAppServerJob(

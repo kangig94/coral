@@ -1,7 +1,7 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
-import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
+import type { TerminalOutcome } from '../../jobs/outcome.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -87,18 +87,21 @@ export class KbJobRecorder {
   }
 
   appendMessage(jobId: string, projectRoot: string, message: string): void {
-    this.deps.progressStore.appendEvent({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.deps.backendNamespace,
-      project: projectRoot,
-      refs: { jobId },
-      bodyVersion: 1,
-      body: {
-        kind: 'message',
-        message,
-        ts: nowIsoString(this.deps.runtime.time),
-      },
+    this.deps.progressStore.commit((c) => {
+      c.append({
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: jobId },
+        namespace: this.deps.backendNamespace,
+        project: projectRoot,
+        refs: { jobId },
+        bodyVersion: 1,
+        body: {
+          kind: 'message',
+          message,
+          ts: nowIsoString(this.deps.runtime.time),
+        },
+      });
+      return undefined;
     });
   }
 
@@ -155,46 +158,51 @@ export class KbJobRecorder {
     detail: unknown;
     kbRefs?: Array<Pick<KbRef, 'entryId'>>;
   }): void {
-    this.deps.progressStore.appendEvent({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: params.jobId },
-      namespace: params.namespace,
-      project: params.projectRoot,
-      refs: {
-        jobId: params.jobId,
-        sessionId: params.sessionId,
-        ...(params.kbRefs === undefined ? {} : { kbRefs: params.kbRefs }),
-      },
-      bodyVersion: 1,
-      body: {
-        kind: 'domain',
-        stage: 'hosted_kb_operation_failed',
-        message: `KB ${params.operation} failed: ${params.message}`,
-        ts: nowIsoString(this.deps.runtime.time),
-        detail: {
-          operation: params.operation,
-          code: params.code,
-          message: params.message,
-          ...(params.detail === undefined ? {} : { detail: params.detail }),
+    this.deps.progressStore.commit((c) => {
+      c.append({
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: params.jobId },
+        namespace: params.namespace,
+        project: params.projectRoot,
+        refs: {
+          jobId: params.jobId,
+          sessionId: params.sessionId,
+          ...(params.kbRefs === undefined ? {} : { kbRefs: params.kbRefs }),
         },
-      },
+        bodyVersion: 1,
+        body: {
+          kind: 'domain',
+          stage: 'hosted_kb_operation_failed',
+          message: `KB ${params.operation} failed: ${params.message}`,
+          ts: nowIsoString(this.deps.runtime.time),
+          detail: {
+            operation: params.operation,
+            code: params.code,
+            message: params.message,
+            ...(params.detail === undefined ? {} : { detail: params.detail }),
+          },
+        },
+      });
+      return undefined;
     });
   }
 
   appendCompleted(jobId: string, startedAtMs: number, content: string): void {
-    this.appendTerminal(jobId, startedAtMs, { kind: 'completed' }, content);
+    this.commitTerminal(jobId, startedAtMs, { kind: 'completed' }, content);
   }
 
-  private appendTerminal(jobId: string, startedAtMs: number, outcome: TerminalOutcome, content: string): void {
-    this.deps.progressStore.appendTerminal(
-      jobId,
-      null,
-      {
-        outcome,
-        durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-        content,
-      },
-      phaseForOutcome(outcome),
-    );
+  private commitTerminal(jobId: string, startedAtMs: number, outcome: TerminalOutcome, content: string): void {
+    this.deps.progressStore.commit((c) => {
+      appendJobTerminalRecorded(c, {
+        jobId,
+        terminal: {
+          outcome,
+          durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
+          content,
+        },
+        continuity: null,
+      });
+      return undefined;
+    });
   }
 }

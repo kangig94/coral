@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { appendEvents, type AppendInput } from '#src/store/append.js';
+import { type AppendInput } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
@@ -180,7 +181,7 @@ describe('jobs queries', () => {
       },
     ];
 
-    appendEvents(db, inputs, {
+    commitInputs(db, inputs, {
       now: () => new Date('2026-04-20T00:03:00.000Z'),
       reducers,
       upcasters,

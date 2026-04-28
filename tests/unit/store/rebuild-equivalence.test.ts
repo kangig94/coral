@@ -5,12 +5,12 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
-import { rebuildProjections } from '#src/store/rebuild.js';
+import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
@@ -36,7 +36,7 @@ describe('rebuildProjections replay identity', () => {
         body: { id: ids[i % ids.length], delta: (i % 7) + 1 },
       }));
 
-      appendEvents(db, inputs, { now: () => new Date(0), reducers, upcasters });
+      commitInputs(db, inputs, { now: () => new Date(0), reducers, upcasters });
 
       const beforeRebuild = db.prepare('SELECT * FROM projection_test_counter ORDER BY id').all();
       expect(beforeRebuild.length).toBe(ids.length);

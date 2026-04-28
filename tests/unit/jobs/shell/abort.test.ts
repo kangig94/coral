@@ -14,11 +14,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred as _createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type {
-  JobLaunch as _JobLaunch,
-  JobProgress,
-  JobStatus,
-} from '#src/jobs/records.js';
+import type { JobLaunch as _JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -29,8 +25,8 @@ import {
 } from '#src/providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { jobsDir } from "#src/jobs/paths.js";
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { jobsDir } from '#src/jobs/paths.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
@@ -110,7 +106,7 @@ function createProgressStore(namespace = 'test-ns'): ProgressStore {
 }
 
 function _jobResultPath(jobId: string): string {
-  return join(JOBS_DIR, jobId, 'result.md');
+  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
@@ -288,9 +284,7 @@ function toCompletedResult(
   return { ...result, outcome: completedOutcome() };
 }
 
-function toCompletedJobTerminal(
-  result: TestJobTerminal | { content: string },
-): NonNullable<JobStatus['result']> {
+function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): NonNullable<JobStatus['result']> {
   if ('outcome' in result && result.outcome !== undefined) {
     return result as NonNullable<JobStatus['result']>;
   }
@@ -329,7 +323,8 @@ function makeProvider(options?: {
   preflight?: ReturnType<typeof vi.fn>;
 } {
   const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })));
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+  );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -449,21 +444,15 @@ function _makeSharedClaudeAppServerProvider(spec: {
             ? {
                 type: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
-                ...(probeResult.updatedContinuity
-                  ? { providerContinuity: probeResult.updatedContinuity }
-                  : {}),
+                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
             : {
                 type: 'preserve' as const,
-                ...(probeResult.updatedContinuity
-                  ? { providerContinuity: probeResult.updatedContinuity }
-                  : {}),
+                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
           : {
               type: 'clear_non_resumable' as const,
-              ...(probeResult.updatedContinuity
-                ? { providerContinuity: probeResult.updatedContinuity }
-                : {}),
+              ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
             };
       },
     },

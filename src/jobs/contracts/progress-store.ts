@@ -1,19 +1,10 @@
 import type { Database } from 'better-sqlite3';
 
 import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
-import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
-import type { JobPhase } from '../phase.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import type { JobEventBus } from '../event-bus.js';
-import type {
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-  JobLaunch,
-  JobProgress,
-  JobRuntime,
-  JobStatus,
-} from '../records.js';
+import type { JobTerminalDiagnostics, JobLaunch, JobProgress, JobRuntime, JobStatus } from '../records.js';
 
 export type InitJobOptions = {
   jobId: string;
@@ -41,8 +32,6 @@ export interface JobProgressStore {
   readJobProgress(jobId: string): JobProgress[];
   ensureResultArtifact(jobId: string): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
-  appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[];
-  appendEvent(input: CoralEventInput): void;
   initJob(opts: InitJobOptions): void;
   rollbackJob(jobId: string): void;
   purgeFromCache(jobId: string): void;
@@ -57,11 +46,4 @@ export interface JobProgressStore {
   liveJobCountByNamespace(namespace: string): number;
   hydrateJobStartedAt(jobId: string, startTime: string): void;
   appendProgress(jobId: string, sessionId: string | null, message: string): number;
-  appendTerminal(
-    jobId: string,
-    sessionId: string | null,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options?: TerminalWriteOptions,
-  ): number;
 }

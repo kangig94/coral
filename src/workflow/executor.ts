@@ -117,12 +117,17 @@ async function awaitLaunchedStepResults(
       recoverStaleAtom,
       onFailureDrain: (_state, failure) => {
         if (!options.workflowJobId || !options.journal || !failure.failedSlotId) return;
-        options.journal.append([
-          workflowDrainEnteredEvent(options.workflowJobId, {
-            firstFailureSlotId: failure.failedSlotId,
-            drainDeadline: options.time.now() + 15_000,
-          }),
-        ]);
+        const workflowJobId = options.workflowJobId;
+        const firstFailureSlotId = failure.failedSlotId;
+        options.journal.commit((c) => {
+          c.append(
+            workflowDrainEnteredEvent(workflowJobId, {
+              firstFailureSlotId,
+              drainDeadline: options.time.now() + 15_000,
+            }),
+          );
+          return undefined;
+        });
       },
     });
   } catch (error) {
@@ -130,7 +135,9 @@ async function awaitLaunchedStepResults(
       throw error;
     }
 
-    throw createWorkflowExecutionError(errorMessage(error), Boolean(options.signal?.aborted), [...options.completedStepDetails]);
+    throw createWorkflowExecutionError(errorMessage(error), Boolean(options.signal?.aborted), [
+      ...options.completedStepDetails,
+    ]);
   }
 }
 
@@ -223,9 +230,14 @@ export async function executePlannedSteps(
       plan: workingPlan,
     };
   } finally {
-    executionSvc.cleanupWorkflowSessions(
-      [...new Map(allLaunchedAtoms.map((atom) => [`${atom.providerName}:${atom.sessionId}`, { providerName: atom.providerName, sessionId: atom.sessionId }])).values()],
-    );
+    executionSvc.cleanupWorkflowSessions([
+      ...new Map(
+        allLaunchedAtoms.map((atom) => [
+          `${atom.providerName}:${atom.sessionId}`,
+          { providerName: atom.providerName, sessionId: atom.sessionId },
+        ]),
+      ).values(),
+    ]);
   }
 }
 
@@ -257,7 +269,11 @@ export async function executePipeline(
   });
 
   if (options.workflowJobId && options.journal) {
-    options.journal.append([workflowPlanDeclaredEvent(options.workflowJobId, plan)]);
+    const workflowJobId = options.workflowJobId;
+    options.journal.commit((c) => {
+      c.append(workflowPlanDeclaredEvent(workflowJobId, plan));
+      return undefined;
+    });
   }
 
   const result = await executePlannedSteps(plan, initialPrompt, executionSvc, ctx, {

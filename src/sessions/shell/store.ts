@@ -1,12 +1,12 @@
 import { resolve } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../../store/append.js';
+import { commit as commitJournalEvents, type CommitEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
-import { pluginRootNamespace } from "../../infra/plugin-identity.js";
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime, IdPort, TimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
@@ -21,10 +21,7 @@ import type { SessionAllocateOptions } from '../contracts.js';
 import { sessionsRegistry } from '../events.js';
 import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
-import {
-  listProjectionSessionEntries,
-  readProjectionSession,
-} from '../projections.js';
+import { listProjectionSessionEntries, readProjectionSession } from '../projections.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
@@ -34,10 +31,7 @@ export type SessionManagerOptions = {
   db?: Database;
 };
 
-function toSessionNamespace(
-  dir: string,
-  ids: Pick<IdPort, 'sha256'>,
-): string {
+function toSessionNamespace(dir: string, ids: Pick<IdPort, 'sha256'>): string {
   try {
     return pluginRootNamespace(dir);
   } catch (error: unknown) {
@@ -62,7 +56,9 @@ function normalizeEntry(entry: SessionEntry): SessionEntry {
   };
 }
 
-function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>): ContinuitySnapshot {
+function snapshotFromEntry(
+  entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>,
+): ContinuitySnapshot {
   return {
     conversationRef: entry.conversationRef ?? null,
     resumable: entry.state === 'ready',
@@ -85,10 +81,7 @@ function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventIn
   };
 }
 
-function sessionCheckpointedEvent(
-  entry: SessionEntry,
-  snapshot: ContinuitySnapshot,
-): CoralEventInput {
+function sessionCheckpointedEvent(entry: SessionEntry, snapshot: ContinuitySnapshot): CoralEventInput {
   return {
     type: 'session.continuity.checkpointed',
     stream: { kind: 'session', id: entry.sessionId },
@@ -127,12 +120,12 @@ function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEve
   };
 }
 
-function createLocalSessionAppendEvents(db: Database, time: TimePort): AppendEventsFn {
+function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn {
   const reducers = composeReducers(sessionsRegistry);
   const upcasters = createDefaultUpcasterRegistry();
 
-  return (inputs) =>
-    appendJournalEvents(db, inputs, {
+  return (cb) =>
+    commitJournalEvents(db, cb, {
       now: () => nowDate(time),
       reducers,
       upcasters,
@@ -142,7 +135,7 @@ function createLocalSessionAppendEvents(db: Database, time: TimePort): AppendEve
 export class SessionManager {
   private readonly time: TimePort;
   private readonly ids: IdPort;
-  private readonly appendEvents: AppendEventsFn;
+  private readonly commitEvents: CommitEventsFn;
   private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly scopeKey: string;
   private readonly db: Database;
@@ -152,14 +145,14 @@ export class SessionManager {
   constructor(
     workingDirectory: string,
     runtime: SessionRuntime,
-    appendEvents?: AppendEventsFn,
+    commitEvents?: CommitEventsFn,
     releaseEmitter: SessionReleasedEmitter = () => {},
     db?: Database,
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
     this.db = db ?? openBackendStoreDb(runtime);
-    this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
+    this.commitEvents = commitEvents ?? createLocalSessionCommit(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);
   }
@@ -167,17 +160,11 @@ export class SessionManager {
   static forProduction(
     workingDirectory: string,
     runtime: SessionRuntime,
-    appendEvents: AppendEventsFn | undefined,
+    commitEvents: CommitEventsFn | undefined,
     releaseEmitter: SessionReleasedEmitter,
     options: SessionManagerOptions = {},
   ): SessionManager {
-    return new SessionManager(
-      workingDirectory,
-      runtime,
-      appendEvents,
-      releaseEmitter,
-      options.db,
-    );
+    return new SessionManager(workingDirectory, runtime, commitEvents, releaseEmitter, options.db);
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
@@ -214,7 +201,10 @@ export class SessionManager {
   }
 
   private appendSessionEvent(input: CoralEventInput): void {
-    this.appendEvents([input]);
+    this.commitEvents((c) => {
+      c.append(input);
+      return undefined;
+    });
   }
 
   private appendEntryEvent(nextEntry: SessionEntry, eventInput: CoralEventInput): SessionEntry {
@@ -309,10 +299,7 @@ export class SessionManager {
       version: this.bumpVersion(currentEntry),
     };
 
-    this.appendEntryEvent(
-      nextEntry,
-      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-    );
+    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)));
   }
 
   checkpointProviderContinuity(
@@ -325,17 +312,12 @@ export class SessionManager {
     const nextEntry: SessionEntry = {
       ...currentEntry,
       providerContinuity: update.providerContinuity,
-      ...(update.conversationRef
-        ? { conversationRef: update.conversationRef, state: 'ready' as const }
-        : {}),
+      ...(update.conversationRef ? { conversationRef: update.conversationRef, state: 'ready' as const } : {}),
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
     };
 
-    this.appendEntryEvent(
-      nextEntry,
-      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-    );
+    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)));
   }
 
   /** Transition session to non_resumable (provider completed without yielding a conversationRef). */
@@ -350,10 +332,7 @@ export class SessionManager {
       version: this.bumpVersion(currentEntry),
     };
 
-    this.appendEntryEvent(
-      nextEntry,
-      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-    );
+    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)));
   }
 
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
@@ -411,10 +390,7 @@ export class SessionManager {
       }
     })();
 
-    this.appendEntryEvent(
-      nextEntry,
-      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
-    );
+    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)));
     this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
     return true;
   }
@@ -442,10 +418,7 @@ export class SessionManager {
       version: this.bumpVersion(currentEntry),
     };
 
-    const stored = this.appendEntryEvent(
-      nextEntry,
-      sessionCheckpointedEvent(nextEntry, snapshot),
-    );
+    const stored = this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot));
     return { ok: true, nextVersion: stored.version };
   }
 

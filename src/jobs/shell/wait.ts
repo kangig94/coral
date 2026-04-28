@@ -1,6 +1,12 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
-import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type WaitRequest, type WaitStreamEvent, type WaitStreamOnceResult, type WaitStreamRequest } from '../wait.js';
+import {
+  WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
+  type WaitRequest,
+  type WaitStreamEvent,
+  type WaitStreamOnceResult,
+  type WaitStreamRequest,
+} from '../wait.js';
 import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { TimePort } from '../../runtime/ports.js';
@@ -55,7 +61,9 @@ function toTerminalWaitEvent(
   };
 }
 
-function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
+function createAbortWaiter(
+  signal: AbortSignal | undefined,
+): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
   if (!signal) {
     return null;
   }
@@ -97,11 +105,14 @@ function createTimeoutWaiter(
   let settled = false;
   let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
   const promise = new Promise<typeof TIMED_OUT>((resolve) => {
-    timeoutHandle = time.setTimeout(() => {
-      settled = true;
-      timeoutHandle = null;
-      resolve(TIMED_OUT);
-    }, Math.max(0, timeoutMs));
+    timeoutHandle = time.setTimeout(
+      () => {
+        settled = true;
+        timeoutHandle = null;
+        resolve(TIMED_OUT);
+      },
+      Math.max(0, timeoutMs),
+    );
   });
 
   return {
@@ -124,11 +135,14 @@ function createJournalPollWaiter(
   let settled = false;
   let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
   const promise = new Promise<typeof JOURNAL_POLL>((resolve) => {
-    timeoutHandle = time.setTimeout(() => {
-      settled = true;
-      timeoutHandle = null;
-      resolve(JOURNAL_POLL);
-    }, Math.max(0, timeoutMs));
+    timeoutHandle = time.setTimeout(
+      () => {
+        settled = true;
+        timeoutHandle = null;
+        resolve(JOURNAL_POLL);
+      },
+      Math.max(0, timeoutMs),
+    );
   });
 
   return {
@@ -158,6 +172,7 @@ export interface WaitCoordinatorDeps {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobProgress>;
   getCurrentJournalSeq: () => number;
+  resultJobsRoot: string;
   ensureResultArtifact?: (jobId: string) => string;
 }
 
@@ -174,34 +189,25 @@ export class WaitCoordinator {
 
   private resultPathFor(jobId: string): string {
     if (!this.deps.ensureResultArtifact) {
-      return defaultResultPathFor(jobId);
+      return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
     }
 
     try {
       return this.deps.ensureResultArtifact(jobId);
     } catch (error: unknown) {
       backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
-      return defaultResultPathFor(jobId);
+      return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
     }
   }
 
-  private readPendingHistory(
-    pending: ReadonlySet<string>,
-    observedSeq: number,
-    maxSeq: number,
-  ): JobProgress[] {
+  private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobProgress[] {
     const { readJobProgress } = this.deps;
     return [...pending]
-      .flatMap((jobId) =>
-        readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq),
-      )
+      .flatMap((jobId) => readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
       .sort(compareProgressSeq);
   }
 
-  private toWaitEvent(
-    event: JobProgress,
-    pending: ReadonlySet<string>,
-  ): WaitStreamEvent {
+  private toWaitEvent(event: JobProgress, pending: ReadonlySet<string>): WaitStreamEvent {
     if (event.type === 'progress') {
       return toProgressWaitEvent(event);
     }
@@ -364,10 +370,7 @@ export class WaitCoordinator {
       }
       observedSeq = Math.max(observedSeq, catchUpMaxSeq);
 
-      timeoutWaiter = createTimeoutWaiter(
-        this.deps.time,
-        Math.max(0, deadlineMs - this.deps.time.now()),
-      );
+      timeoutWaiter = createTimeoutWaiter(this.deps.time, Math.max(0, deadlineMs - this.deps.time.now()));
 
       while (pending.size > 0) {
         const now = this.deps.time.now();
@@ -430,7 +433,12 @@ export class WaitCoordinator {
           continue;
         }
 
-        yield toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
+        yield toTerminalWaitEvent(
+          event,
+          pending,
+          this.resultPathFor(event.jobId),
+          this.readQueryContinuity(event.jobId),
+        );
         return;
       }
     } finally {

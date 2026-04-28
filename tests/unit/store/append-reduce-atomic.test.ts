@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
@@ -29,12 +29,12 @@ function setupDb(): Database.Database {
   return db;
 }
 
-describe('appendEvents + in-transaction projection reduction', () => {
+describe('commitInputs + in-transaction projection reduction', () => {
   it('writes projection row and event atomically', () => {
     const db = setupDb();
 
     try {
-      appendEvents(
+      commitInputs(
         db,
         [
           {
@@ -82,7 +82,7 @@ describe('appendEvents + in-transaction projection reduction', () => {
       });
 
       expect(() =>
-        appendEvents(
+        commitInputs(
           db,
           [
             {
@@ -136,7 +136,7 @@ describe('appendEvents + in-transaction projection reduction', () => {
       };
 
       expect(() =>
-        appendEvents(
+        commitInputs(
           db,
           [
             {
@@ -166,7 +166,7 @@ describe('appendEvents + in-transaction projection reduction', () => {
     const db = setupDb();
 
     try {
-      appendEvents(
+      commitInputs(
         db,
         [
           {

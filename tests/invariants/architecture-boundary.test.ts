@@ -411,12 +411,9 @@ function collectLaunchPoolDefinitions(): string[] {
 
 function collectDomainAmbientRuntimeAccess(): string[] {
   const scopedRoots = ['src/providers', 'src/workflow', 'src/kb', 'src/discuss'];
-  // inject.ts renders INJECT.md template substitutions at request-prep time
-  // and must read process.env to derive the build flavor for {{CORAL_KB}};
-  // the function has no runtime in scope.
   // kb/paths.ts owns the CORAL_KB_PATH env override (vault root) — that env
   // read is the contract, not a leak.
-  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/providers/inject.ts', 'src/kb/paths.ts']);
+  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/kb/paths.ts']);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 
@@ -427,6 +424,13 @@ function collectDomainAmbientRuntimeAccess(): string[] {
 
     return ambientPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8'));
   }).sort();
+}
+
+function collectProductionTestHelperImports(): string[] {
+  const helperImportPattern = /from\s+['"]#tests\/helpers\/|import\s*\(\s*['"]#tests\/helpers\//u;
+  return PRODUCTION_SOURCE_FILES.filter((filePath) =>
+    helperImportPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8')),
+  ).sort();
 }
 
 function collectReadModelAmbientRuntimeAccess(): string[] {
@@ -514,9 +518,7 @@ describe('architecture boundary guard', () => {
       'session fault event builders own only session event vocabulary',
       'keep runtime access and cross-domain orchestration outside sessions/shell/session-fault-events.ts.',
       (target) =>
-        isWithinPath(target, COORDINATOR_ROOT) ||
-        isWithinPath(target, JOBS_ROOT) ||
-        isWithinPath(target, RUNTIME_ROOT),
+        isWithinPath(target, COORDINATOR_ROOT) || isWithinPath(target, JOBS_ROOT) || isWithinPath(target, RUNTIME_ROOT),
     );
     const runtimeEdges = (PARSED_IMPORT_EDGES_BY_SOURCE.get(SESSION_FAULT_EVENTS) ?? []).filter((edge) => edge.runtime);
 
@@ -536,8 +538,11 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('raw job.terminal.recorded writes stay owned by jobs terminal recording and transitional job store wrapper', () => {
-    expect(collectRawTerminalRecordedWriters()).toEqual(['src/jobs/job-store.ts', JOBS_TERMINAL_RECORDING]);
+  it('raw job.terminal.recorded writes stay owned by jobs terminal recording', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual([JOBS_TERMINAL_RECORDING]);
+  });
+  it('production sources never import tests/helpers', () => {
+    expect(collectProductionTestHelperImports()).toEqual([]);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/launch.ts']);
@@ -1539,11 +1544,7 @@ describe('architecture boundary guard', () => {
         if (found) {
           return;
         }
-        if (
-          ts.isTypeReferenceNode(child) &&
-          ts.isIdentifier(child.typeName) &&
-          child.typeName.text === 'Backed'
-        ) {
+        if (ts.isTypeReferenceNode(child) && ts.isIdentifier(child.typeName) && child.typeName.text === 'Backed') {
           found = true;
           return;
         }

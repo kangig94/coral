@@ -14,9 +14,9 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { appendEvents } from '#src/store/append.js';
+import { commit } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
@@ -65,8 +65,8 @@ describe('sessions shell store', () => {
     });
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createEmptyRegistry();
-    const coordinatorAppendEvents = (inputs: Parameters<typeof appendEvents>[1]) => {
-      appendEvents(db, inputs, {
+    const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
+      commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
         upcasters,
@@ -75,7 +75,7 @@ describe('sessions shell store', () => {
 
     return {
       db,
-      mgr: new SessionManager(workDir, runtime, coordinatorAppendEvents, undefined, db),
+      mgr: new SessionManager(workDir, runtime, coordinatorCommit, undefined, db),
       workDir,
     };
   }
@@ -129,10 +129,7 @@ describe('sessions shell store', () => {
         )
         .all(entry.sessionId) as Array<{ type: string; body_version: number; body: Uint8Array | Buffer }>;
 
-      expect(rows.map((row) => row.type)).toEqual([
-        'session.opened',
-        'session.continuity.checkpointed',
-      ]);
+      expect(rows.map((row) => row.type)).toEqual(['session.opened', 'session.continuity.checkpointed']);
       expect(rows[0]?.body_version).toBe(1);
       expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toMatchObject({
         controller: 'team-a',
@@ -543,11 +540,7 @@ describe('sessions shell store', () => {
         )
         .all(entry.sessionId) as Array<{ type: string }>;
 
-      expect(rows.map((row) => row.type)).toEqual([
-        'session.opened',
-        'session.claimed',
-        'session.claim.released',
-      ]);
+      expect(rows.map((row) => row.type)).toEqual(['session.opened', 'session.claimed', 'session.claim.released']);
     } finally {
       db.close();
     }
@@ -618,5 +611,4 @@ describe('sessions shell store adversarial', () => {
     expect(codexSessions).toHaveLength(1);
     expect(claudeSessions).toHaveLength(1);
   });
-
 });

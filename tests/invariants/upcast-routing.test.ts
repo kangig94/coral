@@ -16,21 +16,16 @@ const PROGRAM = ts.createProgram(FILES, {
   target: ts.ScriptTarget.ESNext,
 });
 const CHECKER = PROGRAM.getTypeChecker();
-const ALLOWLIST = new Set([
-  'src/store/body-codec.ts',
-  'src/store/append.ts',
-  'src/store/rebuild.ts',
-  'src/store/envelope.ts',
-]);
+const ALLOWLIST = new Set(['src/store/body-codec.ts', 'src/store/append.ts', 'src/store/envelope.ts']);
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
   while (
-    ts.isAsExpression(current)
-    || ts.isParenthesizedExpression(current)
-    || ts.isTypeAssertionExpression(current)
-    || ts.isNonNullExpression(current)
-    || ts.isSatisfiesExpression(current)
+    ts.isAsExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
   ) {
     current = current.expression;
   }
@@ -39,7 +34,9 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
 
 function isDecodeEventBodyCall(expression: ts.Expression): boolean {
   const current = unwrapExpression(expression);
-  return ts.isCallExpression(current) && ts.isIdentifier(current.expression) && current.expression.text === 'decodeEventBody';
+  return (
+    ts.isCallExpression(current) && ts.isIdentifier(current.expression) && current.expression.text === 'decodeEventBody'
+  );
 }
 
 function isParseCall(node: ts.CallExpression): node is ts.CallExpression & { expression: ts.PropertyAccessExpression } {
@@ -89,7 +86,11 @@ function collectViolations(sourceFile: ts.SourceFile): string[] {
     }
 
     if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression) && node.expression.text === 'rowToCoralEvent' && node.arguments.length === 1) {
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'rowToCoralEvent' &&
+        node.arguments.length === 1
+      ) {
         violations.push(
           formatViolation(sourceFile, node, 'rowToCoralEvent(row) uses the raw-body overload outside the allowlist'),
         );
@@ -120,8 +121,8 @@ describe('upcast routing invariant', () => {
       }
 
       const sourceFile =
-        PROGRAM.getSourceFile(filePath)
-        ?? ts.createSourceFile(filePath, readFileSync(filePath, 'utf-8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+        PROGRAM.getSourceFile(filePath) ??
+        ts.createSourceFile(filePath, readFileSync(filePath, 'utf-8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
       return collectViolations(sourceFile);
     });

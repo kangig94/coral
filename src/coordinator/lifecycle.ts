@@ -20,12 +20,7 @@ import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
-import {
-  SHUTDOWN_POLL_MS,
-  runShutdownSequence,
-  type LifecycleWiringState,
-  type ShutdownMode,
-} from './shutdown.js';
+import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode } from './shutdown.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -184,6 +179,7 @@ export function markJobsAsError(
   namespace: string,
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
+  jobsRoot: string,
 ): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
@@ -198,7 +194,7 @@ export function markJobsAsError(
       );
       if (status.jobKind === 'workflow') {
         try {
-          writeResultArtifact(storage, status.jobId, '');
+          writeResultArtifact(storage, jobsRoot, status.jobId, '');
         } catch {
           // best-effort export materialization; Journal terminal state is authoritative
         }
@@ -416,7 +412,9 @@ async function runLifecycleStartup({
 
     const { port, host } = await listenFn(server);
     const { socketPath } =
-      ipcServer && listenIpcFn ? await listenIpcFn(ipcServer) : { socketPath: runtime.paths.coral.coordinator.socketPath };
+      ipcServer && listenIpcFn
+        ? await listenIpcFn(ipcServer)
+        : { socketPath: runtime.paths.coral.coordinator.socketPath };
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 

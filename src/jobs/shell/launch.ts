@@ -19,16 +19,10 @@ import { type AbortReason, type JobLaunchRejected } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
-import type {
-  AcceptedAdmission,
-  JobAdmissionPort,
-  LaunchPool,
-  QueuedHandle,
-} from '../contracts/admission.js';
+import type { AcceptedAdmission, JobAdmissionPort, LaunchPool, QueuedHandle } from '../contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../contracts/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
-import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
@@ -67,11 +61,10 @@ export interface LaunchOrchestratorDeps {
   sessionManager: SessionJobClaimPort;
   launchAdmission: JobAdmissionPort;
   durableSpawner: ProviderDurableSpawner;
-  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
+  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'paths'>;
   backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
-  appendEvents: AppendEventsFn;
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
   terminalMaterializer: {
     recordProviderTerminal(
@@ -130,20 +123,23 @@ export class LaunchOrchestrator {
     } = {},
   ): void {
     const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
-    this.deps.progressStore.appendEvent({
-      type,
-      stream: { kind: 'job', id: jobId },
-      namespace: metadata.namespace,
-      project: metadata.project,
-      correlationId: metadata.correlationId,
-      refs: {
-        jobId,
-        sessionId,
-        ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
-        ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
-      },
-      bodyVersion: 1,
-      body,
+    this.deps.progressStore.commit((c) => {
+      c.append({
+        type,
+        stream: { kind: 'job', id: jobId },
+        namespace: metadata.namespace,
+        project: metadata.project,
+        correlationId: metadata.correlationId,
+        refs: {
+          jobId,
+          sessionId,
+          ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+          ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
+        },
+        bodyVersion: 1,
+        body,
+      });
+      return undefined;
     });
   }
 
@@ -452,12 +448,25 @@ export class LaunchOrchestrator {
     jobId: string,
     sessionId: string,
     result: JobTerminalInput,
-    phase: JobPhase,
+    _phase: JobPhase,
     options: TerminalWriteOptions = {},
   ): number {
     const { progressStore } = this.deps;
     try {
-      return progressStore.appendTerminal(jobId, sessionId, result, phase, options);
+      const status = progressStore.readStatus(jobId);
+      const [appended] = progressStore.commit((c) => {
+        appendJobTerminalRecorded(c, {
+          jobId,
+          sessionId,
+          namespace: status?.backendNamespace ?? this.deps.backendNamespace,
+          project: status?.projectRoot,
+          terminal: result,
+          diagnostics: options.diagnostics,
+          continuity: options.continuity ?? null,
+        });
+        return undefined;
+      });
+      return appended?.seq ?? 0;
     } catch (error: unknown) {
       throw new TerminalWriteError(jobId, error);
     }
@@ -497,7 +506,7 @@ export class LaunchOrchestrator {
       appendProgress: (message) => {
         this.appendProgressEvent(jobId, sessionId, message);
       },
-      appendTerminal: (event) => {
+      recordTerminal: (event) => {
         this.appendProviderTerminal(jobId, sessionId, request.cwd, event, latestContinuity);
       },
     });
@@ -512,7 +521,7 @@ export class LaunchOrchestrator {
   ): Promise<void> {
     const { abortRegistry, jobPools } = this.deps;
     try {
-      writeResultArtifact(this.deps.runtime.storage, jobId, content);
+      writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, content);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
     } finally {
@@ -682,12 +691,7 @@ export class LaunchOrchestrator {
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {
     const { abortRegistry, jobPools, sessionManager } = this.deps;
     this.appendJobEvent(jobId, sessionId, 'job.aborted', { reason });
-    this.writeJobTerminal(
-      jobId,
-      sessionId,
-      { content: '', outcome: { kind: 'aborted', reason } },
-      'aborted',
-    );
+    this.writeJobTerminal(jobId, sessionId, { content: '', outcome: { kind: 'aborted', reason } }, 'aborted');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);

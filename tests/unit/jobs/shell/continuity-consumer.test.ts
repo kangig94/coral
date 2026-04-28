@@ -10,7 +10,7 @@ describe('consumeJobStream', () => {
 
   it('threads session versions through continuity checkpoints and preserves event order', async () => {
     const appendProgress = vi.fn();
-    const appendTerminal = vi.fn();
+    const recordTerminal = vi.fn();
     const checkpointJobContinuityAtomic = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, nextVersion: 8 })
@@ -50,7 +50,7 @@ describe('consumeJobStream', () => {
         checkpointJobContinuityAtomic,
       },
       appendProgress,
-      appendTerminal,
+      recordTerminal,
     });
 
     expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'session-1', {
@@ -72,8 +72,8 @@ describe('consumeJobStream', () => {
       },
     });
     expect(appendProgress.mock.calls).toEqual([['starting'], ['streaming']]);
-    expect(appendTerminal).toHaveBeenCalledTimes(1);
-    expect(appendTerminal).toHaveBeenCalledWith({
+    expect(recordTerminal).toHaveBeenCalledTimes(1);
+    expect(recordTerminal).toHaveBeenCalledWith({
       kind: 'terminal',
       terminal: {
         content: 'done',
@@ -99,7 +99,7 @@ describe('consumeJobStream', () => {
 
   it('returns null continuity when the stream never emits a continuity body', async () => {
     const appendProgress = vi.fn();
-    const appendTerminal = vi.fn();
+    const recordTerminal = vi.fn();
     const checkpointJobContinuityAtomic = vi.fn();
 
     const result = await consumeJobStream({
@@ -121,7 +121,7 @@ describe('consumeJobStream', () => {
         checkpointJobContinuityAtomic,
       },
       appendProgress,
-      appendTerminal,
+      recordTerminal,
     });
 
     expect(checkpointJobContinuityAtomic).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe('consumeJobStream', () => {
 
   it('warns on stale checkpoints, drains the terminal, and preserves the last successful continuity', async () => {
     const appendProgress = vi.fn();
-    const appendTerminal = vi.fn();
+    const recordTerminal = vi.fn();
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const checkpointJobContinuityAtomic = vi
       .fn()
@@ -177,7 +177,7 @@ describe('consumeJobStream', () => {
         checkpointJobContinuityAtomic,
       },
       appendProgress,
-      appendTerminal,
+      recordTerminal,
     });
 
     expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'session-3', {
@@ -202,7 +202,7 @@ describe('consumeJobStream', () => {
       'Continuity checkpoint went stale for claimed job job-3 on session session-3; draining terminal.',
     );
     expect(appendProgress).not.toHaveBeenCalled();
-    expect(appendTerminal).toHaveBeenCalledWith({
+    expect(recordTerminal).toHaveBeenCalledWith({
       kind: 'terminal',
       terminal: {
         content: 'done',

@@ -7,9 +7,7 @@ import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { SessionWorkflowPort } from '../../sessions/contracts.js';
 import type { CommitEventsFn } from '../../store/append.js';
-import {
-  type WorkflowCommand,
-} from '../../workflow/input.js';
+import { type WorkflowCommand } from '../../workflow/input.js';
 import type { PipelineAST } from '../../workflow/ast.js';
 import { executePipeline } from '../../workflow/executor.js';
 import {
@@ -19,10 +17,7 @@ import {
   type WorkflowSessionHandle,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
-import type {
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-} from '../../jobs/records.js';
+import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
@@ -33,11 +28,7 @@ import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
 import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
-import {
-  buildSessionControllerProfile,
-  claimJobAtomic,
-  serializeWorkflowResult,
-} from './execution-policies.js';
+import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
 import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workflow/events.js';
@@ -124,16 +115,19 @@ export class WorkflowExecutionService {
       },
       createdAt: nowIsoString(this.deps.runtime.time),
     });
-    this.deps.progressStore.appendEvent({
-      type: 'job.runtime.started',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.deps.backendNamespace,
-      project: ctx.projectRoot,
-      refs: { jobId, sessionId: session.sessionId },
-      bodyVersion: 1,
-      body: {
-        startedAt: nowIsoString(this.deps.runtime.time),
-      },
+    this.deps.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: jobId },
+        namespace: this.deps.backendNamespace,
+        project: ctx.projectRoot,
+        refs: { jobId, sessionId: session.sessionId },
+        bodyVersion: 1,
+        body: {
+          startedAt: nowIsoString(this.deps.runtime.time),
+        },
+      });
+      return undefined;
     });
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
@@ -189,9 +183,7 @@ export class WorkflowExecutionService {
         return undefined;
       }
 
-      const causeRef =
-        intent.causeRef ??
-        c.append(workflowLifecycleFaultEvent(jobId, intent.lifecycleFault));
+      const causeRef = intent.causeRef ?? c.append(workflowLifecycleFaultEvent(jobId, intent.lifecycleFault));
       const workflowCompleted = c.append(
         workflowCompletedEvent(jobId, {
           outcome: 'failed',
@@ -214,13 +206,9 @@ export class WorkflowExecutionService {
     });
   }
 
-  private finishWorkflowJobPostCommit(
-    sessionId: string,
-    jobId: string,
-    markdown: string,
-  ): void {
+  private finishWorkflowJobPostCommit(sessionId: string, jobId: string, markdown: string): void {
     try {
-      writeResultArtifact(this.deps.runtime.storage, jobId, markdown);
+      writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, markdown);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }
@@ -264,8 +252,8 @@ export class WorkflowExecutionService {
       workflowJobId: jobId,
       journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
-    })
-      .then((result: PipelineResult) => {
+    }).then(
+      (result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
         try {
           this.commitWorkflowJobTerminal(sessionId, jobId, {
@@ -278,13 +266,15 @@ export class WorkflowExecutionService {
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
-      }, (err: unknown) => {
+      },
+      (err: unknown) => {
         try {
           this.handleWorkflowError(err, sessionId, jobId);
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
-      });
+      },
+    );
   }
 
   private handleWorkflowError(err: unknown, sessionId: string, jobId: string): void {

@@ -1,16 +1,26 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '#src/transport/http/backend/health.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
-import { jobsDir } from "#src/jobs/paths.js";
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { jobsDir } from '#src/jobs/paths.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import type { JobStatus } from '#src/jobs/records.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
@@ -80,7 +90,11 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
   );
   cpSync(join(process.cwd(), 'dist', 'store', 'schemas'), join(root, 'dist', 'store', 'schemas'), { recursive: true });
   mkdirSync(join(root, 'node_modules'), { recursive: true });
-  symlinkSync(join(process.cwd(), 'node_modules', 'better-sqlite3'), join(root, 'node_modules', 'better-sqlite3'), 'dir');
+  symlinkSync(
+    join(process.cwd(), 'node_modules', 'better-sqlite3'),
+    join(root, 'node_modules', 'better-sqlite3'),
+    'dir',
+  );
 
   const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${flavor}-`));
   tempRoots.push(scratchCwd);
@@ -119,7 +133,7 @@ function seedCompletedJob(
   const sessionId = `${jobId}-session`;
 
   try {
-    appendEvents(
+    commitInputs(
       db,
       [
         {
@@ -240,12 +254,14 @@ describe('flavor coexistence integration', () => {
     expect(existsSync(join(prodFixture.root, 'bridge', 'coral-backend.cjs'))).toBe(true);
     expect(existsSync(join(devFixture.root, 'bridge', 'coral-backend.cjs'))).toBe(true);
 
-    const prodManifest = JSON.parse(
-      readFileSync(join(prodFixture.root, 'bridge', 'manifest.json'), 'utf-8'),
-    ) as { bundleHash: string; flavor: 'prod' | 'dev' };
-    const devManifest = JSON.parse(
-      readFileSync(join(devFixture.root, 'bridge', 'manifest.json'), 'utf-8'),
-    ) as { bundleHash: string; flavor: 'prod' | 'dev' };
+    const prodManifest = JSON.parse(readFileSync(join(prodFixture.root, 'bridge', 'manifest.json'), 'utf-8')) as {
+      bundleHash: string;
+      flavor: 'prod' | 'dev';
+    };
+    const devManifest = JSON.parse(readFileSync(join(devFixture.root, 'bridge', 'manifest.json'), 'utf-8')) as {
+      bundleHash: string;
+      flavor: 'prod' | 'dev';
+    };
 
     expect(prodManifest).toEqual({ bundleHash: sourceManifest.bundleHash, flavor: 'prod' });
     expect(devManifest).toEqual({ bundleHash: sourceManifest.bundleHash, flavor: 'dev' });
@@ -305,16 +321,8 @@ describe('flavor coexistence integration', () => {
     await fetchJson<{ status: JobStatus; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
     await fetchJson<{ status: JobStatus; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
 
-    const prodForeignLookup = await fetchJson<{ code: string; message: string }>(
-      prodInfo,
-      `/jobs/${devJobId}`,
-      404,
-    );
-    const devForeignLookup = await fetchJson<{ code: string; message: string }>(
-      devInfo,
-      `/jobs/${prodJobId}`,
-      404,
-    );
+    const prodForeignLookup = await fetchJson<{ code: string; message: string }>(prodInfo, `/jobs/${devJobId}`, 404);
+    const devForeignLookup = await fetchJson<{ code: string; message: string }>(devInfo, `/jobs/${prodJobId}`, 404);
 
     expect(prodForeignLookup.code).toBe('job_not_found');
     expect(devForeignLookup.code).toBe('job_not_found');

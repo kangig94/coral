@@ -16,6 +16,7 @@ import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projec
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
 import { createEmptyRegistry } from '../../store/envelope.js';
+import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -26,7 +27,7 @@ type CreateDiscussRuntimeDeps = {
     progressStore: {
       readStatus(jobId: string): JobStatus | null;
       getDb(): Database;
-      appendEventsWithResult(inputs: ReturnType<typeof toJournalInput>[]): unknown;
+      commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
     };
     resolveProjectSource: (projectRoot: string) => string;
     eventBus: {
@@ -44,11 +45,7 @@ type CreateDiscussRuntimeDeps = {
   };
 };
 
-export function createDiscussRuntime({
-  world,
-  runtime,
-  getExecutionService,
-}: CreateDiscussRuntimeDeps): {
+export function createDiscussRuntime({ world, runtime, getExecutionService }: CreateDiscussRuntimeDeps): {
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readHelpersDeps: DiscussReadHelpersDeps;
@@ -72,7 +69,12 @@ export function createDiscussRuntime({
   function createJournal(): DiscussSessionJournal {
     return {
       append(_source, _snapshot, events) {
-        world.progressStore.appendEventsWithResult(events.map((event) => toJournalInput(event)));
+        world.progressStore.commit((c) => {
+          for (const event of events) {
+            c.append(toJournalInput(event));
+          }
+          return undefined;
+        });
       },
       readSnapshot(sessionId) {
         return readProjectionDiscuss(world.progressStore.getDb(), sessionId)?.state ?? null;
@@ -130,20 +132,14 @@ export function createDiscussRuntime({
       resume: (...args) => executionService.resumeBySessionId(...args),
       waitStreamOnce: (...args) => executionService.waitStreamOnce(...args),
     };
-    return getOrCreateDiscussContext(
-      world.discussRegistry,
-      ctx.projectRoot,
-      discussService,
-      store,
-      {
-        runtime: {
-          ids: runtime.ids,
-          env: runtime.env,
-          time: runtime.time,
-        },
-        jobStatusReader,
+    return getOrCreateDiscussContext(world.discussRegistry, ctx.projectRoot, discussService, store, {
+      runtime: {
+        ids: runtime.ids,
+        env: runtime.env,
+        time: runtime.time,
       },
-    );
+      jobStatusReader,
+    });
   }
 
   const readHelpersDeps: DiscussReadHelpersDeps = {

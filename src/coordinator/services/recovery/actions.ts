@@ -14,10 +14,7 @@ import type { SessionLookup } from '../../../sessions/lookup.js';
 import { releaseSessionJobClaim } from '../../../sessions/job-release.js';
 import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
-import {
-  recordJobRecoveryFaultTerminal,
-  recordProviderTerminal,
-} from '../terminal-materializer.js';
+import { recordJobRecoveryFaultTerminal, recordProviderTerminal } from '../terminal-materializer.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
@@ -63,7 +60,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       markJobAsError(progressStore, action.status, action.fault, log);
       if (action.status.jobKind === 'workflow') {
         try {
-          writeResultArtifact(runtime.storage, action.status.jobId, '');
+          writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
         } catch (error: unknown) {
           log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
         }
@@ -207,27 +204,26 @@ export function finalizeDeadAdoptedJob({
         })
         .then((result) => {
           const status = progressStore.readStatus(jobId);
-          recordProviderTerminal(progressStore, result.terminal, {
-            jobId,
-            sessionId,
-            namespace: status?.backendNamespace ?? launchRecord.backendNamespace,
-            project: status?.projectRoot ?? launchRecord.projectRoot,
-          }, {
-            continuity: result.continuity ?? null,
-          });
+          recordProviderTerminal(
+            progressStore,
+            result.terminal,
+            {
+              jobId,
+              sessionId,
+              namespace: status?.backendNamespace ?? launchRecord.backendNamespace,
+              project: status?.projectRoot ?? launchRecord.projectRoot,
+            },
+            {
+              continuity: result.continuity ?? null,
+            },
+          );
           const persistedPayload = progressStore.readTerminalProjection(jobId);
           if (persistedPayload === null) {
             throw new Error(`Provider recovery did not record a terminal payload for ${jobId}.`);
           }
-          service.completeRecoveredJob(
-            jobId,
-            sessionId,
-            persistedPayload,
-            phaseForOutcome(persistedPayload.outcome),
-            {
-              ...(result.continuity ? { continuity: result.continuity } : {}),
-            },
-          );
+          service.completeRecoveredJob(jobId, sessionId, persistedPayload, phaseForOutcome(persistedPayload.outcome), {
+            ...(result.continuity ? { continuity: result.continuity } : {}),
+          });
         })
         .catch((recoverErr: unknown) => {
           log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
@@ -250,12 +246,7 @@ export function finalizeDeadAdoptedJob({
           if (persistedPayload === null) {
             throw new Error(`Provider recovery failure did not record a terminal payload for ${jobId}.`);
           }
-          service.completeRecoveredJob(
-            jobId,
-            sessionId,
-            persistedPayload,
-            phaseForOutcome(persistedPayload.outcome),
-          );
+          service.completeRecoveredJob(jobId, sessionId, persistedPayload, phaseForOutcome(persistedPayload.outcome));
         });
       return;
     }

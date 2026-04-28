@@ -5,7 +5,13 @@ import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
-import { WorkflowExecutionError, formatStepOutput, toSessionHandles, type LaunchedAtom, type WorkflowExecutionPort } from '#src/workflow/command.js';
+import {
+  WorkflowExecutionError,
+  formatStepOutput,
+  toSessionHandles,
+  type LaunchedAtom,
+  type WorkflowExecutionPort,
+} from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/recover.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
@@ -40,7 +46,7 @@ function terminal(
     type: 'terminal',
     jobId,
     remainingJobIds: [],
-    resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
+    resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result: terminalResult,
   };
 }
@@ -458,7 +464,9 @@ describe('workflow pipe executor', () => {
           controller.abort();
           return emit([stillWaiting(['job-1'])]);
         }
-          return emit([terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })]);
+        return emit([
+          terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+        ]);
       }),
     });
 
@@ -984,7 +992,7 @@ describe('waitForAtoms', () => {
   it('throws WorkflowExecutionError on aborted terminal results', async () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn(() =>
-        emit([terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })])
+        emit([terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })]),
       ),
     });
 

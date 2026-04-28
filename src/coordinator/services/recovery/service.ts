@@ -1,8 +1,4 @@
-import type {
-  ProviderContinuityBlob,
-  ProviderServerLease,
-  ProviderServerSpec,
-} from '../../../providers/contract.js';
+import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
@@ -19,10 +15,7 @@ import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { ProviderCatalog } from '../../../providers/catalog.js';
-import type {
-  ExecutionProviderServerAttachment,
-  ExecutionProviderHostManager,
-} from '../../contracts.js';
+import type { ExecutionProviderServerAttachment, ExecutionProviderHostManager } from '../../contracts.js';
 import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/progress-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -46,7 +39,10 @@ type ProviderLaunchRecord = JobLaunch & {
   jobKind: Exclude<JobLaunch['jobKind'], 'kb'>;
 };
 
-function requireProviderLaunchRecord(launchRecord: JobLaunch, operation: string): asserts launchRecord is ProviderLaunchRecord {
+function requireProviderLaunchRecord(
+  launchRecord: JobLaunch,
+  operation: string,
+): asserts launchRecord is ProviderLaunchRecord {
   if (launchRecord.jobKind === 'kb' || launchRecord.sessionId === null || launchRecord.provider === null) {
     throw new Error(`${operation} requires a provider launch record.`);
   }
@@ -99,10 +95,7 @@ export class RecoveryService {
     return lease;
   }
 
-  async interruptAppServerJob(
-    launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntime,
-  ): Promise<void> {
+  async interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void> {
     requireProviderLaunchRecord(launchRecord, 'interruptAppServerJob');
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
     const appServer = providerEntry?.appServer;
@@ -264,7 +257,12 @@ export class RecoveryService {
       { content: interruptedReport },
     );
     try {
-      writeResultArtifact(this.deps.runtime.storage, launchRecord.jobId, interruptedReport);
+      writeResultArtifact(
+        this.deps.runtime.storage,
+        this.deps.runtime.paths.coral.exports.jobsRoot,
+        launchRecord.jobId,
+        interruptedReport,
+      );
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${launchRecord.jobId}: ${String(error)}`);
     }
@@ -351,7 +349,12 @@ export class RecoveryService {
       });
     }
     try {
-      writeResultArtifact(this.deps.runtime.storage, jobId, result.content);
+      writeResultArtifact(
+        this.deps.runtime.storage,
+        this.deps.runtime.paths.coral.exports.jobsRoot,
+        jobId,
+        result.content,
+      );
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
     }
@@ -375,9 +378,7 @@ export class RecoveryService {
     this.deps.sessionManager.releaseJob(sessionId, jobId);
   }
 
-  private createAttachedProviderServerLease(
-    attachment: ExecutionProviderServerAttachment,
-  ): ProviderServerLease {
+  private createAttachedProviderServerLease(attachment: ExecutionProviderServerAttachment): ProviderServerLease {
     return {
       rpc: attachment.rpc,
       subscribe: attachment.subscribe,

@@ -5,9 +5,10 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { appendEvents } from '#src/store/append.js';
+import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -77,7 +78,9 @@ function createProjectRoot(name: string): string {
   return projectRoot;
 }
 
-function createLaunchCoordinator(modules: LoadedModules): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
+function createLaunchCoordinator(
+  modules: LoadedModules,
+): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
   return new modules.engineModule.LaunchCoordinator({ runtime });
 }
 
@@ -212,7 +215,7 @@ function appendQueuedEvent(
   projectRoot: string,
   queuePosition = 1,
 ): void {
-  progressStore.appendEvent({
+  commitJobInput(progressStore, {
     type: 'job.queue.queued',
     stream: { kind: 'job', id: jobId },
     namespace: backendNamespace,
@@ -271,7 +274,7 @@ function appendSessionOpenedEvent(
     scopeKey: string;
   },
 ): void {
-  appendEvents(
+  commitInputs(
     progressStore.getDb(),
     [
       {
@@ -308,7 +311,7 @@ function appendSessionOpenedEvent(
   );
 }
 
-function appendTerminalEvent(
+function commitTerminalEvent(
   progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
   overrides: {
     jobId: string;
@@ -319,7 +322,7 @@ function appendTerminalEvent(
     content?: string;
   },
 ): void {
-  progressStore.appendEvent({
+  commitJobInput(progressStore, {
     type: 'job.terminal.recorded',
     stream: { kind: 'job', id: overrides.jobId },
     namespace: overrides.backendNamespace,
@@ -680,9 +683,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it.each([
-    ['3. launching without runtime finalizes as ghost_launch', 'launching'],
-  ])('%s', async (_label, phase) => {
+  it.each([['3. launching without runtime finalizes as ghost_launch', 'launching']])('%s', async (_label, phase) => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot(`plugin-ghost-${phase}`);
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -732,7 +733,9 @@ describe('lifecycle recovery', () => {
     ['9. foreign live PIDs still finalize as wrapper_lost', 'running', true, false],
   ])('%s', async (_label, phase, durableRuntime, appServerRuntime) => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot(`plugin-foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`);
+    const pluginRoot = createProjectRoot(
+      `plugin-foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`,
+    );
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-foreign-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -993,7 +996,7 @@ describe('lifecycle recovery', () => {
       projectRoot,
       scopeKey,
     });
-    appendTerminalEvent(progressStore, {
+    commitTerminalEvent(progressStore, {
       jobId: 'terminal-job',
       sessionId: session.sessionId,
       backendNamespace: namespace,
@@ -1013,7 +1016,10 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(sessionLookupSpy).not.toHaveBeenCalled();
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBeUndefined();
+      expect(
+        new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)
+          ?.activeJobId,
+      ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1054,7 +1060,10 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBeUndefined();
+      expect(
+        new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)
+          ?.activeJobId,
+      ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1220,7 +1229,7 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: 'foreign-terminal-namespace',
     });
-    appendTerminalEvent(progressStore, {
+    commitTerminalEvent(progressStore, {
       jobId: 'foreign-terminal',
       sessionId: 'foreign-terminal-session',
       backendNamespace: 'foreign-terminal-namespace',
@@ -1322,7 +1331,14 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: 'foreign-preserved-namespace',
     });
-    appendQueuedEvent(progressStore, 'foreign-preserved', 'foreign-preserved-session', 'foreign-preserved-namespace', projectRoot, 1);
+    appendQueuedEvent(
+      progressStore,
+      'foreign-preserved',
+      'foreign-preserved-session',
+      'foreign-preserved-namespace',
+      projectRoot,
+      1,
+    );
 
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
@@ -1460,7 +1476,14 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: 'foreign-no-queued-namespace',
     });
-    appendQueuedEvent(progressStore, 'foreign-no-queued', 'foreign-no-queued-session', 'foreign-no-queued-namespace', projectRoot, 1);
+    appendQueuedEvent(
+      progressStore,
+      'foreign-no-queued',
+      'foreign-no-queued-session',
+      'foreign-no-queued-namespace',
+      projectRoot,
+      1,
+    );
 
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
