@@ -71,6 +71,33 @@ export function getRelativeImportTypeSpecifier(node: ts.ImportTypeNode): string 
   return node.argument.literal.text.startsWith('.') ? node.argument.literal.text : null;
 }
 
+/**
+ * Returns specifiers that match the project's `#src/*` subpath imports
+ * (declared in package.json#imports as `"#src/*.js": "./src/*.ts"`).
+ * Used by engine-blindness invariants to catch leaks of the form
+ * `import { ... } from '#src/engines/...'` outside the documented wiring
+ * points; complements `getRelativeModuleSpecifier`'s `.`-prefix coverage.
+ */
+export function getSubpathModuleSpecifier(specifier: string): string | undefined {
+  return specifier.startsWith('#src/') ? specifier : undefined;
+}
+
+/**
+ * Resolves a `#src/...` subpath specifier to the canonical `src/...` path
+ * that the package.json#imports map points at. Mirrors the mapping
+ * `#src/*.js → ./src/*.ts` and `#src/* → ./src/*` so import-graph
+ * consumers see the same target shape that relative-path resolution
+ * produces.
+ */
+export function resolveSubpathSourcePath(specifier: string): string {
+  if (!specifier.startsWith('#src/')) {
+    throw new Error(`Expected a #src/ specifier, got ${specifier}`);
+  }
+
+  const tail = specifier.slice('#src/'.length);
+  return tail.endsWith('.js') ? `src/${tail.slice(0, -'.js'.length)}.ts` : `src/${tail}`;
+}
+
 export function resolveRelativeSourcePath(
   repoRoot: string,
   sourceFilePath: string,
@@ -230,6 +257,69 @@ export function parseSourceImportEdges(
 
     return left.via.localeCompare(right.via);
   });
+}
+
+export type SubpathImportEdge = {
+  source: string;
+  target: string;
+  specifier: string;
+  via: EdgeSyntax;
+};
+
+/**
+ * Walks the AST for `#src/...` subpath specifiers (static, type, and
+ * dynamic imports). Returns one edge per occurrence with the resolved
+ * `src/...` target path. Sibling collector to `parseSourceImportEdges`
+ * — additive, does not reshape the existing relative-edge stream.
+ */
+export function parseSourceSubpathImportEdges(repoRoot: string, sourceFilePath: string): SubpathImportEdge[] {
+  const sourceCanonicalPath = toCanonicalSrcPath(repoRoot, sourceFilePath);
+  const sourceText = readFileSync(sourceFilePath, 'utf-8');
+  const sourceFile = ts.createSourceFile(sourceFilePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const edges: SubpathImportEdge[] = [];
+
+  function recordEdge(specifier: string | undefined, via: EdgeSyntax): void {
+    if (!specifier) {
+      return;
+    }
+    edges.push({
+      source: sourceCanonicalPath,
+      target: resolveSubpathSourcePath(specifier),
+      specifier,
+      via,
+    });
+  }
+
+  function readStringLiteral(expression: ts.Expression | undefined): string | undefined {
+    return expression && ts.isStringLiteralLike(expression) ? expression.text : undefined;
+  }
+
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node)) {
+      recordEdge(getSubpathModuleSpecifier(readStringLiteral(node.moduleSpecifier) ?? ''), 'ImportDeclaration');
+    } else if (ts.isExportDeclaration(node)) {
+      recordEdge(getSubpathModuleSpecifier(readStringLiteral(node.moduleSpecifier) ?? ''), 'ExportDeclaration');
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      recordEdge(getSubpathModuleSpecifier(node.argument.literal.text), 'ImportTypeNode');
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      recordEdge(getSubpathModuleSpecifier(node.arguments[0].text), 'DynamicImport');
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+
+  return edges;
 }
 
 export function parseProductionImportEdges(

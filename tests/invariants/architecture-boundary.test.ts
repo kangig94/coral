@@ -15,8 +15,10 @@ import {
   createProductionFileIndex,
   listProductionSourceFiles,
   parseSourceImportEdges,
+  parseSourceSubpathImportEdges,
   toCanonicalSrcPath,
   type ParsedImportEdge,
+  type SubpathImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -172,6 +174,10 @@ for (const edge of PARSED_IMPORT_EDGES) {
   edgesForSource.push(edge);
   PARSED_IMPORT_EDGES_BY_SOURCE.set(edge.source, edgesForSource);
 }
+
+const PARSED_SUBPATH_IMPORT_EDGES: readonly SubpathImportEdge[] = PRODUCTION_FILE_PATHS.flatMap((filePath) =>
+  parseSourceSubpathImportEdges(REPO_ROOT, filePath),
+);
 
 type BoundaryViolation = {
   source: string;
@@ -1403,6 +1409,156 @@ describe('architecture boundary guard', () => {
         pattern.test(source) ? [`${canonical}: imports ${label}`] : [],
       );
     });
+    expect(violations).toEqual([]);
+  });
+
+  it('only the documented manifest registry and lifecycle wiring point reach into src/engines/** (AC7.1)', () => {
+    // Engine-blindness: code outside `src/engines/**` must not know engine
+    // identity. Two files are documented wiring points:
+    //   - `src/expansion/bundled.ts` declares `BUNDLED_ENGINES.specifier`
+    //     strings (manifest declarations; no executed import of engine code).
+    //   - `src/coordinator/expansion/lifecycle.ts` is the wiring point that
+    //     dynamically `import()`s engine specifiers from `BUNDLED_ENGINES`.
+    // Sibling imports inside a single engine (`src/engines/<id>/...`) are
+    // allowed — engines own their own internals.
+    const allowedEngineImporters = new Set<string>([
+      'src/expansion/bundled.ts',
+      'src/coordinator/expansion/lifecycle.ts',
+    ]);
+
+    const relativeViolations = PARSED_IMPORT_EDGES.filter(
+      (edge) =>
+        edge.target.startsWith('src/engines/') &&
+        !edge.source.startsWith('src/engines/') &&
+        !allowedEngineImporters.has(edge.source),
+    ).map((edge) => `${edge.source} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+
+    const subpathViolations = PARSED_SUBPATH_IMPORT_EDGES.filter(
+      (edge) =>
+        edge.target.startsWith('src/engines/') &&
+        !edge.source.startsWith('src/engines/') &&
+        !allowedEngineImporters.has(edge.source),
+    ).map((edge) => `${edge.source} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+
+    expect([...relativeViolations, ...subpathViolations]).toEqual([]);
+  });
+
+  it('src/kb/** and src/coordinator/** carry no engine-id string literals (AC7.2)', () => {
+    // Engine-id literals (`'orama'`, `'needle'`, `'gemini'`, `'onnx'`) leaking
+    // into KB or coordinator code defeats engine-blindness regardless of
+    // whether the leak is wired through an import. Slot names
+    // (`'kb.fts'`, `'kb.vector'`, `'kb.embedding'`) and authority/interest
+    // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
+    // allowed — they are capability vocabulary, not engine identity.
+    // Allowlist the lifecycle wiring point (the only legitimate consumer of
+    // BUNDLED_ENGINES.id strings).
+    const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx']);
+    const ALLOWED_FILES = new Set<string>(['src/coordinator/expansion/lifecycle.ts']);
+
+    const violations: string[] = [];
+
+    for (const filePath of PRODUCTION_FILE_PATHS) {
+      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
+      if (!canonical.startsWith('src/kb/') && !canonical.startsWith('src/coordinator/')) {
+        continue;
+      }
+      if (ALLOWED_FILES.has(canonical)) {
+        continue;
+      }
+
+      const sourceText = readFileSync(filePath, 'utf8');
+      const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+      function visit(node: ts.Node): void {
+        if (ts.isStringLiteral(node) && ENGINE_IDS.has(node.text)) {
+          violations.push(`${canonical}:${node.getStart()}: literal '${node.text}'`);
+        } else if (ts.isNoSubstitutionTemplateLiteral(node) && ENGINE_IDS.has(node.text)) {
+          violations.push(`${canonical}:${node.getStart()}: template-literal '${node.text}'`);
+        }
+        ts.forEachChild(node, visit);
+      }
+
+      visit(sourceFile);
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('Backed<T> values are not stored at module scope or as class fields outside src/kb/runtime.ts (AC7.3)', () => {
+    // `Backed<T>` is a per-use read primitive — `binding.read()` must be
+    // called fresh every time so consumers re-resolve through whichever
+    // engine currently holds the binding. Caching a `Backed<T>` reference
+    // (in a module-level variable or a class field) freezes the consumer
+    // against the engine that filled the binding at construction time and
+    // breaks the engine-swap contract. The only legitimate cache lives
+    // inside `src/kb/runtime.ts`'s `RuntimeBinding<Backed<T>>` storage.
+    function annotationContainsBacked(node: ts.TypeNode | undefined): boolean {
+      if (!node) {
+        return false;
+      }
+      let found = false;
+      function check(child: ts.Node): void {
+        if (found) {
+          return;
+        }
+        if (
+          ts.isTypeReferenceNode(child) &&
+          ts.isIdentifier(child.typeName) &&
+          child.typeName.text === 'Backed'
+        ) {
+          found = true;
+          return;
+        }
+        ts.forEachChild(child, check);
+      }
+      check(node);
+      return found;
+    }
+
+    const violations: string[] = [];
+
+    for (const filePath of PRODUCTION_FILE_PATHS) {
+      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
+      if (canonical === 'src/kb/runtime.ts') {
+        continue;
+      }
+
+      const sourceText = readFileSync(filePath, 'utf8');
+      const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+      // Module-scope: top-level `let`/`const`/`var` declarations whose
+      // annotation references `Backed<...>`. (Local variables inside
+      // function bodies are per-invocation — fresh each call — and not
+      // covered by this invariant.)
+      for (const statement of sourceFile.statements) {
+        if (ts.isVariableStatement(statement)) {
+          for (const declaration of statement.declarationList.declarations) {
+            if (annotationContainsBacked(declaration.type)) {
+              const name = ts.isIdentifier(declaration.name) ? declaration.name.text : '<destructure>';
+              violations.push(`${canonical}: module-level binding '${name}: Backed<...>'`);
+            }
+          }
+        }
+      }
+
+      // Class fields: any property declaration on any class whose annotation
+      // references `Backed<...>`. Classes can be nested or local; walk all.
+      function walkClassFields(node: ts.Node): void {
+        if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+          for (const member of node.members) {
+            if (ts.isPropertyDeclaration(member) && annotationContainsBacked(member.type)) {
+              const name = ts.isIdentifier(member.name) ? member.name.text : '<computed>';
+              const className = node.name?.text ?? '<anonymous>';
+              violations.push(`${canonical}: class field ${className}.${name}: Backed<...>`);
+            }
+          }
+        }
+        ts.forEachChild(node, walkClassFields);
+      }
+
+      walkClassFields(sourceFile);
+    }
+
     expect(violations).toEqual([]);
   });
 });

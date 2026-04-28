@@ -22,6 +22,7 @@ const DOMAIN_ROOTS = [
   'src/kb/',
   'src/providers/',
   'src/expansion/',
+  'src/engines/',
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
