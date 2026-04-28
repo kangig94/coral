@@ -16,8 +16,8 @@ import {
   type ProviderMiddleware,
   type ProviderRequest,
   type ProviderRuntime,
+  type ProviderTerminalOutcome,
   terminalOutcomeSchema,
-  type TerminalOutcome,
 } from '#src/providers/contract.js';
 import type { ProviderFailureCause } from '#src/providers/fault.js';
 
@@ -159,7 +159,7 @@ describe('compose', () => {
 
 describe('contract schemas', () => {
   it('keeps zod inference aligned with the native failure cause and continuity types', () => {
-    expectTypeParity<IsEqual<z.infer<typeof terminalOutcomeSchema>, TerminalOutcome>>();
+    expectTypeParity<IsEqual<z.infer<typeof terminalOutcomeSchema>, ProviderTerminalOutcome>>();
     expectTypeParity<IsEqual<z.infer<typeof providerFailureCauseSchema>, ProviderFailureCause>>();
     expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();
     expectTypeParity<IsEqual<z.infer<typeof sessionContinuityMutationSchema>, SessionContinuityMutation>>();

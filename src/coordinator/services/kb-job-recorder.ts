@@ -3,6 +3,7 @@ import { nowIsoString } from '../../infra/time.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../jobs/outcome.js';
 import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { KbRef } from '../../store/envelope.js';
 
@@ -128,21 +129,16 @@ export class KbJobRecorder {
 
     this.deps.progressStore.commit((c) => {
       const cause = c.append(causeEvent);
-      c.append({
-        type: 'job.terminal.recorded',
-        stream: { kind: 'job', id: params.jobId },
+      appendJobTerminalRecorded(c, {
+        jobId: params.jobId,
         namespace: this.deps.backendNamespace,
         project: params.projectRoot,
-        refs: { jobId: params.jobId },
-        bodyVersion: 1,
-        body: {
-          terminal: {
-            outcome: { kind: 'failed', causeRef: cause },
-            durationMs,
-            content: '',
-          },
-          continuity: null,
+        terminal: {
+          outcome: failedTerminalOutcome(cause),
+          durationMs,
+          content: '',
         },
+        continuity: null,
       });
       return undefined;
     });

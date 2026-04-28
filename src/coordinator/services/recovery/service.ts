@@ -35,10 +35,10 @@ import {
   FINALIZE_CONTINUITY_MAX_RETRIES,
   buildInterruptedAppServerReport,
   isProviderContinuityBlob,
-  materializeInterruptedSessionOutcome,
   type InterruptedAppServerReason,
   type InterruptedProbeOutcome,
 } from '../execution-policies.js';
+import { recordSessionInterruptedTerminal } from '../terminal-materializer.js';
 
 type ProviderLaunchRecord = JobLaunch & {
   sessionId: string;
@@ -252,18 +252,16 @@ export class RecoveryService {
     }
 
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
-    const outcome = materializeInterruptedSessionOutcome(
+    recordSessionInterruptedTerminal(
       this.deps.progressStore,
-      launchRecord.jobId,
-      launchRecord.sessionId,
       fault,
-    );
-
-    this.deps.launchOrchestrator.writeJobTerminal(
-      launchRecord.jobId,
-      launchRecord.sessionId,
-      { content: interruptedReport, outcome },
-      'error',
+      {
+        jobId: launchRecord.jobId,
+        sessionId: launchRecord.sessionId,
+        namespace: status.backendNamespace,
+        project: status.projectRoot,
+      },
+      { content: interruptedReport },
     );
     try {
       writeResultArtifact(this.deps.runtime.storage, launchRecord.jobId, interruptedReport);
@@ -345,10 +343,13 @@ export class RecoveryService {
     phase: JobPhase,
     options?: TerminalWriteOptions,
   ): void {
-    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
-      ...options,
-      continuity: options?.continuity ?? null,
-    });
+    const currentStatus = this.deps.progressStore.readStatus(jobId);
+    if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
+      this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
+        ...options,
+        continuity: options?.continuity ?? null,
+      });
+    }
     try {
       writeResultArtifact(this.deps.runtime.storage, jobId, result.content);
     } catch (error: unknown) {

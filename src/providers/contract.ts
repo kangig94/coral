@@ -91,7 +91,7 @@ export interface ProviderServerLease {
   generation?: number;
 }
 
-export type TerminalOutcome =
+export type ProviderTerminalOutcome =
   | { kind: 'completed' }
   | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
   | { kind: 'failed' };
@@ -99,7 +99,7 @@ export type TerminalOutcome =
 export interface JobTerminal {
   content: string;
   model?: string;
-  outcome: TerminalOutcome;
+  outcome: ProviderTerminalOutcome;
   durationMs?: number;
   exitCode?: number | null;
   usage?: UsageSummary;

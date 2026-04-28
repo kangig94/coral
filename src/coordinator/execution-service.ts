@@ -37,6 +37,7 @@ import { WorkflowExecutionService } from './services/workflow-execution-service.
 import { JobAbortService } from './services/job-abort-service.js';
 import { JobWaitService } from './services/job-wait-service.js';
 import { RecoveryService } from './services/recovery/service.js';
+import { recordProviderTerminal } from './services/terminal-materializer.js';
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort {
   private readonly runtime: ExecutionServiceDeps['runtime'];
@@ -93,6 +94,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           return null;
         }
       },
+      terminalMaterializer: { recordProviderTerminal },
       acquireServer: (spec, options) => this.recoveryService.acquireServer(spec, options),
     });
     const waitCoordinator = new WaitCoordinator({

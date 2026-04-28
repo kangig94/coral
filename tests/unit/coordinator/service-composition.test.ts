@@ -43,6 +43,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
+import type { CommitContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
@@ -1446,7 +1447,7 @@ describe('ExecutionService', () => {
     expect(session?.state).toBe('non_resumable');
   });
 
-  it('leaves provider jobs unterminated when authoritative terminal append throws', async () => {
+  it('leaves provider jobs unterminated when authoritative terminal commit throws', async () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
 
@@ -1454,9 +1455,25 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
-      throw new Error('disk full');
-    });
+    const originalCommit = progressStore.commit.bind(progressStore);
+    let terminalCommitAttempts = 0;
+    const commit = vi.spyOn(progressStore, 'commit').mockImplementation((cb) =>
+      originalCommit(<Scope>(c: CommitContext<Scope>) => {
+        let sawTerminal = false;
+        const tracked: CommitContext<Scope> = {
+          append(input) {
+            sawTerminal = sawTerminal || input.type === 'job.terminal.recorded';
+            return c.append(input);
+          },
+        };
+        const result = cb(tracked);
+        if (sawTerminal) {
+          terminalCommitAttempts += 1;
+          throw new Error('disk full');
+        }
+        return result;
+      }),
+    );
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -1465,12 +1482,13 @@ describe('ExecutionService', () => {
     trackJob(decision.job);
 
     const deadline = Date.now() + 2_000;
-    while (appendTerminal.mock.calls.length === 0 && Date.now() < deadline) {
+    while (terminalCommitAttempts === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const status = progressStore.readStatus(decision.job);
 
-    expect(appendTerminal).toHaveBeenCalled();
+    expect(commit).toHaveBeenCalled();
+    expect(terminalCommitAttempts).toBeGreaterThan(0);
     expect(status).toMatchObject({
       phase: 'launching',
     });

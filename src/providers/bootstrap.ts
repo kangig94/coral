@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   type ProviderRecoveryContract,
   type ProviderSpec,
-  type TerminalOutcome,
+  type ProviderTerminalOutcome,
 } from './contract.js';
 import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { adapterOutputUnparseable, providerRequestFailed } from './fault.js';
@@ -61,7 +61,7 @@ async function finalizeClaudeFromArtifacts(
             stderr,
             parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
           });
-  const outcome: TerminalOutcome =
+  const outcome: ProviderTerminalOutcome =
     options.signal !== null
       ? { kind: 'aborted', reason: 'signal_abort' as const }
       : parsed.isError || (options.exitCode !== null && options.exitCode !== 0)

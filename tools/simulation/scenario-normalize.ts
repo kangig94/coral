@@ -6,7 +6,7 @@ import type {
   MockSpawnScript,
   SimulationScenario,
 } from './core/backend.js';
-import type { TerminalOutcome } from '../../src/providers/contract.js';
+import type { ProviderTerminalOutcome } from '../../src/providers/contract.js';
 import { toError } from './core/constants.js';
 import type { ScenarioError, WorldConfig } from './scenario-schema.js';
 
@@ -101,7 +101,7 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
           ...config.result,
           warnings: config.result.warnings ? [...config.result.warnings] : undefined,
           usage: config.result.usage ? { ...config.result.usage } : undefined,
-          outcome: { ...config.result.outcome } as TerminalOutcome,
+          outcome: { ...config.result.outcome } as ProviderTerminalOutcome,
         }
       : undefined,
     preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),

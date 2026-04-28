@@ -1,16 +1,19 @@
 import {
   type JobLifecycleFault,
   type JobProgressFault,
+  type TerminalOutcomeInput,
 } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminalInput } from '../records.js';
+import type { JobLaunch, JobStatus } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
-import {
-  jobRecoveryNeedsDomainEvent,
-  materializeJobRecoveryFault,
-} from '../terminal/materializer.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
+import type { CommitContext } from '../../store/append.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
+
+function jobRecoveryNeedsDomainEvent(fault: JobRecoveryError): boolean {
+  return fault.kind === 'missing_launch_record' || fault.kind === 'recovery_parse_failed';
+}
 
 export function listLiveJobs(progressStore: ProgressStore, namespace: string): JobStatus[] {
   const results: JobStatus[] = [];
@@ -34,7 +37,7 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 export function markJobAsError(
   progressStore: Pick<
     ProgressStore,
-    'appendEventsWithResult' | 'appendTerminal' | 'readLaunchProjection' | 'readStatus' | 'appendLaunchRequested'
+    'commit' | 'readLaunchProjection' | 'appendLaunchRequested'
   >,
   status: JobStatus,
   fault: JobRecoveryError,
@@ -48,12 +51,47 @@ export function markJobAsError(
     progressStore.appendLaunchRequested(status.jobId, syntheticLaunchRecord(status));
   }
 
-  const outcome = materializeJobRecoveryFault(progressStore, fault, {
-    jobId: status.jobId,
-    sessionId: status.sessionId,
+  progressStore.commit((c) => {
+    const outcome = materializeJobRecoveryFaultInCommit(c, status, fault);
+    appendJobTerminalRecorded(c, {
+      jobId: status.jobId,
+      sessionId: status.sessionId,
+      namespace: status.backendNamespace,
+      project: status.projectRoot,
+      terminal: { content: '', outcome },
+      continuity: null,
+    });
+    return undefined;
   });
-  const terminalResult: JobTerminalInput = { content: '', outcome };
-  progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
+}
+
+function materializeJobRecoveryFaultInCommit<Scope>(
+  c: CommitContext<Scope>,
+  status: JobStatus,
+  fault: JobRecoveryError,
+): TerminalOutcomeInput<Scope> {
+  switch (fault.kind) {
+    case 'ghost_launch':
+    case 'wrapper_lost':
+    case 'wrapper_crashed':
+      return { kind: 'job_fault', fault };
+    case 'missing_launch_record':
+    case 'recovery_parse_failed': {
+      const cause = c.append({
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: status.jobId },
+        namespace: status.backendNamespace,
+        project: status.projectRoot,
+        refs: {
+          jobId: status.jobId,
+          ...(status.sessionId === null ? {} : { sessionId: status.sessionId }),
+        },
+        bodyVersion: 1,
+        body: fault,
+      });
+      return failedTerminalOutcome(cause);
+    }
+  }
 }
 
 function syntheticLaunchRecord(status: JobStatus): JobLaunch {

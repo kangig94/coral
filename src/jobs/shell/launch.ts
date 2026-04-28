@@ -15,8 +15,7 @@ import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
-import { phaseForOutcome, type AbortReason, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
+import { type AbortReason, type JobLaunchRejected } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
@@ -33,7 +32,7 @@ import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
-import { materializeProviderTerminal } from '../terminal/materializer.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
 import { rejectLaunch } from '../launch.js';
 import { toProviderRequest } from '../provider-request.js';
@@ -74,6 +73,24 @@ export interface LaunchOrchestratorDeps {
   jobPools: Map<string, LaunchPool>;
   appendEvents: AppendEventsFn;
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
+  terminalMaterializer: {
+    recordProviderTerminal(
+      progressStore: JobProgressStore,
+      terminal: Extract<ProviderEventBody, { kind: 'terminal' }>,
+      options: {
+        readonly jobId: string;
+        readonly sessionId: string;
+        readonly namespace?: string;
+        readonly project?: string;
+        readonly correlationId?: string;
+        readonly parentJobId?: string;
+        readonly workflowSlotId?: string;
+      },
+      record?: {
+        readonly continuity?: JobContinuitySnapshot | null;
+      },
+    ): void;
+  };
   acquireServer: (
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
@@ -138,7 +155,7 @@ export class LaunchOrchestrator {
     });
   }
 
-  private appendJobFailureCause(
+  private appendLaunchRejectedTerminal(
     jobId: string,
     sessionId: string,
     body: JobLaunchRejected,
@@ -147,37 +164,44 @@ export class LaunchOrchestrator {
       workflowSlotId?: string;
       projectRoot?: string;
     } = {},
-  ): TerminalOutcome {
+  ): void {
     const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
-    const [appended] = this.deps.progressStore.appendEventsWithResult([
-      {
-        type: 'job.launch.rejected',
-        stream: { kind: 'job', id: jobId },
-        namespace: metadata.namespace,
-        project: metadata.project,
-        correlationId: metadata.correlationId,
-        refs: {
+    try {
+      this.deps.progressStore.commit((c) => {
+        const cause = c.append({
+          type: 'job.launch.rejected',
+          stream: { kind: 'job', id: jobId },
+          namespace: metadata.namespace,
+          project: metadata.project,
+          correlationId: metadata.correlationId,
+          refs: {
+            jobId,
+            sessionId,
+            ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+            ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
+          },
+          bodyVersion: 1,
+          body,
+        });
+        appendJobTerminalRecorded(c, {
           jobId,
           sessionId,
-          ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
-          ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
-        },
-        bodyVersion: 1,
-        body,
-      },
-    ]);
-
-    if (!appended) {
-      throw new Error(`Failed to append job.launch.rejected for ${jobId}`);
+          namespace: metadata.namespace,
+          project: metadata.project,
+          correlationId: metadata.correlationId,
+          parentJobId: options.parentJobId,
+          workflowSlotId: options.workflowSlotId,
+          terminal: {
+            content: '',
+            outcome: failedTerminalOutcome(cause),
+          },
+          continuity: null,
+        });
+        return undefined;
+      });
+    } catch (error: unknown) {
+      throw new TerminalWriteError(jobId, error);
     }
-
-    return {
-      kind: 'failed',
-      causeRef: {
-        stream: appended.stream as CauseRef['stream'],
-        seq: appended.seq,
-      },
-    };
   }
 
   async claimAndAdmitJob(
@@ -409,8 +433,12 @@ export class LaunchOrchestrator {
   }
 
   failJob(jobId: string, sessionId: string, terminal: JobTerminalInput): void {
-    const { abortRegistry, jobPools, sessionManager } = this.deps;
     this.writeJobTerminal(jobId, sessionId, terminal, 'error');
+    this.releaseTerminalJob(jobId, sessionId);
+  }
+
+  private releaseTerminalJob(jobId: string, sessionId: string): void {
+    const { abortRegistry, jobPools, sessionManager } = this.deps;
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -508,14 +536,14 @@ export class LaunchOrchestrator {
     }
 
     if (error instanceof CliBusyError) {
-      const outcome = this.appendJobFailureCause(jobId, sessionId, {
+      this.appendLaunchRejectedTerminal(jobId, sessionId, {
         reason: 'busy',
         message: error.message,
         provider: error.detail.provider,
         globalActive: error.detail.globalActive,
         globalLimit: error.detail.globalLimit,
       });
-      this.failJob(jobId, sessionId, { content: '', outcome });
+      this.releaseTerminalJob(jobId, sessionId);
       return;
     }
 
@@ -581,27 +609,27 @@ export class LaunchOrchestrator {
   ): void {
     const { progressStore } = this.deps;
     const metadata = this.resolveEventMetadata(jobId, projectRoot);
-    const materialized = materializeProviderTerminal(
-      progressStore,
-      event,
-      {
-        jobId,
-        sessionId,
-        namespace: metadata.namespace,
-        project: metadata.project,
-        correlationId: metadata.correlationId,
-      },
-    );
-    const phase = phaseForOutcome(materialized.terminal.outcome);
     const currentStatus = progressStore.readStatus(jobId);
     if (currentStatus && isTerminalPhase(currentStatus.phase)) {
       return;
     }
 
-    this.writeJobTerminal(jobId, sessionId, materialized.terminal, phase, {
-      continuity,
-      diagnostics: materialized.diagnostics,
-    });
+    try {
+      this.deps.terminalMaterializer.recordProviderTerminal(
+        progressStore,
+        event,
+        {
+          jobId,
+          sessionId,
+          namespace: metadata.namespace,
+          project: metadata.project,
+          correlationId: metadata.correlationId,
+        },
+        { continuity },
+      );
+    } catch (error: unknown) {
+      throw new TerminalWriteError(jobId, error);
+    }
   }
 
   private readClaimVersion(providerName: string, sessionId: string, jobId: string): number {

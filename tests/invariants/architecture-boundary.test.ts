@@ -154,7 +154,9 @@ const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const NEEDLE_BACKEND_TARGET = 'src/engines/needle/backend.ts';
-const JOBS_TERMINAL_MATERIALIZER = 'src/jobs/terminal/materializer.ts';
+const SESSION_FAULT_EVENTS = 'src/sessions/shell/session-fault-events.ts';
+const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
+const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
@@ -500,39 +502,42 @@ describe('architecture boundary guard', () => {
       'move the service dependency to a domain-owned contract or inject the shell implementation from the composition root.',
       (target) =>
         isWithinPath(target, JOBS_SHELL_ROOT) ||
-        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        (isWithinPath(target, SESSIONS_SHELL_ROOT) && target !== SESSION_FAULT_EVENTS) ||
         target.startsWith('src/discuss/shell/'),
     );
 
     assertNoViolations(violations);
   });
-  it('job terminal materializer remains a pure domain translator, not a god module', () => {
+  it('session fault event builders are import-pure', () => {
     const violations = collectViolations(
-      JOBS_TERMINAL_MATERIALIZER,
-      'jobs/terminal-materializer may only translate domain failures into job outcomes',
-      'keep I/O, runtime access, shell orchestration, and coordinator policy outside terminal-materializer.',
+      SESSION_FAULT_EVENTS,
+      'session fault event builders own only session event vocabulary',
+      'keep runtime access and cross-domain orchestration outside sessions/shell/session-fault-events.ts.',
       (target) =>
         isWithinPath(target, COORDINATOR_ROOT) ||
-        isWithinPath(target, JOBS_SHELL_ROOT) ||
-        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        isWithinPath(target, JOBS_ROOT) ||
         isWithinPath(target, RUNTIME_ROOT),
     );
-    const source = readFileSync(resolve(REPO_ROOT, JOBS_TERMINAL_MATERIALIZER), 'utf8');
-    const forbiddenRuntimeTokens = [
-      '.appendEvent(',
-      '.appendTerminal(',
-      '.readStatus(',
-      '.loadJobProjectionDetail(',
-      '.getDb(',
-      '.readLaunchProjection(',
-      '.appendLaunchRequested(',
-    ].filter((token) => source.includes(token));
+    const runtimeEdges = (PARSED_IMPORT_EDGES_BY_SOURCE.get(SESSION_FAULT_EVENTS) ?? []).filter((edge) => edge.runtime);
 
     assertNoViolations(violations);
-    expect(forbiddenRuntimeTokens).toEqual([]);
+    expect(runtimeEdges).toEqual([]);
   });
-  it('raw job.terminal.recorded writes stay owned by the job store and atomic KB recorder', () => {
-    expect(collectRawTerminalRecordedWriters()).toEqual([KB_JOB_RECORDER, 'src/jobs/job-store.ts']);
+  it('coordinator terminal materializer avoids shell and live implementation imports', () => {
+    const violations = collectViolations(
+      COORDINATOR_TERMINAL_MATERIALIZER,
+      'coordinator terminal materializer may compose domains without shell/live implementation reach-through',
+      'depend on pure event builders, jobs-owned recording helpers, or lower-level contracts.',
+      (target) =>
+        isWithinPath(target, JOBS_SHELL_ROOT) ||
+        (isWithinPath(target, SESSIONS_SHELL_ROOT) && target !== SESSION_FAULT_EVENTS) ||
+        target.startsWith('src/coordinator/live/'),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('raw job.terminal.recorded writes stay owned by jobs terminal recording and transitional job store wrapper', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual(['src/jobs/job-store.ts', JOBS_TERMINAL_RECORDING]);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/launch.ts']);

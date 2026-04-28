@@ -8,7 +8,6 @@ import { errorMessage } from '../../infra/error-format.js';
 import type { EffortLevel } from '../../providers/request-policy.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
-import type { TerminalOutcome } from '../../jobs/outcome.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -30,9 +29,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import { materializeSessionInterrupted } from '../../jobs/terminal/materializer.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
@@ -173,15 +170,6 @@ export function buildInterruptedAppServerReport(
       : 'Session was interrupted before completion. The existing conversation reference was preserved.',
   );
   return lines.join('\n');
-}
-
-export function materializeInterruptedSessionOutcome(
-  progressStore: Pick<JobProgressStore, 'appendEventsWithResult'>,
-  jobId: string,
-  sessionId: string,
-  fault: SessionInterruptedFault,
-): TerminalOutcome {
-  return materializeSessionInterrupted(progressStore, fault, { jobId, sessionId });
 }
 
 export function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {

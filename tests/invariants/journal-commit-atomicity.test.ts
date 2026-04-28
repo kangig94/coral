@@ -190,7 +190,9 @@ describe('journal commit atomicity invariant', () => {
 
     expect(recorderSource).toContain('appendOperationFailureWithTerminal');
     expect(recorderSource.match(/this\.deps\.progressStore\.commit\(\(c\) =>/gu) ?? []).toHaveLength(1);
-    expect(recorderSource).toMatch(/const cause = c\.append\(causeEvent\);[\s\S]*causeRef: cause/u);
+    expect(recorderSource).toMatch(
+      /const cause = c\.append\(causeEvent\);[\s\S]*appendJobTerminalRecorded\(c,[\s\S]*failedTerminalOutcome\(cause\)/u,
+    );
     expect(recorderSource).not.toContain('appendKbOperationFailureCause');
     expect(recorderSource).not.toContain('appendFailed');
     expect(recorderSource).not.toContain('appendEventsWithResult');

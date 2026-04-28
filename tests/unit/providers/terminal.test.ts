@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type { JobTerminal, TerminalOutcome } from '#src/providers/contract.js';
+import type { JobTerminal, ProviderTerminalOutcome } from '#src/providers/contract.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 
 describe('buildJobTerminal', () => {
   it.each([
-    ['completed', { kind: 'completed' } satisfies TerminalOutcome],
-    ['aborted', { kind: 'aborted', reason: 'signal_abort' } satisfies TerminalOutcome],
-    ['failed', { kind: 'failed' } satisfies TerminalOutcome],
+    ['completed', { kind: 'completed' } satisfies ProviderTerminalOutcome],
+    ['aborted', { kind: 'aborted', reason: 'signal_abort' } satisfies ProviderTerminalOutcome],
+    ['failed', { kind: 'failed' } satisfies ProviderTerminalOutcome],
   ] as const)('builds the native JobTerminal shape for %s outcomes', (_label, outcome) => {
     const terminal: JobTerminal = buildJobTerminal({
       content: 'terminal content',

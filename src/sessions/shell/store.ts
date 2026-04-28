@@ -21,10 +21,6 @@ import type { SessionAllocateOptions } from '../contracts.js';
 import { sessionsRegistry } from '../events.js';
 import type { SessionContinuityMutation } from '../continuity-mutation.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
-import type {
-  SessionCloseReason,
-  SessionInterruptedFault,
-} from '../fault.js';
 import {
   listProjectionSessionEntries,
   readProjectionSession,
@@ -127,34 +123,6 @@ function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEve
     body: {
       entry,
       jobId,
-    },
-  };
-}
-
-function sessionInterruptedEvent(sessionId: string, fault: SessionInterruptedFault, entry?: SessionEntry): CoralEventInput {
-  return {
-    type: 'session.interrupted',
-    stream: { kind: 'session', id: sessionId },
-    refs: { sessionId },
-    bodyVersion: 1,
-    body: entry === undefined
-      ? fault
-      : {
-          entry,
-          fault,
-        },
-  };
-}
-
-function sessionClosedEvent(sessionId: string, reason: SessionCloseReason, entry?: SessionEntry): CoralEventInput {
-  return {
-    type: 'session.closed',
-    stream: { kind: 'session', id: sessionId },
-    refs: { sessionId },
-    bodyVersion: 1,
-    body: {
-      ...(entry === undefined ? {} : { entry }),
-      reason,
     },
   };
 }
@@ -326,36 +294,6 @@ export class SessionManager {
     };
 
     this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot));
-  }
-
-  interrupt(sessionId: string, fault: SessionInterruptedFault): void {
-    const currentEntry = this.readEntry(sessionId);
-    if (!currentEntry) {
-      return;
-    }
-
-    const nextEntry: SessionEntry = {
-      ...currentEntry,
-      lastUsedAt: nowIsoString(this.time),
-      version: this.bumpVersion(currentEntry),
-    };
-
-    this.appendEntryEvent(nextEntry, sessionInterruptedEvent(sessionId, fault, nextEntry));
-  }
-
-  close(sessionId: string, reason: SessionCloseReason): void {
-    const currentEntry = this.readEntry(sessionId);
-    if (!currentEntry) {
-      return;
-    }
-
-    const nextEntry: SessionEntry = {
-      ...currentEntry,
-      lastUsedAt: nowIsoString(this.time),
-      version: this.bumpVersion(currentEntry),
-    };
-
-    this.appendEntryEvent(nextEntry, sessionClosedEvent(sessionId, reason, nextEntry));
   }
 
   /** Set conversationRef and transition state from pending -> ready. */

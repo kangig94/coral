@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { causeRefSchema, type CauseRef, type ResolvableCauseRef } from '../causality/cause-ref.js';
+import { causeRefSchema } from '../causality/cause-ref.js';
 import { assertNever } from '../infra/error-format.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
@@ -54,18 +54,6 @@ export const sessionCloseReasonSchema = z.union([
     })
     .strict(),
 ]);
-export type SessionCloseReason =
-  | 'completed'
-  | 'non_resumable'
-  | 'interrupted'
-  | { kind: 'failed'; causeRef: CauseRef };
-
-export type SessionCloseReasonInput<Scope = never> =
-  | 'completed'
-  | 'non_resumable'
-  | 'interrupted'
-  | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> };
-
 export function continuitySentenceFragment(continuity: SessionContinuityState): string {
   switch (continuity) {
     case 'verified':
