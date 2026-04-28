@@ -5,7 +5,10 @@
 
 **This is a clean-slate rewrite, not a migration.** Existing `~/.coral/` state is assumed destroyed before the new build runs. No migration path exists or is planned. The document describes only the endpoint; transitional constructs, backward-compat fields, and dual-write windows are out of scope.
 
-**Solo-development model, no transition period.** Coral is developed by a single author. No deployment happens until the refactor is complete AND all declared features (including post-refactor items like the Orama vector backend) land. There is no window in which users run "refactor done but feature X pending." The doc therefore does not specify transition-period behavior, partial-feature error paths, or compatibility shims for in-flight development. Every capability the doc declares is available at first deploy.
+**Solo-development model, no transition period.** Coral is developed by a single author. No deployment happens until the refactor is complete AND all declared features (including the post-refactor KB slot model) land.
+Orama fills `kb.fts` only.
+`kb.vector` is empty until an installed vector engine is equipped, and peer embedder engines fill `kb.embedding` independently.
+There is no window in which users run "refactor done but feature X pending." The doc therefore does not specify transition-period behavior, partial-feature error paths, or compatibility shims for in-flight development. Every capability the doc declares is available at first deploy.
 
 **Scope of the "discuss is the template" claim**: the word *template* refers to the **persistence pattern** — events → pure reducer → projections → replay — and the **functional-core / imperative-shell** separation. It does NOT claim domain isomorphism. Jobs-specific complexity (workflow composition, shared host pools, cross-namespace release, admission seat control) is modeled by first-class structures (`coordinator/live/*`, `jobs/reconcile/*`, `workflow/`), not by stretching discuss semantics.
 
@@ -201,7 +204,7 @@ One engine ships one Expansion. The terms describe distinct facets, not synonyms
 
 The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus pure install/onboarding modules under `src/cli/expansion/` and the runtime expansion contract under `src/expansion/` (see §2.8a). The post-refactor catalog uses engine/tool-named entries rather than capability-named entries, matching the Zelda equipment metaphor.
 
-Installed expansion activation is tracked in an explicit durable expansion registry keyed by engine/expansion id, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `expansion_state` (rows: `{id, version, installed_at}`) for installed engines only. The KB domain declares `kb.vector`, `kb.fts`, and `kb.embedding` as `RuntimeBinding<Backed<...>>` cells with no constructor-time defaults. Orama is a bundled engine that auto-equips at coordinator boot via the fallback pass, after installed-engine recovery, filling only empty slots under its Expansion scope. Embedders are peer engines discovered through `BUNDLED_ENGINES` entries whose `EngineManifest.fills?.includes('kb.embedding')`. Expansion bodies call `host.bind(binding, backed)` under their own scope; structural single-occupancy enforces "at most one active Expansion per binding" (#43) inside the primitive. Native addons enter the process only via user activation routed through `coral-cli expansion equip <name>`.
+Installed expansion activation is tracked in an explicit durable expansion registry keyed by engine/expansion id, not by implicit boot-time registration. In the clean-slate rewrite, `001_initial.sql` includes `expansion_state` (rows: `{id, version, installed_at}`) for installed engines only. The KB domain declares `kb.vector`, `kb.fts`, and `kb.embedding` as `RuntimeBinding<Backed<...>>` cells with no initial binding values. Orama is a bundled engine that auto-equips at coordinator boot via the fallback pass, after installed-engine recovery, filling only empty slots under its Expansion scope. Embedders are peer engines discovered through `BUNDLED_ENGINES` entries whose `EngineManifest.fills?.includes('kb.embedding')`. Expansion bodies call `host.bind(binding, backed)` under their own scope; structural single-occupancy enforces "at most one active Expansion per binding" (#43) inside the primitive. Native addons enter the process only via user activation routed through `coral-cli expansion equip <name>`.
 
 **Engine paths are per-name closures, not per-name standalone functions.** `runtime.paths.coral.engine` exposes `dataDir(name)` and `installLockPath(name)` — closures bound to the resolved `EnginePaths` family. Lifecycle, install/onboarding, and retrieval backends call these closures with the engine name and never recompute paths from `coralRoot()` or compose the path family themselves. This keeps path-shape decisions (e.g., "data lives under `data/engines/<name>/`") in one place — the `enginePaths` composer — and prevents per-call sites from quietly diverging on naming or layout. Engine-specific addon paths are computed inside the owning engine tree, not by generic infra.
 
@@ -220,13 +223,13 @@ This decouples projection latency from authoritative write latency: a slow or fa
 
 > **Status**: This section describes the post-commit-6 target for the KB engine uniform-binding plan. It intentionally lands in commit 0 before code changes. Reviewers verifying intermediate commits (1-5) should reference `/home/ing/.coral/projects/kangig94-coral/plans/kb-engine-uniform-binding.md`, not this section, because this section describes the final target state.
 
-The old binary "default owner + override" slot model is gone. It encoded two mechanisms for the same semantic operation: one backend supplied as a constructor-time default and another backend supplied by user equip. The final model uses one mechanism for every binding fill.
+The old binary "default owner + override" slot model is gone. It encoded two mechanisms for the same semantic operation: one backend supplied as a construction-time initializer and another backend supplied by user equip. The final model uses one mechanism for every binding fill.
 
 **Diagnosis**: the question is not "which of several competing implementations?" (a multiplexer) but "which implementation is currently bound for this name?" (a single mutable cell). A multiplexer with one decision is a reference cell with extra steps. The original §2.8a draft's `Slot`/`SlotProvider`/`SlotRegistry` apparatus was a multiplexer addressing a problem Coral does not have.
 
 The unified design uses three load-bearing primitives:
 
-1. **`RuntimeBinding<T>`** — a domain-owned mutable cell with structural single-occupancy and no constructor-time default value. Replaces the original slot apparatus.
+1. **`RuntimeBinding<T>`** — a domain-owned mutable cell with structural single-occupancy and no initial value. Replaces the original slot apparatus.
 2. **`EngineManifest` + `Expansion = (host) => void | Promise<void>`** — the manifest names an engine, its tier, and the bindings it fills; the Expansion body is the one lifecycle mechanism used by bundled and installed engines alike.
 3. **`Backed<T> = { read(): T, consumer: Consumer }`** — capability + freshness, exposed by every backend. The cell holds `Backed<T>`, not raw `T`. This lets routing read `binding.read().read(...)` synchronously while coordinator readiness reads `binding.read().consumer.id` — same cell, two clients, two faces.
 
@@ -288,12 +291,12 @@ interface KbRuntime {
 Load-bearing invariants (also tracked in §16 #43, #43a, #43b, #43c, #43d):
 
 - **Routing reads `binding.read().read(...)`** — one indirection. No literal union, no priority compare, no readiness poll at the routing layer.
-- **Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot.** The pass runs after installed-engine recovery and fills only empty slots. Every binding is filled by an Expansion under a scope; no constructor-time defaults exist on `RuntimeBinding<T>` (#43a).
+- **Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot.** The pass runs after installed-engine recovery and fills only empty slots. Every binding is filled by an Expansion under a scope; no binding is created with an initial value (#43a).
 - **Expansion bodies call `host.bind(binding, backed)`** under their own scope; `scope.dispose()` is the only un-bind path.
 - **Single-occupancy is structural**: `RuntimeBinding.bind` throws `CoralSetupError('binding-occupied', { heldBy })` if already held. Invariant #43 is enforced inside the primitive, not by lifecycle bookkeeping.
 - **Readiness is a comparison**: `backed.consumer.cursor ≥ runtime.authorities.<kind>.version`. No `isReady()` / `waitForReady()` on the `Backed<T>` contract. The only readiness primitive is `waitFreshUntil(authority, version, consumerId)` from §9.4 (#43c).
 - **Capability deps via `host.require(binding)`** — inline at expansion top, throws `CoralSetupError` before any `bind`.
-- **`kb.embedding` is a peer-category slot.** All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) have no constructor-time defaults. Embedders are bundled or installed engines like any other, discovered structurally through `EngineManifest.fills?.includes('kb.embedding')`.
+- **`kb.embedding` is a peer-category slot.** All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) have no initial binding values. Embedders are bundled or installed engines like any other, discovered structurally through `EngineManifest.fills?.includes('kb.embedding')`.
 - **Adding a backend** = one new engine Expansion module + one manifest entry. Coordinator/router/lifecycle code change: zero unless the engine creates a new domain binding.
 
 #### Ownership
@@ -322,7 +325,8 @@ Retired (drift items never to exist): `coordinator/discovery-api.ts`, `expansion
 1. **Path layer rename + ChunkSeed direction reversal.** Rename `infra/path/expansion.ts` → `infra/path/engine.ts`; `runtime.paths.coral.expansion` → `runtime.paths.coral.engine`; `ExpansionPaths.expansionRoot` → `EnginePaths.engineRoot`; data path `data/expansion/<name>/` → `data/engines/<name>/`. Introduce `src/kb/chunking.ts` defining `ChunkSeed`; needle's `ChunkRecord = ChunkSeed & { specId, vector }` reverses the import direction.
 2. **Engine relocation.** Move `src/kb/search/{orama,needle}/` and `src/kb/embedding/{gemini,onnx}/` to `src/engines/{orama,needle,gemini,onnx}/`. `src/kb/embedding/vector.ts` → `src/kb/embedding-vector.ts`. `src/kb/embedding/fetch.ts` → `src/infra/http-retry.ts`. Test mirror-move. Engine-id helpers in `src/kb/paths.ts` relocate to engine-internal `paths.ts`.
 3. **Manifest + dispatcher + onboarding rewrite.** `EngineManifest` (replaces `BundledExpansion`) with `tier: 'bundled' | 'installed'`, `fills?: readonly string[]`, `installer?: EngineInstaller`, `onboarding?: readonly OnboardingStep[]`. `BUNDLED_EXPANSIONS` → `BUNDLED_ENGINES`. Generic `cli/expansion/install.ts` (≤100 lines, call-time manifest lookup); engine-internal `src/engines/needle/install.ts`. Generic `cli/expansion/onboarding.ts` (≤100 lines, declarative `OnboardingStep[]` walker). Existing `OnboardingStep` at `coordinator/expansion/rpc.ts` renamed to `OnboardingChoice`. `infra/install-helpers.ts` lifted from `cli/expansion/install-support.ts`.
-4. **Orama as Expansion + KbRuntime engine-blind + bundled fallback pass** (squashed per Clean-Slate Ownership). `RuntimeBinding<T>` drops `defaultValue` parameter. `KbRuntime` drops all Orama-named state. `src/engines/orama/expansion.ts` (NEW) constructs `OramaBaseProjection` + `OramaSnapshotStore` Expansion-internally; binds ONLY `kb.fts` (vector path is removed; queries fail with `binding_empty` until needle/kb_scann is equipped). `FtsRetrieval`/`VectorRetrieval` pinned symmetric `{search, tokenize, warnings}` capability surfaces. `applyBundledFallback()` returns `{equipped, failed}` map. `ExpansionLifecycleService.scopes` becomes `Map<string, Disposable[]>`. Host derives `registrationKind` from `(manifest.tier, registration.apply)` triple — preserving `'stateless'` for embedders. `readBinding` retained (RPC chain preserved); only `KB_BINDING_BY_SLOT`/`bindingOf`/`BundledExpansionSlot` removed.
+4. **Orama as Expansion + KbRuntime engine-blind + bundled fallback pass** (squashed per Clean-Slate Ownership). `RuntimeBinding<T>` drops `defaultValue` parameter. `KbRuntime` drops all Orama-named state. `src/engines/orama/expansion.ts` (NEW) constructs `OramaBaseProjection` + `OramaSnapshotStore` Expansion-internally and binds ONLY `kb.fts`.
+   The `kb.vector` binding has no bundled fill; queries fail with `binding_empty` until needle/kb_scann is equipped. `FtsRetrieval` exposes `{search, tokenize, warnings}`; `VectorRetrieval` uses the symmetric `search(...)` verb. `applyBundledFallback()` returns `{equipped, failed}` map. `ExpansionLifecycleService.scopes` becomes `Map<string, Disposable[]>`. Host derives `registrationKind` from `(manifest.tier, registration.apply)` triple — preserving `'stateless'` for embedders. `readBinding` retained (RPC chain preserved); only `KB_BINDING_BY_SLOT`/`bindingOf`/`BundledExpansionSlot` removed.
 5. **KB-init failure wraps bundled-equip failure.** `recoverOnBoot` aggregates `applyBundledFallback` failures and throws; existing try/catch at `coordinator/lifecycle.ts:410-414` routes to `runtimeState.setKbInitError(...)`. Daemon comes up with `subsystems.kb = 'unavailable'`; KB IPC ops return `kb_unavailable`; non-KB ops continue.
 6. **Architecture-boundary invariants + cleanup.** New invariant tests forbid imports from `src/engines/**` outside two wiring points (`src/expansion/bundled.ts`, `src/coordinator/expansion/lifecycle.ts`); forbid engine-id literals in `src/kb/**` and `src/coordinator/**`; forbid `Backed<T>` caching outside `KbRuntime`. `tests/helpers/ts-import-scanner.ts` extended with sibling `getSubpathModuleSpecifier` for `#src/...` specifiers. `DOMAIN_ROOTS` extended with `src/engines/`. `tests/integration/engine-acceptance.test.ts` (NEW) verifies the kb_scann gate. Phase 2 namespace `~/.coral/expansions/<name>/` reserved via comment in `infra/path/engine.ts`.
 
@@ -338,8 +342,8 @@ The third-party test: bundled and filesystem engines get **equal treatment** —
 #### Resolutions to original-draft open questions
 
 1. **Multi-slot expansion.** An `Expansion` calls `host.bind` N times on one scope; one scope releases all bindings. No `slots: string[]` field, no `Expansion.bindings[]` array. Single-binding is the degenerate case of N=1.
-2. **Capability negotiation.** `host.require(binding)` inline at expansion top, throws `CoralSetupError` before any `bind`. Peer binding dependencies are handled by declarative onboarding plus the absence of constructor-time defaults, not by a runtime `requires` field.
-3. **Test override.** Tests are expansions. `loadExpansions([fakeExpansion])` binds the fake; `scope.dispose()` releases it. No priority arithmetic, no `replaceForTest`, no constructor default path.
+2. **Capability negotiation.** `host.require(binding)` inline at expansion top, throws `CoralSetupError` before any `bind`. Peer binding dependencies are handled by declarative onboarding plus empty bindings, not by a runtime `requires` field.
+3. **Test override.** Tests are expansions. `loadExpansions([fakeExpansion])` binds the fake; `scope.dispose()` releases it. No priority arithmetic, no `replaceForTest`, no built-in default path.
 4. **Phase 2 manifest format.** `package.json` with `"coral": { "expansion": "./dist/expansion.js" }`. The expansion module's default export is `Expansion`. Reuses Node's existing manifest with no Coral-specific dialect.
 5. **Phase 2 security model.** Out of contract; loader-level concern. The `ExpansionHost`'s `bind`/`require` already pass capabilities structurally — an expansion can only touch bindings it imports — so future sandboxing wraps `expansion(host)` invocation without changing the contract.
 6. **Onboarding ownership.** Lives in `cli/expansion/onboarding.ts`, keyed by engine id. NOT on the runtime Expansion function. Onboarding runs once before any installed Expansion invocation.
@@ -347,7 +351,7 @@ The third-party test: bundled and filesystem engines get **equal treatment** —
 
 #### Synthesis history
 
-The original 2026-04-27 draft proposed a `Slot`/`SlotProvider`/`ExpansionContract` model with `priority` and explicit `isReady`/`waitForReady` — eight open questions remained. On 2026-04-27, five parallel pioneers (A-E) explored alternative framings; a meta-pioneer synthesized them. The uniform-binding plan refines that synthesis by removing constructor-time defaults entirely and making bundled engines participate through the same Expansion body shape as installed engines.
+The original 2026-04-27 draft proposed a `Slot`/`SlotProvider`/`ExpansionContract` model with `priority` and explicit `isReady`/`waitForReady` — eight open questions remained. On 2026-04-27, five parallel pioneers (A-E) explored alternative framings; a meta-pioneer synthesized them. The uniform-binding plan refines that synthesis by removing initial binding values entirely and making bundled engines participate through the same Expansion body shape as installed engines.
 
 Synthesis-level move that remains load-bearing: the binding holds `Backed<T>`, not raw `T`. This composition lets routing and freshness coordination see two faces of the same cell: the router reads the capability, while `waitFreshUntil` reads the consumer id.
 
@@ -794,8 +798,8 @@ Each job stream records **exactly one** `job.terminal.recorded` body, and that b
 ```ts
 type SourceImportReadiness =
   | 'commit'        // source markdown is durably written to the Corpus
-  | 'base-search'   // Orama FTS/base search consumer is fresh for the commit
-  | 'active-vector' // current kb.vector slot owner (Orama or needle) is fresh
+  | 'base-search'   // current kb.fts binding owner is fresh for the commit
+  | 'active-vector' // current kb.vector binding owner is fresh; binding_empty if unbound
   | 'all-equipped'; // every installed Corpus consumer is fresh
 ```
 
@@ -854,9 +858,9 @@ The KB domain does not live on the Journal. Its authority is the **Corpus** — 
 
 ~/.coral/data/kb/                   ← Corpus-derived indexes (device-local, git-ignored)
   index.json                        ← structured metadata snapshot
-  orama/                            ← Orama snapshot directory (base-tier FTS + vector)
+  orama/                            ← Orama snapshot directory (bundled FTS)
     orama-index.json                ← Orama serialized index
-  needle/                           ← needle runtime storage (expansion-tier vector)
+  needle/                           ← needle runtime storage (installed vector engine)
   needle-staging/                   ← needle staging area for snapshot builds
   consumer_cursors                  ← in store.db (SQLite); tracked per Corpus consumer
 ```
@@ -878,7 +882,7 @@ Fast coordinator KB operations follow the same pattern inside a single **Corpus 
 2. Bump `contentSeq` (or `metadataSeq`) in the corpus version state.
 3. Update lightweight Corpus metadata/index state (`index.json`, manifest authority records) needed to describe the Corpus itself.
 4. Release lock.
-5. Notify Corpus consumers (`orama-base` for FTS+vector, `needle-vector` for expansion-tier vector, etc.) — they run their apply loop asynchronously (§9).
+5. Notify Corpus consumers for currently bound retrieval projections (for example the consumer behind `kb.fts`, and the consumer behind `kb.vector` when that binding is filled) — they run their apply loop asynchronously (§9).
 
 Retrieval artifacts are not built inside the authoritative critical section. A command that promises retrieval freshness captures the committed `contentSeq` / `metadataSeq` and waits for the relevant consumer cursor after the lock releases. This keeps the Corpus write small while still giving long-running commands a precise readiness contract.
 
@@ -890,11 +894,11 @@ External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordina
 | Readiness | Completion condition |
 |---|---|
 | `commit` | Corpus source markdown is durable and `contentSeq` advanced. |
-| `base-search` | `commit` + Orama FTS/base-search consumer cursor reached the committed `contentSeq`. |
-| `active-vector` | `commit` + the current `kb.vector` slot owner (`orama` or `needle`) reached the committed `contentSeq`. |
+| `base-search` | `commit` + `kb.fts.read().consumer` reached the committed `contentSeq`. |
+| `active-vector` | `commit` + `kb.vector.read().consumer` reached the committed `contentSeq`; if `kb.vector` is empty, readiness fails structurally with `binding_empty`. |
 | `all-equipped` | `commit` + every installed Corpus consumer reached the committed Corpus version. |
 
-The command surface is identical in base and equipped tiers. Equipping needle changes only which consumer satisfies `active-vector`; it does not create a separate import command.
+The command surface is identical in base and equipped tiers. Equipping needle or another vector engine changes whether `kb.vector` is bound and which consumer satisfies `active-vector`; it does not create a separate import command.
 Retrieval readiness is observed through `waitFreshUntil('corpus', version, consumerId)` after the Corpus commit. If that wait fails, the source markdown and Corpus version remain durable; the hosting job records the readiness failure instead of rolling back knowledge content.
 
 **Projections / search backends** (all rebuildable from the Corpus alone):
@@ -902,22 +906,25 @@ Retrieval readiness is observed through `waitFreshUntil('corpus', version, consu
 | Backend | Consumer ID | Role | Tier | Substrate |
 |---|---|---|---|---|
 | KB runtime/query layer | — (direct read, no consumer) | direct markdown read + list/diagnose helpers | base, always | `~/.coral/kb/` + `~/.coral/data/kb/` |
-| **Orama** (JS-native) | `orama-base` | FTS (BM25) + vector (cosine), one consumer over one in-memory index | base, always | `~/.coral/data/kb/orama/orama-index.json` |
-| **coral-needle** (C++ DuckDB ScanANN) | `needle-vector` | ANN vector at scale; replaces Orama's vector path | expansion (`/equip needle`) | `~/.coral/data/kb/needle/` |
+| **FTS projection** | `kb.fts.read().consumer.id` (bundled Orama by default) | FTS (BM25) | bundled fallback, always in normal startup | `~/.coral/data/kb/orama/orama-index.json` |
+| **Vector projection** | `kb.vector.read().consumer.id` when bound | vector/ANN retrieval | installed engine (`/equip needle`, `/equip kb_scann`, ...) | engine-owned runtime storage |
 
-**Why one Orama consumer, not two**: FTS and vector share the same Orama instance, the same on-disk snapshot, and the same atomic snapshot-swap lifecycle. Splitting them into `orama-fts` and `orama-vector` consumers would force two parallel apply paths over one underlying index — one in-flight `apply()` could swap the snapshot out from under the other. Treating Orama as a single consumer is structurally honest about what is one piece of state. `needle-vector` is a separate consumer because needle is a separate process-side index with its own snapshot store.
+**Why binding lookup, not hardcoded consumer IDs**: readiness waits first read the active binding, then pass that bound backend's `consumer.id` to `waitFreshUntil`. `base-search` reads `kb.fts`; `active-vector` reads `kb.vector`. This keeps future engines behind the same binding cells and prevents source import from depending on a specific engine name.
+The bundled Orama consumer owns the FTS projection.
+Needle and future vector engines own independent projection state when they fill `kb.vector`.
 
 KB has no SQLite content projection in the steady state. Markdown remains authoritative; Orama/needle are rebuildable retrieval artifacts; SQLite stores only control state (`kb_corpus_state`, curate scheduler/retry tables, and `consumer_cursors`).
 
 **Equipment principle applied**:
 - Command surface is identical in both tiers: `kb search "query"`, `kb search --vector <emb>`, `kb search --hybrid "query"` all exist.
-- Base tier: Orama FTS (zero-config) + Orama vector (cosine brute-force). Vector requires embedding provider config — register Google Gemini API key per README, one line in `~/.coral/.env`.
-- Equipped (`/equip needle`): vector and hybrid paths upgrade to ScanANN for scale. Uses the same embedding provider as base. FTS unchanged.
+- Base tier: FTS is zero-config through bundled fallback. Vector and hybrid paths require both `kb.vector` and `kb.embedding` to be filled by equipped engines.
+- Equipped (`/equip needle`): needle fills `kb.vector` for scale. Embedders such as gemini or onnx fill `kb.embedding` independently. FTS unchanged.
 - No new commands appear from equipping. The needle sharpens existing blades, it does not add new weapons.
-- Why not bundle ONNX for zero-config local embeddings? `onnxruntime-node` is ~82MB compressed / 210MB unpacked — roughly 40× the current plugin size. Bundling breaks the "click-install, just works" UX premise. A Google Gemini API key is a one-line README step; the free tier covers personal-scale KB use indefinitely. Users who need fully offline embedding can opt in via `/equip` onboarding which installs the local ONNX runtime alongside the needle addon.
+- Why not bundle ONNX for zero-config local embeddings? `onnxruntime-node` is ~82MB compressed / 210MB unpacked — roughly 40× the current plugin size. Bundling breaks the "click-install, just works" UX premise. Users who need fully offline embedding can opt in via `/equip` onboarding, which installs the local ONNX runtime as the engine that fills `kb.embedding`.
 
 **Why Orama is architecturally load-bearing** (not replaceable by SQLite FTS5):
-Orama's value is NOT just FTS quality — it is the combination of (1) pure JS, zero native dependencies, and (2) dual-modal support (FTS + basic vector search) in one library. These together enable the Zelda-style base tier: full KB search functionality with zero install friction. Replacing Orama with SQLite FTS5 is superficially attractive (unified storage, FTS co-transactional with metadata) but collapses on the vector axis: SQLite has no native vector search; `sqlite-vec` requires a loadable C extension (native binary, kills the zero-dep premise); custom SQL cosine is slow and worse than Orama. Every alternative forces losing base-tier vector search or compromising the zero-native-dep base tier. **Orama is the only option that satisfies both constraints simultaneously.** The Corpus + indexes layout is role-specialization, not accidental complexity.
+Orama's value is focused FTS with pure JS and zero native dependencies. That is exactly what the bundled tier needs: reliable full-text KB search with no install friction. Replacing it with SQLite FTS5 is superficially attractive (unified storage, FTS co-transactional with metadata), but it would add a second SQL search subsystem beside Corpus-derived engine projections without improving the binding model.
+The vector axis is intentionally separate: `kb.vector` starts empty and is filled by installed engines that can own their native/runtime dependencies explicitly. The Corpus + indexes layout is role-specialization, not accidental complexity.
 
 **Operational facts are not Corpus mutations.** Events like "Orama index rebuilt", "needle index snapshot rotated", "WAL checkpointed" are coordinator-local operational telemetry — they belong in structured logs, not on any authority.
 
@@ -1376,8 +1383,8 @@ interface CorpusConsumer {
 
 Projection types:
 
-- Orama serialized index (base-tier FTS + cosine vector).
-- needle DuckDB ANN index (expansion-tier vector).
+- FTS projection bound at `kb.fts` (bundled Orama).
+- Vector projection bound at `kb.vector` by installed engines (e.g., needle).
 
 The per-consumer manifest (hashes of processed entries) lives beside the consumer's storage — e.g., `~/.coral/data/kb/needle/snapshots/<snapshot>/manifest.json` for installed needle snapshots, with staging under `~/.coral/data/kb/needle-staging/<snapshot>/manifest.json` during rebuild.
 
@@ -1593,7 +1600,7 @@ When subdividing:
 - If the cluster has no single orchestrator, all files are siblings under the subdir.
 - Update intra-cluster imports to `./X.js` (sibling), parent-dir imports to `../X.js`, grandparent and beyond to `../../X.js` (or absolute via `#src/...`).
 
-3 files = borderline (subdivide only if cohesion is unmistakable and the cluster is clearly bounded — e.g., needle equipment in `kb/search/needle/`). 2 files = no.
+3 files = borderline (subdivide only if cohesion is unmistakable and the cluster is clearly bounded — e.g., needle equipment in `src/engines/needle/`). 2 files = no.
 
 **Subdivision rejection** — a few cases where subdividing makes the tree *worse*:
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
@@ -2102,7 +2109,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 **Expansion**:
 32. Expansion never writes to any authority. Expansion adds or replaces projection backends only.
 33. Every Expansion-backed projection is rebuildable from the authority of the domain it serves (Journal events OR Corpus contents).
-34. The base tier is **fully functional** after plugin install for all zero-config commands. Commands that intrinsically need external resources (vector search needs an embedding provider) declare their one-line setup in README. Every CLI command available in equipped tier is also available in base tier — at potentially lower quality but never unavailable; missing prerequisites surface as structured errors with setup guidance, not silent failure.
+34. The base tier is **fully functional** after plugin install for all zero-config commands. Commands that intrinsically need additional resources (vector search needs a `kb.vector` engine and a `kb.embedding` engine) declare their setup in README/onboarding. Every CLI command available in equipped tier is also available in base tier — missing prerequisites surface as structured errors with setup guidance, not silent failure.
 35. Expansion **replaces specific query paths** with higher-quality implementations. It never adds new command surfaces.
 36. Unequipping an Expansion returns the replaced path to the base backend without data loss and without command availability changes.
 37. An Expansion loads via dynamic import; its heavy dependencies enter the process only after `/equip` completes.
@@ -2113,10 +2120,10 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listExpansion` is status observation, not a readiness waiter.
 42. Expansion failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
 43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding-occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
-43a. Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot, after installed-engine recovery, filling only empty slots. Every binding is filled by an Expansion under a scope; no constructor-time defaults exist on `RuntimeBinding<T>`. Tier (bundled vs installed) controls lifecycle (when equipped, who can unequip), not invocation mechanism.
+43a. Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot, after installed-engine recovery, filling only empty slots. Every binding is filled by an Expansion under a scope; no binding is created with an initial value. Tier (bundled vs installed) controls lifecycle (when equipped, who can unequip), not invocation mechanism.
 43b. An `Expansion` is a function `(host: ExpansionHost) => void | Promise<void>`. Expansions do not export `id`, `priority`, `slots`, `requires`, `install`, `uninstall`, `activate`, or `deactivate` fields on a contract object. Identity is the import specifier; priority is registration order; binding fill is `host.bind(binding, backed)`; capability deps are `host.require(binding)`; install is a CLI-tier concern that runs before the Expansion is loaded; deactivation is `scope.dispose()`.
 43c. `Backed<T>` readiness is a comparison: `backed.consumer.cursor ≥ <authority version>`. No `Backed<T>` exposes a boolean `isReady()` or `waitForReady()` method on its public contract. The only readiness primitive in the system is the coordinator-owned `ConsumerDriver.waitFreshUntil(authority, version, consumerId)` from §9.4 (see invariants #41a/#41b). Routing the wait through ConsumerDriver — rather than a per-authority accessor on `Runtime` — keeps freshness coordination a single-writer concern owned by the layer that already owns `notify(authority, version)` fan-out; expansion-tier consumers receive the same primitive without a parallel access path.
-43d. `kb.embedding` is a peer-category slot. All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) have no constructor-time defaults on `RuntimeBinding<T>`; embedders are bundled or installed engines like any other. Switching embedders requires `coral-cli expansion unequip <current>` then `coral-cli expansion equip <new>` (structural single-occupancy via `binding-occupied`). `BUNDLED_ENGINES` carries ≥1 entry whose Expansion body fills `kb.embedding` so the binding is fillable.
+43d. `kb.embedding` is a peer-category slot. All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) start empty; embedders are bundled or installed engines like any other. Switching embedders requires `coral-cli expansion unequip <current>` then `coral-cli expansion equip <new>` (structural single-occupancy via `binding-occupied`). `BUNDLED_ENGINES` carries ≥1 entry whose Expansion body fills `kb.embedding` so the binding is fillable.
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
@@ -2159,13 +2166,16 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Provider kernel**: the leaf `Provider` function for a specific CLI/app-server — the pure execution unit.
 - **Host pool**: coordinator-owned pool of long-running app-server subprocesses (Claude, Codex).
 - **Namespace**: caller/emitter identity on an event. Not the same as `stream.kind`.
-- **Expansion**: an installable noun in `src/expansion/` (`needle`, `cgc`, ...). Equipped via `/equip <name>` / `coral-cli expansion equip <name>`, an Expansion may bind one or more runtime bindings to sharpen an existing query path. Expansions never write authorities or add new commands.
-- **Base tier**: the default runtime after plugin install (~3MB bundle, no native deps). Zero-config surface works immediately; vector search additionally needs embedder Expansion setup per README or onboarding.
+- **Engine**: the installable noun and source/data identity. Engine source lives under `src/engines/<id>/`; rebuildable local engine state lives under `~/.coral/data/engines/<id>/` when the engine owns such state.
+- **Expansion**: lifecycle pattern and user verb. An engine ships one Expansion body, and users equip installed engines through `/equip <name>` / `coral-cli expansion equip <name>`. Expansions may bind one or more runtime bindings to sharpen an existing query path; they never write authorities or add new commands.
+- **Base tier**: the default runtime after plugin install (~3MB bundle, no native deps). Zero-config surface works immediately through bundled FTS. Vector retrieval is unavailable until `kb.vector` and `kb.embedding` are both filled by equipped engines.
 - **Equipment metaphor (Zelda UX)**: curiosity-driven discovery, never enforced. Base tier always works; equipping is a reward for looking, not a gate to close. Equipment sharpens existing capabilities, never unlocks new commands.
 - **`/equip <name>`**: skill verb that routes to `coral-cli expansion equip <name>` and equips an Expansion. `/equip uninstall <name>` preserves the user grammar while routing internally to `coral-cli expansion unequip <name>`.
-- **Orama**: base-tier KB search engine. Provides FTS (BM25) and vector search (cosine brute-force). Pure JS, always present. Vector path requires embedding provider config.
-- **coral-needle**: first Expansion. C++ N-API addon at `../coral-needle` providing DuckDB-backed ScanANN vector search (exact / USearch HNSW / ScaNN tree-AH, auto-selected). Replaces Orama's vector path when equipped; FTS stays with Orama. Distributed as prebuilt binaries via GitHub Releases.
-- **SearchBackend**: interface at `src/kb/search/contract.ts` that both Orama and needle implement. `router.ts` picks the active backend per query type based on expansion bindings.
+- **Orama**: bundled KB FTS engine. Fills `kb.fts` only. Pure JS, auto-equipped by the bundled fallback pass.
+- **coral-needle**: installed vector engine. C++ N-API addon at `../coral-needle` providing DuckDB-backed ScanANN vector search (exact / USearch HNSW / ScaNN tree-AH, auto-selected). Fills `kb.vector` when equipped and requires `kb.embedding` to be filled by a peer engine. Distributed as prebuilt binaries via GitHub Releases.
+- **base-search**: source-import/readiness level that waits on the consumer currently bound to `kb.fts`. In normal startup this is the bundled Orama FTS consumer, but callers use the binding's `consumer.id` rather than hardcoding an engine id.
+- **active-vector**: source-import/readiness level that waits on the consumer currently bound to `kb.vector`. If the binding is empty, readiness fails with `binding_empty` instead of falling back to FTS.
+- **Retrieval capability surfaces**: `FtsRetrieval` and `VectorRetrieval` live in `src/kb/contract.ts`; engines adapt to these surfaces before binding `kb.fts` or `kb.vector`.
 - **ConsumerDriver**: in-process driver that turns `notify(authority, version)` signals into `apply(signal)` calls for a registered consumer (Journal or Corpus). Single-in-flight guarantee (backpressure-safe), cursor persistence after success, condition-variable wake for `waitFreshUntil(authority, version, consumerId)`. Lives at `src/coordinator/consumer-driver.ts`.
 - **`waitFreshUntil(authority, version, consumerId)`**: blocks until the named consumer's cursor reaches the target authority version. Journal callers pass `events.seq`; Corpus callers pass `contentSeq` or `metadataSeq`. Implemented as condition-variable wake, not polling.
 - **`consumer_cursors`**: SQLite table that persists each consumer's cursor (per authority). Source of truth for "where is each projection consumer caught up to".
@@ -2190,7 +2200,7 @@ Six pioneers + All-6 unifier + B-v2 reëxamination + Pioneer-final + KB-pioneer 
 - **Causal graph** (CauseRef pointers) is the fault model within Journal. Failures live once on the originating stream; terminals dereference, never wrap.
 - **Three-variant `JobLifecycleFault`** is the only fault ADT — reserved for wrapper-local failures with no domain origin.
 - **Two consumer interfaces** match the two authorities: `JournalConsumer` (range replay) + `CorpusConsumer` (snapshot content-hash diff). Both share `ConsumerDriver` mechanics (cursor, idempotent apply, condition-var wake).
-- **Zelda-style equipment model**: base tier always functional (FTS zero-config, vector with one-line embedding setup); `/equip needle` sharpens the vector path for scale without adding commands. Curiosity-driven, never prompted.
+- **Zelda-style equipment model**: base tier always functional for zero-config FTS through the bundled `kb.fts` binding. `kb.vector` remains empty until a vector engine is equipped; `/equip needle` fills that binding for scale without adding commands. Curiosity-driven, never prompted.
 - **Command-class routing** replaces transport-topology assumptions.
 - **Journal recovery** = projection rebuild + reconciliation. **Corpus recovery** = rescan + per-consumer snapshot diff. Each authority recovers from its own truth.
 - **Schema evolution** via per-`type` `bodyVersion` + upcasters (Journal) or ordered SQL schema scripts (projection tables); Corpus evolves through markdown format changes that the frontmatter parser accommodates.
