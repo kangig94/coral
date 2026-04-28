@@ -16,6 +16,7 @@ export interface CliErrorEnvelope {
   error: true;
   code: string;
   message: string;
+  remediation?: string;
   detail?: unknown;
 }
 
@@ -47,11 +48,16 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
     const body = isRecord(error.body) ? error.body : null;
     const code = body && typeof body.code === 'string' ? body.code : 'backend_error';
     const message = body && typeof body.message === 'string' ? body.message : error.message;
+    const remediation = body && typeof body.remediation === 'string' ? body.remediation : undefined;
     const detail = body && 'detail' in body ? body.detail : undefined;
     return withExitCode(
-      detail === undefined
-        ? { error: true, code, message }
-        : { error: true, code, message, detail },
+      {
+        error: true,
+        code,
+        message,
+        ...(remediation === undefined ? {} : { remediation }),
+        ...(detail === undefined ? {} : { detail }),
+      },
       errorCodeToExit(code, error.statusCode),
     );
   }

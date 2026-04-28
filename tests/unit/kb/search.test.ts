@@ -825,6 +825,55 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'needle-beta').matchedBy).toEqual([]);
   });
 
+  it('reports kb.embedding remediation for explicit vector search without embedding binding', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
+      title: 'Needle Alpha',
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+    await expect(searchKb(kb, 'semantic', 2, 'all', 'vector')).rejects.toMatchObject({
+      code: 'binding_empty',
+      userMessage: 'Vector search needs kb.embedding.',
+      remediation:
+        "Run `coral-cli expansion list` to find an engine that fills 'kb.embedding', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.",
+      context: { binding: 'kb.embedding' },
+    });
+  });
+
+  it('reports kb.vector remediation for explicit vector search without vector binding', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
+      title: 'Needle Alpha',
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+    await bindEmbedding(kb, {
+      embedDocuments: vi.fn(async () => []),
+      embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
+    });
+
+    const error = await searchKb(kb, 'semantic', 2, 'all', 'vector').catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'binding_empty',
+      userMessage: 'Vector search needs kb.vector.',
+      remediation:
+        "Run `coral-cli expansion list` to find an engine that fills 'kb.vector', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.",
+      context: { binding: 'kb.vector' },
+    });
+    expect((error as { userMessage: string }).userMessage).not.toContain('embedder');
+    expect((error as { remediation: string }).remediation).not.toContain('--binding');
+  });
+
   it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);

@@ -15,6 +15,7 @@ describe('cli errors', () => {
         new BackendToolHttpError('timeout failed', 400, {
           code: 'invalid_request',
           message: 'timeoutSeconds: Number must be less than or equal to 1200',
+          remediation: 'Retry with timeoutSeconds <= 1200.',
           detail,
         }),
       );
@@ -24,6 +25,7 @@ describe('cli errors', () => {
           error: true,
           code: 'invalid_request',
           message: 'timeoutSeconds: Number must be less than or equal to 1200',
+          remediation: 'Retry with timeoutSeconds <= 1200.',
           detail,
         },
         exitCode: 1,

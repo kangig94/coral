@@ -538,12 +538,14 @@ describe('cli format', () => {
       const error = new BackendToolHttpError('HTTP 503', 503, {
         code: 'backend_recovering',
         message: 'recovering — retry after 500ms',
+        remediation: 'Retry after the backend finishes recovery.',
         detail: { retryAfterMs: 500 },
       });
       const { envelope } = buildErrorEnvelope(error);
 
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
         'recovering — retry after 500ms [code=backend_recovering, http=503]\n' +
+          'remediation: Retry after the backend finishes recovery.\n' +
           'Detail: {"retryAfterMs":500}',
       );
     });

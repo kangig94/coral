@@ -19,8 +19,14 @@ export function formatErrorEnvelope(envelope: CliErrorEnvelope, statusCode?: num
     ? `${envelope.message} Run 'coral-cli backend status' to diagnose.`
     : envelope.message;
   const head = `${message} [${tags.join(', ')}]`;
-  if (envelope.detail === undefined) return head;
-  return `${head}\nDetail: ${JSON.stringify(envelope.detail)}`;
+  const lines = [head];
+  if (envelope.remediation !== undefined) {
+    lines.push(`remediation: ${envelope.remediation}`);
+  }
+  if (envelope.detail !== undefined) {
+    lines.push(`Detail: ${JSON.stringify(envelope.detail)}`);
+  }
+  return lines.join('\n');
 }
 
 export function formatError(error: unknown): string {

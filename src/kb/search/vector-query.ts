@@ -1,6 +1,6 @@
 import type { KbRuntime } from '../contract.js';
 import type { KbSearchScope } from '../entry-types.js';
-import { CoralSetupError } from '../../runtime/errors.js';
+import { serializeCoralSetupError } from '../../runtime/errors.js';
 import type { VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
 import type { SearchResponseWarnings } from './text-retrieval.js';
 
@@ -23,7 +23,7 @@ export async function searchExplicitVectorResults(
   try {
     queryVector = await embedQueryForVectorSearch(rt, rawQuery);
   } catch (error) {
-    if (error instanceof CoralSetupError && error.code === 'binding_empty') {
+    if (serializeCoralSetupError(error)?.code === 'binding_empty') {
       throw error;
     }
     return {
@@ -42,11 +42,12 @@ export async function searchExplicitVectorResults(
       fallbackToText: false,
     };
   } catch (error) {
+    const setupError = serializeCoralSetupError(error);
+    const binding = setupError?.context?.binding;
     if (
-      error instanceof CoralSetupError &&
-      error.code === 'binding_empty' &&
-      typeof error.context?.binding === 'string' &&
-      VECTOR_PATH_BINDING_NAMES.has(error.context.binding)
+      setupError?.code === 'binding_empty' &&
+      typeof binding === 'string' &&
+      VECTOR_PATH_BINDING_NAMES.has(binding)
     ) {
       throw error;
     }
