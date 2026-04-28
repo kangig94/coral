@@ -61,7 +61,8 @@ Two hooks run after compaction:
 Implementation notes:
 
 - snapshots are written under the project temp directory (`/tmp/coral/<project-slug>/hooks/active-jobs-*.json`)
-- terminal recovery uses the durable artifact path under `/tmp/coral-jobs/<jobId>/result.md`
+- terminal recovery uses the durable artifact path under `~/.coral/exports/jobs/<jobId>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/result.md` in dev
+- `<os-tmpdir>/coral-jobs/<jobId>/` contains live scratch artifacts such as stdout/stderr/intermediates only
 - hook recovery reads CLI-visible job state and durable result artifacts, not file-backed job status records
 
 The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.

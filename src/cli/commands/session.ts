@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { z, ZodError } from 'zod';
 
 import { BackendToolHttpError } from '../../transport/http/errors.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/records.js';
@@ -18,6 +19,7 @@ import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError } from '../errors.js';
 import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
+import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import {
   formatWaitProgress,
   formatWaitQueued,
@@ -205,49 +207,60 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           jobIds.length > 1
             ? new Map(jobIds.map((id, index) => [id, `j${index}`]))
             : null;
-        const subscription = await client.subscribe<WaitStreamEvent>(
-          'jobs.wait',
-          {
-            jobIds,
-            timeoutSeconds,
-            projectRoot,
-            ...(parsedCursor ? { cursor: parsedCursor } : {}),
-          },
-        );
+        const causeRenderer = openCliCauseRefRenderer(projectRoot);
 
         try {
-          for await (const event of subscription) {
-            if (event.type === 'progress' || event.type === 'terminal') {
-              currentCursor.afterSeq = event.seq;
+          const subscription = await client.subscribe<WaitStreamEvent>(
+            'jobs.wait',
+            {
+              jobIds,
+              timeoutSeconds,
+              projectRoot,
+              ...(parsedCursor ? { cursor: parsedCursor } : {}),
+            },
+          );
+
+          try {
+            for await (const event of subscription) {
+              if (event.type === 'progress' || event.type === 'terminal') {
+                currentCursor.afterSeq = event.seq;
+              }
+
+              const cursor = currentCursor.afterSeq > 0 ? serializeWaitCursor(currentCursor) : null;
+
+              const ctx: WaitRenderContext = getTerminalContext();
+              const renderCauseRef = causeRenderer.render;
+              let formatted: string;
+
+              switch (event.type) {
+                case 'progress':
+                  formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
+                  break;
+                case 'queued':
+                  formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
+                  break;
+                case 'terminal': {
+                  const describer = renderCauseRef
+                    ? { describeCauseRef: (ref: CauseRef) => renderCauseRef(ref, event.result.outcome) }
+                    : {};
+                  formatted = formatWaitTerminal(event, cursor, embed, describer);
+                  break;
+                }
+                case 'waiting':
+                  formatted = formatWaitWaiting(event, cursor);
+                  break;
+              }
+
+              process.stdout.write(renderWaitLine(formatted, ctx));
+              if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
+                process.stdout.write('\n');
+              }
             }
-
-            const cursor = currentCursor.afterSeq > 0 ? serializeWaitCursor(currentCursor) : null;
-
-            const ctx: WaitRenderContext = getTerminalContext();
-            let formatted: string;
-
-            switch (event.type) {
-              case 'progress':
-                formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
-                break;
-              case 'queued':
-                formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
-                break;
-              case 'terminal':
-                formatted = formatWaitTerminal(event, cursor, embed);
-                break;
-              case 'waiting':
-                formatted = formatWaitWaiting(event, cursor);
-                break;
-            }
-
-            process.stdout.write(renderWaitLine(formatted, ctx));
-            if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
-              process.stdout.write('\n');
-            }
+          } finally {
+            await subscription.close();
           }
         } finally {
-          await subscription.close();
+          causeRenderer.close();
         }
       } catch (error) {
         emitError(error);

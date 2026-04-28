@@ -259,7 +259,8 @@ Foundation layer
 | `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db` | Journal authority and projection tables |
 | `projection_sessions` in `store.db` | Projected provider sessions, continuation profiles, and project `scope_key` |
 | `projection_discuss` in `store.db` | Projected discuss snapshots and source-scoped discovery/summary state |
-| `<os-tmpdir>/coral-jobs/<jobId>/` | Job runtime scratch dir; `result.md` remains the durable wait/follow artifact |
+| `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact |
+| `<os-tmpdir>/coral-jobs/<jobId>/` | Live job scratch artifacts such as stdout/stderr/intermediates |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
 | `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |

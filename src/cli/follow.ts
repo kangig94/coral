@@ -2,10 +2,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../transport/http/client.js';
-import { createCauseRefRenderer } from '../causality/render.js';
-import { defaultEventDescribers } from '../read-model/event-describers.js';
 import type { CauseRef } from '../causality/cause-ref.js';
-import { describeTerminalOutcome, type TerminalOutcome } from '../jobs/outcome.js';
+import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
@@ -14,8 +12,8 @@ import { TransientHttpError, isTransientStreamError } from '../infra/http-errors
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
-import { getSharedReadCoralStore } from './read-store.js';
 import { formatLaunch } from './format/jobs.js';
+import { openCliCauseRefRenderer } from './cause-renderer.js';
 import {
   formatWaitProgress,
   formatWaitQueued,
@@ -113,30 +111,6 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
   return exitCode;
 }
 
-const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
-
-function openCauseRenderer(projectRoot: string): {
-  readonly render?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string;
-  close(): void;
-} {
-  try {
-    const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
-    return {
-      render: (ref, terminalOutcomeDiagnostic) => {
-        const hint = terminalOutcomeDiagnostic
-          ? `Original terminal outcome: ${describeTerminalOutcome(terminalOutcomeDiagnostic)}`
-          : undefined;
-        return causeRefRenderer.describe(ref, store, hint);
-      },
-      close: () => {},
-    };
-  } catch {
-    return {
-      close: () => {},
-    };
-  }
-}
-
 async function waitForRetry(signal: AbortSignal, backoffScheduler?: BackoffScheduler): Promise<boolean> {
   try {
     if (backoffScheduler) {
@@ -192,7 +166,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
   let localAbortRequested = false;
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
-  const causeRenderer = openCauseRenderer(options.projectRoot);
+  const causeRenderer = openCliCauseRefRenderer(options.projectRoot);
 
   const onSigint = () => {
     sigintCount += 1;

@@ -180,7 +180,9 @@ describe('journal commit primitive', () => {
           },
           ctx(),
         ),
-      ).toThrow(/body\.detail\.causeRef/);
+      ).toThrow(
+        /CauseRefToken is not allowed at body\.detail\.causeRef\. Tokens may appear only at: workflow\.completed:body\.causeRef, job\.terminal\.recorded:body\.terminal\.outcome\.causeRef, session\.closed:body\.reason\.causeRef\. Move the token to a pinned path or pass a resolved CauseRef instead\./,
+      );
 
       expect(countEvents(db)).toBe(0);
     } finally {

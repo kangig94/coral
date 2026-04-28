@@ -131,9 +131,15 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 
 ### Job state
 
+Durable result exports:
+
+- prod: `~/.coral/exports/jobs/<jobId>/result.md`
+- dev: `~/.coral/exports-dev/jobs/<jobId>/result.md`
+
+Live scratch artifacts:
+
 `<os-tmpdir>/coral-jobs/<jobId>/`
 
-- `result.md`: durable wait/follow export materialized from Journal terminal state
 - provider runtime scratch files such as stdout/stderr/env artifacts, owned by the runtime transport
 - KB source imports and explicit reindex runs are internal jobs in the Journal/store, not provider/session jobs; CLI display may label them as KB work even though `session_id` and `provider` are null in the projection
 
@@ -172,7 +178,9 @@ bridge/manifest.json                           -> backend bundle hash + build fl
 ~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock
 projection_sessions in store.db                -> projected provider session continuity and scope
 projection_discuss in store.db                 -> projected discuss snapshots and source indexes
-<os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
+~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
+~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
+<os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
 ~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
 ~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging

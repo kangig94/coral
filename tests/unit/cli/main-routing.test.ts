@@ -1,4 +1,4 @@
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
@@ -14,6 +14,10 @@ import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import { formatAbortResult, formatJobsList, formatLaunch, renderJobsList } from '#src/cli/format/jobs.js';
 import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
 import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { openStoreDatabase } from '#src/store/db.js';
+import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
+import { storePaths } from '#src/infra/path/store.js';
 
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -227,6 +231,56 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
         updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
       },
     })),
+  };
+}
+
+function createCauseRenderFixture(): { home: string; cleanup(): void } {
+  const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
+  const runtime = createRealRuntime('prod');
+  const db = openStoreDatabase({
+    path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
+    storage: runtime.storage,
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
+  });
+
+  try {
+    const insertEvent = db.prepare(
+      `INSERT INTO events (
+        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    );
+    insertEvent.run(
+      1,
+      '2026-03-21T00:00:00.000Z',
+      'workflow.completed',
+      'workflow',
+      'workflow-1',
+      1,
+      Buffer.from(
+        JSON.stringify({
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
+          stepDetails: [],
+        }),
+        'utf-8',
+      ),
+    );
+    insertEvent.run(
+      2,
+      '2026-03-21T00:00:00.000Z',
+      'workflow.lifecycle_fault',
+      'workflow',
+      'workflow-1',
+      1,
+      Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
+    );
+  } finally {
+    db.close();
+  }
+
+  return {
+    home,
+    cleanup: () => rmSync(home, { recursive: true, force: true }),
   };
 }
 
@@ -1319,6 +1373,59 @@ describe('cli main routing', () => {
       `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 2 }), false)}\n`,
     );
     expect(stderr).toBe('');
+  });
+
+  it('renders wait failed terminal cause chains from the store', async () => {
+    const fixture = createCauseRenderFixture();
+    const originalHome = process.env.HOME;
+    const originalTmpdir = process.env.TMPDIR;
+
+    try {
+      process.env.HOME = fixture.home;
+      process.env.TMPDIR = fixture.home;
+
+      const { buildProgram } = await loadMainModule();
+      const program = buildProgram();
+      const terminalEvent = {
+        type: 'terminal' as const,
+        jobId: 'job-1',
+        seq: 1,
+        remainingJobIds: [] as string[],
+        resultPath: '/tmp/result.md',
+        result: {
+          content: '',
+          outcome: {
+            kind: 'failed' as const,
+            causeRef: { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 },
+          },
+        },
+      };
+      mockState.streamWait.mockImplementationOnce(async function* () {
+        yield terminalEvent;
+      });
+
+      await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1']);
+
+      expect(stdout).toContain(
+        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
+      );
+      expect(stdout).not.toContain('workflow/workflow-1#1');
+      expect(stderr).toBe('');
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      if (originalTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpdir;
+      }
+
+      fixture.cleanup();
+    }
   });
 
   it('keeps Result path in wait --embed output when preview content is present', async () => {

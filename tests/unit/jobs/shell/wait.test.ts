@@ -54,6 +54,8 @@ import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/hel
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -906,6 +908,65 @@ describe('ExecutionService wait', () => {
     });
     expect(_existsSync(resultPath)).toBe(true);
     expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
+  });
+
+  it('rebuilds failed workflow result artifacts with lifecycle fault details', async () => {
+    const service = createService(ctx);
+    const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+    const resultPath = jobResultPath(jobId);
+    const workflowId = `workflow-${jobId}`;
+    const status = progressStore.readStatus(jobId);
+
+    progressStore.commit((c) => {
+      const fault = c.append(
+        workflowLifecycleFaultEvent(workflowId, {
+          kind: 'unknown',
+          message: 'workflow failure',
+        }),
+      );
+      const completed = c.append(
+        workflowCompletedEvent(workflowId, {
+          outcome: 'failed',
+          causeRef: fault,
+          stepDetails: [],
+        }),
+      );
+      appendJobTerminalRecorded(c, {
+        jobId,
+        sessionId,
+        namespace: status?.backendNamespace,
+        project: status?.projectRoot,
+        terminal: {
+          content: '',
+          outcome: { kind: 'failed', causeRef: completed },
+        },
+      });
+      return undefined;
+    });
+    rmSync(resultPath, { force: true });
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'terminal',
+      jobId,
+      resultPath,
+      result: {
+        content: '',
+        outcome: {
+          kind: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: workflowId } },
+        },
+      },
+    });
+    expect(_existsSync(resultPath)).toBe(true);
+    expect(_readFileSync(resultPath, 'utf-8')).toBe(
+      'Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.\n',
+    );
   });
 
   it('waitStream polls durable journal catch-up when live notifications are missed', async () => {

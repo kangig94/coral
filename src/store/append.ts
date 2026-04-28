@@ -202,7 +202,13 @@ function resolveSessionClosedCauseRef(
 
 function rejectResidualTokens(value: unknown, path: readonly string[] = ['body'], seen = new WeakSet<object>()): void {
   if (isCauseRefToken(value)) {
-    throw new Error(`CauseRefToken is not allowed at ${tokenPath(path)}.`);
+    throw new Error(
+      `CauseRefToken is not allowed at ${tokenPath(path)}. Tokens may appear only at: `
+        + 'workflow.completed:body.causeRef, '
+        + 'job.terminal.recorded:body.terminal.outcome.causeRef, '
+        + 'session.closed:body.reason.causeRef. '
+        + 'Move the token to a pinned path or pass a resolved CauseRef instead.',
+    );
   }
 
   if (typeof value !== 'object' || value === null) {

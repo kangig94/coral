@@ -4,7 +4,11 @@ import type { Database } from 'better-sqlite3';
 
 import type { StoragePort } from '../../runtime/ports.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
+import { getEvent } from '../../store/event-queries.js';
 import type { EventsRow } from '../../store/schema.js';
+import { causeRefSchema, type CauseRef } from '../../causality/cause-ref.js';
+import type { CoralEvent } from '../../store/envelope.js';
+import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
 
@@ -24,6 +28,84 @@ export function writeResultArtifact(
     throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
+}
+
+function renderCauseRefFallback(ref: CauseRef): string {
+  return `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
+}
+
+function parseCauseRef(value: unknown): CauseRef | null {
+  const parsed = causeRefSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function extractCauseRef(body: unknown): CauseRef | null {
+  if (!isRecord(body)) return null;
+  const direct = parseCauseRef(body.causeRef);
+  if (direct) return direct;
+  if (isRecord(body.reason) && body.reason.kind === 'failed') {
+    return parseCauseRef(body.reason.causeRef);
+  }
+  if (!isRecord(body.terminal) || !isRecord(body.terminal.outcome)) return null;
+  return body.terminal.outcome.kind === 'failed' ? parseCauseRef(body.terminal.outcome.causeRef) : null;
+}
+
+function describeKnownEvent(event: CoralEvent): string {
+  const body = event.body;
+  if (event.type === 'workflow.completed' && isRecord(body) && typeof body.outcome === 'string') {
+    return `Workflow ${body.outcome}.`;
+  }
+
+  if (
+    event.type === 'workflow.lifecycle_fault'
+    && isRecord(body)
+    && typeof body.kind === 'string'
+    && typeof body.message === 'string'
+  ) {
+    return `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
+  }
+
+  if (event.type === 'job.terminal.recorded') {
+    const parsed = jobTerminalRecordedBodySchema.safeParse(body);
+    if (parsed.success) {
+      return describeTerminalOutcome(parsed.data.terminal.outcome, {
+        describeCauseRef: renderCauseRefFallback,
+      });
+    }
+  }
+
+  return event.type;
+}
+
+function describeCauseRefChain(
+  db: Database,
+  ctx: StoreReadContext,
+  ref: CauseRef,
+  visited: Set<string>,
+): string | null {
+  const key = `${ref.stream.kind}:${ref.stream.id}:${ref.seq}`;
+  if (visited.has(key)) {
+    return null;
+  }
+  visited.add(key);
+
+  const event = getEvent(db, ref.stream, ref.seq, ctx);
+  if (!event) {
+    return null;
+  }
+
+  const localDescription = describeKnownEvent(event);
+  const nextRef = extractCauseRef(event.body);
+  if (!nextRef) {
+    return localDescription;
+  }
+
+  const nextDescription = describeCauseRefChain(db, ctx, nextRef, visited);
+  return nextDescription === null ? null : `${localDescription} Caused by: ${nextDescription}`;
+}
+
+function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: CauseRef): string {
+  return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
 }
 
 export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
@@ -46,7 +128,9 @@ export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadC
   }
 
   if (body?.terminal.outcome) {
-    return `${describeTerminalOutcome(body.terminal.outcome)}\n`;
+    return `${describeTerminalOutcome(body.terminal.outcome, {
+      describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref),
+    })}\n`;
   }
 
   return '';
