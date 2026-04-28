@@ -16,8 +16,10 @@ import type {
   VectorRetrieval,
 } from '#src/kb/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/index.js';
 import { workflowRecover } from '#src/workflow/recover.js';
+
+// Match the orama projection's id so the bundled fallback's registration matches.
+const MOCK_BASE_CONSUMER_ID = 'orama-base';
 
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
@@ -30,26 +32,23 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
 
 function createMockKb(order?: string[]) {
   const baseConsumer = {
-    id: ORAMA_BASE_CONSUMER_ID,
+    id: MOCK_BASE_CONSUMER_ID,
     authority: 'corpus' as const,
     corpusInterest: 'content' as const,
-    registrationKind: 'base' as const,
     apply: vi.fn(async () => {}),
   };
   const vectorRetrieval: VectorRetrieval = {
-    read: vi.fn(async () => ({ hits: [] })),
+    search: vi.fn(async () => ({ hits: [] })),
   };
   const ftsRetrieval: FtsRetrieval = {
-    read: vi.fn(async () => ({ hits: [] })),
+    search: vi.fn(async () => ({ hits: [], exhausted: true })),
+    tokenize: vi.fn(() => []),
+    warnings: vi.fn(() => []),
   };
-  const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', {
-    read: () => vectorRetrieval,
-    consumer: baseConsumer,
-  });
-  const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', {
-    read: () => ftsRetrieval,
-    consumer: baseConsumer,
-  });
+  const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
+  vector.bind({ read: () => vectorRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
+  const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+  fts.bind({ read: () => ftsRetrieval, consumer: baseConsumer }, { [Symbol.dispose]() {} }, MOCK_BASE_CONSUMER_ID);
   const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
 
   return {
@@ -64,19 +63,6 @@ function createMockKb(order?: string[]) {
       const result = await fn();
       order?.push('withMutationLock:end');
       return result;
-    }),
-    ensureOramaIndex: vi.fn(async () => {
-      order?.push('ensureOramaIndex');
-      return {
-        db: {} as never,
-        tokenizer: {} as never,
-        index: {
-          entries: {},
-          principles: {},
-          entityMeta: {},
-          relationships: [],
-        },
-      };
     }),
     ensureCorpusFreshness: vi.fn(async () => {
       order?.push('ensureCorpusFreshness');
@@ -156,7 +142,7 @@ describe('coordinator startup ordering', () => {
         1,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        ORAMA_BASE_CONSUMER_ID,
+        MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
@@ -270,7 +256,7 @@ describe('coordinator startup ordering', () => {
         1,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        ORAMA_BASE_CONSUMER_ID,
+        MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));

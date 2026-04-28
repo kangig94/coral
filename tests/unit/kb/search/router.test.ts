@@ -1,62 +1,42 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Backed, FtsRetrieval, KbRuntime, VectorRetrieval } from '#src/kb/contract.js';
+import type { Backed, KbRuntime, VectorRetrieval } from '#src/kb/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { createRouter } from '#src/kb/search/router.js';
 
-type BackendVectorRetrieval = VectorRetrieval & {
-  readonly backendKind: 'needle' | 'orama';
-};
-
-function createVectorBacked(
-  backendKind: BackendVectorRetrieval['backendKind'],
-): { backed: Backed<VectorRetrieval>; retrieval: BackendVectorRetrieval } {
-  const retrieval: BackendVectorRetrieval = {
-    backendKind,
-    read: vi.fn(async () => ({ hits: [] })),
+function createVectorBacked(): { backed: Backed<VectorRetrieval>; retrieval: VectorRetrieval } {
+  const retrieval: VectorRetrieval = {
+    search: vi.fn(async () => ({ hits: [] })),
   };
   return {
     retrieval,
     backed: {
       read: () => retrieval,
       consumer: {
-        id: `mock-${backendKind}`,
+        id: 'mock-vector',
         authority: 'corpus',
         corpusInterest: 'content',
-        registrationKind: 'expansion',
       },
     },
   };
 }
 
 describe('createRouter', () => {
-  it('reads vector and fts bindings without touching runtime.db', () => {
-    const { backed: vectorBacked, retrieval: vectorRetrieval } = createVectorBacked('needle');
-    const textRetrieval: FtsRetrieval = {
-      read: vi.fn(async () => ({ hits: [] })),
-    };
-    const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector', vectorBacked);
-    const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', {
-      read: () => textRetrieval,
-      consumer: {
-        id: 'mock-orama',
-        authority: 'corpus',
-        corpusInterest: 'content',
-        registrationKind: 'base',
-      },
-    });
+  it('lazily reads the vector binding when invoked, without touching runtime.db', async () => {
+    const { backed: vectorBacked, retrieval: vectorRetrieval } = createVectorBacked();
+    const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
+    vector.bind(vectorBacked, { [Symbol.dispose]() {} }, 'mock-vector');
 
     const runtime = {
       vector,
-      fts,
       get db() {
         throw new Error('createRouter should not touch runtime.db');
       },
     } as unknown as KbRuntime;
 
     const router = createRouter(runtime);
+    await router.vector.search([0.1, 0.2], 5);
 
-    expect(router.vector).toBe(vectorRetrieval);
-    expect(router.text).toBe(textRetrieval);
+    expect(vectorRetrieval.search).toHaveBeenCalledTimes(1);
   });
 });

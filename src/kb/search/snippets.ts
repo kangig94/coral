@@ -1,5 +1,5 @@
-import { normalizeWhitespace, tokenizeField } from '../../engines/orama/document-builder.js';
-import type { KbOramaTokenizer } from '../../engines/orama/schema.js';
+import type { FtsRetrieval } from '../contract.js';
+import { normalizeWhitespace, denormalizeSlug } from '../text-utils.js';
 
 type SnippetAnchor = {
   index: number;
@@ -8,16 +8,14 @@ type SnippetAnchor = {
 
 export type QueryContext = {
   rawQuery: string;
-  oramaTerm: string;
-  queryTokens: string[];
-  tokenizer: KbOramaTokenizer;
+  normalizedQuery: string;
+  queryTokens: readonly string[];
+  fts: FtsRetrieval;
 };
 
-export function denormalizeSlug(slug: string): string {
-  return slug.replace(/ /g, '-');
-}
+export { denormalizeSlug };
 
-export function hasTokenOverlap(queryTokens: string[], fieldTokens: string[]): boolean {
+export function hasTokenOverlap(queryTokens: readonly string[], fieldTokens: readonly string[]): boolean {
   if (queryTokens.length === 0 || fieldTokens.length === 0) {
     return false;
   }
@@ -82,9 +80,9 @@ function normalizedOffset(text: string): number {
   return normalizeWhitespace(text).length;
 }
 
-function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string): SnippetAnchor | null {
+function findPhraseAnchor(content: string, rawQuery: string, normalizedQuery: string): SnippetAnchor | null {
   const normalizedContent = content.toLowerCase();
-  const candidates = [...new Set([rawQuery.trim(), oramaTerm].filter(Boolean))];
+  const candidates = [...new Set([rawQuery.trim(), normalizedQuery].filter(Boolean))];
   let bestAnchor: SnippetAnchor | null = null;
 
   for (const candidate of candidates) {
@@ -101,10 +99,10 @@ function findPhraseAnchor(content: string, rawQuery: string, oramaTerm: string):
 }
 
 // Inverse of Orama English SPLITTER, preserving the indexer's word boundaries.
-function findTokenAnchor(content: string, queryTokens: string[], tokenizer: KbOramaTokenizer): SnippetAnchor | null {
+function findTokenAnchor(content: string, queryTokens: readonly string[], fts: FtsRetrieval): SnippetAnchor | null {
   for (const match of content.matchAll(/[A-Za-zàèéìòóù0-9_'-]+/gim)) {
     const value = match[0];
-    const valueTokens = tokenizeField(value, tokenizer);
+    const valueTokens = fts.tokenize(value);
     if (!hasTokenOverlap(queryTokens, valueTokens)) {
       continue;
     }
@@ -120,8 +118,8 @@ function findTokenAnchor(content: string, queryTokens: string[], tokenizer: KbOr
 
 export function extractSnippet(content: string, query: QueryContext): string | undefined {
   const anchor =
-    findPhraseAnchor(content, query.rawQuery, query.oramaTerm) ??
-    findTokenAnchor(content, query.queryTokens, query.tokenizer);
+    findPhraseAnchor(content, query.rawQuery, query.normalizedQuery) ??
+    findTokenAnchor(content, query.queryTokens, query.fts);
 
   if (anchor === null) {
     return undefined;

@@ -1,9 +1,8 @@
-import type { FtsRetrieval, KbRuntime, VectorRetrieval } from '../contract.js';
-import type { GraphRetrieval, GraphRetrievalResult, HybridFusion, RetrievalScope } from './contract.js';
+import type { KbRuntime } from '../contract.js';
+import type { GraphRetrieval, GraphRetrievalResult, HybridFusion, RetrievalScope, VectorRetrieval } from './contract.js';
 import { createHybridFusion } from './hybrid.js';
 
 export interface SearchRouter {
-  text: FtsRetrieval;
   vector: VectorRetrieval;
   graph: GraphRetrieval;
   hybrid: HybridFusion;
@@ -21,11 +20,18 @@ class NullGraphRetrieval implements GraphRetrieval {
   }
 }
 
-/** Builds the KB search router with shared text, vector, graph, and hybrid retrieval roles. */
+/**
+ * Builds the KB search router with shared vector, graph, and hybrid retrieval roles.
+ * The vector role is read lazily — callers in pure-text/graph paths never trigger
+ * `kb.vector.read()` if they don't invoke `router.vector.search(...)`.
+ */
 export function createRouter(runtime: KbRuntime, options: SearchRouterOptions = {}): SearchRouter {
   return {
-    text: runtime.fts.read().read(),
-    vector: runtime.vector.read().read(),
+    vector: {
+      search(embedding, topK, scope) {
+        return runtime.vector.read().read().search(embedding, topK, scope);
+      },
+    },
     graph: options.graph ?? new NullGraphRetrieval(),
     hybrid: createHybridFusion(),
   };

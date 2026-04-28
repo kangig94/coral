@@ -9,6 +9,7 @@ import { createHybridFusion } from '#src/kb/search/hybrid.js';
 import type { TextRetrievalResult, VectorRetrievalResult } from '#src/kb/search/contract.js';
 import {
   bindEmbedding,
+  bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
   seedNeedleRouteState,
@@ -48,11 +49,13 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createTestKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+  bindOramaFtsForTest(kb);
+  return kb;
 }
 
 function writeNote(
@@ -105,7 +108,6 @@ async function installMockHybridSearch(
   bindVectorBacked(
     kb,
     {
-      backendKind: 'needle',
       search: async (embedding: number[], topK: number, scope?: 'all' | 'notes' | 'sources' | 'communities') => {
         let candidateK = Math.max(topK, 1);
         const candidateCap = Math.max(topK, 10 * topK);

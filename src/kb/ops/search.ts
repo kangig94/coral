@@ -1,6 +1,7 @@
 import { CoralSetupError } from '../../runtime/errors.js';
 import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
-import type { KbRuntime } from '../contract.js';
+import { normalizeWhitespace } from '../text-utils.js';
+import type { FtsRetrieval, KbRuntime } from '../contract.js';
 import type { EntityGraph, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
 import {
   buildGraphSearchContext,
@@ -8,8 +9,6 @@ import {
   RuntimeGraphRetrieval,
   type GraphSearchContext,
 } from '../search/graph-retrieval.js';
-import { ORAMA_BASE_CONSUMER_ID } from '../../engines/orama/index.js';
-import { normalizeOramaTerm, tokenizeQuery } from '../../engines/orama/document-builder.js';
 import { buildHybridResponse, buildTextResponse, buildVectorResponse } from '../search/responses.js';
 import { createRouter } from '../search/router.js';
 import type { QueryContext } from '../search/snippets.js';
@@ -20,13 +19,14 @@ import {
   fuseRetrievalRoles,
   rerankHits,
   resolveHit,
-  searchOrama,
   shouldContinueWidening,
   type HybridKbSearchHit,
   type ResolvedKbSearchHit,
 } from '../search/text-retrieval.js';
 import { EMPTY_VECTOR_RETRIEVAL_RESULT, searchExplicitVectorResults } from '../search/vector-query.js';
 import type { GraphRetrievalResult } from '../search/contract.js';
+
+const VECTOR_BINDING_NAMES: ReadonlySet<string> = new Set(['kb.embedding', 'kb.vector']);
 
 type TextSearchState = {
   queryCtx: QueryContext;
@@ -41,24 +41,26 @@ type TextGraphSearchState = TextSearchState & {
   textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit>;
 };
 
-function rethrowMissingEmbedder(error: unknown): never {
+function rethrowAsMissingEmbedder(error: unknown): never {
   if (
     !(error instanceof CoralSetupError) ||
     error.code !== 'binding_empty' ||
-    error.context?.binding !== 'kb.embedding'
+    typeof error.context?.binding !== 'string' ||
+    !VECTOR_BINDING_NAMES.has(error.context.binding)
   ) {
     throw error;
   }
 
+  const binding = error.context.binding;
   throw Object.assign(
     new CoralSetupError({
       code: 'binding_empty',
       userMessage: 'Vector search needs an embedder.',
       remediation:
-        'Run `coral-cli expansion list` to find an engine that fills the missing binding, then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.',
-      context: { binding: 'kb.embedding' },
+        'Run `coral-cli expansion equip <embedder>` — see `coral-cli expansion list --binding kb.embedding`.',
+      context: { binding },
     }),
-    { binding: 'kb.embedding', cause: error },
+    { binding, cause: error },
   );
 }
 
@@ -70,10 +72,25 @@ export async function searchKb(
   mode?: KbSearchMode,
 ): Promise<KbSearchResponse> {
   const rawQuery = query.trim();
-  const oramaTerm = normalizeOramaTerm(rawQuery);
+  const normalizedQuery = normalizeWhitespace(rawQuery);
   const topK = Number.isInteger(top_k) && top_k > 0 ? top_k : 20;
-  const { db, tokenizer, index, warnings: oramaWarnings } = await rt.ensureOramaIndex();
-  if (oramaWarnings?.includes('orama_snapshot_absent') || oramaWarnings?.includes('orama_snapshot_stale')) {
+
+  let ftsBacked: ReturnType<typeof rt.fts.read>;
+  try {
+    ftsBacked = rt.fts.read();
+  } catch (error) {
+    if (error instanceof CoralSetupError && error.code === 'binding_empty' && error.context?.binding === 'kb.fts') {
+      return {
+        mode: 'text',
+        results: [],
+        warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+      };
+    }
+    throw error;
+  }
+  const fts: FtsRetrieval = ftsBacked.read();
+  const ftsWarnings = fts.warnings();
+  if (ftsWarnings.includes('fts_index_uninitialized') || ftsWarnings.includes('fts_index_stale')) {
     return {
       mode: 'text',
       results: [],
@@ -81,6 +98,7 @@ export async function searchKb(
     };
   }
 
+  const index = rt.readIndex() ?? rt.readIndexOrEmpty();
   if (Object.keys(index.entries).length === 0) {
     return emptySearchResponse(mode);
   }
@@ -101,9 +119,9 @@ export async function searchKb(
     }
     queryCtx = {
       rawQuery,
-      oramaTerm,
-      queryTokens: tokenizeQuery(oramaTerm, tokenizer),
-      tokenizer,
+      normalizedQuery,
+      queryTokens: fts.tokenize(normalizedQuery),
+      fts,
     };
     return queryCtx;
   };
@@ -157,17 +175,24 @@ export async function searchKb(
 
       if (nextQueryCtx.queryTokens.length > 0) {
         let limit = topK;
-        let hits = await searchOrama(db, oramaTerm, limit);
-        let exhausted = hits.length < limit;
-        resolvedHits.push(...hits.map((hit) => resolveHit(hit, index)));
+        let result = await fts.search(nextQueryCtx.normalizedQuery, limit, scope);
+        resolvedHits.push(...result.hits.map((hit) => resolveHit(hit, index)));
 
-        while (shouldContinueWidening(hits, resolvedHits, nextCommunitiesFresh, scope, topK, exhausted)) {
-          const prevCount = hits.length;
+        while (
+          shouldContinueWidening(
+            result.hits,
+            resolvedHits,
+            nextCommunitiesFresh,
+            scope,
+            topK,
+            result.exhausted,
+          )
+        ) {
+          const prevCount = result.hits.length;
           limit = Math.max(limit + 1, limit * 2);
-          hits = await searchOrama(db, oramaTerm, limit);
-          exhausted = hits.length < limit;
-          for (let i = prevCount; i < hits.length; i += 1) {
-            resolvedHits.push(resolveHit(hits[i], index));
+          result = await fts.search(nextQueryCtx.normalizedQuery, limit, scope);
+          for (let i = prevCount; i < result.hits.length; i += 1) {
+            resolvedHits.push(resolveHit(result.hits[i], index));
           }
         }
       }
@@ -216,11 +241,27 @@ export async function searchKb(
     return textGraphStatePromise;
   };
 
-  const searchVectorResults = async () => {
+  const searchVectorResults = async (explicit: boolean) => {
     try {
       return await searchExplicitVectorResults(rt, rawQuery, topK, scope);
     } catch (error) {
-      rethrowMissingEmbedder(error);
+      if (
+        error instanceof CoralSetupError &&
+        error.code === 'binding_empty' &&
+        typeof error.context?.binding === 'string' &&
+        VECTOR_BINDING_NAMES.has(error.context.binding)
+      ) {
+        if (explicit) {
+          rethrowAsMissingEmbedder(error);
+        }
+        // Implicit hybrid path with no engine: degrade silently to text-only.
+        return {
+          hits: [],
+          responseWarnings: {},
+          fallbackToText: true as const,
+        };
+      }
+      throw error;
     }
   };
 
@@ -241,7 +282,7 @@ export async function searchKb(
       return buildVectorResponse([], topK);
     }
 
-    const vectorResult = await searchVectorResults();
+    const vectorResult = await searchVectorResults(true);
     if (vectorResult.fallbackToText) {
       const textState = await getTextState();
       return buildTextResponse(
@@ -275,7 +316,7 @@ export async function searchKb(
       );
     }
 
-    const vectorResult = await searchVectorResults();
+    const vectorResult = await searchVectorResults(true);
     if (vectorResult.fallbackToText) {
       const textState = await getTextState();
       return buildTextResponse(
@@ -319,18 +360,8 @@ export async function searchKb(
   }
 
   const textGraphState = await getTextGraphState();
-  if (rt.vector.read().consumer.id === ORAMA_BASE_CONSUMER_ID) {
-    return buildTextResponse(
-      textGraphState.textHits,
-      textGraphState.queryCtx,
-      topK,
-      index,
-      textGraphState.communitiesFresh,
-      textGraphState.graphFresh,
-    );
-  }
 
-  const vectorResult = await searchVectorResults();
+  const vectorResult = await searchVectorResults(false);
   if (vectorResult.fallbackToText) {
     return buildTextResponse(
       textGraphState.textHits,

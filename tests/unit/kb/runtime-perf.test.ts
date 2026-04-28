@@ -193,8 +193,10 @@ describe('runtime hot-path perf regressions', () => {
       runtimeDir: tempRoot,
       db: createKbTestDb(tempRoot),
     });
+    const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
+    bindOramaFtsForTest(kb);
     await reindex.reindex(kb);
-    await kb.ensureOramaIndex();
+    await kb.fts.read().read().search('warmup', 1);
     const entry = kb.readIndexOrEmpty().entries['note:target-note'];
     if (entry === undefined || entry.kind !== 'note' || entry.entrySeq === undefined) {
       throw new Error('Expected target note to exist in the index.');

@@ -5,12 +5,10 @@ import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
-  EmbeddingService,
   KbCorpusSnapshot,
   KbRuntime,
 } from '../../kb/contract.js';
 import {
-  buildRetrievalAuthorityText,
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
 } from '../../kb/corpus/snapshot.js';
@@ -19,23 +17,28 @@ import type { CommunityDocument } from '../../kb/curate/community/detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../../kb/corpus/frontmatter.js';
 import { cloneKbIndex } from '../../kb/corpus/index-records.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
-import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from './document-builder.js';
+import {
+  createOramaDb,
+  createOramaTokenizer,
+  normalizeOramaTerm,
+  toOramaDocument,
+  tokenizeQuery,
+  type KbOramaDocument,
+} from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
+import { OramaSnapshotStore } from './snapshot.js';
 import { loadKbNote, loadKbSource } from '../../kb/read.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { CoralSetupError } from '../../runtime/errors.js';
 import type {
+  FtsHit,
+  FtsSearchResult,
+  RetrievedDocument,
   RetrievalScope,
-  TextRetrieval,
-  TextRetrievalResult,
-  VectorRetrieval,
-  VectorRetrievalResult,
 } from '../../kb/search/contract.js';
 import {
   isCommunityEntry,
   isNoteEntry,
   isSourceEntry,
-  type KbEntryId,
   type CommunityEntry,
   type KbIndex,
   type NoteEntry,
@@ -53,6 +56,7 @@ export {
   type KbOramaDocument,
 } from './document-builder.js';
 export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
+export { OramaSnapshotStore } from './snapshot.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
   'slug',
@@ -125,204 +129,41 @@ function compareScoreAndEntryId(
   return left.entryId.localeCompare(right.entryId);
 }
 
-type ScoredVectorCandidate = {
-  document: KbOramaDocument;
-  score: number;
-};
-
-function compareScoredVectorCandidates(left: ScoredVectorCandidate, right: ScoredVectorCandidate): number {
-  return compareScoreAndEntryId(
-    { score: left.score, entryId: left.document.entryId },
-    { score: right.score, entryId: right.document.entryId },
-  );
-}
-
-function isWorseVectorCandidate(left: ScoredVectorCandidate, right: ScoredVectorCandidate): boolean {
-  return compareScoredVectorCandidates(left, right) > 0;
-}
-
-function siftWorseCandidateUp(heap: ScoredVectorCandidate[], startIndex: number): void {
-  let index = startIndex;
-  while (index > 0) {
-    const parentIndex = Math.floor((index - 1) / 2);
-    const current = heap[index];
-    const parent = heap[parentIndex];
-    if (current === undefined || parent === undefined || !isWorseVectorCandidate(current, parent)) {
-      break;
-    }
-    heap[index] = parent;
-    heap[parentIndex] = current;
-    index = parentIndex;
-  }
-}
-
-function siftWorseCandidateDown(heap: ScoredVectorCandidate[], startIndex: number): void {
-  let index = startIndex;
-
-  while (true) {
-    const leftChildIndex = index * 2 + 1;
-    const rightChildIndex = leftChildIndex + 1;
-    let worstIndex = index;
-
-    if (
-      leftChildIndex < heap.length &&
-      heap[leftChildIndex] !== undefined &&
-      heap[worstIndex] !== undefined &&
-      isWorseVectorCandidate(heap[leftChildIndex], heap[worstIndex])
-    ) {
-      worstIndex = leftChildIndex;
-    }
-
-    if (
-      rightChildIndex < heap.length &&
-      heap[rightChildIndex] !== undefined &&
-      heap[worstIndex] !== undefined &&
-      isWorseVectorCandidate(heap[rightChildIndex], heap[worstIndex])
-    ) {
-      worstIndex = rightChildIndex;
-    }
-
-    if (worstIndex === index) {
-      return;
-    }
-
-    const current = heap[index];
-    const worst = heap[worstIndex];
-    if (current === undefined || worst === undefined) {
-      return;
-    }
-    heap[index] = worst;
-    heap[worstIndex] = current;
-    index = worstIndex;
-  }
-}
-
-function listStoredDocuments(db: KbOramaDb): KbOramaDocument[] {
-  // Orama does not expose enumerate-all publicly; documentsStore is internal but stable across minor versions.
-  const store = (
-    db as KbOramaDb & {
-      documentsStore: { getAll(docs: unknown): Record<number, KbOramaDocument> };
-      data: { docs: unknown };
-    }
-  ).documentsStore;
-  const docs = store.getAll((db as KbOramaDb & { data: { docs: unknown } }).data.docs);
-
-  return Object.values(docs).sort((left, right) => left.entryId.localeCompare(right.entryId));
-}
-
-function toUnitVector(values: ArrayLike<number>): Float64Array | null {
-  if (values.length === 0) {
-    return null;
-  }
-
-  let magnitude = 0;
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index] ?? 0;
-    magnitude += value * value;
-  }
-  if (magnitude === 0) {
-    return null;
-  }
-
-  const scale = 1 / Math.sqrt(magnitude);
-  const normalized = new Float64Array(values.length);
-  for (let index = 0; index < values.length; index += 1) {
-    normalized[index] = values[index] * scale;
-  }
-
-  return normalized;
-}
-
-function cosineSimilarity(left: Float64Array, right: readonly number[]): number {
-  let total = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    total += left[index] * (right[index] ?? 0);
-  }
-  return total;
-}
-
-function normalizeStoredVector(values: ArrayLike<number>): number[] {
-  if (values.length === 0) {
-    return [];
-  }
-
-  const normalized = toUnitVector(values);
-  if (normalized === null) {
-    throw new Error('Embedding provider returned a zero-norm vector.');
-  }
-
-  return Array.from(normalized);
-}
-
-function collectTopKByCosine(
-  documents: readonly KbOramaDocument[],
-  queryVector: Float64Array,
-  topK: number,
-  scope?: RetrievalScope,
-): ScoredVectorCandidate[] {
-  if (topK <= 0) {
-    return [];
-  }
-
-  const heap: ScoredVectorCandidate[] = [];
-
-  for (const document of documents) {
-    if (!scopeAllowsKind(scope, document.kind)) {
-      continue;
-    }
-    if (document.vector.length === 0 || document.vector.length !== queryVector.length) {
-      continue;
-    }
-
-    const candidate = {
-      document,
-      score: cosineSimilarity(queryVector, document.vector),
-    };
-
-    if (heap.length < topK) {
-      heap.push(candidate);
-      siftWorseCandidateUp(heap, heap.length - 1);
-      continue;
-    }
-
-    const worst = heap[0];
-    if (worst !== undefined && isWorseVectorCandidate(worst, candidate)) {
-      heap[0] = candidate;
-      siftWorseCandidateDown(heap, 0);
-    }
-  }
-
-  return heap.sort(compareScoredVectorCandidates);
-}
-
 function communityMetadataHash(rawContent: string): string {
   return computeMetadataSurfaceHash({
     rawBytes: rawContent,
   });
 }
 
-function retrievalHitFromDocument(document: KbOramaDocument, score: number, rank: number) {
+function toRetrievedDocument(document: KbOramaDocument): RetrievedDocument {
   return {
-    entryId: document.entryId as KbEntryId,
+    entryId: document.entryId,
     slug: document.entryId.slice(document.entryId.indexOf(':') + 1),
     kind: document.kind,
+    freshness: document.freshness,
     title: document.title,
+    body: document.body,
     tags: document.tags,
     principles: document.principles,
-    score,
-    rank,
   };
 }
 
-/** Coordinator-facing Orama projection that serves both lexical search and base-tier cosine search. */
-export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, CorpusConsumerRegistration {
+/**
+ * Coordinator-facing Orama projection that serves lexical search through the
+ * engine-blind FTS contract. Owns its own snapshot store (Expansion-internal
+ * state) so KbRuntime stays engine-blind.
+ */
+export class OramaBaseProjection implements CorpusConsumerRegistration {
   readonly id = ORAMA_BASE_CONSUMER_ID;
   readonly authority = 'corpus';
   readonly corpusInterest = 'content';
-  readonly registrationKind = 'base';
-  readonly backendKind = 'orama';
   onApplyFailure?: (error: ConsumerApplyError) => void;
-  constructor(private readonly runtime: KbRuntime) {}
+  private readonly warningSet = new Set<string>();
+
+  constructor(
+    private readonly runtime: KbRuntime,
+    private readonly snapshotStore: OramaSnapshotStore,
+  ) {}
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
     await this.runtime.ensureCorpusFreshness();
@@ -331,71 +172,136 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     this.runtime.recordIndexSyncSuccess();
   }
 
-  /** Loads the current Orama index artifacts from the runtime. */
+  /**
+   * Loads the current Orama index artifacts. If no snapshot exists but the KB
+   * index is populated, auto-rebuilds from the canonical index — preserves
+   * "search works zero-config after a fresh boot or empty cache" behaviour.
+   */
   async ensureLoaded(): Promise<OramaLoadedIndex> {
-    const { db, tokenizer } = await this.runtime.ensureOramaIndex();
-    return { db, tokenizer };
+    const cached = this.snapshotStore.getCache();
+    if (cached !== null) {
+      this.warningSet.delete('fts_index_uninitialized');
+      return cached;
+    }
+
+    const loaded = await this.snapshotStore.loadIfPresent();
+    if (loaded !== null) {
+      this.warningSet.delete('fts_index_uninitialized');
+      return loaded;
+    }
+
+    const currentIndex = this.runtime.readIndex();
+    if (currentIndex !== null && Object.keys(currentIndex.entries).length > 0) {
+      const prepared = await this.prepareFullSnapshotForCurrentCorpus(currentIndex);
+      await this.installFullSnapshot(this.runtime.captureCorpusSnapshot(), prepared);
+      const rebuilt = this.snapshotStore.getCache();
+      if (rebuilt !== null) {
+        this.warningSet.delete('fts_index_uninitialized');
+        return rebuilt;
+      }
+    }
+
+    this.warningSet.add('fts_index_uninitialized');
+    const created = await createOramaDb();
+    this.snapshotStore.install(created);
+    return created;
   }
 
-  async search(query: string, topK: number, scope?: RetrievalScope): Promise<TextRetrievalResult>;
-  async search(embedding: number[], topK: number, scope?: RetrievalScope): Promise<VectorRetrievalResult>;
-  /** Runs lexical search for text queries and cosine search over stored vectors for embeddings. */
-  async search(
-    queryOrEmbedding: string | number[],
-    topK: number,
-    scope?: RetrievalScope,
-  ): Promise<TextRetrievalResult | VectorRetrievalResult> {
+  /**
+   * Eager freshness probe. Reports `'fts_index_uninitialized'` only when there
+   * is neither an in-memory cache nor a persisted snapshot AND no KB index to
+   * auto-rebuild from — matches the pre-rewrite degraded-search behaviour.
+   */
+  probeFreshness(): void {
+    if (this.snapshotStore.hasCache()) {
+      this.warningSet.delete('fts_index_uninitialized');
+      return;
+    }
+    if (this.snapshotStore.hasPersistedSnapshot()) {
+      this.warningSet.delete('fts_index_uninitialized');
+      return;
+    }
+    const currentIndex = this.runtime.readIndex();
+    if (currentIndex !== null && Object.keys(currentIndex.entries).length > 0) {
+      this.warningSet.delete('fts_index_uninitialized');
+      return;
+    }
+    this.warningSet.add('fts_index_uninitialized');
+  }
+
+  /** Single-shot ranked lexical search; KB-tier owns the widening loop. */
+  async search(query: string, topK: number, scope?: RetrievalScope): Promise<FtsSearchResult> {
+    const safeTopK = topK > 0 ? topK : 1;
+    const term = normalizeOramaTerm(query);
+    if (!term) {
+      return { hits: [], exhausted: true };
+    }
+
     const { db } = await this.ensureLoaded();
+    const limit = Math.max(safeTopK * 5, safeTopK);
 
-    if (typeof queryOrEmbedding === 'string') {
-      const term = normalizeOramaTerm(queryOrEmbedding);
-      if (!term) {
-        return { hits: [] };
-      }
+    const response = await oramaSearch(db, {
+      term,
+      properties: ORAMA_SEARCH_PROPERTIES,
+      boost: ORAMA_SEARCH_BOOST,
+      limit,
+    });
 
-      const response = await oramaSearch(db, {
-        term,
-        properties: ORAMA_SEARCH_PROPERTIES,
-        boost: ORAMA_SEARCH_BOOST,
-        limit: Math.max(topK * 5, topK),
-      });
-      const hits = response.hits
-        .map((hit) => hit.document as KbOramaDocument)
-        .filter((document) => scopeAllowsKind(scope, document.kind))
-        .map((document, index) => ({
-          ...retrievalHitFromDocument(document, response.hits[index]?.score ?? 0, index + 1),
-          document,
-        }))
-        .sort(compareScoreAndEntryId)
-        .slice(0, topK)
-        .map((hit, index) => ({
-          ...hit,
-          rank: index + 1,
-        }));
+    const filtered = response.hits
+      .map((hit, index) => ({
+        document: hit.document as KbOramaDocument,
+        score: response.hits[index]?.score ?? 0,
+      }))
+      .filter(({ document }) => scopeAllowsKind(scope, document.kind))
+      .sort((left, right) =>
+        compareScoreAndEntryId(
+          { score: left.score, entryId: left.document.entryId },
+          { score: right.score, entryId: right.document.entryId },
+        ),
+      );
 
-      return { hits } as TextRetrievalResult;
+    const exhausted = response.hits.length < limit;
+    const hits: FtsHit[] = filtered.slice(0, safeTopK).map(({ document, score }) => ({
+      documentId: document.entryId,
+      score,
+      fields: toRetrievedDocument(document),
+    }));
+
+    return { hits, exhausted };
+  }
+
+  /** Engine tokenizer pipeline; used for snippet anchoring. */
+  tokenize(text: string): readonly string[] {
+    const tokenizer = this.tokenizerProbe();
+    return tokenizeQuery(normalizeOramaTerm(text), tokenizer);
+  }
+
+  /**
+   * Returns a tokenizer for synchronous callers. Lazily creates one if no
+   * snapshot has materialized yet — the ENGLISH stemmer is configuration-only,
+   * matching what `createOramaDb` produces.
+   */
+  private tokenizerProbe(): KbOramaTokenizer {
+    const cached = this.snapshotStore.getCache();
+    if (cached !== null) {
+      return cached.tokenizer;
     }
+    this.lazyTokenizer ??= createOramaTokenizer();
+    return this.lazyTokenizer;
+  }
 
-    const queryVector = toUnitVector(queryOrEmbedding);
-    if (queryVector === null) {
-      return { hits: [] };
-    }
+  private lazyTokenizer: KbOramaTokenizer | null = null;
 
-    const hits = collectTopKByCosine(listStoredDocuments(db), queryVector, topK, scope)
-      .slice(0, topK)
-      .map(({ document, score }, index) => ({
-        ...retrievalHitFromDocument(document, score, index + 1),
-      }));
-
-    return { hits } as VectorRetrievalResult;
+  warnings(): readonly string[] {
+    this.probeFreshness();
+    return [...this.warningSet];
   }
 
   /** Materializes a full Orama projection from the current runtime corpus view. */
   async prepareFullSnapshotForCurrentCorpus(
     index: KbIndex = this.runtime.readIndexOrEmpty(),
-    options: { includeEmbeddings?: boolean } = {},
   ): Promise<PreparedOramaProjection> {
-    return this.prepareFullSnapshotForProjectedIndex({ index, ...options });
+    return this.prepareFullSnapshotForProjectedIndex({ index });
   }
 
   /** Builds a complete projection from a provided index, optionally injecting generated community docs. */
@@ -403,15 +309,13 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     index: KbIndex;
     generatedCommunityDocs?: readonly CommunityDocument[];
     forceCommunityFresh?: boolean;
-    includeEmbeddings?: boolean;
   }): Promise<PreparedOramaProjection> {
     const nextIndex = cloneKbIndex(params.index);
     const { db, tokenizer } = await createOramaDb();
-    const documents = await this.buildDocumentsForIndex(
+    const documents = this.buildDocumentsForIndex(
       nextIndex,
       params.generatedCommunityDocs,
       params.forceCommunityFresh,
-      params.includeEmbeddings ?? true,
     );
 
     return {
@@ -428,31 +332,20 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
     if (preparedProjection.documents.length > 0) {
       await insertMultiple(preparedProjection.db, preparedProjection.documents);
     }
-    this.runtime.persistIndexToDisk(preparedProjection.index);
-    this.runtime.persistOramaSnapshot(preparedProjection.db);
-    this.runtime.installRebuiltArtifacts(preparedProjection.index, {
+    this.runtime.writeIndex(preparedProjection.index);
+    this.snapshotStore.persist(preparedProjection.db);
+    this.snapshotStore.install({
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
     });
+    this.warningSet.delete('fts_index_uninitialized');
   }
 
-  private async getEmbeddingProvider(): Promise<EmbeddingService | null> {
-    try {
-      return this.runtime.embedding.read().read();
-    } catch (error) {
-      if (error instanceof CoralSetupError && error.code === 'binding_empty') {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  private async buildDocumentsForIndex(
+  private buildDocumentsForIndex(
     index: KbIndex,
     generatedCommunityDocs: readonly CommunityDocument[] = [],
     forceCommunityFresh?: boolean,
-    includeEmbeddings = true,
-  ): Promise<KbOramaDocument[]> {
+  ): KbOramaDocument[] {
     const generatedCommunityDocsBySlug = new Map(
       generatedCommunityDocs.map((document) => [document.slug, document] as const),
     );
@@ -463,24 +356,14 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
       .map(([, entry]) => this.loadProjectionRecord(entry, generatedCommunityDocsBySlug))
       .filter((record): record is ProjectionRecord => record !== null);
 
-    return this.materializeDocuments(records, communityFresh, includeEmbeddings);
+    return this.materializeDocuments(records, communityFresh);
   }
 
-  private async materializeDocuments(
+  private materializeDocuments(
     records: readonly ProjectionRecord[],
     communityFresh: boolean,
-    includeEmbeddings: boolean,
-  ): Promise<KbOramaDocument[]> {
-    const provider = includeEmbeddings ? await this.getEmbeddingProvider() : null;
-    const authorityTexts = records.map((record) => buildRetrievalAuthorityText(record.entry.title, record.body));
-    const embeddings = provider === null ? [] : await provider.embedDocuments(authorityTexts);
-
-    return records.map((record, index) => {
-      if (provider !== null && embeddings[index] === undefined) {
-        throw new Error(`Embedding provider returned too few vectors for ${record.entry.slug}.`);
-      }
-      const vector = provider === null ? [] : normalizeStoredVector(embeddings[index]);
-
+  ): KbOramaDocument[] {
+    return records.map((record) => {
       if (record.kind === 'note') {
         return toOramaDocument(
           {
@@ -503,7 +386,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
               body: record.body,
             }),
             metadataHash: noteMetadataHash(record.entry),
-            vector,
           },
         );
       }
@@ -528,7 +410,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
               body: record.body,
             }),
             metadataHash: sourceMetadataHash(record.entry),
-            vector,
           },
         );
       }
@@ -554,7 +435,6 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
             body: record.body,
           }),
           metadataHash: communityMetadataHash(record.rawContent),
-          vector,
         },
       );
     });
@@ -628,6 +508,9 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval, Corp
 }
 
 /** Creates the shared Orama projection wrapper for a KB runtime. */
-export function createOramaBaseProjection(runtime: KbRuntime): OramaBaseProjection {
-  return new OramaBaseProjection(runtime);
+export function createOramaBaseProjection(
+  runtime: KbRuntime,
+  snapshotStore: OramaSnapshotStore = new OramaSnapshotStore(runtime.runtimeDir),
+): OramaBaseProjection {
+  return new OramaBaseProjection(runtime, snapshotStore);
 }

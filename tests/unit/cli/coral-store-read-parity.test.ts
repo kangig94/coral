@@ -45,6 +45,9 @@ async function seedKbSearchSnapshot(): Promise<void> {
     runtime: realRuntime,
   });
 
+  const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
+  bindOramaFtsForTest(kb);
+
   try {
     await reindex(kb);
     await kb.fts.read().consumer.apply?.({

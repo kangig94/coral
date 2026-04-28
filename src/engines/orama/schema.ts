@@ -11,7 +11,6 @@ export const ORAMA_SCHEMA = {
   principles: 'string[]',
   contentHash: 'string',
   metadataHash: 'string',
-  vector: 'number[]',
 } as const;
 
 export type KbOramaDb = AnyOrama<typeof ORAMA_SCHEMA>;

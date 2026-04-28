@@ -28,7 +28,6 @@ describe('gemini expansion', () => {
       expect(kb.embedding.read().consumer).toMatchObject({
         id: 'gemini',
         authority: 'journal',
-        registrationKind: 'stateless',
       });
       expect(kb.embedding.read().read()).toMatchObject({
         name: 'gemini',

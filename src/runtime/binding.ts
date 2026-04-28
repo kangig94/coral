@@ -8,16 +8,17 @@ export interface RuntimeBinding<T> {
   bind(value: T, scope: Disposable, holder: string): void;
 }
 
-export function createRuntimeBinding<T>(name: string, defaultValue?: T): RuntimeBinding<T> {
-  const hasDefault = arguments.length > 1;
-  let bound = defaultValue;
+export function createRuntimeBinding<T>(name: string): RuntimeBinding<T> {
+  let bound: T | undefined;
   let heldBy: string | undefined;
   return {
     name,
     get heldBy() { return heldBy; },
     read() {
-      if (heldBy !== undefined || hasDefault) return bound as T;
-      throw documentedCoralSetupError('binding_empty', { binding: name });
+      if (heldBy === undefined) {
+        throw documentedCoralSetupError('binding_empty', { binding: name });
+      }
+      return bound as T;
     },
     bind(value, scope, holder) {
       if (heldBy !== undefined) throw documentedCoralSetupError('binding_occupied', { binding: name, heldBy });
@@ -28,7 +29,7 @@ export function createRuntimeBinding<T>(name: string, defaultValue?: T): Runtime
       scope[Symbol.dispose] = () => {
         if (disposed) return;
         disposed = true;
-        bound = defaultValue;
+        bound = undefined;
         heldBy = undefined;
         dispose();
       };

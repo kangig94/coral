@@ -306,9 +306,7 @@ function aggregateVectorHits(
 
 export class NeedleBackend implements NeedleBackendContract {
   readonly authority = 'corpus';
-  readonly backendKind = 'needle';
   readonly corpusInterest = 'content';
-  readonly registrationKind = 'expansion';
   readonly id: string;
   onApplyFailure?: (error: ConsumerApplyError) => void;
 
@@ -770,7 +768,7 @@ export async function createNeedleBacked(
     embedder: resolveBoundNeedleEmbedder(embedder),
   });
   const retrieval: BoundVectorRetrieval = {
-    read(embedding, topK, scope) {
+    search(embedding, topK, scope) {
       return backend.search(embedding, topK, scope);
     },
   };

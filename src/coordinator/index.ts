@@ -33,7 +33,6 @@ import { workflowRecover } from '../workflow/recover.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { ORAMA_BASE_CONSUMER_ID } from '../engines/orama/index.js';
 import type { KbRuntime } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
@@ -131,7 +130,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
   let currentKbRuntime: KbRuntime | null = null;
   const expansionLifecycleService = new ExpansionLifecycleService({
-    makeHost: (id, scope) => {
+    makeHost: (id, scope, tier) => {
       const kbRuntime = currentKbRuntime;
       if (kbRuntime === null) {
         throw documentedCoralSetupError('expansion_runtime_unavailable', { name: id });
@@ -141,7 +140,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         runtime,
         kbRuntime,
         consumerDriver: getConsumerDriver(),
-      })(id, scope);
+      })(id, scope, tier);
     },
     state: new ExpansionStateStore(getStoreDb()),
     now: () => nowDate(runtime.time).toISOString(),
@@ -209,15 +208,19 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Boot step 2: absorb external Corpus edits before replaying consumers.
       await kbSubsystem.kb.ensureCorpusFreshness();
       const driver = getConsumerDriver();
-      driver.register(kbSubsystem.kb.vector.read().consumer);
-      // Boot step 3: replay only rows already recorded in expansion_state.
+      // Boot step 3: replay installed-tier rows + apply bundled fallback to fill empty bindings.
       await expansionLifecycleService.recoverOnBoot();
-      // Boot step 3: replay the persisted corpus snapshot into downstream consumers.
+      // Boot step 4: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
-      await driver.waitFreshUntil('corpus', corpusSnapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
+      await driver.waitFreshUntil(
+        'corpus',
+        corpusSnapshot,
+        kbSubsystem.kb.fts.read().consumer.id,
+        bootFreshnessTimeoutMs,
+      );
       if (kbSubsystem.curateScheduler) {
-        // Boot step 4: start background curation only after the read projections are aligned.
+        // Boot step 5: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();
       }
       return kbSubsystem;
@@ -243,7 +246,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       const driver = getConsumerDriver();
       if (readiness === 'base-search') {
-        await driver.waitFreshUntil('corpus', snapshot, ORAMA_BASE_CONSUMER_ID, bootFreshnessTimeoutMs);
+        await driver.waitFreshUntil('corpus', snapshot, kb.fts.read().consumer.id, bootFreshnessTimeoutMs);
         return;
       }
 

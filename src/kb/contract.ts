@@ -9,8 +9,7 @@ import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
-import type { TextRetrievalResult, VectorRetrievalResult } from './search/contract.js';
-import type { KbOramaDb, KbOramaTokenizer } from '../engines/orama/schema.js';
+import type { FtsSearchResult, VectorRetrievalResult } from './search/contract.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,
@@ -57,11 +56,6 @@ export interface KbIndexState {
   textStaleReason?: string;
 }
 
-export interface KbCachedOramaIndex {
-  db: KbOramaDb;
-  tokenizer: KbOramaTokenizer;
-}
-
 export type Consumer = ConsumerRegistration;
 
 export interface Backed<T> {
@@ -69,12 +63,19 @@ export interface Backed<T> {
   consumer: Consumer;
 }
 
-export interface VectorRetrieval {
-  read(embedding: number[], topK: number, scope?: KbSearchScope): Promise<VectorRetrievalResult>;
+/**
+ * Pinned engine-blind FTS capability surface (commit 4 — AC4.7).
+ * The widening loop lives in KB-tier; the engine signals `exhausted` in the result
+ * so the loop can stop without re-querying for shape information.
+ */
+export interface FtsRetrieval {
+  search(query: string, topK: number, scope?: KbSearchScope): Promise<FtsSearchResult>;
+  tokenize(text: string): readonly string[];
+  warnings(): readonly string[];
 }
 
-export interface FtsRetrieval {
-  read(query: string, topK: number, scope?: KbSearchScope): Promise<TextRetrievalResult>;
+export interface VectorRetrieval {
+  search(embedding: number[], topK: number, scope?: KbSearchScope): Promise<VectorRetrievalResult>;
 }
 
 export interface EmbeddingService {
@@ -137,20 +138,11 @@ export interface KbRuntime {
   captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;
   ensureCorpusFreshness(): Promise<KbIndex>;
-  ensureOramaIndex(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-    warnings?: string[];
-  }>;
-  loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null>;
   withMutationLock<T>(fn: (mutation: KbMutationEffects) => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;
   invalidateKbCache(): void;
   invalidateTextSnapshot(reason: string): KbIndexState;
-  installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex;
-  persistOramaSnapshot(db: KbOramaDb): void;
   notesDir(): string;
   sourcesDir(): string;
   communitiesDir(): string;

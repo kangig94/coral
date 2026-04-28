@@ -16,9 +16,10 @@ describe('createExpansionHost', () => {
       kb,
       scope,
       id: 'needle',
+      tier: 'installed',
       consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
     });
-    const binding = createRuntimeBinding<string>('kb.vector', 'orama');
+    const binding = createRuntimeBinding<string>('kb.vector');
 
     host.bind(binding, 'needle');
 
@@ -33,6 +34,7 @@ describe('createExpansionHost', () => {
       kb,
       scope: { [Symbol.dispose]() {} },
       id: 'needle',
+      tier: 'installed',
       consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
     });
     const binding = createRuntimeBinding<string>('kb.embedding');
@@ -56,7 +58,7 @@ describe('createExpansionHost', () => {
     const consumerDriver = {
       register: vi.fn(() => ({
         id: 'consumer-a',
-        registrationKind: 'base' as const,
+        registrationKind: 'expansion' as const,
         lastApplyError: null,
         stop,
         unregister,
@@ -68,6 +70,7 @@ describe('createExpansionHost', () => {
       kb,
       scope,
       id: 'needle',
+      tier: 'installed',
       consumerDriver,
     });
     const reg: ConsumerRegistration = {
@@ -81,8 +84,67 @@ describe('createExpansionHost', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(consumerDriver.register).toHaveBeenCalledWith(reg);
+    expect(consumerDriver.register).toHaveBeenCalledWith({ ...reg, registrationKind: 'expansion' });
     expect(stop).toHaveBeenCalledTimes(1);
     expect(unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it('derives registrationKind from (tier, hasApply) — bundled→base, installed+apply→expansion, installed-no-apply→stateless', () => {
+    const { runtime, kb } = createTestRuntime();
+    const captured: ConsumerRegistration[] = [];
+    const consumerDriver = {
+      register: vi.fn((reg: ConsumerRegistration) => {
+        captured.push(reg);
+        return {
+          id: reg.id,
+          registrationKind: reg.registrationKind ?? 'base',
+          lastApplyError: null,
+          stop: async () => {},
+          unregister: async () => {},
+          status: () => ({ authority: 'journal' as const, cursor: 0, pending: false, lastApplyError: null }),
+        };
+      }),
+    } as unknown as ConsumerDriverPort;
+
+    const bundledHost = createExpansionHost({
+      runtime,
+      kb,
+      scope: { [Symbol.dispose]() {} },
+      id: 'orama',
+      tier: 'bundled',
+      consumerDriver,
+    });
+    bundledHost.registerConsumer(
+      { id: 'orama-base', authority: 'corpus', corpusInterest: 'content', async apply() {} },
+      bundledHost.scope,
+    );
+
+    const installedApplyHost = createExpansionHost({
+      runtime,
+      kb,
+      scope: { [Symbol.dispose]() {} },
+      id: 'needle',
+      tier: 'installed',
+      consumerDriver,
+    });
+    installedApplyHost.registerConsumer(
+      { id: 'needle', authority: 'corpus', corpusInterest: 'content', async apply() {} },
+      installedApplyHost.scope,
+    );
+
+    const installedStatelessHost = createExpansionHost({
+      runtime,
+      kb,
+      scope: { [Symbol.dispose]() {} },
+      id: 'gemini',
+      tier: 'installed',
+      consumerDriver,
+    });
+    installedStatelessHost.registerConsumer(
+      { id: 'gemini', authority: 'journal' },
+      installedStatelessHost.scope,
+    );
+
+    expect(captured.map((reg) => reg.registrationKind)).toEqual(['base', 'expansion', 'stateless']);
   });
 });

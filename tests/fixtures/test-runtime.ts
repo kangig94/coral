@@ -110,19 +110,19 @@ export function createTestRuntime(): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable) => ExpansionHost;
+  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
 };
 export function createTestRuntime(options: CreateTestRuntimeOptions): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable) => ExpansionHost;
+  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
 };
 export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable) => ExpansionHost;
+  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
 } {
   const root = mkdtempSync(join(tmpdir(), 'coral-expansion-test-'));
   const runtime = options.runtime ?? new SimulationRuntime({ roots: { coralRoot: root } });
@@ -144,12 +144,13 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
 
   // Tests model fake backends as Expansions and load them through the same
   // makeHost/manifest path as production code.
-  const makeHost = (id: string, scope: Disposable): ExpansionHost =>
+  const makeHost = (id: string, scope: Disposable, tier: 'bundled' | 'installed' = 'installed'): ExpansionHost =>
     createExpansionHost({
       runtime,
       kb,
       scope,
       id,
+      tier,
       consumerDriver,
     });
 

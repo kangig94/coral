@@ -14,6 +14,7 @@ import { buildKbDiagnoseResult } from './diagnose.js';
 import {
   createDefaultKbQueryRuntime,
   createDefaultKbReadPaths,
+  ensureBundledEnginesLoaded,
   getDefaultKbQueryDb,
   resolveQueryProjectRoot,
   type KbQueryContext,
@@ -30,6 +31,7 @@ export async function searchKnowledgeBase(
   context: KbQueryContext,
 ): Promise<KbSearchResponse> {
   const kb = createDefaultKbQueryRuntime(context);
+  await ensureBundledEnginesLoaded(kb, context);
 
   return await searchKb(kb, args.query, args.top_k ?? 20, args.scope ?? 'all', args.mode);
 }

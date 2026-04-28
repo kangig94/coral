@@ -6,6 +6,8 @@ import type { SearchResponseWarnings } from './text-retrieval.js';
 
 export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
+const VECTOR_PATH_BINDING_NAMES: ReadonlySet<string> = new Set(['kb.embedding', 'kb.vector']);
+
 async function embedQueryForVectorSearch(rt: KbRuntime, rawQuery: string): Promise<number[]> {
   const embedding = rt.embedding.read().read();
   return Array.from(await embedding.embedQuery(rawQuery));
@@ -35,11 +37,19 @@ export async function searchExplicitVectorResults(
 
   try {
     return {
-      hits: (await rt.vector.read().read().read(queryVector, topK, scope)).hits,
+      hits: (await rt.vector.read().read().search(queryVector, topK, scope)).hits,
       responseWarnings: {},
       fallbackToText: false,
     };
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof CoralSetupError &&
+      error.code === 'binding_empty' &&
+      typeof error.context?.binding === 'string' &&
+      VECTOR_PATH_BINDING_NAMES.has(error.context.binding)
+    ) {
+      throw error;
+    }
     return {
       hits: [],
       responseWarnings: {

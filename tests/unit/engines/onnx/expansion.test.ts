@@ -83,7 +83,6 @@ describe('onnx expansion', () => {
       expect(kb.embedding.read().consumer).toMatchObject({
         id: 'onnx',
         authority: 'journal',
-        registrationKind: 'stateless',
       });
       expect(kb.embedding.read().read()).toMatchObject({
         name: 'onnx',

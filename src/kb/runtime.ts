@@ -10,7 +10,6 @@ import type {
   EmbeddingService,
   FtsRetrieval,
   KbInboundSyncOptions,
-  KbCachedOramaIndex,
   KbCorpusPublishCallbacks,
   KbCorpusPublication,
   KbCorpusSnapshot,
@@ -32,9 +31,6 @@ import { detectRescanInfo } from './corpus/rescan/drift.js';
 import { performRescan } from './corpus/rescan/index.js';
 import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
 import { type EntityGraph, type KbIndex } from './entry-types.js';
-import { createOramaDb } from '../engines/orama/document-builder.js';
-import type { KbOramaDb, KbOramaTokenizer } from '../engines/orama/schema.js';
-import { createOramaBacked, createOramaBaseProjection, createOramaFtsBacked } from '../engines/orama/index.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
 import {
   applyMutationLane,
@@ -50,7 +46,6 @@ import {
 import { emptyIndex, isFreshTextSnapshot, KbIndexStore } from './corpus/index-store.js';
 import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
-import { OramaSnapshotStore } from '../engines/orama/snapshot.js';
 import {
   buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,
@@ -76,7 +71,6 @@ export interface CreateKbRuntimeOptions {
   runtimeDir: string;
   db: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
-  readOnlyOrama?: boolean;
   time?: Pick<TimePort, 'now'>;
   ids?: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
@@ -99,14 +93,11 @@ class KbRuntimeImpl implements KbRuntime {
   readonly vector: KbRuntime['vector'];
   readonly embedding: KbRuntime['embedding'];
   readonly fts: KbRuntime['fts'];
-  private readonly readOnlyOrama: boolean;
   private readonly paths: KbRuntimePaths;
   private readonly manifestAuthority = createManifestAuthority();
   private readonly indexStore: KbIndexStore;
-  private readonly oramaSnapshotStore: OramaSnapshotStore;
 
   private mutationLock: Promise<void> = Promise.resolve();
-  private readonly baseProjection = createOramaBaseProjection(this);
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly publicationQueue: CorpusPublicationQueue;
   private activeMutationContext: MutationLockContext | null = null;
@@ -147,7 +138,6 @@ class KbRuntimeImpl implements KbRuntime {
     runtimeDir,
     db,
     corpusPublishCallbacks,
-    readOnlyOrama,
     time,
     ids,
     envPort,
@@ -165,23 +155,15 @@ class KbRuntimeImpl implements KbRuntime {
     this.spawnCli = spawnCli;
     this.processPort = processPort;
     this.envPort = envPort;
-    this.readOnlyOrama = readOnlyOrama === true;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
-    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>(
-      'kb.vector',
-      createOramaBacked(this, this.baseProjection),
-    );
+    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
     this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
-    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts', createOramaFtsBacked(this, this.baseProjection));
+    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
     this.corpusStateMirror = createCorpusStateMirror(this.db);
-    this.oramaSnapshotStore = new OramaSnapshotStore(this.runtimeDir);
     this.indexStore = new KbIndexStore({
       runtimeDir: this.runtimeDir,
       onStateChange: (previous, next) => {
         this.capturePublicationFromStateChange(previous, next);
-      },
-      onIndexCorruption: () => {
-        this.oramaSnapshotStore.clear();
       },
     });
     this.publicationQueue = new CorpusPublicationQueue({
@@ -361,7 +343,6 @@ class KbRuntimeImpl implements KbRuntime {
 
   async ensureCorpusFreshness(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
-      let rebuilt = false;
       await this.withMutationLock(async (mutation) => {
         const state = this.readIndexStateIfPresent();
         if (!this.textArtifactsNeedRebuild(state)) {
@@ -369,66 +350,10 @@ class KbRuntimeImpl implements KbRuntime {
         }
 
         await performRescan(this, mutation, captureIndexStateSnapshot(state));
-        rebuilt = true;
       });
-      if (rebuilt) {
-        this.oramaSnapshotStore.clear();
-        this.oramaSnapshotStore.removeSnapshot();
-      }
     }
 
     return this.readIndex() ?? emptyIndex();
-  }
-
-  async ensureOramaIndex(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-    warnings?: string[];
-  }> {
-    const state = this.readIndexStateIfPresent();
-    const cachedOramaIndex = this.oramaSnapshotStore.getCache();
-    if (!this.textArtifactsNeedRebuild(state) && cachedOramaIndex !== null && this.indexStore.hasIndexCache()) {
-      return {
-        ...cachedOramaIndex,
-        index: this.readIndex() ?? emptyIndex(),
-      };
-    }
-
-    const loaded = await this.ensureOramaIndexReadOnly();
-    const loadedSnapshotAbsent = loaded.warnings?.includes('orama_snapshot_absent') === true;
-    if (!this.textArtifactsNeedRebuild(state) && !loadedSnapshotAbsent) {
-      return loaded;
-    }
-
-    if (!this.readOnlyOrama && state !== null && !this.textArtifactsNeedRebuild(state) && loadedSnapshotAbsent) {
-      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(
-        this.readIndexOrEmpty(),
-        { includeEmbeddings: false },
-      );
-      await this.baseProjection.installFullSnapshot(this.captureCorpusSnapshot(), preparedProjection);
-      const rebuiltOramaIndex = this.oramaSnapshotStore.getCache();
-      if (rebuiltOramaIndex !== null) {
-        return {
-          ...rebuiltOramaIndex,
-          index: this.readIndex() ?? emptyIndex(),
-        };
-      }
-    }
-
-    if (this.textArtifactsNeedRebuild(state)) {
-      return {
-        ...loaded,
-        index: emptyIndex(),
-        warnings: ['orama_snapshot_stale'],
-      };
-    }
-
-    return loaded;
-  }
-
-  async loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null> {
-    return this.oramaSnapshotStore.loadIfPresent();
   }
 
   async withMutationLock<T>(
@@ -527,24 +452,10 @@ class KbRuntimeImpl implements KbRuntime {
 
   invalidateKbCache(): void {
     this.indexStore.invalidateIndexCache();
-    this.oramaSnapshotStore.clear();
   }
 
   invalidateTextSnapshot(reason: string): KbIndexState {
-    const nextState = this.recordIndexSyncFailure(reason);
-    this.oramaSnapshotStore.clear();
-    this.oramaSnapshotStore.removeSnapshot();
-    return nextState;
-  }
-
-  installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex {
-    const normalized = this.indexStore.installIndexCache(index);
-    this.oramaSnapshotStore.install(orama);
-    return normalized;
-  }
-
-  persistOramaSnapshot(db: KbOramaDb): void {
-    this.oramaSnapshotStore.persist(db);
+    return this.recordIndexSyncFailure(reason);
   }
 
   private publishCurrentSnapshot(): void {
@@ -593,38 +504,6 @@ class KbRuntimeImpl implements KbRuntime {
       snapshot: this.buildCurrentCorpusSnapshot(next),
       changedLanes,
     });
-  }
-
-  private async ensureOramaIndexReadOnly(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-    warnings?: string[];
-  }> {
-    const cachedOramaIndex = this.oramaSnapshotStore.getCache();
-    if (cachedOramaIndex !== null) {
-      return {
-        ...cachedOramaIndex,
-        index: this.readIndex() ?? emptyIndex(),
-      };
-    }
-
-    try {
-      const loaded = await this.oramaSnapshotStore.load();
-      this.oramaSnapshotStore.install(loaded);
-      return {
-        ...loaded,
-        index: this.readIndex() ?? emptyIndex(),
-      };
-    } catch {
-      const { db, tokenizer } = await createOramaDb();
-      return {
-        db,
-        tokenizer,
-        index: emptyIndex(),
-        warnings: ['orama_snapshot_absent'],
-      };
-    }
   }
 
   private indexNeedsRebuild(): boolean {

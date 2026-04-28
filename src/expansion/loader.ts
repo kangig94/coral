@@ -15,7 +15,7 @@ function disposeQuietly(scope: Disposable): void {
 }
 
 export async function loadExpansions(
-  makeHost: (id: string, scope: Disposable) => ExpansionHost,
+  makeHost: (id: string, scope: Disposable, tier: 'bundled' | 'installed') => ExpansionHost,
   manifest: readonly EngineManifest[],
 ): Promise<readonly Disposable[]> {
   const scopes: Disposable[] = [];
@@ -24,7 +24,7 @@ export async function loadExpansions(
     const scope = createScope();
 
     try {
-      const host = makeHost(entry.id, scope);
+      const host = makeHost(entry.id, scope, entry.tier);
       const module = (await import(entry.specifier)) as ExpansionModule;
       await module.default(host);
       scopes.push(scope);

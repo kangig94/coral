@@ -9,6 +9,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
+  bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
   seedNeedleRouteState,
@@ -69,11 +70,13 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createTestKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+  bindOramaFtsForTest(kb);
+  return kb;
 }
 
 function setMtime(path: string, mtime: Date): void {
@@ -363,7 +366,6 @@ async function installMockHybridSearch(
   bindVectorBacked(
     kb,
     {
-      backendKind: 'needle',
       search: async (embedding: number[], topK: number, scope?: 'all' | 'notes' | 'sources' | 'communities') => {
         let candidateK = Math.max(topK, 1);
         const candidateCap = Math.max(topK, 10 * topK);
@@ -792,70 +794,6 @@ describe('kb search', () => {
     expect(position(notesByRank, 'rendering-alpha')).toBeLessThan(position(notesByRank, 'gamma-reference'));
     expect(resultFor(response.results, 'beta-archive').matchedBy).toEqual(expect.arrayContaining(['content']));
     expect(resultFor(response.results, 'gamma-reference').matchedBy).toEqual([]);
-  });
-
-  it('routes explicit vector search through Orama cosine without equipment', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
-    const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
-
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-alpha', {
-      title: 'Vector Alpha',
-      body: 'Archive only.',
-    });
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-beta', {
-      title: 'Vector Beta',
-      body: 'History only.',
-    });
-
-    await reindex(kb);
-    const [{ insertMultiple }, { createOramaDb }] = await Promise.all([
-      import('@orama/orama'),
-      import('#src/engines/orama/backend.js'),
-    ]);
-    const { db } = await createOramaDb();
-    await insertMultiple(db, [
-      {
-        id: 'note:vector-alpha',
-        entryId: 'note:vector-alpha',
-        slug: 'vector-alpha',
-        kind: 'note',
-        freshness: 'fresh',
-        title: 'Vector Alpha',
-        body: 'Archive only.',
-        tags: [],
-        principles: [],
-        contentHash: 'content:vector-alpha',
-        metadataHash: 'metadata:vector-alpha',
-        vector: [1, 0],
-      },
-      {
-        id: 'note:vector-beta',
-        entryId: 'note:vector-beta',
-        slug: 'vector-beta',
-        kind: 'note',
-        freshness: 'fresh',
-        title: 'Vector Beta',
-        body: 'History only.',
-        tags: [],
-        principles: [],
-        contentHash: 'content:vector-beta',
-        metadataHash: 'metadata:vector-beta',
-        vector: [0, 1],
-      },
-    ]);
-    kb.persistOramaSnapshot(db);
-    kb.invalidateKbCache();
-    await bindEmbedding(kb, {
-      embedDocuments: vi.fn(async () => []),
-      embedQuery: vi.fn().mockResolvedValue(new Float32Array([1, 0])),
-    });
-
-    const response = await searchKb(kb, 'semantic', 2, 'all', 'vector');
-
-    expect(response.mode).toBe('vector');
-    expect(resultNotes(response.results)).toEqual(['vector-alpha', 'vector-beta']);
-    expect(resultFor(response.results, 'vector-alpha').matchedBy).toEqual([]);
   });
 
   it('routes explicit vector search through needle when equipment content manifests match', async () => {

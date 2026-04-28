@@ -8,7 +8,8 @@ import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-type
 import { nowDate } from '#src/infra/time.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
+import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
+import { bindEmbedding, bindOramaFtsForTest, type OramaFtsBinding } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 type StoredOramaDocument = {
@@ -19,9 +20,7 @@ type StoredOramaDocument = {
 };
 
 type BaseProjectionSpyTarget = {
-  baseProjection: {
-    apply: (...args: unknown[]) => Promise<void>;
-  };
+  oramaBinding: OramaFtsBinding;
 };
 
 const tempRoots: string[] = [];
@@ -55,6 +54,8 @@ async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
     db: createKbTestDb(root),
   });
   openDatabases.push(kb.db);
+  const ftsBinding = bindOramaFtsForTest(kb);
+  (kb as unknown as BaseProjectionSpyTarget).oramaBinding = ftsBinding;
   await bindEmbedding(kb, {
     embedDocuments: async (texts) => texts.map(embedText),
     embedQuery: async (text) => embedText(text),
@@ -219,7 +220,7 @@ function seedCorpus(kb: KbRuntime): {
 }
 
 async function readStoredOramaDocuments(kb: KbRuntime): Promise<Map<string, StoredOramaDocument>> {
-  const orama = await kb.loadOramaSnapshotIfPresent();
+  const orama = await new OramaSnapshotStore(kb.runtimeDir).loadIfPresent();
   expect(orama).not.toBeNull();
   if (orama === null) {
     throw new Error('Expected persisted Orama snapshot to exist.');
@@ -285,10 +286,7 @@ async function bootstrapSeededCorpus(
 }
 
 function spyOnFullInstall(kb: KbRuntime) {
-  return vi.spyOn(
-    (kb as unknown as BaseProjectionSpyTarget).baseProjection,
-    'apply',
-  );
+  return vi.spyOn((kb as unknown as BaseProjectionSpyTarget).oramaBinding.projection, 'apply');
 }
 
 afterEach(() => {

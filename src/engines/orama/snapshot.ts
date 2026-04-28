@@ -1,15 +1,19 @@
 import { load, save, type RawData } from '@orama/orama';
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { KbCachedOramaIndex } from '../../kb/contract.js';
 import { writeJsonAtomic } from '../../kb/corpus/index-store.js';
 import { oramaSnapshotDir } from './paths.js';
 import { createOramaDb } from './document-builder.js';
-import type { KbOramaDb } from './schema.js';
+import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 
 export const ORAMA_INDEX_FILE = 'orama-index.json';
+
+export interface KbCachedOramaIndex {
+  db: KbOramaDb;
+  tokenizer: KbOramaTokenizer;
+}
 
 export class OramaSnapshotStore {
   private cached: KbCachedOramaIndex | null = null;
@@ -18,6 +22,10 @@ export class OramaSnapshotStore {
 
   hasCache(): boolean {
     return this.cached !== null;
+  }
+
+  hasPersistedSnapshot(): boolean {
+    return existsSync(this.oramaIndexPath());
   }
 
   getCache(): KbCachedOramaIndex | null {

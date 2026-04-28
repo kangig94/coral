@@ -1,9 +1,12 @@
-import { search as oramaSearch } from '@orama/orama';
-
-import { denormalizeSlug } from './snippets.js';
-import type { FusedRetrievalHit, HybridFusion, TextRetrievalResult, VectorRetrievalHit } from './contract.js';
-import type { KbOramaDocument } from '../../engines/orama/document-builder.js';
-import type { KbOramaDb } from '../../engines/orama/schema.js';
+import { denormalizeSlug } from '../text-utils.js';
+import type {
+  FtsHit,
+  FusedRetrievalHit,
+  HybridFusion,
+  RetrievedDocument,
+  TextRetrievalResult,
+  VectorRetrievalHit,
+} from './contract.js';
 import {
   getEntry,
   isCommunityEntry,
@@ -17,29 +20,10 @@ import {
   type KbSearchScope,
 } from '../entry-types.js';
 
-const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
-  'slug',
-  'title',
-  'body',
-  'tags',
-  'principles',
-];
-const ORAMA_SEARCH_BOOST = {
-  slug: 3,
-  title: 2,
-  tags: 1.5,
-  principles: 1.5,
-  body: 1,
-} as const;
 const KIND_ORDER: Record<KbResult['kind'], number> = {
   note: 0,
   community: 1,
   source: 2,
-};
-
-export type KbSearchHit = {
-  document: KbOramaDocument;
-  score: number;
 };
 
 export type ResolvedKbSearchEntry = {
@@ -52,7 +36,7 @@ export type ResolvedKbSearchEntry = {
 };
 
 export type ResolvedKbSearchHit = ResolvedKbSearchEntry & {
-  document: KbOramaDocument;
+  document: RetrievedDocument;
   score: number;
 };
 
@@ -84,18 +68,18 @@ export function resolveEntry(entryId: string, index: KbIndex): ResolvedKbSearchE
   };
 }
 
-export function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
-  const resolvedEntry = resolveEntry(hit.document.entryId, index);
+export function resolveHit(hit: FtsHit, index: KbIndex): ResolvedKbSearchHit {
+  const resolvedEntry = resolveEntry(hit.fields.entryId, index);
 
   return {
-    entryId: resolvedEntry?.entryId ?? (hit.document.entryId as KbEntryId),
-    document: hit.document,
+    entryId: resolvedEntry?.entryId ?? (hit.fields.entryId as KbEntryId),
+    document: hit.fields,
     score: hit.score,
-    slug: resolvedEntry?.slug ?? denormalizeSlug(hit.document.slug),
-    kind: resolvedEntry?.kind ?? hit.document.kind,
-    title: resolvedEntry?.title ?? hit.document.title,
-    tags: resolvedEntry?.tags ?? [...hit.document.tags],
-    principles: resolvedEntry?.principles ?? [...hit.document.principles],
+    slug: resolvedEntry?.slug ?? denormalizeSlug(hit.fields.slug),
+    kind: resolvedEntry?.kind ?? hit.fields.kind,
+    title: resolvedEntry?.title ?? hit.fields.title,
+    tags: resolvedEntry?.tags ?? [...hit.fields.tags],
+    principles: resolvedEntry?.principles ?? [...hit.fields.principles],
   };
 }
 
@@ -190,7 +174,7 @@ export function rerankHits<T extends { score: number; kind: KbResult['kind']; sl
   });
 }
 
-function maxPossibleOmittedScore(hits: KbSearchHit[]): number {
+function maxPossibleOmittedScore(hits: readonly FtsHit[]): number {
   const boundaryHit = hits.at(-1);
   if (boundaryHit === undefined) {
     return Number.NEGATIVE_INFINITY;
@@ -200,7 +184,7 @@ function maxPossibleOmittedScore(hits: KbSearchHit[]): number {
 }
 
 export function shouldContinueWidening(
-  hits: KbSearchHit[],
+  hits: readonly FtsHit[],
   resolvedHits: ResolvedKbSearchHit[],
   communitiesFresh: boolean,
   scope: KbSearchScope,
@@ -218,18 +202,6 @@ export function shouldContinueWidening(
   }
 
   return !exhausted && rerankedHits[topK - 1].score <= maxPossibleOmittedScore(hits);
-}
-
-export async function searchOrama(db: KbOramaDb, oramaTerm: string, limit: number): Promise<KbSearchHit[]> {
-  const response = await oramaSearch(db, {
-    term: oramaTerm,
-    properties: ORAMA_SEARCH_PROPERTIES,
-    boost: ORAMA_SEARCH_BOOST,
-    threshold: 1,
-    limit,
-  });
-
-  return response.hits as KbSearchHit[];
 }
 
 export function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {

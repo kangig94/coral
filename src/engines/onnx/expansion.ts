@@ -253,7 +253,6 @@ const onnxExpansion: Expansion = async (host) => {
   const consumer = {
     id: host.id,
     authority: 'journal' as const,
-    registrationKind: 'stateless' as const,
   };
   const provider: Backed<EmbeddingService> = {
     read: () => service,

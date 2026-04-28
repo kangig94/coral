@@ -28,7 +28,6 @@ export type KbOramaDocument = {
   principles: string[];
   contentHash: string;
   metadataHash: string;
-  vector: number[];
 };
 
 export function normalizeWhitespace(value: string): string {
@@ -65,7 +64,6 @@ export function toOramaDocument(
     communityFresh?: boolean;
     contentHash?: string;
     metadataHash?: string;
-    vector?: number[];
   } = {},
 ): KbOramaDocument {
   if ('note' in record) {
@@ -99,7 +97,6 @@ export function toOramaDocument(
             related: record.related,
           } as CanonicalFrontmatterRecord,
         }),
-      vector: [...(options.vector ?? [])],
     };
   }
 
@@ -133,7 +130,6 @@ export function toOramaDocument(
             related: record.related,
           } as CanonicalFrontmatterRecord,
         }),
-      vector: [...(options.vector ?? [])],
     };
   }
 
@@ -167,15 +163,18 @@ export function toOramaDocument(
           summary: record.summary,
         } as CanonicalFrontmatterRecord,
       }),
-    vector: [...(options.vector ?? [])],
   };
 }
 
-export async function createOramaDb(): Promise<{ db: KbOramaDb; tokenizer: KbOramaTokenizer }> {
-  const tokenizer = components.tokenizer.createTokenizer({
+export function createOramaTokenizer(): KbOramaTokenizer {
+  return components.tokenizer.createTokenizer({
     language: ORAMA_LANGUAGE,
     stemming: true,
   });
+}
+
+export async function createOramaDb(): Promise<{ db: KbOramaDb; tokenizer: KbOramaTokenizer }> {
+  const tokenizer = createOramaTokenizer();
   const db = create({
     schema: ORAMA_SCHEMA,
     components: { tokenizer },

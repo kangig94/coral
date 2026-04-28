@@ -2,7 +2,11 @@ import type { KbRuntime } from '../kb/contract.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
-import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
+import type {
+  ConsumerHandle,
+  ConsumerRegistration,
+  ConsumerRegistrationKind,
+} from '../store/consumer-contract.js';
 import type { ExpansionHost } from './contract.js';
 import { decorateDispose } from './scope.js';
 
@@ -14,11 +18,14 @@ export interface ConsumerDriverPort {
   register(reg: ConsumerRegistration): ConsumerHandle;
 }
 
+export type ExpansionTier = 'bundled' | 'installed';
+
 export interface ExpansionHostDeps {
   readonly runtime: Runtime;
   readonly kb: KbRuntime;
   readonly scope: Disposable;
   readonly id: string;
+  readonly tier: ExpansionTier;
   readonly consumerDriver: ConsumerDriverPort;
 }
 
@@ -31,6 +38,21 @@ type ExpansionScope = Disposable & {
 function bindingNameOf<T>(binding: RuntimeBinding<T>, error: unknown): string {
   const fromError = error instanceof CoralSetupError ? error.context?.binding : undefined;
   return typeof fromError === 'string' && fromError.length > 0 ? fromError : binding.name;
+}
+
+/**
+ * Derives `registrationKind` from the (tier, hasApply) triple. Engine code
+ * intentionally does NOT declare `registrationKind` so the kind is bound to
+ * lifecycle, not engine identity:
+ *  - bundled                   → 'base'       (auto-equips at boot, owns the cursor)
+ *  - installed && apply !== undefined → 'expansion'  (projection consumer)
+ *  - installed && apply === undefined → 'stateless' (embedders / service consumers)
+ */
+function deriveRegistrationKind(tier: ExpansionTier, reg: ConsumerRegistration): ConsumerRegistrationKind {
+  if (tier === 'bundled') {
+    return 'base';
+  }
+  return reg.apply !== undefined ? 'expansion' : 'stateless';
 }
 
 export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
@@ -58,7 +80,9 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
       }
     },
     registerConsumer(reg, scope) {
-      const handle = deps.consumerDriver.register(reg);
+      const registrationKind = deriveRegistrationKind(deps.tier, reg);
+      const tierAware: ConsumerRegistration = { ...reg, registrationKind } as ConsumerRegistration;
+      const handle = deps.consumerDriver.register(tierAware);
       const expandedScope = scope as ExpansionScope;
       const handles = expandedScope[REGISTERED_CONSUMER_HANDLES] ?? [];
       handles.push(handle);

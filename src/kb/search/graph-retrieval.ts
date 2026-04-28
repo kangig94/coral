@@ -1,4 +1,4 @@
-import { normalizeWhitespace } from '../../engines/orama/document-builder.js';
+import { normalizeWhitespace } from '../text-utils.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult } from './contract.js';
 import {

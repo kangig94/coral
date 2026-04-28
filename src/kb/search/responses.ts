@@ -1,4 +1,3 @@
-import { tokenizeField } from '../../engines/orama/document-builder.js';
 import {
   isCommunityEntry,
   type KbEntryId,
@@ -112,18 +111,18 @@ function buildCommunityContextMap(
 function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
   const matchedBy = new Set<KbMatchSurface>();
 
-  if (hasTokenOverlap(query.queryTokens, tokenizeField(hit.slug, query.tokenizer))) {
+  if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.slug))) {
     matchedBy.add('filename');
   }
   if (
-    hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, tokenizeField(principle, query.tokenizer)))
+    hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(principle)))
   ) {
     matchedBy.add('principle');
   }
-  if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, tokenizeField(tag, query.tokenizer)))) {
+  if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(tag)))) {
     matchedBy.add('tag');
   }
-  if (hasTokenOverlap(query.queryTokens, tokenizeField(hit.title, query.tokenizer))) {
+  if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.title))) {
     matchedBy.add('title');
   }
 

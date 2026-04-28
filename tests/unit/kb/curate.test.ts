@@ -26,6 +26,7 @@ import { readCurateState, writeCurateState, type CurateState } from '#src/kb/cur
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -241,6 +242,7 @@ beforeEach(() => {
     runtime: gitSyncRuntime,
     spawnCli: noopSpawnCli,
   });
+  bindOramaFtsForTest(runtime);
   useScheduler();
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));

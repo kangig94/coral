@@ -8,6 +8,7 @@ import type * as RouterModule from '#src/kb/search/router.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
+  bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
   seedNeedleRouteState,
@@ -77,11 +78,13 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createTestKbRuntime({
+  const kb = createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+  bindOramaFtsForTest(kb);
+  return kb;
 }
 
 function writeNote(
@@ -174,7 +177,6 @@ describe('kb search mode branching', () => {
     bindVectorBacked(
       kb,
       {
-        backendKind: 'needle',
         search: needleSearchSpy,
       },
       createCorpusHandle(
@@ -228,7 +230,6 @@ describe('kb search mode branching', () => {
     bindVectorBacked(
       kb,
       {
-        backendKind: 'needle',
         search: vi.fn(async () => ({ hits: [] })),
       },
       createCorpusHandle(

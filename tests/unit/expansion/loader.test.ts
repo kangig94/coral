@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { loadExpansions } from '#src/expansion/loader.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
+import { CoralSetupError } from '#src/runtime/errors.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 function toDataModule(source: string): string {
@@ -19,13 +20,15 @@ describe('loadExpansions', () => {
         id: 'alpha',
         version: '0.0.0',
         specifier: toDataModule("export default async (host) => { globalThis.__expansionLoads.push(host.id); }"),
-        metadata: { description: 'alpha' },
+        tier: 'installed',
+        description: 'alpha',
       },
       {
         id: 'beta',
         version: '0.0.0',
         specifier: toDataModule("export default async (host) => { globalThis.__expansionLoads.push(host.id); }"),
-        metadata: { description: 'beta' },
+        tier: 'installed',
+        description: 'beta',
       },
     ]);
 
@@ -35,8 +38,8 @@ describe('loadExpansions', () => {
 
   it('disposes earlier scopes when a later expansion fails', async () => {
     const { makeHost } = createTestRuntime();
-    const vector = createRuntimeBinding<string>('kb.vector', 'orama');
-    const fts = createRuntimeBinding<string>('kb.fts', 'base-fts');
+    const vector = createRuntimeBinding<string>('kb.vector');
+    const fts = createRuntimeBinding<string>('kb.fts');
     (globalThis as { __vectorBinding?: typeof vector; __ftsBinding?: typeof fts }).__vectorBinding = vector;
     (globalThis as { __vectorBinding?: typeof vector; __ftsBinding?: typeof fts }).__ftsBinding = fts;
 
@@ -48,7 +51,8 @@ describe('loadExpansions', () => {
           specifier: toDataModule(
             "export default (host) => { host.bind(globalThis.__vectorBinding, 'needle'); }",
           ),
-          metadata: { description: 'alpha' },
+          tier: 'installed',
+          description: 'alpha',
         },
         {
           id: 'beta',
@@ -56,13 +60,14 @@ describe('loadExpansions', () => {
           specifier: toDataModule(
             "export default (host) => { host.bind(globalThis.__ftsBinding, 'needle-fts'); throw new Error('boom'); }",
           ),
-          metadata: { description: 'beta' },
+          tier: 'installed',
+          description: 'beta',
         },
       ]),
     ).rejects.toThrow('boom');
 
-    expect(vector.read()).toBe('orama');
-    expect(fts.read()).toBe('base-fts');
+    expect(() => vector.read()).toThrowError(CoralSetupError);
+    expect(() => fts.read()).toThrowError(CoralSetupError);
     expect(vector.heldBy).toBeUndefined();
     expect(fts.heldBy).toBeUndefined();
   });

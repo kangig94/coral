@@ -130,11 +130,13 @@ describe('kb detection and paths', () => {
       runtimeDir: paths.kbRuntimeDir('prod'),
       db: createKbTestDb(paths.kbRuntimeDir('prod')),
     });
+    const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
+    bindOramaFtsForTest(kb);
 
     try {
-      const result = await kb.ensureOramaIndex();
+      const fts = kb.fts.read().read();
 
-      expect(result.warnings).toEqual(['orama_snapshot_stale']);
+      expect(fts.warnings()).toContain('fts_index_uninitialized');
       expect(existsSync(oramaPaths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(needlePaths.needleIndexDir(kb.runtimeDir))).toBe(false);
       expect(existsSync(needlePaths.needleStagingDir(kb.runtimeDir))).toBe(false);
