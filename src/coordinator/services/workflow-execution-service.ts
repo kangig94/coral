@@ -10,6 +10,7 @@ import type { CommitEventsFn } from '../../store/append.js';
 import { type WorkflowCommand } from '../../workflow/input.js';
 import type { PipelineAST } from '../../workflow/ast.js';
 import { executePipeline } from '../../workflow/executor.js';
+import { resolveDrainDeadlineMs } from '../../workflow/execution-constants.js';
 import {
   WorkflowExecutionError,
   type PipelineResult,
@@ -202,6 +203,7 @@ export class WorkflowExecutionService {
       journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
       ids: this.deps.runtime.ids,
+      drainDeadlineMs: resolveDrainDeadlineMs(this.deps.runtime.env),
     }).then(
       (result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
