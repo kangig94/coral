@@ -161,7 +161,7 @@ const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb-job-recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
 const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
-const CONSUMER_DRIVER_SUPPORT_MODULE = 'src/coordinator/consumer-driver-support.ts';
+const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -585,9 +585,10 @@ describe('architecture boundary guard', () => {
   it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
     expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
   });
-  it('large coordinator transport and consumer-driver helpers stay split by responsibility', () => {
+  it('large coordinator transport stays split by responsibility and consumer-driver helpers stay inlined', () => {
     expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
-    expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_SUPPORT_MODULE);
+    expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
+    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
 
     const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
     expect(durableTransportSource).not.toContain('createInterface');

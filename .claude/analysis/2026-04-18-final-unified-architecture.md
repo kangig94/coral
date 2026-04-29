@@ -1146,9 +1146,9 @@ Each fault-bearing event type has one producer:
 | `job.launch.rejected` | `job/<id>` | `coordinator/live/admission.ts` |
 | `job.progress.emitted` (with `kind: 'domain'`, `stage: 'kb_operation_failed'`/etc.) | `job/<id>` | internal KB job recorder; domain leaf (`kb/ops/`, etc.) supplies detail |
 | `job.progress.emitted` (with `kind: 'domain'`, `stage: 'hosted_kb_operation_failed'`/etc.) | `job/<id>` | provider-hosted KB failure recorder; domain leaf (`kb/ops/`, etc.) supplies detail |
-| `session.interrupted` | `session/<id>` | `coordinator/live/provider-hosts.ts` |
-| `session.provider_failed` | `session/<id>` | provider leaf kernel |
-| `session.adapter_unparseable` | `session/<id>` | `providers/middleware/adapter-parse-guard.ts` |
+| `session.interrupted` | `session/<id>` | `coordinator/services/terminal-materializer.ts` (input from `coordinator/live/provider-hosts.ts`) |
+| `session.provider_failed` | `session/<id>` | `coordinator/services/terminal-materializer.ts` (input from provider leaf kernel) |
+| `session.adapter_unparseable` | `session/<id>` | `coordinator/services/terminal-materializer.ts` (input from `providers/middleware/adapter-parse-guard.ts`) |
 | `discuss.agent.job.finished` (failed/recovery outcomes) | `discuss/<id>` | `discuss/shell/` |
 | `workflow.lifecycle_fault` | `workflow/<id>` | the workflow lifecycle finalizer (covering both launch-time `executor.ts` finalization and recovery-time `resumeAll` finalization) |
 | `workflow.completed { outcome: 'aborted', stepDetails }` or `{ outcome: 'failed', causeRef, stepDetails }` | `workflow/<id>` | the workflow lifecycle finalizer (a single conceptual producer enacted at two coordinator-owned call sites) |

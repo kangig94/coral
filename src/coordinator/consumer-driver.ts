@@ -9,29 +9,99 @@ import type {
   ConsumerRegistrationKind,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import type { TimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
-import {
-  consumerAuthorityMismatchError,
-  consumerInterestMismatchError,
-  consumerNotRegisteredError,
-  consumerRegistrationKindMismatchError,
-  isCorpusInterest,
-  isKbCorpusSnapshot,
-  isRegistrationKind,
-  laneHintFromInterest,
-  parseStoredCorpusInterest,
-  renderConsumerId,
-  shouldNotifyCorpusConsumer,
-  toConsumerApplyError,
-} from './consumer-driver-support.js';
 
 // Consumer-related contract types live at their canonical home in
 // `src/store/consumer-contract.ts`. Importers should reach there directly —
 // no re-export shim from this file.
+
+function isCorpusInterest(value: unknown): value is CorpusInterest {
+  return value === 'content' || value === 'metadata' || value === 'both';
+}
+
+function isRegistrationKind(value: unknown): value is ConsumerRegistrationKind {
+  return value === 'base' || value === 'expansion' || value === 'stateless';
+}
+
+function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint | null {
+  return interest === 'both' ? null : interest;
+}
+
+function parseStoredCorpusInterest(row: {
+  readonly corpus_interest: string | null;
+  readonly lane: string | null;
+}): CorpusInterest | null {
+  const raw = row.corpus_interest ?? row.lane;
+  return isCorpusInterest(raw) ? raw : null;
+}
+
+function shouldNotifyCorpusConsumer(interest: CorpusInterest, laneHint: CorpusLaneHint | undefined): boolean {
+  return laneHint === undefined || interest === 'both' || interest === laneHint;
+}
+
+function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as KbCorpusSnapshot).snapshotId === 'string' &&
+    typeof (value as KbCorpusSnapshot).contentSeq === 'number' &&
+    typeof (value as KbCorpusSnapshot).metadataSeq === 'number' &&
+    typeof (value as KbCorpusSnapshot).contentManifestHash === 'string' &&
+    typeof (value as KbCorpusSnapshot).metadataManifestHash === 'string'
+  );
+}
+
+function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return { message: err.message, at, cause: err };
+  }
+  if (typeof err === 'string' && err.trim().length > 0) {
+    return { message: err, at, cause: err };
+  }
+  return { message: 'Consumer apply failed', at, cause: err };
+}
+
+function consumerNotRegisteredError(consumerId: string): CoralSetupError {
+  return documentedCoralSetupError('consumer_not_registered', { id: consumerId });
+}
+
+function consumerAuthorityMismatchError(consumerId: string, expected: string, actual: string): CoralSetupError {
+  return documentedCoralSetupError('consumer_authority_mismatch', {
+    id: consumerId,
+    expected,
+    actual,
+  });
+}
+
+function consumerInterestMismatchError(consumerId: string): CoralSetupError {
+  return documentedCoralSetupError('consumer_interest_mismatch', { id: consumerId });
+}
+
+function consumerRegistrationKindMismatchError(
+  consumerId: string,
+  expected: ConsumerRegistrationKind | undefined,
+  actual: ConsumerRegistrationKind,
+): CoralSetupError {
+  return documentedCoralSetupError('consumer_registration_kind_mismatch', {
+    id: consumerId,
+    expected,
+    actual,
+  });
+}
+
+function renderConsumerId(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    return `${value}`;
+  }
+  return 'invalid';
+}
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {
