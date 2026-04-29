@@ -1,12 +1,7 @@
 import type { ProviderServerLease } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
-
-export function createAbortError(message: string): Error {
-  const error = new Error(message);
-  error.name = 'AbortError';
-  return error;
-}
+import { AbortError } from '../../../runtime/abort.js';
 
 export function createProviderServerLease(
   handle: ProviderServerHandle,
@@ -78,7 +73,7 @@ export async function waitForProviderServerLease(entry: ProviderHostEntry, signa
     };
 
     const onAbort = () => {
-      waiter.reject(createAbortError('Aborted while waiting for a provider server lease'));
+      waiter.reject(new AbortError({ stage: 'provider_server_lease_wait', reason: signal?.reason }));
     };
 
     if (signal?.aborted) {

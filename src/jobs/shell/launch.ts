@@ -20,6 +20,7 @@ import type { JobProgressBody, JobQueueAdmittedBody, JobQueueQueuedBody } from '
 import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
+import { isAbortError } from '../../runtime/abort.js';
 import type { AcceptedAdmission, JobAdmissionPort, LaunchPool, QueuedHandle } from '../contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../contracts/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -44,10 +45,6 @@ const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> =
   checkpoint: () => missingContinuityMiddleware('checkpoint'),
   transportClosed: () => missingContinuityMiddleware('transportClosed'),
 };
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
-}
 
 function runProviderExecution(
   provider: ProviderSpec,

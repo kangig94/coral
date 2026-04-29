@@ -1060,6 +1060,28 @@ describe('architecture boundary guard', () => {
     );
     expect(helperLikeFiles).toEqual([]);
   });
+  it('abort vocabulary lives only at src/runtime/abort.ts', () => {
+    // §16 #53 cross-reference: AbortError / isAbortError / throwIfAborted have
+    // exactly one home. Local re-implementations (`function isAbortError`,
+    // `const isAbortError`, `createAbortError`, ad-hoc `new Error` whose name
+    // is later set to 'AbortError') drift the vocabulary and break callers
+    // that distinguish user aborts from deadline aborts via `signal.reason`.
+    const ALLOWED_ABORT_VOCAB_HOME = 'src/runtime/abort.ts';
+    const forbiddenPatterns: Array<[RegExp, string]> = [
+      [/\bfunction\s+isAbortError\b/u, 'function isAbortError'],
+      [/\bconst\s+isAbortError\s*=/u, 'const isAbortError'],
+      [/\bcreateAbortError\b/u, 'createAbortError'],
+      [/\.name\s*=\s*['"]AbortError['"]/u, ".name = 'AbortError'"],
+    ];
+    const violations = PRODUCTION_SOURCE_FILES.flatMap((filePath) => {
+      if (filePath === ALLOWED_ABORT_VOCAB_HOME) {
+        return [];
+      }
+      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+      return forbiddenPatterns.flatMap(([pattern, label]) => (pattern.test(source) ? [`${filePath}: ${label}`] : []));
+    });
+    expect(violations).toEqual([]);
+  });
   it('the removed coordinator shim files must remain deleted', () => {
     for (const shimPath of RETIRED_COORDINATOR_SHIMS) {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(shimPath);
