@@ -29,6 +29,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -40,6 +41,7 @@ import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Backed, EmbeddingService, FtsRetrieval, VectorRetrieval } from '#src/kb/contract.js';
+import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/response.js';
 import {
@@ -106,8 +108,13 @@ function createProgressStore(
   runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time'> = runtime,
 ): JobStore {
   return new JobStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtimeArg),
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
   });
+}
+
+function createSessionManager(projectRoot: string): SessionManager {
+  return new SessionManager(projectRoot, runtime, undefined, undefined, openTestStoreDb(runtime));
 }
 
 vi.mock('node:os', async () => {
@@ -515,33 +522,61 @@ describe('execution backend server', () => {
     );
     const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
     const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    const engineArtifactRegistry = new EngineArtifactRegistry();
     const runtimeDir = join(mockState.tmpHome, 'kb-runtime');
     mkdirSync(runtimeDir, { recursive: true });
+    const emptyIndex = {
+      entries: {},
+      principles: {},
+      entityMeta: {},
+      relationships: [],
+    };
     return {
       kb: {
         runtimeDir,
+        projectionArtifacts: {
+          runtimeDir,
+          files: {
+            existsSync: vi.fn(() => false),
+            readFileSync: vi.fn(() => '{}'),
+            rmSync: vi.fn(),
+            mkdirSync: vi.fn(),
+            renameSync: vi.fn(),
+            writeTextAtomic: vi.fn(),
+            writeJsonAtomic: vi.fn(),
+          },
+        },
+        corpusProjectionReader: {
+          resolveCurrentIndex: vi.fn(() => emptyIndex),
+          prepareCurrentProjectionInput: vi.fn(async () => ({
+            index: emptyIndex,
+            records: [],
+            communityFresh: false,
+          })),
+        },
         vector,
         fts,
         embedding,
+        engineArtifactRegistry,
+        corpusAuthorityBaseline: {
+          ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
+          rebuild: vi.fn(() => new Map()),
+          read: vi.fn(() => new Map()),
+          replace: vi.fn(),
+        },
         retryPendingCorpusPublication: vi.fn(async () => {}),
         withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
         mutationLockDiagnostics: vi.fn(() => ({ blocked: false })),
+        recordIndexSyncSuccess: vi.fn(() => ({
+          contentSeq: 0,
+          metadataSeq: 0,
+        })),
         ensureOramaIndex: vi.fn(async () => ({
           db: {} as never,
           tokenizer: {} as never,
-          index: {
-            entries: {},
-            principles: {},
-            entityMeta: {},
-            relationships: [],
-          },
+          index: emptyIndex,
         })),
-        ensureCorpusFreshness: vi.fn(async () => ({
-          entries: {},
-          principles: {},
-          entityMeta: {},
-          relationships: [],
-        })),
+        ensureCorpusFreshness: vi.fn(async () => emptyIndex),
         getCorpusStateSnapshot: vi.fn(() => ({
           snapshotId: '',
           contentSeq: 0,
@@ -1099,7 +1134,7 @@ describe('execution backend server', () => {
   it('does not recover discuss project roots discovered only from the session index', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('session-index-only-project');
-    new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -1144,10 +1179,28 @@ describe('execution backend server', () => {
 
   it('routes KB tool calls through direct handlers and catches errors', async () => {
     const kbSubsystem = createMockKbSubsystem();
+    const ensureCorpusFreshness = vi.fn(async () => ({
+      entries: {},
+      principles: {},
+      entityMeta: {},
+      relationships: [],
+    }));
     const backend = await startBackendServer({
       createKbSubsystemFn: async () => ({
         kb: {
           ...(kbSubsystem.kb as Record<string, unknown>),
+          projectionArtifacts: {
+            ...((kbSubsystem.kb as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts),
+            files: {
+              ...((kbSubsystem.kb as { projectionArtifacts: { files: Record<string, unknown> } }).projectionArtifacts
+                .files),
+              existsSync: vi.fn(() => true),
+            },
+          },
+          ensureCorpusFreshness,
+          readIndex: vi.fn(() => {
+            throw new Error('mock KB runtime unavailable');
+          }),
           ensureOramaIndex: vi.fn(async () => ({
             db: {} as never,
             tokenizer: {} as never,
@@ -1173,6 +1226,7 @@ describe('execution backend server', () => {
         curateScheduler: kbSubsystem.curateScheduler,
       }),
     });
+    ensureCorpusFreshness.mockRejectedValue(new Error('mock KB runtime unavailable'));
 
     const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {
       headers: {
@@ -4043,7 +4097,7 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('continuation-project');
     const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
-    const foreign = new SessionManager(foreignProjectRoot, runtime).allocate({
+    const foreign = createSessionManager(foreignProjectRoot).allocate({
       provider: 'codex',
       name: 'foreign',
       model: 'gpt-5',
@@ -4221,8 +4275,8 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const projectA = createProjectRoot('project-a');
     const projectB = createProjectRoot('project-b');
-    const sessionA = new SessionManager(projectA, runtime).allocate('codex', 'alpha', 'gpt-5', projectA);
-    const sessionB = new SessionManager(projectB, runtime).allocate('codex', 'beta', 'gpt-5', projectB);
+    const sessionA = createSessionManager(projectA).allocate('codex', 'alpha', 'gpt-5', projectA);
+    const sessionB = createSessionManager(projectB).allocate('codex', 'beta', 'gpt-5', projectB);
     stubSessionProjection(progressStore, {
       sessionId: sessionA.sessionId,
       provider: 'codex',
@@ -4236,28 +4290,28 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
 
-    new SessionManager(projectA, runtime).claimForJobSync(sessionA.sessionId, 'missing-job-a');
-    new SessionManager(projectB, runtime).claimForJobSync(sessionB.sessionId, 'missing-job-b');
+    createSessionManager(projectA).claimForJobSync(sessionA.sessionId, 'missing-job-a');
+    createSessionManager(projectB).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
     await startBackendServer({ progressStore });
 
-    expect(new SessionManager(projectA, runtime).get('codex', sessionA.sessionId)).toMatchObject({
+    expect(createSessionManager(projectA).get('codex', sessionA.sessionId)).toMatchObject({
       sessionId: sessionA.sessionId,
       lastJobId: 'missing-job-a',
     });
-    expect(new SessionManager(projectA, runtime).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
+    expect(createSessionManager(projectA).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
 
-    expect(new SessionManager(projectB, runtime).get('codex', sessionB.sessionId)).toMatchObject({
+    expect(createSessionManager(projectB).get('codex', sessionB.sessionId)).toMatchObject({
       sessionId: sessionB.sessionId,
       lastJobId: 'missing-job-b',
     });
-    expect(new SessionManager(projectB, runtime).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
+    expect(createSessionManager(projectB).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
   });
 
   it('releases terminal session claims even when the referenced job dir exists', async () => {
     const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('project-existing-job');
-    const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
     const jobId = 'completed-job';
     stubSessionProjection(progressStore, {
       sessionId: session.sessionId,
@@ -4288,12 +4342,12 @@ describe('execution backend server', () => {
       { content: 'done', outcome: { kind: 'completed' } },
       'completed',
     );
-    new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
+    createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer({ progressStore });
 
     // Terminal jobs should have their session claims released during startup recovery
-    const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
+    const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
     expect(recoveredSession?.activeJobId).toBeUndefined();
     expect(recoveredSession?.lastJobId).toBe(jobId);
   });
@@ -4302,7 +4356,7 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = new SessionManager(projectRoot, runtime).allocate(
+    const session = createSessionManager(projectRoot).allocate(
       'codex',
       'workflow-session',
       'gpt-5',
@@ -4318,7 +4372,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
     });
-    new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
+    createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
@@ -4336,7 +4390,7 @@ describe('execution backend server', () => {
     const body = await response.text();
     const status = progressStore.readStatus(jobId);
     const detail = progressStore.loadJobProjectionDetail(jobId);
-    const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
+    const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
 
     expect(response.status).toBe(200);
     expect(body).toContain('event: terminal');
@@ -5010,7 +5064,7 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'clean-live-job';
       const projectRoot = createProjectRoot('clean-live-project');
-      const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -5021,7 +5075,7 @@ describe('execution backend server', () => {
         backendNamespace: testBackendNamespace,
         initialPhase: 'launching',
       });
-      new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
+      createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
       expect(progressStore.readLaunchProjection(jobId)).not.toBeNull();
 
       const _backend = await startBackendServer({ progressStore });
@@ -5036,7 +5090,7 @@ describe('execution backend server', () => {
       });
 
       // Session claim should be released
-      const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
+      const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
     });
 
@@ -5044,7 +5098,7 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');
-      const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -5062,7 +5116,7 @@ describe('execution backend server', () => {
         projectRoot,
         backendNamespace: testBackendNamespace,
       });
-      new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
+      createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
       const backend = await startBackendServer({ progressStore });
 
@@ -5075,7 +5129,7 @@ describe('execution backend server', () => {
         },
       });
 
-      const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
+      const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
       await backend.controller.shutdown('test');
       await backend.controller.waitForShutdown();

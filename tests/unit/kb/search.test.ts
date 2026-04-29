@@ -15,7 +15,7 @@ import {
   seedNeedleRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -24,6 +24,8 @@ const mockState = vi.hoisted(() => ({
 const routerMockState = vi.hoisted(() => ({
   createRouter: null as null | ((...args: unknown[]) => unknown),
 }));
+
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -70,13 +72,27 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(paths.kbRuntimeDir('prod'));
+  const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
-    db: createKbTestDb(paths.kbRuntimeDir('prod')),
+    db,
   });
+  writableDbByRuntime.set(kb, db);
   bindOramaFtsForTest(kb);
   return kb;
+}
+
+function seedRouteState(
+  kb: KbRuntime,
+  snapshot: Parameters<typeof seedNeedleRouteState>[1],
+  options?: Parameters<typeof seedNeedleRouteState>[2],
+): ReturnType<typeof seedNeedleRouteState> {
+  return seedNeedleRouteState(writableDbByRuntime.get(kb)!, snapshot, options);
+}
+
+async function applyOramaProjection(kb: KbRuntime): Promise<void> {
+  await applyBoundCorpusConsumerForTest(kb, writableDbByRuntime.get(kb)!);
 }
 
 function setMtime(path: string, mtime: Date): void {
@@ -209,15 +225,18 @@ function writeCommunity(
  *   4. Third reindex inserts community Orama documents as fresh.
  */
 async function ensureFreshCommunityIndex(
-  kb: { readIndex: () => any },
+  kb: KbRuntime,
   reindex: (kb: any) => Promise<any>,
   writeCommunities: () => void,
 ) {
   await reindex(kb);
+  await applyOramaProjection(kb);
   writeCommunities();
   await reindex(kb);
+  await applyOramaProjection(kb);
   await markCommunityStateFresh(kb);
   await reindex(kb);
+  await applyOramaProjection(kb);
 }
 
 async function markCommunityStateFresh(kb: { readIndex: () => any }) {
@@ -427,6 +446,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'rendering', 10);
 
@@ -455,6 +475,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'rendering guiding contracts', 10);
     const notesByRank = resultNotes(response.results);
@@ -484,6 +505,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'WFPG cone aperture', 10);
     const notesByRank = resultNotes(response.results);
@@ -512,6 +534,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'contract first design tokenized tag workflow alignment', 10);
     const match = resultFor(response.results, 'contract-first-design-surface');
@@ -530,6 +553,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'cafe', 10);
     const match = resultFor(response.results, 'cafe-memo');
@@ -551,6 +575,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const response = await searchKb(kb, 'contract first design', 10);
     const match = resultFor(response.results, 'contract-first-design');
@@ -599,6 +624,7 @@ describe('kb search', () => {
     await kb.writeEntityGraph(graph);
 
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     const aliasResponse = await searchKb(kb, 'vram', 5);
     expect(aliasResponse.mode).toBe('text');
@@ -653,6 +679,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     writeCommunity(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'graph-rag-context', {
       title: 'Graph RAG',
       members: ['graph-rag', 'retrieval'],
@@ -660,6 +687,7 @@ describe('kb search', () => {
       body: 'Community body.',
     });
     await reindex(kb);
+    await applyOramaProjection(kb);
     await markCommunityStateFresh(kb);
 
     const response = await searchKb(kb, 'retrieval', 5, 'all');
@@ -693,6 +721,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     writeCurateState(kb, {
       ...readCurateState(kb),
       communityTopologyHash: 'stale-topology',
@@ -722,6 +751,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     expect((await searchKb(kb, 'vram', 5)).results).toEqual([]);
 
     writeFileSync(
@@ -749,10 +779,7 @@ describe('kb search', () => {
     }
     setMtime(kb.entityGraphPath(), new Date(editedGraphMtimeMs));
     await kb.ensureCorpusFreshness();
-    await kb.fts.read().consumer.apply?.({
-      snapshot: kb.captureCorpusSnapshot(),
-      db: kb.db,
-    });
+    await applyBoundCorpusConsumerForTest(kb, writableDbByRuntime.get(kb)!);
     const response = await searchKb(kb, 'vram', 5);
 
     expect(resultNotes(response.results)).toEqual(['memory-entry']);
@@ -779,7 +806,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await applyOramaProjection(kb);
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'beta:0', entryId: 'note:beta-archive', score: 0.99 },
         { chunkId: 'gamma:0', entryId: 'source:gamma-reference', score: 0.98 },
@@ -811,7 +839,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await applyOramaProjection(kb);
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'needle:0', entryId: 'note:needle-beta', score: 0.99 },
         { chunkId: 'needle:1', entryId: 'note:needle-alpha', score: 0.97 },
@@ -836,6 +865,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     await expect(searchKb(kb, 'semantic', 2, 'all', 'vector')).rejects.toMatchObject({
       code: 'binding_empty',
       userMessage: 'Vector search needs kb.embedding.',
@@ -856,6 +886,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     await bindEmbedding(kb, {
       embedDocuments: vi.fn(async () => []),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
@@ -889,7 +920,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    const routeState = seedNeedleRouteState(kb, kb.captureCorpusSnapshot());
+    await applyOramaProjection(kb);
+    const routeState = seedRouteState(kb, kb.captureCorpusSnapshot());
 
     const searchVector = vi.fn().mockImplementation(async (_query: Float32Array, candidateK: number) => {
       if (candidateK === 2) {
@@ -938,7 +970,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await applyOramaProjection(kb);
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-note', score: 0.99 }]),
     });
 
@@ -970,7 +1003,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await applyOramaProjection(kb);
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'note:0', entryId: 'note:vector-note', score: 0.99 },
         { chunkId: 'source:0', entryId: 'source:vector-source', score: 0.97 },
@@ -1006,7 +1040,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
     });
 
@@ -1035,7 +1069,7 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
-    const { embedQuery } = await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    const { embedQuery } = await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([]),
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     });
@@ -1058,8 +1092,9 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     const snapshot = kb.captureCorpusSnapshot();
-    const routeState = seedNeedleRouteState(
+    const routeState = seedRouteState(
       kb,
       {
         ...snapshot,
@@ -1094,8 +1129,9 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     const snapshot = kb.captureCorpusSnapshot();
-    const routeState = seedNeedleRouteState(
+    const routeState = seedRouteState(
       kb,
       {
         ...snapshot,
@@ -1130,7 +1166,8 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    await installMockHybridSearch(kb, seedNeedleRouteState(kb, kb.captureCorpusSnapshot()), {
+    await applyOramaProjection(kb);
+    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi
         .fn()
         .mockResolvedValue([{ chunkId: 'rendering:0', entryId: 'note:rendering-guides', score: 0.99 }]),

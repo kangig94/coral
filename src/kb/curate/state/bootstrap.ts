@@ -31,7 +31,7 @@ import {
   type CurateState,
   type PendingRepair,
 } from './model.js';
-import { readCurateState, writeCurateState } from './store.js';
+import { readCurateState, writeCurateState, type CurateStateTarget } from './store.js';
 
 export type ScannedNote = {
   note: string;
@@ -356,7 +356,7 @@ export function reconcileSeqs(
 }
 
 export function persistState(
-  kb: Pick<KbRuntime, 'db'>,
+  kb: CurateStateTarget,
   state: CurateState,
   scannedNotes: ScannedNote[],
   scannedSources: ScannedSource[],
@@ -394,7 +394,7 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     });
     await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
 
-    const retryQueue = readCurateRetryQueue(kb.db);
+    const retryQueue = readCurateRetryQueue(kb);
     const { highestAssignedEntrySeq, rewrittenNotes, rewrittenSources } = assignEntrySeqs(
       indexState,
       scannedNotes,
@@ -412,9 +412,9 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     // post-bootstrap corpus state.
     const postRewriteIncidents = projectIncidents(buildCorpusScanView(kb));
     const stillDetected = new Set(postRewriteIncidents.map((incident) => incident.entryId));
-    for (const queued of readCurateRetryQueue(kb.db)) {
+    for (const queued of readCurateRetryQueue(kb)) {
       if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
-        deleteCurateRetryEntry(kb.db, queued.entryId);
+        deleteCurateRetryEntry(kb, queued.entryId);
       }
     }
 

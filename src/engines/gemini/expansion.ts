@@ -167,7 +167,7 @@ const geminiExpansion: Expansion = (host) => {
     consumer,
   };
 
-  host.registerConsumer(consumer, host.scope);
+  host.registerConsumer({ id: consumer.id, kind: consumer.kind }, host.scope);
   host.bind(host.kb.embedding, provider);
 };
 

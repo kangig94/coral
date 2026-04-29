@@ -14,6 +14,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import type { ExpansionHost } from '#src/expansion/contract.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -105,6 +106,14 @@ describe('Two-axis kind/registrationKind invariant', () => {
       registrationKind: 'stateless',
     };
 
+    const typecheckOnly = false as boolean;
+    if (typecheckOnly) {
+      const host = null as unknown as ExpansionHost;
+      const scope = host.scope;
+      // @ts-expect-error cursor consumers are coordinator-startup-owned and unreachable through ExpansionHost
+      host.registerConsumer({ id: 'cursor-expansion', authority: 'journal', kind: 'cursor' }, scope);
+    }
+
     expect([
       _statelessAsBase,
       _statelessAsExpansion,
@@ -126,12 +135,6 @@ describe('Two-axis kind/registrationKind invariant', () => {
           authority: 'journal',
           kind: 'cursor',
           registrationKind: 'base',
-        },
-        {
-          id: 'cursor-expansion',
-          authority: 'journal',
-          kind: 'cursor',
-          registrationKind: 'expansion',
         },
         {
           id: 'apply-base',

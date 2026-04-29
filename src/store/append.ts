@@ -1,6 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
+import type { ProviderLookupPort } from '../providers/catalog.js';
 import { encodeEventBody } from './body-codec.js';
 import {
   journalEventInputSchema,
@@ -9,11 +10,14 @@ import {
   type ResolvableCoralEventInput,
   type UpcasterRegistry,
 } from './envelope.js';
-import type { ComposedReducers } from './reducers.js';
+import type { ComposedReducers, DomainAppendValidationContext } from './reducers.js';
 import { applyReducer } from './reducers.js';
 
 type Database = BetterSqlite3.Database;
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
+const permissiveProviderLookupPort: ProviderLookupPort = {
+  hasProvider: () => true,
+};
 
 type RuntimeCauseRefToken = {
   readonly [COMMIT_CAUSE_REF_TOKEN]: {
@@ -25,6 +29,7 @@ export interface AppendContext {
   now(): Date;
   reducers: ComposedReducers;
   upcasters: UpcasterRegistry;
+  providers?: ProviderLookupPort;
 }
 
 export interface AppendedEvent extends CoralEvent {
@@ -283,9 +288,13 @@ export function commit(
       ...input,
       body: parsedBody,
     }));
+    const validationCtx: DomainAppendValidationContext = {
+      db,
+      providers: ctx.providers ?? permissiveProviderLookupPort,
+    };
 
     for (const validateAppend of ctx.reducers.appendValidators) {
-      validateAppend(db, validationInputs);
+      validateAppend(validationCtx, validationInputs);
     }
 
     const insertStmt = db.prepare<

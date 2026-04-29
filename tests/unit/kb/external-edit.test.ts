@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { bindEmbedding, bindOramaFtsForTest, type OramaFtsBinding } from '#tests/unit/kb/expansion-test-helpers.js';
@@ -25,6 +25,7 @@ type BaseProjectionSpyTarget = {
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 function embedText(text: string): Float32Array {
   const buckets = [0, 0, 0, 0];
@@ -48,12 +49,14 @@ function allocateRoot(): string {
 }
 
 async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(root);
+  const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,
-    db: createKbTestDb(root),
+    db,
   });
-  openDatabases.push(kb.db);
+  writableDbByRuntime.set(kb, db);
+  openDatabases.push(db);
   const ftsBinding = bindOramaFtsForTest(kb);
   (kb as unknown as BaseProjectionSpyTarget).oramaBinding = ftsBinding;
   await bindEmbedding(kb, {
@@ -61,7 +64,9 @@ async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
     embedQuery: async (text) => embedText(text),
   });
   kb.register({
-    persistCorpusState: (snapshot) => persistCorpusState(kb.db, snapshot, { now: () => nowDate(kb.time) }),
+    persistCorpusState: (snapshot) => persistCorpusState(writableDbByRuntime.get(kb)!, snapshot, {
+      now: () => nowDate(kb.time),
+    }),
     notifyCorpusMutation: () => {},
   });
   return kb;
@@ -75,14 +80,11 @@ async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
 }
 
 async function applyBaseProjection(kb: KbRuntime): Promise<void> {
-  await kb.fts.read().consumer.apply?.({
-    snapshot: kb.captureCorpusSnapshot(),
-    db: kb.db,
-  });
+  await applyBoundCorpusConsumerForTest(kb, writableDbByRuntime.get(kb)!);
 }
 
 function persistCurrentSnapshot(kb: KbRuntime): void {
-  persistCorpusState(kb.db, kb.captureCorpusSnapshot(), { now: () => nowDate(kb.time) });
+  persistCorpusState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), { now: () => nowDate(kb.time) });
   kb.invalidateCorpusStateSnapshot();
 }
 
@@ -221,8 +223,8 @@ function seedCorpus(kb: KbRuntime): {
 
 async function readStoredOramaDocuments(kb: KbRuntime): Promise<Map<string, StoredOramaDocument>> {
   const orama = await new OramaSnapshotStore(
-    { storage: kb.storagePort, ids: kb.ids },
-    kb.runtimeDir,
+    { files: kb.projectionArtifacts.files },
+    kb.projectionArtifacts.runtimeDir,
   ).loadIfPresent();
   expect(orama).not.toBeNull();
   if (orama === null) {
@@ -283,7 +285,7 @@ async function bootstrapSeededCorpus(
   return {
     kb,
     ...paths,
-    snapshot: readCorpusState(kb.db),
+    snapshot: readCorpusState(writableDbByRuntime.get(kb)!),
     docs: await readStoredOramaDocuments(kb),
   };
 }
@@ -316,7 +318,7 @@ describe('external edit absorption', () => {
     const initialIndexMtime = statSync(join(root, 'index.json')).mtimeMs;
     expect(beforeNote).toBeDefined();
 
-    initial.kb.db.close();
+    writableDbByRuntime.get(initial.kb)!.close();
 
     writeFileSync(
       initial.notePath,
@@ -332,7 +334,7 @@ describe('external edit absorption', () => {
     const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
-    const afterSnapshot = readCorpusState(restarted.db);
+    const afterSnapshot = readCorpusState(writableDbByRuntime.get(restarted)!);
     const afterNote = (await readStoredOramaDocuments(restarted)).get(noteEntryId('coral-note'));
 
     expect(afterSnapshot.contentSeq).toBe(initial.snapshot.contentSeq);
@@ -351,7 +353,7 @@ describe('external edit absorption', () => {
     const initialIndexMtime = statSync(join(root, 'index.json')).mtimeMs;
     expect(beforeSource).toBeDefined();
 
-    initial.kb.db.close();
+    writableDbByRuntime.get(initial.kb)!.close();
 
     writeFileSync(
       initial.sourcePath,
@@ -367,7 +369,7 @@ describe('external edit absorption', () => {
     const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
-    const afterSnapshot = readCorpusState(restarted.db);
+    const afterSnapshot = readCorpusState(writableDbByRuntime.get(restarted)!);
     const afterSource = (await readStoredOramaDocuments(restarted)).get(sourceEntryId('sqlite-source'));
 
     expect(afterSnapshot.contentSeq).toBe(initial.snapshot.contentSeq + 1);
@@ -387,7 +389,7 @@ describe('external edit absorption', () => {
     const initialIndexMtime = statSync(join(root, 'index.json')).mtimeMs;
     expect(beforeSource).toBeDefined();
 
-    initial.kb.db.close();
+    writableDbByRuntime.get(initial.kb)!.close();
 
     writeFileSync(
       initial.sourcePath,
@@ -403,7 +405,7 @@ describe('external edit absorption', () => {
     const restarted = await createRegisteredRuntime(root);
     await bootLikeCoordinator(restarted);
 
-    const afterSnapshot = readCorpusState(restarted.db);
+    const afterSnapshot = readCorpusState(writableDbByRuntime.get(restarted)!);
     const afterSource = (await readStoredOramaDocuments(restarted)).get(sourceEntryId('sqlite-source'));
 
     expect(afterSnapshot.contentSeq).toBe(initial.snapshot.contentSeq);
@@ -435,7 +437,7 @@ describe('external edit absorption', () => {
     await initial.kb.retryPendingCorpusPublication();
     await applyBaseProjection(initial.kb);
 
-    const afterSnapshot = readCorpusState(initial.kb.db);
+    const afterSnapshot = readCorpusState(writableDbByRuntime.get(initial.kb)!);
     const afterNote = (await readStoredOramaDocuments(initial.kb)).get(noteEntryId('coral-note'));
 
     expect(afterSnapshot.contentSeq).toBe(initial.snapshot.contentSeq + 1);

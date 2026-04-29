@@ -10,6 +10,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -257,7 +258,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     namespace,
     runtime,
     createDefaultUpcasterRegistry(),
-    { eventBus },
+    { db: openTestStoreDb(runtime), eventBus },
   );
   const { runtimeState, setLifecycle } = createRuntimeStateMock();
   const idleTimer = createFakeIdleTimer();

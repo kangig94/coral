@@ -3,6 +3,7 @@ export {
   normalizeCurateStateRepairFrontier,
   readCurateState,
   writeCurateState,
+  type CurateStateTarget,
 } from './store.js';
 export {
   CORAL_CURATE_CLAIM_STALE_MS_ENV,

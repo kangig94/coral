@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
   last_mutation          TEXT    NOT NULL    -- ISO 8601
 );
 
+CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
+  entry_id      TEXT PRIMARY KEY,
+  content_hash  TEXT NOT NULL,
+  metadata_hash TEXT NOT NULL
+);
+
 -- Consumer cursor table — tracks every registered consumer (default and expansion-owned) per authority.
 -- Cursor interpretation depends on the consumer's authority:
 -- - Journal consumers: cursor is events.seq

@@ -25,7 +25,7 @@ import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -37,6 +37,7 @@ vi.mock('#src/kb/curate/usage-budget.js', () => ({
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 type NoteCurateClaimedEntry = Extract<CurateClaimedEntry, { kind: 'note' }>;
 
@@ -237,13 +238,15 @@ async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-'));
   gitSyncRuntime = createRealRuntime('prod');
-  runtime = createTestKbRuntime({
+  const db = createKbTestDb(tempDir);
+  ({ kb: runtime } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
-    db: createKbTestDb(tempDir),
+    db,
     runtime: gitSyncRuntime,
     spawnCli: noopSpawnCli,
-  });
+  }));
+  writableDbByRuntime.set(runtime, db);
   bindOramaFtsForTest(runtime);
   useScheduler();
   vi.useFakeTimers();
@@ -1904,13 +1907,15 @@ describe('curate', () => {
       expect(afterFirstStart).toContain('notes/\n');
       expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
 
-      const secondRuntime = createTestKbRuntime({
+      const secondDb = createKbTestDb(tempDir);
+      const { kb: secondRuntime } = createKbTestRuntime({
         markdownRoot: tempDir,
         runtimeDir: tempDir,
-        db: createKbTestDb(tempDir),
+        db: secondDb,
         runtime: gitSyncRuntime,
         spawnCli: noopSpawnCli,
       });
+      writableDbByRuntime.set(secondRuntime, secondDb);
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,
         spawnCli: noopSpawnCli,
@@ -2334,10 +2339,7 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       expect(lockSpy).toHaveBeenCalledTimes(1);
-      await runtime.fts.read().consumer.apply?.({
-        snapshot: runtime.captureCorpusSnapshot(),
-        db: runtime.db,
-      });
+      await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
       expect(indexSyncSuccessSpy.mock.calls.length).toBeGreaterThan(0);
       expect(spawn.mock.calls.length).toBeGreaterThan(0);
 

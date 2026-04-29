@@ -83,7 +83,7 @@ describe('sessions consumer-driver notify', () => {
     const runtime = createRealRuntime('prod');
     const workDir = join(tempHome, 'project');
     mkdirSync(workDir, { recursive: true });
-    const manager = new SessionManager(workDir, runtime, coordinatorCommit);
+    const manager = new SessionManager(workDir, runtime, coordinatorCommit, undefined, db);
 
     try {
       const entry = manager.allocate({

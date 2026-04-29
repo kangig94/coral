@@ -1,10 +1,13 @@
 import type { KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
 import { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint } from './detection.js';
-import { readCurateState, type CurateState } from '../state/index.js';
+import { readCurateState, type CurateState, type CurateStateTarget } from '../state/index.js';
+
+type CommunityFreshnessRuntime = CurateStateTarget &
+  Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
 export function areCommunityDocumentsFresh(
-  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath' | 'storagePort'>,
+  kb: CommunityFreshnessRuntime,
   index: KbIndex,
   state?: CurateState,
 ): boolean {
@@ -18,7 +21,7 @@ export function areCommunityDocumentsFresh(
 
 function isCommunityStateFreshForIndex(
   state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
-  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath' | 'storagePort'>,
+  kb: CommunityFreshnessRuntime,
   index: KbIndex,
 ): boolean {
   const communityEntries = Object.values(index.entries).filter(isCommunityEntry);

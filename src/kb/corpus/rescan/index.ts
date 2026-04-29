@@ -53,7 +53,7 @@ export async function performRescan(
   const notes = loadNotes(initialScan);
   const sources = loadSources(initialScan);
   const principles = loadPrinciples(initialScan);
-  const rebuildInfo = detectRescanInfo(kb, initialScan);
+  const rebuildInfo = await detectRescanInfo(kb, initialScan);
 
   // Topology refresh may rewrite community files on disk; rescan once afterwards
   // so the projected index reflects the regenerated communities.
@@ -109,9 +109,9 @@ function syncRetryQueueAgainstIncidents(
   incidents: readonly DetectedIncident[],
 ): void {
   const stillDetected = new Set(incidents.map((incident) => incident.entryId));
-  for (const queued of readCurateRetryQueue(kb.db)) {
+  for (const queued of readCurateRetryQueue(kb)) {
     if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
-      deleteCurateRetryEntry(kb.db, queued.entryId);
+      deleteCurateRetryEntry(kb, queued.entryId);
     }
   }
 }

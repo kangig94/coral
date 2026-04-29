@@ -1,4 +1,6 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
+import { providerLookupPortFromCatalog } from '../providers/catalog.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
@@ -35,6 +37,7 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
@@ -162,6 +165,34 @@ export async function waitForCorpusReadiness(params: {
   }
 }
 
+async function repairProjectionArtifactLagOnBoot(
+  kb: KbRuntime,
+  driver: ConsumerDriver,
+  timeoutMs: number,
+): Promise<void> {
+  const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
+  const targetConsumerIds = [...new Set(lag.flatMap((entry) => entry.targetConsumerIds))];
+  if (targetConsumerIds.length === 0) {
+    return;
+  }
+
+  const snapshot = kb.getCorpusStateSnapshot();
+  const forced = driver.forceCorpusApply(snapshot, {
+    reason: 'projection-artifact-lag',
+    consumers: targetConsumerIds,
+  });
+  await Promise.all(
+    forced.consumers.map((consumerId) =>
+      driver.waitFreshUntil(
+        'corpus',
+        { snapshot, atLeastGeneration: forced.generation },
+        consumerId,
+        timeoutMs,
+      ),
+    ),
+  );
+}
+
 export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
   const {
     runtime: providedRuntime,
@@ -184,6 +215,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   }
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
   // rendering causeRef chains as bare type names.
@@ -218,6 +250,29 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       db: getStoreDb(),
       now: () => nowDate(runtime.time),
       time: runtime.time,
+      corpusProjectionReader: {
+        resolveCurrentIndex: () => {
+          const kbRuntime = currentKbRuntime;
+          if (kbRuntime === null) {
+            throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
+          }
+          return kbRuntime.corpusProjectionReader.resolveCurrentIndex();
+        },
+        prepareCurrentProjectionInput: (options) => {
+          const kbRuntime = currentKbRuntime;
+          if (kbRuntime === null) {
+            throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
+          }
+          return kbRuntime.corpusProjectionReader.prepareCurrentProjectionInput(options);
+        },
+      },
+      onTextProjectionSync: () => {
+        const kbRuntime = currentKbRuntime;
+        if (kbRuntime === null) {
+          throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.textProjectionSync' });
+        }
+        kbRuntime.recordIndexSyncSuccess();
+      },
     });
     return consumerDriver;
   };
@@ -256,6 +311,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       now: () => nowDate(runtime.time),
       reducers,
       upcasters,
+      providers: providerLookupPortFromCatalog(providerRegistry),
     });
     if (appended.length === 0) {
       return appended;
@@ -267,6 +323,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
   const core = createCoordinatorCore({
     ...coreOptions,
+    ...(coreOptions.progressStore === undefined ? { storeDb: coreOptions.storeDb ?? getStoreDb() } : {}),
+    providerRegistry,
     runtime,
     expansionLifecycleService,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
@@ -314,7 +372,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const driver = getConsumerDriver();
       // Boot step 3: replay installed-tier rows + apply bundled fallback to fill empty bindings.
       await expansionLifecycleService.recoverOnBoot();
-      // Boot step 4: replay the persisted corpus snapshot into downstream consumers.
+      // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
+      await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
+      // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
       await driver.waitFreshUntil(
@@ -324,7 +384,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         bootFreshnessTimeoutMs,
       );
       if (kbSubsystem.curateScheduler) {
-        // Boot step 5: start background curation only after the read projections are aligned.
+        // Boot step 6: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();
       }
       return kbSubsystem;

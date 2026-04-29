@@ -24,12 +24,14 @@ describe('kb contracts boundary', () => {
   it('keeps kb runtime-type consumers pointed at contract.ts instead of runtime.ts', () => {
     for (const [fileName, contractImport] of [
       ['curate/state/bootstrap.ts', "from '../../contract.js'"],
-      ['curate/state/store.ts', "from '../../contract.js'"],
+      ['curate/state/store.ts', null],
       ['corpus/index-mutations.ts', "from '../contract.js'"],
       ['corpus/rescan/index.ts', "from '../../contract.js'"],
     ] as const) {
       const source = readKbFile(fileName);
-      expect(source).toContain(contractImport);
+      if (contractImport !== null) {
+        expect(source).toContain(contractImport);
+      }
       expect(source).not.toMatch(
         /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState)[^}]*\}\s+from ['"](?:\.\/|\.\.\/)?runtime\.js['"]/,
       );

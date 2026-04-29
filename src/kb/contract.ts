@@ -1,15 +1,16 @@
-import type BetterSqlite3 from 'better-sqlite3';
-
 import type { RuntimeBinding } from '../runtime/binding.js';
-import type { ConsumerRegistration } from '../store/consumer-contract.js';
+import type { ConsumerRegistration, CorpusStateReadPort, JournalConsumerReadPort } from '../store/consumer-contract.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockDiagnostics, KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
+import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
+import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { FtsSearchResult, VectorRetrievalResult } from './search/contract.js';
+import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 export type {
   ConsumerApplyError,
   ConsumerRegistrationKind,
@@ -17,7 +18,16 @@ export type {
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
+  CorpusStateReadPort,
+  JournalConsumerReadPort,
 } from '../store/consumer-contract.js';
+export type {
+  KbCorpusProjectionReader,
+  KbGeneratedCommunityDocument,
+  KbProjectionInput,
+  KbProjectionInputOptions,
+  KbProjectionRecord,
+} from './projection-input-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -83,6 +93,21 @@ export interface EmbeddingService {
   embedQuery(text: string): Promise<Float32Array>;
 }
 
+export interface KbProjectionArtifactFilePort {
+  existsSync(path: string): boolean;
+  readFileSync(path: string, encoding: 'utf-8'): string;
+  rmSync(path: string, options?: { force?: boolean; recursive?: boolean }): void;
+  mkdirSync(path: string, options?: { recursive?: boolean }): void;
+  renameSync(oldPath: string, newPath: string): void;
+  writeTextAtomic(path: string, content: string): void;
+  writeJsonAtomic(path: string, value: unknown): void;
+}
+
+export interface KbProjectionArtifactPort {
+  readonly runtimeDir: string;
+  readonly files: KbProjectionArtifactFilePort;
+}
+
 export interface KbInboundSyncOptions {
   structuredDiff?: boolean;
 }
@@ -106,17 +131,31 @@ export interface KbMutationEffects {
   writeEntityGraph(graph: EntityGraph): void;
 }
 
+export interface KbEngineRuntimeBase {
+  readonly runtimeDir: string;
+  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  readonly ids: Pick<IdPort, 'uuid'>;
+  readonly projectionArtifacts: KbProjectionArtifactPort;
+  readonly corpusProjectionReader: KbCorpusProjectionReader;
+  readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
+  readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
+  readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;
+}
+
+export interface KbEngineRuntime extends KbEngineRuntimeBase {
+  readonly journalReader: JournalConsumerReadPort;
+  readonly corpusStateReader: CorpusStateReadPort;
+}
+
 /**
  * kb-domain port aggregator. Carries the ports that domain orchestrators
  * (performRescan, gitSync) construct from; cross-domain consumers should
  * compose at the subsystem level instead.
  */
-export interface KbRuntime {
+export interface KbRuntime extends KbEngineRuntimeBase {
   readonly markdownRoot: string;
-  readonly runtimeDir: string;
-  readonly db: BetterSqlite3.Database;
-  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
-  readonly ids: Pick<IdPort, 'uuid'>;
+  readonly engineArtifactRegistry: EngineArtifactRegistry;
+  readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
   /**
    * general-purpose I/O surface used by gitSync; do NOT use for corpus
    * markdown reads — use corpusStorage instead.
@@ -130,9 +169,6 @@ export interface KbRuntime {
   readonly spawnCli: SpawnCliFn;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
-  readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
-  readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
-  readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;

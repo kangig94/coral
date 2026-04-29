@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { StoragePort } from '../../../runtime/ports.js';
-import { isRecord } from '../../../infra/json.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { extractBody, parseSourceFrontmatter } from '../frontmatter.js';
 import { computeContentSurfaceHash } from '../snapshot.js';
@@ -9,7 +8,7 @@ import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contract.js';
+import type { CorpusInterest, KbCorpusSnapshot, KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contract.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -22,13 +21,21 @@ import {
 import { projectIncidents } from './projections.js';
 import type { CorpusEntityGraphScan, CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident } from './incidents/catalog.js';
+import type { EngineArtifactDescriptor, EngineArtifactProjectedSnapshot } from '../artifact-port.js';
+import type { CorpusAuthorityBaselineMap, CorpusAuthorityBaselineRecord } from '../authority-baseline-contract.js';
 
 const INDEX_FILE = 'index.json';
-const ORAMA_INDEX_FILE = 'orama-index.json';
 
-type StoredAuthorityHashes = {
-  contentHash: string;
-  metadataHash: string;
+export type ProjectionArtifactLag = {
+  readonly artifactId: string;
+  readonly targetConsumerIds: readonly string[];
+  readonly diagnostic: string;
+};
+
+export type RescanInfo = {
+  readonly needsRebuild: boolean;
+  readonly externalMutation: KbIndexMutationLane | null;
+  readonly projectionArtifactLag: readonly ProjectionArtifactLag[];
 };
 
 export function mergeMutationLane(
@@ -71,51 +78,9 @@ function fileModifiedAfter(storagePort: StoragePort, filePath: string, threshold
   return modifiedAt !== null && modifiedAt > threshold;
 }
 
-function collectStoredAuthorityHashes(value: unknown, hashes: Map<string, StoredAuthorityHashes>): void {
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      collectStoredAuthorityHashes(entry, hashes);
-    }
-    return;
-  }
-
-  if (!isRecord(value)) {
-    return;
-  }
-
-  const entryId = typeof value.entryId === 'string' ? value.entryId : null;
-  const contentHash = typeof value.contentHash === 'string' ? value.contentHash : null;
-  const metadataHash = typeof value.metadataHash === 'string' ? value.metadataHash : null;
-  if (entryId !== null && contentHash !== null && metadataHash !== null) {
-    hashes.set(entryId, {
-      contentHash,
-      metadataHash,
-    });
-  }
-
-  for (const child of Object.values(value)) {
-    collectStoredAuthorityHashes(child, hashes);
-  }
-}
-
-function readStoredOramaAuthorityHashes(
-  storagePort: StoragePort,
-  runtimeDir: string,
-): Map<string, StoredAuthorityHashes> {
-  const snapshotPath = join(runtimeDir, ORAMA_INDEX_FILE);
-  try {
-    const parsed = JSON.parse(storagePort.readFileSync(snapshotPath, 'utf-8')) as unknown;
-    const hashes = new Map<string, StoredAuthorityHashes>();
-    collectStoredAuthorityHashes(parsed, hashes);
-    return hashes;
-  } catch {
-    return new Map<string, StoredAuthorityHashes>();
-  }
-}
-
 function classifyAuthorityDrift(
-  previous: StoredAuthorityHashes | undefined,
-  current: StoredAuthorityHashes,
+  previous: CorpusAuthorityBaselineRecord | undefined,
+  current: Pick<CorpusAuthorityBaselineRecord, 'contentHash' | 'metadataHash'>,
   fallback: {
     contentChangedByIndex: boolean;
     metadataChangedByIndex: boolean;
@@ -164,7 +129,7 @@ function detectKindDrift<E extends IndexEntry>(
   kind: CorpusMarkdownFileScan['kind'],
   scan: CorpusScanView,
   index: KbIndex,
-  storedHashes: Map<string, StoredAuthorityHashes>,
+  storedHashes: CorpusAuthorityBaselineMap,
   indexMtime: bigint,
   pendingRepairIds: ReadonlySet<string>,
   loaders: KindDriftLoaders<E>,
@@ -218,15 +183,14 @@ function detectKindDrift<E extends IndexEntry>(
   return lane;
 }
 
-function detectStructuredTextDrift(
+async function detectStructuredTextDrift(
   kb: Pick<KbRuntime, 'runtimeDir' | 'storagePort'>,
   scan: CorpusScanView,
   index: KbIndex,
   pendingRepairIds: ReadonlySet<string>,
   indexMtime: bigint,
-): KbIndexMutationLane | null {
-  const storedAuthorityHashes = readStoredOramaAuthorityHashes(kb.storagePort, kb.runtimeDir);
-
+  storedAuthorityHashes: CorpusAuthorityBaselineMap,
+): Promise<KbIndexMutationLane | null> {
   const noteLane = detectKindDrift(
     kb.storagePort,
     'note',
@@ -338,35 +302,90 @@ export function detectIncidentRetryDrift(
   return null;
 }
 
-export function detectRescanInfo(
-  kb: Pick<
-    KbRuntime,
-    | 'runtimeDir'
-    | 'storagePort'
-    | 'db'
-    | 'readIndex'
-    | 'notesDir'
-    | 'sourcesDir'
-    | 'communitiesDir'
-    | 'principlesDir'
-  >,
+function projectedSnapshotMatchesInterest(
+  current: KbCorpusSnapshot,
+  projected: EngineArtifactProjectedSnapshot,
+  interest: CorpusInterest,
+): boolean {
+  if (interest === 'both' && projected.snapshotId !== current.snapshotId) {
+    return false;
+  }
+
+  if (interest === 'content' || interest === 'both') {
+    if (projected.contentSeq !== current.contentSeq || projected.contentManifestHash !== current.contentManifestHash) {
+      return false;
+    }
+  }
+
+  if (interest === 'metadata' || interest === 'both') {
+    if (
+      projected.metadataSeq !== current.metadataSeq ||
+      projected.metadataManifestHash !== current.metadataManifestHash
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function projectionLagDiagnostic(descriptor: EngineArtifactDescriptor, current: KbCorpusSnapshot): string | null {
+  if (descriptor.freshness.status === 'missing') {
+    return 'projection artifact is missing';
+  }
+  if (descriptor.freshness.status === 'corrupt') {
+    return descriptor.freshness.diagnostic;
+  }
+  if (descriptor.freshness.projected.projectionIdentityHash !== descriptor.expectedProjectionIdentityHash) {
+    return 'projection identity differs from the currently registered projection';
+  }
+  if (!projectedSnapshotMatchesInterest(current, descriptor.freshness.projected, descriptor.corpusInterest)) {
+    return 'projection artifact does not match the current corpus snapshot';
+  }
+  return null;
+}
+
+export function detectProjectionArtifactLag(
+  kb: Pick<KbRuntime, 'getCorpusStateSnapshot'>,
+  descriptors: readonly EngineArtifactDescriptor[],
+): readonly ProjectionArtifactLag[] {
+  const current = kb.getCorpusStateSnapshot();
+  return descriptors.flatMap((descriptor) => {
+    const diagnostic = projectionLagDiagnostic(descriptor, current);
+    if (diagnostic === null) {
+      return [];
+    }
+    return [
+      {
+        artifactId: descriptor.artifactId,
+        targetConsumerIds: descriptor.targetConsumerIds,
+        diagnostic,
+      },
+    ];
+  });
+}
+
+export async function detectRescanInfo(
+  kb: KbRuntime,
   scan: CorpusScanView,
-): {
-  needsRebuild: boolean;
-  externalMutation: KbIndexMutationLane | null;
-} {
+): Promise<RescanInfo> {
+  const artifactDescriptors = await kb.engineArtifactRegistry.describeArtifacts();
+  const projectionArtifactLag = detectProjectionArtifactLag(kb, artifactDescriptors);
   const indexPath = join(kb.runtimeDir, INDEX_FILE);
   if (!kb.storagePort.existsSync(indexPath)) {
     return {
       needsRebuild: true,
       externalMutation: null,
+      projectionArtifactLag,
     };
   }
 
   try {
+    const baseline = kb.corpusAuthorityBaseline.ensure(scan);
+    const storedAuthorityHashes = baseline.rebuilt ? new Map() : baseline.baseline;
     const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
-    const retryQueue = readCurateRetryQueue(kb.db);
+    const retryQueue = readCurateRetryQueue(kb);
     const pendingRepairIds = new Set(retryQueue.map((entry) => entry.entryId));
     let externalMutation: KbIndexMutationLane | null = null;
 
@@ -389,7 +408,14 @@ export function detectRescanInfo(
     if (currentIndex !== null) {
       externalMutation = mergeMutationLane(
         externalMutation,
-        detectStructuredTextDrift(kb, scan, currentIndex, pendingRepairIds, indexMtime),
+        await detectStructuredTextDrift(
+          kb,
+          scan,
+          currentIndex,
+          pendingRepairIds,
+          indexMtime,
+          storedAuthorityHashes,
+        ),
       );
     }
 
@@ -401,11 +427,13 @@ export function detectRescanInfo(
     return {
       needsRebuild: externalMutation !== null,
       externalMutation,
+      projectionArtifactLag,
     };
   } catch {
     return {
       needsRebuild: true,
       externalMutation: 'both',
+      projectionArtifactLag,
     };
   }
 }

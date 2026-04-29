@@ -119,7 +119,7 @@ function readLatestTerminalSeq(db: Database, jobId: string): number | null {
   return row?.seq ?? null;
 }
 
-export const validateJobTerminalOrder: DomainAppendValidator = (db, inputs) => {
+export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => {
   const terminalByJob = new Map<string, JobTerminalOrderState | null>();
 
   for (const input of inputs) {
@@ -130,7 +130,7 @@ export const validateJobTerminalOrder: DomainAppendValidator = (db, inputs) => {
     const jobId = input.stream.id;
     let terminalState = terminalByJob.get(jobId);
     if (terminalState === undefined) {
-      const seq = readLatestTerminalSeq(db, jobId);
+      const seq = readLatestTerminalSeq(ctx.db, jobId);
       terminalState = seq === null ? null : { kind: 'existing', seq };
       terminalByJob.set(jobId, terminalState);
     }

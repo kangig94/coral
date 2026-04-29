@@ -143,6 +143,7 @@ function listProjectionRows(db: InstanceType<typeof Database>): ProjectionRow[] 
 }
 
 function createNeedleConsumer(options: {
+  db: InstanceType<typeof Database>;
   appliedBy: string;
   applyCalls: Array<{ appliedBy: string; snapshotId: string }>;
   started?: Deferred<void>;
@@ -154,8 +155,8 @@ function createNeedleConsumer(options: {
     kind: 'apply',
     registrationKind: 'expansion',
     corpusInterest: 'content',
-    async apply({ snapshot, db }) {
-      db.prepare(
+    async apply({ snapshot }) {
+      options.db.prepare(
         `
           INSERT INTO test_needle_projection (
             snapshot_id,
@@ -224,6 +225,7 @@ describe('Corpus notify crash replay', () => {
     try {
       primaryDriver.register(
         createNeedleConsumer({
+          db: primaryDb,
           appliedBy: 'pre-crash',
           applyCalls,
           started: firstApplyStarted,
@@ -284,6 +286,7 @@ describe('Corpus notify crash replay', () => {
       });
       replayDriver.register(
         createNeedleConsumer({
+          db: replayDb,
           appliedBy: 'startup-replay',
           applyCalls,
         }),

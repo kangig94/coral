@@ -109,7 +109,7 @@ export async function bindEmbedding(
           registrationKind: ${JSON.stringify(options.registrationKind ?? 'stateless')},
         },
       };
-      host.registerConsumer(provider.consumer, host.scope);
+      host.registerConsumer({ id: provider.consumer.id, kind: provider.consumer.kind }, host.scope);
       host.bind(host.kb.embedding, provider);
     };
   `;
@@ -146,11 +146,11 @@ export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
   }
 
   const snapshotStore = new OramaSnapshotStore(
-    { storage: runtime.storagePort, ids: runtime.ids },
-    runtime.runtimeDir,
+    { files: runtime.projectionArtifacts.files },
+    runtime.projectionArtifacts.runtimeDir,
   );
   const projection = createOramaBaseProjection(runtime, snapshotStore);
-  const ftsBacked = createOramaFtsBacked(runtime, projection);
+  const ftsBacked = createOramaFtsBacked(projection);
   const scope = createScope();
   runtime.fts.bind(ftsBacked, scope, 'orama');
   oramaFtsScopes.set(runtime, scope);
@@ -196,10 +196,7 @@ export function bindVectorBacked(runtime: KbRuntime, retrieval: TaggedVectorRetr
 }
 
 export function seedNeedleRouteState(
-  kb: {
-    db: { prepare: (...args: any[]) => { run: (...params: any[]) => unknown } };
-    invalidateCorpusStateSnapshot?: () => void;
-  },
+  db: { prepare: (...args: any[]) => { run: (...params: any[]) => unknown } },
   snapshot: {
     snapshotId: string;
     contentSeq: number;
@@ -209,9 +206,10 @@ export function seedNeedleRouteState(
   },
   options: {
     cursorContentManifestHash?: string;
+    invalidateCorpusStateSnapshot?: () => void;
   } = {},
 ): Extract<ConsumerHandleStatus, { authority: 'corpus' }> {
-  kb.db
+  db
     .prepare(
       `
         INSERT INTO kb_corpus_state (
@@ -241,7 +239,7 @@ export function seedNeedleRouteState(
       '2026-04-01T00:00:00.000Z',
     );
 
-  kb.invalidateCorpusStateSnapshot?.();
+  options.invalidateCorpusStateSnapshot?.();
 
   return {
     authority: 'corpus',

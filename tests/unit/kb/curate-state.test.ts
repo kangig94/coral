@@ -35,7 +35,8 @@ import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import type { ReadonlyDatabase } from '#src/kb/read-port.js';
 
 function expectPendingRepairEntries(
   pendingRepair: PendingRepair[] | null,
@@ -196,6 +197,7 @@ function noopSpawnCli() {
 
 let tempDir: string;
 let runtime: KbRuntime;
+let readDb: ReadonlyDatabase;
 let scheduler: CurateHandle;
 let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
@@ -203,13 +205,13 @@ let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
   gitSyncRuntime = createRealRuntime('prod');
-  runtime = createTestKbRuntime({
+  ({ kb: runtime, readDb } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
     db: createKbTestDb(tempDir),
     runtime: gitSyncRuntime,
     spawnCli: noopSpawnCli,
-  });
+  }));
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli: noopSpawnCli,
@@ -394,13 +396,13 @@ describe('curate state', () => {
       },
     ]);
 
-    const beforeChanges = (runtime.db.prepare(`SELECT total_changes() AS count`).get() as { count: number }).count;
+    const beforeChanges = (readDb.prepare(`SELECT total_changes() AS count`).get() as { count: number }).count;
     writeCurateState(runtime, {
       ...baseline,
       discoveryHighSeq: 62,
       discoveryOffset: 3,
     });
-    const afterChanges = (runtime.db.prepare(`SELECT total_changes() AS count`).get() as { count: number }).count;
+    const afterChanges = (readDb.prepare(`SELECT total_changes() AS count`).get() as { count: number }).count;
     const rowTouches = afterChanges - beforeChanges;
 
     expect(rowTouches).toBeLessThanOrEqual(1);

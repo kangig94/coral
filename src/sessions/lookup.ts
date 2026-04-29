@@ -1,7 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
-
-import type { Runtime } from '../runtime/ports.js';
-import { openBackendStoreDb } from '../store/db.js';
+import type { KbReadPort, ReadonlyDatabase } from '../kb/read-port.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntry } from './projections.js';
 
@@ -20,7 +17,7 @@ type SessionLookupRow = {
   provider: string;
 };
 
-export function createProjectionSessionLookup(db: BetterSqlite3.Database): SessionLookup {
+export function createProjectionSessionLookup(db: ReadonlyDatabase): SessionLookup {
   const listStmt = db.prepare<[], SessionLookupRow>(
     `SELECT session_id, provider
        FROM projection_sessions
@@ -40,8 +37,6 @@ export function createProjectionSessionLookup(db: BetterSqlite3.Database): Sessi
   };
 }
 
-type SessionLookupRuntime = Pick<Runtime, 'storage' | 'paths'>;
-
-export function createSessionLookup(runtime: SessionLookupRuntime): SessionLookup {
-  return createProjectionSessionLookup(openBackendStoreDb(runtime));
+export function createSessionLookup(readPort: KbReadPort): SessionLookup {
+  return createProjectionSessionLookup(readPort.db);
 }

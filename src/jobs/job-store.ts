@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
 import type { CauseRefToken } from '../causality/cause-ref.js';
+import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
   type AppendedEvent,
@@ -10,9 +11,7 @@ import {
   type CommitContext,
   type CommitEventsFn,
 } from '../store/append.js';
-import { openStoreDatabase } from '../store/db.js';
 import type { ResolvableCoralEventInput, UpcasterRegistry } from '../store/envelope.js';
-import { ensureStoreSchemasDir } from '../store/schema-loader.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -30,6 +29,7 @@ export type JobStoreOptions = {
   eventBus?: JobEventBus;
   db?: Database;
   reducers?: ComposedReducers;
+  providers?: ProviderLookupPort;
 };
 
 function formatElapsed(ms: number): string {
@@ -87,53 +87,17 @@ export class JobStore implements JobProgressStore {
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
-    this.db = db ?? this.openDefaultStoreDatabase();
+    if (db === undefined) {
+      throw new Error('JobStore requires a coordinator-injected store database.');
+    }
+    this.db = db;
     this.commitEvents = (cb) =>
       commitJournalEvents(this.db, cb, {
         now: () => nowDate(this.runtime.time),
         reducers,
         upcasters: this.upcasters,
+        providers: options.providers,
       });
-  }
-
-  private resolveDefaultDbPath(): string {
-    if (this.usesInMemoryStorage()) {
-      return ':memory:';
-    }
-    return this.runtime.paths.coral.store.dbFile;
-  }
-
-  private openDefaultStoreDatabase(): Database {
-    const path = this.resolveDefaultDbPath();
-    try {
-      return openStoreDatabase({
-        path,
-        storage: this.runtime.storage,
-        schemasDir: ensureStoreSchemasDir(this.runtime.storage),
-      });
-    } catch (error: unknown) {
-      // The coordinator opens its own store DB and surfaces the same schema
-      // error if real-disk state is incompatible — so we can fall back to
-      // :memory: here without masking real production bugs. Tests that point a
-      // real Runtime at a dev box's stale ~/.coral DB still get a working
-      // store rather than a hard failure during JobStore construction.
-      if (path === ':memory:') {
-        throw error;
-      }
-      return openStoreDatabase({
-        path: ':memory:',
-        storage: this.runtime.storage,
-        schemasDir: ensureStoreSchemasDir(this.runtime.storage),
-      });
-    }
-  }
-
-  private usesInMemoryStorage(): boolean {
-    const storage = this.runtime.storage as {
-      snapshot?: unknown;
-      restore?: unknown;
-    };
-    return typeof storage.snapshot === 'function' && typeof storage.restore === 'function';
   }
 
   getNamespace(): string {

@@ -28,6 +28,7 @@ import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import { commitJobInputs } from '#tests/helpers/job-commits.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -204,6 +205,7 @@ export function createDiscussHarness(
     runtime,
     createDefaultUpcasterRegistry(),
     {
+      db: openTestStoreDb(runtime),
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     },
   );

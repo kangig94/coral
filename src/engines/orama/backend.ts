@@ -1,21 +1,19 @@
 import { insertMultiple, search as oramaSearch } from '@orama/orama';
-import { readFileSync } from 'node:fs';
 
 import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
+  FtsRetrieval,
+  KbEngineRuntimeBase,
   KbCorpusSnapshot,
-  KbRuntime,
+  KbProjectionInput,
+  KbProjectionRecord,
 } from '../../kb/contract.js';
 import {
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
 } from '../../kb/corpus/snapshot.js';
-import { areCommunityDocumentsFresh } from '../../kb/curate/community/freshness.js';
-import type { CommunityDocument } from '../../kb/curate/community/detection.js';
-import { extractBody, parseCommunityFrontmatter } from '../../kb/corpus/frontmatter.js';
-import { cloneKbIndex } from '../../kb/corpus/index-records.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
 import {
   createOramaDb,
@@ -27,23 +25,12 @@ import {
 } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { OramaSnapshotStore } from './snapshot.js';
-import { loadKbNote, loadKbSource } from '../../kb/read.js';
-import { isNoEntryError } from '../../infra/fs-errors.js';
 import type {
   FtsHit,
   FtsSearchResult,
   RetrievedDocument,
   RetrievalScope,
 } from '../../kb/search/contract.js';
-import {
-  isCommunityEntry,
-  isNoteEntry,
-  isSourceEntry,
-  type CommunityEntry,
-  type KbIndex,
-  type NoteEntry,
-  type SourceEntry,
-} from '../../kb/entry-types.js';
 
 export {
   createOramaDb,
@@ -75,26 +62,7 @@ const ORAMA_SEARCH_BOOST = {
 
 export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
 
-type ProjectionRecord =
-  | {
-      kind: 'note';
-      entry: NoteEntry;
-      body: string;
-    }
-  | {
-      kind: 'source';
-      entry: SourceEntry;
-      body: string;
-    }
-  | {
-      kind: 'community';
-      entry: CommunityEntry;
-      body: string;
-      rawContent: string;
-    };
-
 export interface PreparedOramaProjection {
-  index: KbIndex;
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
   documents: KbOramaDocument[];
@@ -148,93 +116,53 @@ function toRetrievedDocument(document: KbOramaDocument): RetrievedDocument {
   };
 }
 
-/**
- * Coordinator-facing Orama projection that serves lexical search through the
- * engine-blind FTS contract. Owns its own snapshot store (Expansion-internal
- * state) so KbRuntime stays engine-blind.
- */
-export class OramaBaseProjection implements CorpusConsumerRegistration {
-  readonly id = ORAMA_BASE_CONSUMER_ID;
-  readonly authority = 'corpus';
-  readonly corpusInterest = 'content';
-  readonly kind = 'apply';
-  registrationKind: 'base' | 'expansion' = 'base';
-  onApplyFailure?: (error: ConsumerApplyError) => void;
+export class OramaSearchPort implements FtsRetrieval {
   private readonly warningSet = new Set<string>();
+  private fallbackCacheActive = false;
+  private lazyTokenizer: KbOramaTokenizer | null = null;
 
-  constructor(
-    private readonly runtime: KbRuntime,
-    private readonly snapshotStore: OramaSnapshotStore,
-  ) {}
+  constructor(private readonly snapshotStore: OramaSnapshotStore) {}
 
-  async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    // Spec §12.3 lazy non-blocking rescan: kick a background rebuild on
-    // staleness but project against the current index now. A subsequent
-    // notify-cycle will pick up the rebuilt index when it lands.
-    await this.runtime.ensureCorpusFreshness({ wait: false, signal: ctx.signal });
-    const preparedProjection = await this.prepareFullSnapshotForCurrentCorpus();
-    await this.installFullSnapshot(ctx.snapshot, preparedProjection);
-    this.runtime.recordIndexSyncSuccess();
-  }
-
-  /**
-   * Loads the current Orama index artifacts. If no snapshot exists but the KB
-   * index is populated, auto-rebuilds from the canonical index — preserves
-   * "search works zero-config after a fresh boot or empty cache" behaviour.
-   */
   async ensureLoaded(): Promise<OramaLoadedIndex> {
     const cached = this.snapshotStore.getCache();
-    if (cached !== null) {
-      this.warningSet.delete('fts_index_uninitialized');
+    if (cached !== null && !(this.fallbackCacheActive && this.snapshotStore.hasPersistedSnapshot())) {
+      if (!this.fallbackCacheActive) {
+        this.warningSet.delete('fts_index_uninitialized');
+      }
       return cached;
     }
 
-    const loaded = await this.snapshotStore.loadIfPresent();
-    if (loaded !== null) {
-      this.warningSet.delete('fts_index_uninitialized');
-      return loaded;
+    if (this.fallbackCacheActive && this.snapshotStore.hasPersistedSnapshot()) {
+      this.snapshotStore.clear();
     }
 
-    const currentIndex = this.runtime.readIndex();
-    if (currentIndex !== null && Object.keys(currentIndex.entries).length > 0) {
-      const prepared = await this.prepareFullSnapshotForCurrentCorpus(currentIndex);
-      await this.installFullSnapshot(this.runtime.captureCorpusSnapshot(), prepared);
-      const rebuilt = this.snapshotStore.getCache();
-      if (rebuilt !== null) {
-        this.warningSet.delete('fts_index_uninitialized');
-        return rebuilt;
-      }
+    const loaded = await this.snapshotStore.loadReadOnly();
+    if (loaded !== null) {
+      this.fallbackCacheActive = false;
+      this.warningSet.delete('fts_index_uninitialized');
+      return loaded;
     }
 
     this.warningSet.add('fts_index_uninitialized');
     const created = await createOramaDb();
     this.snapshotStore.install(created);
+    this.fallbackCacheActive = true;
     return created;
   }
 
-  /**
-   * Eager freshness probe. Reports `'fts_index_uninitialized'` only when there
-   * is neither an in-memory cache nor a persisted snapshot AND no KB index to
-   * auto-rebuild from — matches the pre-rewrite degraded-search behaviour.
-   */
   probeFreshness(): void {
-    if (this.snapshotStore.hasCache()) {
-      this.warningSet.delete('fts_index_uninitialized');
-      return;
-    }
     if (this.snapshotStore.hasPersistedSnapshot()) {
       this.warningSet.delete('fts_index_uninitialized');
+      this.fallbackCacheActive = false;
       return;
     }
-    const currentIndex = this.runtime.readIndex();
-    if (currentIndex !== null && Object.keys(currentIndex.entries).length > 0) {
+    if (this.snapshotStore.hasCache() && !this.fallbackCacheActive) {
       this.warningSet.delete('fts_index_uninitialized');
       return;
     }
     this.warningSet.add('fts_index_uninitialized');
   }
 
-  /** Single-shot ranked lexical search; KB-tier owns the widening loop. */
   async search(query: string, topK: number, scope?: RetrievalScope): Promise<FtsSearchResult> {
     const safeTopK = topK > 0 ? topK : 1;
     const term = normalizeOramaTerm(query);
@@ -275,56 +203,90 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     return { hits, exhausted };
   }
 
-  /** Engine tokenizer pipeline; used for snippet anchoring. */
   tokenize(text: string): readonly string[] {
     const tokenizer = this.tokenizerProbe();
     return tokenizeQuery(normalizeOramaTerm(text), tokenizer);
   }
-
-  /**
-   * Returns a tokenizer for synchronous callers. Lazily creates one if no
-   * snapshot has materialized yet — the ENGLISH stemmer is configuration-only,
-   * matching what `createOramaDb` produces.
-   */
-  private tokenizerProbe(): KbOramaTokenizer {
-    const cached = this.snapshotStore.getCache();
-    if (cached !== null) {
-      return cached.tokenizer;
-    }
-    this.lazyTokenizer ??= createOramaTokenizer();
-    return this.lazyTokenizer;
-  }
-
-  private lazyTokenizer: KbOramaTokenizer | null = null;
 
   warnings(): readonly string[] {
     this.probeFreshness();
     return [...this.warningSet];
   }
 
-  /** Materializes a full Orama projection from the current runtime corpus view. */
-  async prepareFullSnapshotForCurrentCorpus(
-    index: KbIndex = this.runtime.readIndexOrEmpty(),
-  ): Promise<PreparedOramaProjection> {
-    return this.prepareFullSnapshotForProjectedIndex({ index });
+  private tokenizerProbe(): KbOramaTokenizer {
+    const cached = this.snapshotStore.getCache();
+    if (cached !== null && !this.fallbackCacheActive) {
+      return cached.tokenizer;
+    }
+    this.lazyTokenizer ??= createOramaTokenizer();
+    return this.lazyTokenizer;
+  }
+}
+
+/**
+ * Coordinator-facing Orama projection that serves lexical search through the
+ * engine-blind FTS contract. Owns its own snapshot store (Expansion-internal
+ * state) so the KB runtime stays engine-blind.
+ */
+export class OramaBaseProjection implements CorpusConsumerRegistration {
+  readonly id = ORAMA_BASE_CONSUMER_ID;
+  readonly authority = 'corpus';
+  readonly corpusInterest = 'content';
+  readonly kind = 'apply';
+  readonly projectionSync = 'text-index';
+  registrationKind: 'base' | 'expansion' = 'base';
+  onApplyFailure?: (error: ConsumerApplyError) => void;
+  private readonly searchPort: OramaSearchPort;
+
+  constructor(
+    private readonly runtime: KbEngineRuntimeBase,
+    private readonly snapshotStore: OramaSnapshotStore,
+  ) {
+    this.searchPort = new OramaSearchPort(snapshotStore);
   }
 
-  /** Builds a complete projection from a provided index, optionally injecting generated community docs. */
-  async prepareFullSnapshotForProjectedIndex(params: {
-    index: KbIndex;
-    generatedCommunityDocs?: readonly CommunityDocument[];
-    forceCommunityFresh?: boolean;
-  }): Promise<PreparedOramaProjection> {
-    const nextIndex = cloneKbIndex(params.index);
+  async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
+    const preparedProjection = await this.prepareFullSnapshot(ctx.projectionInput);
+    await this.installFullSnapshot(ctx.snapshot, preparedProjection);
+  }
+
+  async ensureLoaded(): Promise<OramaLoadedIndex> {
+    return this.searchPort.ensureLoaded();
+  }
+
+  /**
+   * Eager freshness probe. Search reads never rebuild or persist Orama
+   * artifacts; a missing persisted snapshot surfaces degraded search until the
+   * next corpus apply materializes it.
+   */
+  probeFreshness(): void {
+    this.searchPort.probeFreshness();
+  }
+
+  /** Single-shot ranked lexical search; KB-tier owns the widening loop. */
+  async search(query: string, topK: number, scope?: RetrievalScope): Promise<FtsSearchResult> {
+    return this.searchPort.search(query, topK, scope);
+  }
+
+  /** Engine tokenizer pipeline; used for snippet anchoring. */
+  tokenize(text: string): readonly string[] {
+    return this.searchPort.tokenize(text);
+  }
+
+  warnings(): readonly string[] {
+    return this.searchPort.warnings();
+  }
+
+  createSearchPort(): OramaSearchPort {
+    return new OramaSearchPort(this.snapshotStore);
+  }
+
+  /** Builds a complete projection from KB-materialized corpus input. */
+  async prepareFullSnapshot(input: KbProjectionInput): Promise<PreparedOramaProjection> {
     const { db, tokenizer } = await createOramaDb();
-    const documents = this.buildDocumentsForIndex(
-      nextIndex,
-      params.generatedCommunityDocs,
-      params.forceCommunityFresh,
-    );
+    const documents = this.materializeDocuments(input.records, input.communityFresh);
 
     return {
-      index: nextIndex,
       db,
       tokenizer,
       documents,
@@ -332,40 +294,19 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   }
 
   async installFullSnapshot(snapshot: KbCorpusSnapshot, preparedProjection: PreparedOramaProjection): Promise<void> {
-    void snapshot;
-
     if (preparedProjection.documents.length > 0) {
       await insertMultiple(preparedProjection.db, preparedProjection.documents);
     }
-    this.runtime.writeIndex(preparedProjection.index);
-    this.snapshotStore.persist(preparedProjection.db);
+    this.snapshotStore.persist(snapshot, preparedProjection.db);
     this.snapshotStore.install({
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
     });
-    this.warningSet.delete('fts_index_uninitialized');
-  }
-
-  private buildDocumentsForIndex(
-    index: KbIndex,
-    generatedCommunityDocs: readonly CommunityDocument[] = [],
-    forceCommunityFresh?: boolean,
-  ): KbOramaDocument[] {
-    const generatedCommunityDocsBySlug = new Map(
-      generatedCommunityDocs.map((document) => [document.slug, document] as const),
-    );
-    const communityFresh = forceCommunityFresh ?? areCommunityDocumentsFresh(this.runtime, index);
-
-    const records = Object.entries(index.entries)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, entry]) => this.loadProjectionRecord(entry, generatedCommunityDocsBySlug))
-      .filter((record): record is ProjectionRecord => record !== null);
-
-    return this.materializeDocuments(records, communityFresh);
+    this.searchPort.probeFreshness();
   }
 
   private materializeDocuments(
-    records: readonly ProjectionRecord[],
+    records: readonly KbProjectionRecord[],
     communityFresh: boolean,
   ): KbOramaDocument[] {
     return records.map((record) => {
@@ -445,79 +386,14 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     });
   }
 
-  private loadProjectionRecord(
-    entry: KbIndex['entries'][string] | undefined,
-    generatedCommunityDocs: ReadonlyMap<string, CommunityDocument> = new Map(),
-  ): ProjectionRecord | null {
-    if (entry === undefined) {
-      return null;
-    }
-
-    if (isNoteEntry(entry)) {
-      let loaded: ReturnType<typeof loadKbNote>;
-      try {
-        loaded = loadKbNote(this.runtime.storagePort, this.runtime.notePath(entry.slug));
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) {
-          return null;
-        }
-        throw error;
-      }
-      return {
-        kind: 'note',
-        entry,
-        body: loaded.body,
-      };
-    }
-
-    if (isSourceEntry(entry)) {
-      let loaded: ReturnType<typeof loadKbSource>;
-      try {
-        loaded = loadKbSource(this.runtime.storagePort, this.runtime.sourcePath(entry.slug));
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) {
-          return null;
-        }
-        throw error;
-      }
-      return {
-        kind: 'source',
-        entry,
-        body: loaded.body,
-      };
-    }
-
-    if (!isCommunityEntry(entry)) {
-      return null;
-    }
-
-    const generated = generatedCommunityDocs.get(entry.slug);
-    if (generated !== undefined) {
-      return {
-        kind: 'community',
-        entry,
-        body: extractBody(generated.content),
-        rawContent: generated.content,
-      };
-    }
-
-    const raw = readFileSync(this.runtime.communityPath(entry.slug), 'utf-8');
-    parseCommunityFrontmatter(raw);
-    return {
-      kind: 'community',
-      entry,
-      body: extractBody(raw),
-      rawContent: raw,
-    };
-  }
 }
 
 /** Creates the shared Orama projection wrapper for a KB runtime. */
 export function createOramaBaseProjection(
-  runtime: KbRuntime,
+  runtime: KbEngineRuntimeBase,
   snapshotStore: OramaSnapshotStore = new OramaSnapshotStore(
-    { storage: runtime.storagePort, ids: runtime.ids },
-    runtime.runtimeDir,
+    { files: runtime.projectionArtifacts.files },
+    runtime.projectionArtifacts.runtimeDir,
   ),
 ): OramaBaseProjection {
   return new OramaBaseProjection(runtime, snapshotStore);

@@ -10,6 +10,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,
@@ -126,6 +127,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),
+    { db: openTestStoreDb(runtime) },
   );
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),

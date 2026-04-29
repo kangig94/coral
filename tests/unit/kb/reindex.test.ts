@@ -3,13 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import type { KbRuntime } from '#src/kb/contract.js';
+import type { ReadonlyDatabase } from '#src/kb/read-port.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
+
+const readDbByRuntime = new WeakMap<KbRuntime, ReadonlyDatabase>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -39,11 +43,13 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createTestKbRuntime({
+  const { kb, readDb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
     db: createKbTestDb(paths.kbRuntimeDir('prod')),
   });
+  readDbByRuntime.set(kb, readDb);
+  return kb;
 }
 
 function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths']) {
@@ -682,7 +688,7 @@ entrySeq: nope
       mode: 'text',
     });
     const { readCurateRetryQueue } = await import('#src/kb/curate/retry.js');
-    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
+    expectPendingRepairEntries(readCurateRetryQueue(readDbByRuntime.get(kb)!), [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
@@ -734,7 +740,7 @@ This note has malformed frontmatter.
     );
 
     await reindex(kb);
-    const pendingRepair = readCurateRetryQueue(kb.db);
+    const pendingRepair = readCurateRetryQueue(readDbByRuntime.get(kb)!);
     expectPendingRepairEntries(pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
@@ -755,7 +761,7 @@ This note has malformed frontmatter.
     await kb.ensureCorpusFreshness();
 
     expect(reindexSuccessSpy).not.toHaveBeenCalled();
-    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
+    expectPendingRepairEntries(readCurateRetryQueue(readDbByRuntime.get(kb)!), [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
@@ -818,7 +824,7 @@ This note has malformed frontmatter.
 
     await reindex(kb);
 
-    const pendingRepair = readCurateRetryQueue(kb.db);
+    const pendingRepair = readCurateRetryQueue(readDbByRuntime.get(kb)!);
     expectPendingRepairEntries(pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
@@ -866,7 +872,7 @@ This note is valid now.
       discoveryHighSeq: 6,
       discoveryOffset: 0,
     });
-    expect(readCurateRetryQueue(kb.db)).toEqual([]);
+    expect(readCurateRetryQueue(readDbByRuntime.get(kb)!)).toEqual([]);
     expect(kb.readIndex()?.entries[noteEntryId('bad-note')]).toEqual({
       kind: 'note',
       slug: 'bad-note',
@@ -904,8 +910,8 @@ Malformed source frontmatter.
 
     await reindex(kb);
 
-    const detectedAt = readCurateRetryQueue(kb.db)[0]?.detectedAt;
-    expectPendingRepairEntries(readCurateRetryQueue(kb.db), [
+    const detectedAt = readCurateRetryQueue(readDbByRuntime.get(kb)!)[0]?.detectedAt;
+    expectPendingRepairEntries(readCurateRetryQueue(readDbByRuntime.get(kb)!), [
       {
         entryId: sourceEntryId('bad-source'),
         entrySeq: 8,
@@ -936,7 +942,7 @@ Source body.
 
     await kb.ensureCorpusFreshness({ wait: true });
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
-    expect(readCurateRetryQueue(kb.db)).toEqual([]);
+    expect(readCurateRetryQueue(readDbByRuntime.get(kb)!)).toEqual([]);
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
       kind: 'source',
       slug: 'bad-source',

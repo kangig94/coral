@@ -17,6 +17,7 @@ import type {
 } from '#src/kb/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { workflowRecover } from '#src/workflow/recover.js';
+import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 
 // Match the orama projection's id so the bundled fallback's registration matches.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
@@ -28,6 +29,12 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
   metadataSeq: 0,
   contentManifestHash: '',
   metadataManifestHash: '',
+};
+const EMPTY_INDEX = {
+  entries: {},
+  principles: {},
+  entityMeta: {},
+  relationships: [],
 };
 
 function createMockKb(order?: string[]) {
@@ -55,6 +62,33 @@ function createMockKb(order?: string[]) {
 
   return {
     runtimeDir,
+    engineArtifactRegistry: new EngineArtifactRegistry(),
+    corpusAuthorityBaseline: {
+      ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
+      rebuild: vi.fn(() => new Map()),
+      read: vi.fn(() => new Map()),
+      replace: vi.fn(),
+    },
+    projectionArtifacts: {
+      runtimeDir,
+      files: {
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(() => '{}'),
+        rmSync: vi.fn(),
+        mkdirSync: vi.fn(),
+        renameSync: vi.fn(),
+        writeTextAtomic: vi.fn(),
+        writeJsonAtomic: vi.fn(),
+      },
+    },
+    corpusProjectionReader: {
+      resolveCurrentIndex: vi.fn(() => EMPTY_INDEX),
+      prepareCurrentProjectionInput: vi.fn(async () => ({
+        index: EMPTY_INDEX,
+        records: [],
+        communityFresh: false,
+      })),
+    },
     vector,
     fts,
     embedding,
@@ -77,6 +111,7 @@ function createMockKb(order?: string[]) {
         relationships: [],
       };
     }),
+    recordIndexSyncSuccess: vi.fn(),
     getCorpusStateSnapshot: vi.fn(() => {
       order?.push('getCorpusStateSnapshot');
       return { ...EMPTY_CORPUS_SNAPSHOT };
@@ -141,18 +176,25 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      expect(waitFreshUntil).toHaveBeenCalledTimes(5);
+      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
         1,
+        'corpus',
+        { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
+        MOCK_BASE_CONSUMER_ID,
+        expect.any(Number),
+      );
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(
+        2,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
     } finally {
@@ -255,18 +297,25 @@ describe('coordinator startup ordering', () => {
       ];
 
       expect(coordinator.getLifecycle()).toBe('running');
-      expect(waitFreshUntil).toHaveBeenCalledTimes(5);
+      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
         1,
+        'corpus',
+        { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
+        MOCK_BASE_CONSUMER_ID,
+        expect.any(Number),
+      );
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(
+        2,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('listenFn (bind)'));
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));

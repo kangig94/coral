@@ -468,7 +468,13 @@ describe('simulation runtime', () => {
       backendNamespace: worldA.namespace,
     });
 
-    const sessionA = new SessionManager(worldA.projectRoot, worldA.runtime).allocate({
+    const sessionA = new SessionManager(
+      worldA.projectRoot,
+      worldA.runtime,
+      undefined,
+      undefined,
+      worldA.progressStore.getDb(),
+    ).allocate({
       provider: 'fake-provider',
       name: 'world-a',
       cwd: worldA.projectRoot,
@@ -478,7 +484,15 @@ describe('simulation runtime', () => {
 
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);
     expect(worldB.progressStore.listJobIds()).toEqual([]);
-    expect(new SessionManager(worldB.projectRoot, worldB.runtime).get('fake-provider', sessionA.sessionId)).toBeNull();
+    expect(
+      new SessionManager(
+        worldB.projectRoot,
+        worldB.runtime,
+        undefined,
+        undefined,
+        worldB.progressStore.getDb(),
+      ).get('fake-provider', sessionA.sessionId),
+    ).toBeNull();
     expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
     expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
 

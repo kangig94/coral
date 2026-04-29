@@ -41,13 +41,14 @@ import { JobStore } from '#src/jobs/job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
+import type { SessionManager } from '#src/sessions/shell/store.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -97,7 +98,10 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtime),
+    eventBus,
+  });
 }
 
 function _jobResultPath(jobId: string): string {
@@ -195,7 +199,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    sessionLookup: createSessionLookup(runtime),
+    sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
     subscribeJobEvents,
@@ -1283,7 +1287,7 @@ describe('ExecutionService launch', () => {
       expect.anything(),
     );
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const session = getInternals(service).sessionManager.get('codex', decision.session);
 
     expect(request).toMatchObject({
       action: 'exec',
@@ -1324,7 +1328,7 @@ describe('ExecutionService launch', () => {
     trackJob(decision.job);
 
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const session = getInternals(service).sessionManager.get('codex', decision.session);
 
     expect(request.bypassPermissions).toBe(true);
     expect(session!.bypassPermissions).toBe(true);

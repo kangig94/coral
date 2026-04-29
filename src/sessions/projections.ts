@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
+import type { ReadonlyDatabase } from '../kb/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
@@ -40,7 +41,7 @@ type SessionProjectionPatch = {
 };
 
 export function readProjectionSession(
-  db: Database,
+  db: ReadonlyDatabase,
   sessionId: string,
 ): ProjectionSessionRow | null {
   const row = db
@@ -233,11 +234,11 @@ export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableF
   });
 };
 
-export function readProjectionSessionEntry(db: Database, sessionId: string): SessionEntry | null {
+export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: string): SessionEntry | null {
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
-export function listProjectionSessionEntries(db: Database, provider?: string, scopeKey?: string): SessionEntry[] {
+export function listProjectionSessionEntries(db: ReadonlyDatabase, provider?: string, scopeKey?: string): SessionEntry[] {
   const clauses: string[] = [];
   const params: string[] = [];
   if (provider !== undefined) {

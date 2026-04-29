@@ -1,16 +1,37 @@
 import type { RuntimeBinding } from '../runtime/binding.js';
-import type { KbRuntime } from '../kb/contract.js';
+import type { KbEngineRuntime } from '../kb/contract.js';
+import type { EngineArtifactPort } from '../kb/corpus/artifact-port.js';
+import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
-import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
+import type {
+  ConsumerHandle,
+  CorpusConsumerRegistration,
+  JournalApplyRegistration,
+  StatelessProviderLifecycleRegistration,
+} from '../store/consumer-contract.js';
 
 export type Expansion = (host: ExpansionHost) => void | Promise<void>;
+
+type HostDerivedRegistrationKind<T> = Omit<T, 'registrationKind'> & {
+  readonly registrationKind?: never;
+};
+
+export type ExpansionConsumerRegistration =
+  | HostDerivedRegistrationKind<JournalApplyRegistration>
+  | HostDerivedRegistrationKind<CorpusConsumerRegistration>
+  | HostDerivedRegistrationKind<StatelessProviderLifecycleRegistration>;
 
 export interface ExpansionHost {
   bind<T>(binding: RuntimeBinding<T>, value: T): void;
   require<T>(binding: RuntimeBinding<T>): T;
-  registerConsumer(reg: ConsumerRegistration, scope: Disposable): ConsumerHandle;
+  registerConsumer(reg: ExpansionConsumerRegistration, scope: Disposable): ConsumerHandle;
+  registerArtifactPort(
+    port: EngineArtifactPort,
+    options: { readonly targetConsumerHandles: readonly ConsumerHandle[] },
+    scope: Disposable,
+  ): EngineArtifactRegistration;
   readonly runtime: Runtime;
-  readonly kb: KbRuntime;
+  readonly kb: KbEngineRuntime;
   readonly scope: Disposable;
   readonly id: string;
 }

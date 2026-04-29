@@ -18,6 +18,7 @@ import { streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
@@ -97,7 +98,10 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderSpec(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+        db: openTestStoreDb(runtime),
+        eventBus,
+      });
       const executionSvc = new ExecutionService(
         { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
         {

@@ -15,11 +15,13 @@ import {
   seedNeedleRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
+
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -49,13 +51,23 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(paths.kbRuntimeDir('prod'));
+  const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
-    db: createKbTestDb(paths.kbRuntimeDir('prod')),
+    db,
   });
+  writableDbByRuntime.set(kb, db);
   bindOramaFtsForTest(kb);
   return kb;
+}
+
+function seedRouteState(kb: KbRuntime): ReturnType<typeof seedNeedleRouteState> {
+  return seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot());
+}
+
+async function applyOramaProjection(kb: KbRuntime): Promise<void> {
+  await applyBoundCorpusConsumerForTest(kb, writableDbByRuntime.get(kb)!);
 }
 
 function writeNote(
@@ -325,9 +337,10 @@ describe('hybrid reciprocal rank fusion', () => {
     } satisfies EntityGraph);
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     await installMockHybridSearch(
       kb,
-      seedNeedleRouteState(kb, kb.captureCorpusSnapshot()),
+      seedRouteState(kb),
       vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 }]),
     );
 

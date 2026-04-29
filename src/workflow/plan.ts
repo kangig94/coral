@@ -15,6 +15,12 @@ export type WorkflowPlan = {
   slots: PlanSlot[];
 };
 
+export type WorkflowSlotIdParts = {
+  workflowId: string;
+  stepIndex: number;
+  atomIndex: number;
+};
+
 export type CompiledPlanSlot = PlanSlot & {
   jobId: string;
   stepIndex: number;
@@ -39,6 +45,35 @@ export const workflowPlanSchema = z
     slots: z.array(planSlotSchema),
   })
   .strict();
+
+function parseNonnegativeIntegerComponent(value: string): number | null {
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function parseWorkflowSlotId(slotId: string): WorkflowSlotIdParts | null {
+  const atomSeparator = slotId.lastIndexOf(':');
+  if (atomSeparator <= 0 || atomSeparator === slotId.length - 1) {
+    return null;
+  }
+
+  const stepSeparator = slotId.lastIndexOf(':', atomSeparator - 1);
+  if (stepSeparator <= 0 || stepSeparator === atomSeparator - 1) {
+    return null;
+  }
+
+  const workflowId = slotId.slice(0, stepSeparator);
+  const stepIndex = parseNonnegativeIntegerComponent(slotId.slice(stepSeparator + 1, atomSeparator));
+  const atomIndex = parseNonnegativeIntegerComponent(slotId.slice(atomSeparator + 1));
+  if (workflowId.length === 0 || stepIndex === null || atomIndex === null) {
+    return null;
+  }
+
+  return { workflowId, stepIndex, atomIndex };
+}
 
 export function buildWorkflowPlan(
   workflowId: string,

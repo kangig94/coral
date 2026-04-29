@@ -25,6 +25,7 @@ import * as ProviderRequestPolicy from '#src/providers/request-policy.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 function assertNotMocked(name: string, value: unknown): void {
@@ -223,7 +224,10 @@ describe('agent wire contract', () => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      db: openTestStoreDb(runtime),
+      eventBus,
+    });
     const pluginRegistry = createPluginRegistry({
       storage: runtime.storage,
       env: runtime.env,
@@ -256,7 +260,7 @@ describe('agent wire contract', () => {
         eventBus,
         providerRegistry,
         pluginRegistry,
-        sessionLookup: createSessionLookup(runtime),
+        sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
         ...createTestJobJournalDeps(progressStore, runtime),
       });
       services.set(ctx.projectRoot, created);

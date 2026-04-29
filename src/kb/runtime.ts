@@ -1,4 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3';
+import { isNoEntryError } from '../infra/fs-errors.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
@@ -14,6 +15,7 @@ import type {
   KbIndexMutationLane,
   KbIndexState,
   KbMutationEffects,
+  KbProjectionArtifactPort,
   KbRuntime,
   VectorRetrieval,
 } from './contract.js';
@@ -44,6 +46,8 @@ import {
   type KbIndexStateSnapshot,
 } from './corpus/lanes.js';
 import { emptyIndex, isFreshTextSnapshot, KbIndexStore } from './corpus/index-store.js';
+import { writeJsonAtomic } from './corpus/index-store.js';
+import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
 import {
@@ -56,8 +60,26 @@ import {
   type InboundSyncMutationDiff,
 } from './corpus/inbound-sync.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
-import { buildCorpusScanView } from './corpus/rescan/scan.js';
+import {
+  buildCorpusScanView,
+  createCorpusEntityGraphScan,
+  createCorpusMarkdownFileScan,
+  createCorpusScanView,
+  ENTITY_GRAPH_SCAN_ENTRY_ID,
+  type CorpusMarkdownKind,
+} from './corpus/rescan/scan.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
+import { createKbProjectionInput } from './projection-input.js';
+import { EngineArtifactRegistry } from './corpus/artifact-registry.js';
+import {
+  collectCorpusAuthorityBaseline,
+  createCorpusAuthorityBaselineStore,
+} from './corpus/rescan/authority-baseline.js';
+import type {
+  CorpusAuthorityBaselineMap,
+  CorpusAuthorityBaselineRecord,
+  CorpusAuthorityBaselineStore,
+} from './corpus/authority-baseline-contract.js';
 
 type MutationLockContext = KbMutationLockContext<
   KbIndex,
@@ -65,6 +87,19 @@ type MutationLockContext = KbMutationLockContext<
   KbIndexMutationLane,
   ManifestAuthorityDelta
 >;
+
+type AuthorityBaselineRefreshTarget =
+  | {
+      readonly kind: CorpusMarkdownKind;
+      readonly slug: string;
+      readonly entryId: string;
+      readonly key: string;
+    }
+  | {
+      readonly kind: 'entity-graph';
+      readonly entryId: typeof ENTITY_GRAPH_SCAN_ENTRY_ID;
+      readonly key: typeof ENTITY_GRAPH_SCAN_ENTRY_ID;
+    };
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
@@ -84,7 +119,10 @@ export interface CreateKbRuntimeOptions {
   processPort: ProcessPort;
   /** Defaults to {@link DEFAULT_MUTATION_LOCK_TIMEOUT_MS}; override for slow paths. */
   mutationLockTimeoutMs?: number;
+  engineArtifactRegistry?: EngineArtifactRegistry;
 }
+
+export type KbRuntimeStoreAccess = KbRuntime & { readonly db: BetterSqlite3.Database };
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
@@ -100,6 +138,10 @@ class KbRuntimeImpl implements KbRuntime {
   readonly vector: KbRuntime['vector'];
   readonly embedding: KbRuntime['embedding'];
   readonly fts: KbRuntime['fts'];
+  readonly engineArtifactRegistry: EngineArtifactRegistry;
+  readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
+  readonly projectionArtifacts: KbProjectionArtifactPort;
+  readonly corpusProjectionReader: KbRuntime['corpusProjectionReader'];
   private readonly paths: KbRuntimePaths;
   private readonly manifestAuthority = createManifestAuthority();
   private readonly indexStore: KbIndexStore;
@@ -138,6 +180,7 @@ class KbRuntimeImpl implements KbRuntime {
     spawnCli,
     processPort,
     mutationLockTimeoutMs,
+    engineArtifactRegistry,
   }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
@@ -153,6 +196,33 @@ class KbRuntimeImpl implements KbRuntime {
     this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
     this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
     this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+    this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
+    this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
+    this.projectionArtifacts = {
+      runtimeDir: this.runtimeDir,
+      files: {
+        existsSync: (path) => this.storagePort.existsSync(path),
+        readFileSync: (path, encoding) => this.storagePort.readFileSync(path, encoding),
+        rmSync: (path, options) => this.storagePort.rmSync(path, options),
+        mkdirSync: (path, options) => {
+          this.storagePort.mkdirSync(path, options);
+        },
+        renameSync: (oldPath, newPath) => this.storagePort.renameSync(oldPath, newPath),
+        writeTextAtomic: (path, content) => {
+          writeFileAtomic(this, path, content);
+        },
+        writeJsonAtomic: (path, value) => {
+          writeJsonAtomic(this, path, value);
+        },
+      },
+    };
+    this.corpusProjectionReader = {
+      resolveCurrentIndex: () => this.readIndexOrEmpty(),
+      prepareCurrentProjectionInput: async ({ signal, ...options } = {}) => {
+        await this.ensureCorpusFreshness({ wait: true, signal });
+        return createKbProjectionInput(this, options);
+      },
+    };
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.indexStore = new KbIndexStore({
       runtimeDir: this.runtimeDir,
@@ -199,7 +269,6 @@ class KbRuntimeImpl implements KbRuntime {
     );
 
     storage.mkdirSync(this.runtimeDir, { recursive: true });
-
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
     }
@@ -319,6 +388,7 @@ class KbRuntimeImpl implements KbRuntime {
     const nextState = commitMutationState(this.readIndexState(), lane, reason);
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
+    this.rebuildAuthorityBaselineFromDisk();
     return nextState;
   }
 
@@ -355,6 +425,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.manifestAuthority.seedFromFullCollectors(this);
     const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation);
     this.writeIndexState(nextState);
+    this.rebuildAuthorityBaselineFromDisk();
     return nextState;
   }
 
@@ -370,7 +441,7 @@ class KbRuntimeImpl implements KbRuntime {
     const wait = options.wait ?? false;
     const signal = options.signal;
 
-    if (this.textArtifactsNeedRebuild()) {
+    if (await this.textArtifactsNeedRebuild()) {
       // Shutdown drained the runtime — do not kick a fresh background rebuild
       // and do not block readiness callers. Boot's `wait: true` on the next
       // coordinator picks up the staleness.
@@ -397,7 +468,7 @@ class KbRuntimeImpl implements KbRuntime {
     await this.withMutationLock(
       async (mutation, { signal: lockSignal }) => {
         const state = this.readIndexStateIfPresent();
-        if (!this.textArtifactsNeedRebuild(state)) {
+        if (!(await this.textArtifactsNeedRebuild(state))) {
           return;
         }
 
@@ -546,6 +617,7 @@ class KbRuntimeImpl implements KbRuntime {
     const nextState = previewPendingMutationState(this.readIndexState(), lockContext);
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
+    this.refreshAuthorityBaselineForPendingDeltas(lockContext.pendingOpaqueDeltas);
   }
 
   private capturePublicationFromStateChange(previous: KbIndexStateSnapshot, next: KbIndexStateSnapshot): void {
@@ -564,13 +636,210 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  private indexNeedsRebuild(): boolean {
-    return detectRescanInfo(this, buildCorpusScanView(this)).needsRebuild;
+  private rebuildAuthorityBaselineFromDisk(): void {
+    this.corpusAuthorityBaseline.rebuild(buildCorpusScanView(this));
   }
 
-  private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
+  private refreshAuthorityBaselineForPendingDeltas(deltas: readonly ManifestAuthorityDelta[]): void {
+    if (deltas.length === 0) {
+      this.rebuildAuthorityBaselineFromDisk();
+      return;
+    }
+
+    const targets = new Map<string, AuthorityBaselineRefreshTarget>();
+    for (const delta of deltas) {
+      const target = this.authorityBaselineRefreshTarget(delta.manifestId);
+      if (target === null) {
+        this.rebuildAuthorityBaselineFromDisk();
+        return;
+      }
+      targets.set(target.key, target);
+    }
+
+    const current = this.corpusAuthorityBaseline.read();
+    if (current.size === 0) {
+      this.rebuildAuthorityBaselineFromDisk();
+      return;
+    }
+
+    for (const target of targets.values()) {
+      if (target.kind === 'entity-graph') {
+        this.refreshEntityGraphAuthorityBaseline(current, target);
+      } else {
+        this.refreshMarkdownAuthorityBaseline(current, target);
+      }
+    }
+
+    this.corpusAuthorityBaseline.replace([...current.values()]);
+  }
+
+  private authorityBaselineRefreshTarget(manifestId: string): AuthorityBaselineRefreshTarget | null {
+    if (manifestId.startsWith('note-meta:')) {
+      const slug = manifestId.slice('note-meta:'.length);
+      return {
+        kind: 'note',
+        slug,
+        entryId: `note:${slug}`,
+        key: `note:${slug}`,
+      };
+    }
+
+    if (manifestId.startsWith('note:')) {
+      const slug = manifestId.slice('note:'.length);
+      return {
+        kind: 'note',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('source-meta:')) {
+      const slug = manifestId.slice('source-meta:'.length);
+      return {
+        kind: 'source',
+        slug,
+        entryId: `source:${slug}`,
+        key: `source:${slug}`,
+      };
+    }
+
+    if (manifestId.startsWith('source:')) {
+      const slug = manifestId.slice('source:'.length);
+      return {
+        kind: 'source',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('community:')) {
+      const slug = manifestId.slice('community:'.length);
+      return {
+        kind: 'community',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('principle:')) {
+      const slug = manifestId.slice('principle:'.length);
+      return {
+        kind: 'principle',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId === ENTITY_GRAPH_SCAN_ENTRY_ID) {
+      return {
+        kind: 'entity-graph',
+        entryId: ENTITY_GRAPH_SCAN_ENTRY_ID,
+        key: ENTITY_GRAPH_SCAN_ENTRY_ID,
+      };
+    }
+
+    return null;
+  }
+
+  private refreshMarkdownAuthorityBaseline(
+    current: CorpusAuthorityBaselineMap,
+    target: Extract<AuthorityBaselineRefreshTarget, { readonly kind: CorpusMarkdownKind }>,
+  ): void {
+    const path = this.authorityBaselineMarkdownPath(target.kind, target.slug);
+    let content: string;
+    try {
+      content = this.storagePort.readFileSync(path, 'utf-8');
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        current.delete(target.entryId);
+        return;
+      }
+      throw error;
+    }
+
+    this.replaceAuthorityBaselineRecord(
+      current,
+      collectCorpusAuthorityBaseline(
+        createCorpusScanView({
+          markdownFiles: [
+            createCorpusMarkdownFileScan({
+              kind: target.kind,
+              path,
+              content,
+              slug: target.slug,
+            }),
+          ],
+        }),
+      )[0],
+      target.entryId,
+    );
+  }
+
+  private refreshEntityGraphAuthorityBaseline(
+    current: CorpusAuthorityBaselineMap,
+    target: Extract<AuthorityBaselineRefreshTarget, { readonly kind: 'entity-graph' }>,
+  ): void {
+    const path = this.entityGraphPath();
+    let content: string;
+    try {
+      content = this.storagePort.readFileSync(path, 'utf-8');
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        current.delete(target.entryId);
+        return;
+      }
+      throw error;
+    }
+
+    this.replaceAuthorityBaselineRecord(
+      current,
+      collectCorpusAuthorityBaseline(
+        createCorpusScanView({
+          markdownFiles: [],
+          entityGraph: createCorpusEntityGraphScan({ content, path }),
+        }),
+      )[0],
+      target.entryId,
+    );
+  }
+
+  private replaceAuthorityBaselineRecord(
+    current: CorpusAuthorityBaselineMap,
+    record: CorpusAuthorityBaselineRecord | undefined,
+    entryId: string,
+  ): void {
+    if (record === undefined) {
+      current.delete(entryId);
+      return;
+    }
+
+    current.set(record.entryId, record);
+  }
+
+  private authorityBaselineMarkdownPath(kind: CorpusMarkdownKind, slug: string): string {
+    switch (kind) {
+      case 'note':
+        return this.notePath(slug);
+      case 'source':
+        return this.sourcePath(slug);
+      case 'community':
+        return this.communityPath(slug);
+      case 'principle':
+        return this.principlePath(slug);
+    }
+  }
+
+  private async indexNeedsRebuild(): Promise<boolean> {
+    return (await detectRescanInfo(this, buildCorpusScanView(this))).needsRebuild;
+  }
+
+  private async textArtifactsNeedRebuild(state?: KbIndexState | null): Promise<boolean> {
     const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild();
+    return !isFreshTextSnapshot(currentState) || (await this.indexNeedsRebuild());
   }
 }
 

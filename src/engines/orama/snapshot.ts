@@ -1,10 +1,9 @@
 import { load, save, type RawData } from '@orama/orama';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { FileAtomicHost } from '../../kb/corpus/file-atomic.js';
-import { writeJsonAtomic } from '../../kb/corpus/index-store.js';
-import type { IdPort, StoragePort } from '../../runtime/ports.js';
-import { ORAMA_INDEX_FILE, oramaIndexPath } from './paths.js';
+import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
+import { computeOramaArtifactDigest, createOramaProjectionMetadata } from './artifact-port.js';
+import { ORAMA_INDEX_FILE, oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 
@@ -16,27 +15,26 @@ export interface KbCachedOramaIndex {
 }
 
 export type OramaSnapshotPorts = {
-  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync'>;
-  ids: Pick<IdPort, 'uuid'>;
+  files: Pick<
+    KbProjectionArtifactFilePort,
+    'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'
+  >;
 };
 
 export class OramaSnapshotStore {
   private cached: KbCachedOramaIndex | null = null;
-  private readonly host: FileAtomicHost;
 
   constructor(
     private readonly ports: OramaSnapshotPorts,
     private readonly runtimeDir: string,
-  ) {
-    this.host = { storagePort: ports.storage, ids: ports.ids };
-  }
+  ) {}
 
   hasCache(): boolean {
     return this.cached !== null;
   }
 
   hasPersistedSnapshot(): boolean {
-    return this.ports.storage.existsSync(oramaIndexPath(this.runtimeDir));
+    return this.ports.files.existsSync(oramaIndexPath(this.runtimeDir));
   }
 
   getCache(): KbCachedOramaIndex | null {
@@ -52,12 +50,13 @@ export class OramaSnapshotStore {
   }
 
   removeSnapshot(): void {
-    this.ports.storage.rmSync(oramaIndexPath(this.runtimeDir), { force: true });
+    this.ports.files.rmSync(oramaIndexPath(this.runtimeDir), { force: true });
+    this.ports.files.rmSync(oramaIndexMetadataPath(this.runtimeDir), { force: true });
   }
 
   async load(): Promise<KbCachedOramaIndex> {
     const { db, tokenizer } = await createOramaDb();
-    const raw = JSON.parse(this.ports.storage.readFileSync(oramaIndexPath(this.runtimeDir), 'utf-8')) as RawData;
+    const raw = JSON.parse(this.ports.files.readFileSync(oramaIndexPath(this.runtimeDir), 'utf-8')) as RawData;
     load(db, raw);
     return { db, tokenizer };
   }
@@ -80,8 +79,31 @@ export class OramaSnapshotStore {
     }
   }
 
-  persist(db: KbOramaDb): void {
+  async loadReadOnly(): Promise<KbCachedOramaIndex | null> {
+    if (this.cached !== null) {
+      return this.cached;
+    }
+
+    try {
+      const loaded = await this.load();
+      this.install(loaded);
+      return loaded;
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        this.clear();
+      }
+      return null;
+    }
+  }
+
+  persist(projected: KbCorpusSnapshot, db: KbOramaDb): void {
     const snapshot = save(db) as unknown as RawData;
-    writeJsonAtomic(this.host, oramaIndexPath(this.runtimeDir), snapshot);
+    const artifactPath = oramaIndexPath(this.runtimeDir);
+    this.ports.files.writeJsonAtomic(artifactPath, snapshot);
+    const artifactRaw = this.ports.files.readFileSync(artifactPath, 'utf-8');
+    this.ports.files.writeJsonAtomic(
+      oramaIndexMetadataPath(this.runtimeDir),
+      createOramaProjectionMetadata(projected, computeOramaArtifactDigest(artifactRaw)),
+    );
   }
 }

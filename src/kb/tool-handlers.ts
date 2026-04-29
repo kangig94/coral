@@ -411,7 +411,7 @@ export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime
     return kbValidationError(parsed.error);
   }
 
-  return runKbSyncAction(() => buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.kb.db)));
+  return runKbSyncAction(() => buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.readDb)));
 }
 
 export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

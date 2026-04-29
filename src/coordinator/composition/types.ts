@@ -22,6 +22,7 @@ import type {
   RunStartupRecoveryFn,
 } from '../lifecycle.js';
 import type { JobStore } from '../../jobs/job-store.js';
+import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ExecutionServiceDeps } from '../contracts.js';
@@ -50,6 +51,7 @@ export type CoordinatorCoreOptions = {
   runtime: Runtime;
   bootSnapshot?: CoordinatorBootSnapshot;
   progressStore?: JobStore;
+  storeDb?: Database;
   pluginRoot?: string;
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;

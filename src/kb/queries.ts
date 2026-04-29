@@ -17,6 +17,7 @@ import {
   createDefaultKbReadPaths,
   ensureBundledEnginesLoaded,
   getDefaultKbQueryDb,
+  getDefaultKbQueryStorage,
   resolveQueryProjectRoot,
   type KbQueryContext,
 } from './query-runtime.js';
@@ -41,10 +42,9 @@ export function readKnowledgeBaseEntry(
   selector: KbReadInput,
   context: KbQueryContext,
 ): KbReadResult {
-  const kb = createDefaultKbQueryRuntime(context);
   return readEntry(selector, {
     projectRoot: resolveQueryProjectRoot(context),
-    storage: kb.storagePort,
+    storage: getDefaultKbQueryStorage(context),
     paths: createDefaultKbReadPaths(context),
   });
 }

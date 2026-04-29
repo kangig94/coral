@@ -5,8 +5,9 @@ import type { CoralEvent, CoralEventInput, ResolvableCoralEventInput } from '../
 import { upsertProjection } from '../store/projection-upsert.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
 import { CoralSetupError } from '../runtime/errors.js';
+import { CoralAppendError } from '../store/append-error.js';
 import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
-import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
+import { parseWorkflowSlotId, workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
 export const workflowStepDetailSchema = z
   .object({
@@ -125,6 +126,191 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
   });
 }
 
+type WorkflowPlanInvalidReason =
+  | 'duplicate_slot'
+  | 'cycle'
+  | 'empty_plan'
+  | 'slot_id_format'
+  | 'unknown_dependency'
+  | 'unknown_slot'
+  | 'unknown_provider';
+
+function workflowPlanInvalid(
+  reason: WorkflowPlanInvalidReason,
+  detail: Record<string, unknown> = {},
+): CoralAppendError {
+  return new CoralAppendError('workflow_plan_invalid', { reason, ...detail });
+}
+
+function detectWorkflowPlanCycle(slotsById: ReadonlyMap<string, WorkflowPlan['slots'][number]>): string[] | null {
+  const visited = new Set<string>();
+  const visitingIndex = new Map<string, number>();
+  const stack: string[] = [];
+
+  const visit = (slotId: string): string[] | null => {
+    if (visited.has(slotId)) {
+      return null;
+    }
+
+    const activeIndex = visitingIndex.get(slotId);
+    if (activeIndex !== undefined) {
+      return [...stack.slice(activeIndex), slotId];
+    }
+
+    const slot = slotsById.get(slotId);
+    if (!slot) {
+      return null;
+    }
+
+    visitingIndex.set(slotId, stack.length);
+    stack.push(slotId);
+    for (const dependency of slot.dependencies) {
+      const cycle = visit(dependency);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    stack.pop();
+    visitingIndex.delete(slotId);
+    visited.add(slotId);
+    return null;
+  };
+
+  for (const slotId of slotsById.keys()) {
+    const cycle = visit(slotId);
+    if (cycle) {
+      return cycle;
+    }
+  }
+
+  return null;
+}
+
+function validateDeclaredWorkflowPlan(
+  ctx: Parameters<DomainAppendValidator>[0],
+  workflowId: string,
+  plan: WorkflowPlan,
+): ReadonlySet<string> {
+  if (plan.slots.length === 0) {
+    throw workflowPlanInvalid('empty_plan', { workflowId });
+  }
+
+  const slotsById = new Map<string, WorkflowPlan['slots'][number]>();
+  for (const slot of plan.slots) {
+    const parsedSlotId = parseWorkflowSlotId(slot.slotId);
+    if (!parsedSlotId || parsedSlotId.workflowId !== workflowId) {
+      throw workflowPlanInvalid('slot_id_format', {
+        workflowId,
+        slotId: slot.slotId,
+        expectedWorkflowId: workflowId,
+      });
+    }
+
+    if (slotsById.has(slot.slotId)) {
+      throw workflowPlanInvalid('duplicate_slot', { workflowId, slotId: slot.slotId });
+    }
+
+    if (!ctx.providers.hasProvider(slot.provider)) {
+      throw workflowPlanInvalid('unknown_provider', {
+        workflowId,
+        slotId: slot.slotId,
+        provider: slot.provider,
+      });
+    }
+
+    slotsById.set(slot.slotId, slot);
+  }
+
+  for (const slot of slotsById.values()) {
+    for (const dependency of slot.dependencies) {
+      if (!slotsById.has(dependency)) {
+        throw workflowPlanInvalid('unknown_dependency', {
+          workflowId,
+          slotId: slot.slotId,
+          dependency,
+        });
+      }
+    }
+  }
+
+  const cycle = detectWorkflowPlanCycle(slotsById);
+  if (cycle) {
+    throw workflowPlanInvalid('cycle', { workflowId, cycle });
+  }
+
+  return new Set(slotsById.keys());
+}
+
+function slotIdsForStoredWorkflowPlan(db: Database, workflowId: string): ReadonlySet<string> | null {
+  const projection = readProjectionWorkflow(db, workflowId);
+  return projection === null ? null : new Set(projection.plan.slots.map((slot) => slot.slotId));
+}
+
+function workflowIdForSlotRef(input: CoralEventInput, parsedWorkflowId: string): string {
+  return input.refs?.workflowId ?? input.refs?.parentJobId ?? parsedWorkflowId;
+}
+
+export const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
+  const declaredSlotIdsByWorkflow = new Map<string, ReadonlySet<string>>();
+  const storedSlotIdsByWorkflow = new Map<string, ReadonlySet<string> | null>();
+
+  for (const input of inputs) {
+    if (input.type !== 'workflow.plan.declared') continue;
+
+    const workflowId = input.stream.id;
+    const slotIds = validateDeclaredWorkflowPlan(ctx, workflowId, input.body as WorkflowPlan);
+    if (!declaredSlotIdsByWorkflow.has(workflowId)) {
+      declaredSlotIdsByWorkflow.set(workflowId, slotIds);
+    }
+  }
+
+  const readSlotIds = (workflowId: string): ReadonlySet<string> | null => {
+    const declared = declaredSlotIdsByWorkflow.get(workflowId);
+    if (declared) {
+      return declared;
+    }
+
+    if (!storedSlotIdsByWorkflow.has(workflowId)) {
+      storedSlotIdsByWorkflow.set(workflowId, slotIdsForStoredWorkflowPlan(ctx.db, workflowId));
+    }
+    return storedSlotIdsByWorkflow.get(workflowId) ?? null;
+  };
+
+  for (const input of inputs) {
+    const slotId = input.refs?.workflowSlotId;
+    if (slotId === undefined) {
+      continue;
+    }
+
+    const parsedSlotId = parseWorkflowSlotId(slotId);
+    if (!parsedSlotId) {
+      throw workflowPlanInvalid('slot_id_format', {
+        eventType: input.type,
+        slotId,
+      });
+    }
+
+    const workflowId = workflowIdForSlotRef(input, parsedSlotId.workflowId);
+    if (workflowId !== parsedSlotId.workflowId) {
+      throw workflowPlanInvalid('slot_id_format', {
+        eventType: input.type,
+        workflowId,
+        slotId,
+        expectedWorkflowId: workflowId,
+      });
+    }
+
+    const slotIds = readSlotIds(workflowId);
+    if (!slotIds?.has(slotId)) {
+      throw workflowPlanInvalid('unknown_slot', {
+        eventType: input.type,
+        workflowId,
+        slotId,
+      });
+    }
+  }
+};
+
 /**
  * Spec §6.5 line 1006: a workflow stream owns exactly one declared plan. A
  * second `workflow.plan.declared` would silently overwrite the first via
@@ -132,7 +318,7 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
  * Reject duplicate declarations at append time — covers both pre-existing
  * declarations on the stream and a second declaration in the same batch.
  */
-export const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (db, inputs) => {
+export const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (ctx, inputs) => {
   const declaredInBatch = new Set<string>();
 
   for (const input of inputs) {
@@ -144,7 +330,7 @@ export const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (db, inpu
     }
     declaredInBatch.add(workflowId);
 
-    const existing = db
+    const existing = ctx.db
       .prepare(
         `SELECT seq
            FROM events
@@ -178,7 +364,7 @@ function workflowPlanDeclaredDuplicate(workflowId: string, where: string): Coral
  * pre-existing completions on the stream and a second completion in the
  * same batch.
  */
-export const validateWorkflowCompletedOnce: DomainAppendValidator = (db, inputs) => {
+export const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
   const completedInBatch = new Set<string>();
 
   for (const input of inputs) {
@@ -190,7 +376,7 @@ export const validateWorkflowCompletedOnce: DomainAppendValidator = (db, inputs)
     }
     completedInBatch.add(workflowId);
 
-    const existing = db
+    const existing = ctx.db
       .prepare(
         `SELECT seq
            FROM events
@@ -240,7 +426,11 @@ export const workflowRegistry: DomainEventRegistry = {
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
     }),
   ],
-  appendValidators: [validateWorkflowPlanDeclaredOnce, validateWorkflowCompletedOnce],
+  appendValidators: [
+    validateWorkflowPlanDeclaredOnce,
+    validateWorkflowPlanValidity,
+    validateWorkflowCompletedOnce,
+  ],
 };
 
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {

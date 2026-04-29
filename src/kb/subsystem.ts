@@ -6,11 +6,13 @@ import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js'
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
 import { kbRuntimeDir } from './paths.js';
 import { createKbRuntime } from './runtime.js';
+import { asReadonlyDatabase, type ReadonlyDatabase } from './read-port.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type { EnvPort, IdPort, ProcessPort, Runtime, StoragePort, TimePort } from '../runtime/ports.js';
 
 export type KnowledgeBaseRuntime = {
   kb: KbRuntime;
+  readDb: ReadonlyDatabase;
   curateScheduler: CurateHandle;
 };
 
@@ -76,6 +78,7 @@ export async function createKbSubsystem({
 
   return {
     kb,
+    readDb: asReadonlyDatabase(db),
     curateScheduler,
   };
 }

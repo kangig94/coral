@@ -11,6 +11,7 @@ import {
   normalizeCurateStateRepairFrontier,
   noteCursor,
   type CurateCursor,
+  type CurateStateTarget,
   type CurateState,
 } from './state/index.js';
 import type {
@@ -123,7 +124,7 @@ function shouldRunDiscoveryBatch(
 }
 
 export function prepareDiscoveryBatch(
-  kb: Pick<KbRuntime, 'db'>,
+  kb: CurateStateTarget,
   index: KbIndex,
   state: CurateState,
   requestedProcessedThrough: CurateCursor,

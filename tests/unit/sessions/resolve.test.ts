@@ -33,14 +33,17 @@ import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
+let db: ReturnType<typeof openStoreDatabase>;
 
 describe('sessions shell resolve', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-resolve-home-'));
     runtime = createRealRuntime('prod');
+    db = createSessionDb();
   });
 
   afterEach(() => {
+    db.close();
     rmSync(tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -48,7 +51,7 @@ describe('sessions shell resolve', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime), workDir };
+    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, db), workDir };
   }
 
   function createSessionDb() {
@@ -62,7 +65,7 @@ describe('sessions shell resolve', () => {
   it('projection lookup lists and reads allocated sessions', () => {
     const { mgr, workDir } = setup('open-shard');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const lookup = createSessionLookup(runtime);
+    const lookup = createSessionLookup({ db });
 
     expect(lookup.listSessionRefs()).toContainEqual(
       expect.objectContaining({
@@ -80,7 +83,7 @@ describe('sessions shell resolve', () => {
   it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
-    const sessionLookup = createSessionLookup(runtime);
+    const sessionLookup = createSessionLookup({ db });
     const sessionA = alpha.mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -151,7 +154,7 @@ describe('sessions shell resolve', () => {
   it('resolveSession supports provider filtering', () => {
     const alpha = setup('resolve-shard-a');
     const beta = setup('resolve-shard-b');
-    const sessionLookup = createSessionLookup(runtime);
+    const sessionLookup = createSessionLookup({ db });
     const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
     const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
 

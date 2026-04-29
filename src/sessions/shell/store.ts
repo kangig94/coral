@@ -8,7 +8,6 @@ import { nowDate, nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime, IdPort, TimePort } from '../../runtime/ports.js';
-import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import {
@@ -165,7 +164,10 @@ export class SessionManager {
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
-    this.db = db ?? openBackendStoreDb(runtime);
+    if (db === undefined) {
+      throw new Error('SessionManager requires a coordinator-injected store database.');
+    }
+    this.db = db;
     this.commitEvents = commitEvents ?? createLocalSessionCommit(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);

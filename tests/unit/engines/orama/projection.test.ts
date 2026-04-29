@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { writeCurateState } from '#src/kb/curate/state/index.js';
+import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph, type KbIndex } from '#src/kb/entry-types.js';
 import {
   buildCommunityIndexEntry,
@@ -129,11 +130,17 @@ async function expectCanonicalEquivalent(
 ): Promise<void> {
   const deltaProjection = createOramaBaseProjection(
     deltaRuntime,
-    new OramaSnapshotStore({ storage: deltaRuntime.storagePort, ids: deltaRuntime.ids }, deltaRuntime.runtimeDir),
+    new OramaSnapshotStore(
+      { files: deltaRuntime.projectionArtifacts.files },
+      deltaRuntime.projectionArtifacts.runtimeDir,
+    ),
   );
   const fullProjection = createOramaBaseProjection(
     fullRuntime,
-    new OramaSnapshotStore({ storage: fullRuntime.storagePort, ids: fullRuntime.ids }, fullRuntime.runtimeDir),
+    new OramaSnapshotStore(
+      { files: fullRuntime.projectionArtifacts.files },
+      fullRuntime.projectionArtifacts.runtimeDir,
+    ),
   );
 
   for (const query of QUERY_PANEL) {
@@ -297,9 +304,9 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
 async function installCurrentFullSnapshot(runtime: ReturnType<typeof createKbRuntime>): Promise<void> {
   const projection = createOramaBaseProjection(
     runtime,
-    new OramaSnapshotStore({ storage: runtime.storagePort, ids: runtime.ids }, runtime.runtimeDir),
+    new OramaSnapshotStore({ files: runtime.projectionArtifacts.files }, runtime.projectionArtifacts.runtimeDir),
   );
-  const preparedProjection = await projection.prepareFullSnapshotForCurrentCorpus(runtime.readIndexOrEmpty());
+  const preparedProjection = await projection.prepareFullSnapshot(createKbProjectionInput(runtime));
   await projection.installFullSnapshot(runtime.captureCorpusSnapshot(), preparedProjection);
 }
 

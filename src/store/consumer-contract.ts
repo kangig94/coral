@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import type { KbProjectionInput } from '../kb/projection-input-contract.js';
 import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
 
 /**
@@ -109,9 +110,20 @@ export type JournalConsumerRegistration = JournalCursorRegistration | JournalApp
 export type CorpusLaneHint = 'content' | 'metadata';
 export type CorpusInterest = CorpusLaneHint | 'both';
 
+export interface JournalConsumerReadPort {
+  readCursor(consumerId: string): number;
+}
+
+export interface CorpusStateReadPort {
+  readConsumerCursor(consumerId: string): CorpusSnapshot;
+  readCurrentSnapshot(): CorpusSnapshot;
+}
+
 export interface CorpusConsumerApplyContext {
   readonly snapshot: CorpusSnapshot;
-  readonly db: BetterSqlite3.Database;
+  readonly journalReader: JournalConsumerReadPort;
+  readonly corpusStateReader: CorpusStateReadPort;
+  readonly projectionInput: KbProjectionInput;
   /**
    * Aborts when the consumer is stopping or the driver is shutting down.
    * Late-notify supersession does NOT abort the signal.
@@ -125,6 +137,7 @@ export interface CorpusConsumerRegistration {
   readonly kind: 'apply';
   readonly registrationKind: 'base' | 'expansion';
   readonly corpusInterest: CorpusInterest;
+  readonly projectionSync?: 'text-index';
   readonly onApplyFailure?: (err: ConsumerApplyError) => void;
   apply(ctx: CorpusConsumerApplyContext): Promise<void>;
 }

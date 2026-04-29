@@ -102,7 +102,16 @@ function workflowPlanInput(workflowId: string): CoralEventInput {
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
     bodyVersion: 1,
-    body: { slots: [] },
+    body: {
+      slots: [
+        {
+          slotId: `${workflowId}:0:0`,
+          dependencies: [],
+          provider: 'codex',
+          instruction: 'test workflow slot',
+        },
+      ],
+    },
   };
 }
 

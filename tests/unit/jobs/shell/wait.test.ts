@@ -56,6 +56,7 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -105,7 +106,10 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtime),
+    eventBus,
+  });
 }
 
 function jobResultPath(jobId: string): string {
@@ -208,7 +212,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    sessionLookup: createSessionLookup(runtime),
+    sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
     subscribeJobEvents: options.subscribeJobEvents ?? subscribeJobEvents,

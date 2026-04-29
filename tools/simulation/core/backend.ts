@@ -44,6 +44,7 @@ import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
+import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/kb/read-port.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
@@ -131,9 +132,10 @@ function readFileIfPresent(storage: Pick<StoragePort, 'existsSync' | 'readFileSy
   return storage.existsSync(path) ? storage.readFileSync(path, 'utf-8') : '';
 }
 
-function createMockKbSubsystem() {
+function createMockKbSubsystem(readDb: ReadonlyDatabase) {
   return {
     kb: {} as never,
+    readDb,
     curateScheduler: {
       start: async () => {},
       schedule: () => {},
@@ -548,7 +550,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         storagePort,
         envPort,
       });
-      return createMockKbSubsystem();
+      return createMockKbSubsystem(asReadonlyDatabase(storeDb));
     },
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async (deps) => {

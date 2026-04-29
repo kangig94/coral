@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
-import { openBackendStoreDb } from '../store/db.js';
+import type { Runtime } from '../runtime/ports.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { KbRuntime } from './contract.js';
 import {
@@ -13,17 +13,22 @@ import {
   sourcePathFromName,
 } from './paths.js';
 import { createKbRuntime } from './runtime.js';
-import { BUNDLED_ENGINES } from '../expansion/bundled.js';
+import { BUNDLED_ENGINES, loadBundledEngine } from '../expansion/bundled.js';
 import { createExpansionHost } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type { KbReadPathResolver } from './read.js';
+import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from './read-port.js';
+
+export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
 export type KbQueryContext = {
   pluginRoot: string;
   projectRoot?: string;
+  runtime?: KbQueryRuntime;
+  readDb?: ReadonlyDatabase;
 };
 
 /**
@@ -35,7 +40,7 @@ export type KbQueryContext = {
  */
 export class KbQueryRegistry {
   private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
-  private cachedDb: { flavor: BuildFlavor; db: Database } | undefined;
+  private cachedDb: { flavor: BuildFlavor; db: ReadonlyDatabase } | undefined;
   private bundledLoaded = new WeakSet<KbRuntime>();
 
   getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
@@ -45,9 +50,12 @@ export class KbQueryRegistry {
     return this.cachedRuntime.runtime;
   }
 
-  getDb(flavor: BuildFlavor): Database {
+  getDb(flavor: BuildFlavor): ReadonlyDatabase {
     if (this.cachedDb?.flavor !== flavor) {
-      this.cachedDb = { flavor, db: openBackendStoreDb(this.getRuntime(flavor)) };
+      if (this.cachedDb?.db.open === true) {
+        this.cachedDb.db.close();
+      }
+      this.cachedDb = { flavor, db: openReadOnlyStoreDatabase(this.getRuntime(flavor)) };
     }
     return this.cachedDb.db;
   }
@@ -67,6 +75,10 @@ export function resolveQueryFlavor(context: KbQueryContext): BuildFlavor {
   return readBuildFlavor(context.pluginRoot);
 }
 
+function resolveQueryRuntime(context: KbQueryContext): KbQueryRuntime {
+  return context.runtime ?? defaultRegistry.getRuntime(resolveQueryFlavor(context));
+}
+
 export function resolveQueryProjectRoot(context: KbQueryContext): string {
   if (!context.projectRoot) {
     throw new Error('KB query requires explicit projectRoot in context');
@@ -75,7 +87,7 @@ export function resolveQueryProjectRoot(context: KbQueryContext): string {
 }
 
 export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
-  return defaultRegistry.getRuntime(resolveQueryFlavor(context)).paths.coral.corpus.kbRoot;
+  return resolveQueryRuntime(context).paths.coral.corpus.kbRoot;
 }
 
 export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathResolver {
@@ -88,17 +100,27 @@ export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathRes
   };
 }
 
-export function getDefaultKbQueryDb(context: KbQueryContext): Database {
+export function getDefaultKbQueryStorage(context: KbQueryContext): ReturnType<typeof createRealRuntime>['storage'] {
+  return resolveQueryRuntime(context).storage;
+}
+
+export function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
+  if (context.readDb !== undefined) {
+    return context.readDb;
+  }
+  if (context.runtime !== undefined) {
+    return openReadOnlyStoreDatabase(context.runtime);
+  }
   return defaultRegistry.getDb(resolveQueryFlavor(context));
 }
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {
   const flavor = resolveQueryFlavor(context);
-  const runtime = defaultRegistry.getRuntime(flavor);
+  const runtime = resolveQueryRuntime(context);
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),
     runtimeDir: kbRuntimeDir(flavor),
-    db: getDefaultKbQueryDb(context),
+    db: getDefaultKbQueryDb(context) as Database,
     time: runtime.time,
     envPort: runtime.env,
     ids: runtime.ids,
@@ -119,8 +141,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     return;
   }
 
-  const flavor = resolveQueryFlavor(context);
-  const runtime = defaultRegistry.getRuntime(flavor);
+  const runtime = resolveQueryRuntime(context);
 
   const noopDriver = {
     register(_reg: ConsumerRegistration): ConsumerHandle {
@@ -145,7 +166,24 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
                   pending: false,
                   lastApplyError: null,
                 }
-              : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
+          : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
+      };
+    },
+    getJournalReader() {
+      return {
+        readCursor: () => 0,
+      };
+    },
+    getCorpusStateReader() {
+      return {
+        readConsumerCursor: () => ({
+          snapshotId: '',
+          contentSeq: 0,
+          metadataSeq: 0,
+          contentManifestHash: '',
+          metadataManifestHash: '',
+        }),
+        readCurrentSnapshot: () => kb.getCorpusStateSnapshot(),
       };
     },
   };
@@ -163,8 +201,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
       tier: entry.tier,
       consumerDriver: noopDriver,
     });
-    const module = (await import(entry.specifier)) as { default: (h: ExpansionHost) => void | Promise<void> };
-    await module.default(host);
+    await loadBundledEngine(entry, host);
   }
 
   defaultRegistry.markBundledLoaded(kb);

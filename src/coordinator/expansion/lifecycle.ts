@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
-import { registeredConsumerHandles } from '../../expansion/host.js';
+import { registeredArtifactPorts, registeredConsumerHandles } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -458,6 +458,9 @@ export class ExpansionLifecycleService {
   }
 
   private async disposeScope(scope: Disposable): Promise<void> {
+    for (const registration of registeredArtifactPorts(scope)) {
+      registration.unregister();
+    }
     for (const handle of registeredConsumerHandles(scope)) {
       await handle.stop().catch(() => {});
       await handle.unregister().catch(() => {});

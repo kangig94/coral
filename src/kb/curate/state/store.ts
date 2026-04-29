@@ -1,8 +1,8 @@
+import type BetterSqlite3 from 'better-sqlite3';
 import type {
   KbCurateActiveClaimRow,
   KbCurateCommunitySummaryInputFingerprintRow,
 } from '../../state/schema.js';
-import type { KbRuntime } from '../../contract.js';
 import { parsePositiveInteger } from '../../validation.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
 import { readCurateRetryQueue } from '../retry.js';
@@ -16,10 +16,10 @@ import {
   type CurateState,
   type PendingRepair,
 } from './model.js';
-import { prepareCached, resolveSqliteDb } from '../sqlite.js';
+import { prepareCached, resolveSqliteDb, type SqliteTarget } from '../sqlite.js';
 import { readCurateSchedulerState, writeCurateSchedulerState } from '../state-scheduler.js';
 
-export type CurateStateTarget = Pick<KbRuntime, 'db'>;
+export type CurateStateTarget = SqliteTarget;
 
 function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
   if (left.entrySeq === null || right.entrySeq === null) {
@@ -267,7 +267,9 @@ export function readCurateState(target: CurateStateTarget): CurateState {
 
 export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
   const normalized = normalizeCurateStateRepairFrontier(target, state);
-  const db = resolveSqliteDb(target);
+  const db = resolveSqliteDb(target) as ReturnType<typeof resolveSqliteDb> & {
+    transaction: BetterSqlite3.Database['transaction'];
+  };
   db.transaction(() => {
     writeCurateSchedulerState(target, {
       processedThrough: normalized.processedThrough,

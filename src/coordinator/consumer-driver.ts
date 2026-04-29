@@ -1,12 +1,21 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint, KbCorpusSnapshot } from '../kb/contract.js';
+import type {
+  CorpusConsumerRegistration,
+  CorpusInterest,
+  CorpusLaneHint,
+  KbCorpusProjectionReader,
+  KbCorpusSnapshot,
+  KbProjectionInput,
+} from '../kb/contract.js';
 import type {
   ConsumerApplyError,
   ConsumerHandle,
   ConsumerHandleStatus,
   ConsumerRegistration,
   ConsumerRegistrationKind,
+  CorpusStateReadPort,
+  JournalConsumerReadPort,
   JournalApplyRegistration,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
@@ -14,7 +23,7 @@ import { documentedCoralSetupError, type CoralSetupError } from '../runtime/erro
 import type { TimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
-import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
+import { isSnapshotFresherForInterest, normalizeCorpusCursor, readCorpusState } from '../kb/state/corpus-state.js';
 
 // Consumer-related contract types live at their canonical home in
 // `src/store/consumer-contract.ts`. Importers should reach there directly —
@@ -54,6 +63,26 @@ function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
     typeof (value as KbCorpusSnapshot).contentManifestHash === 'string' &&
     typeof (value as KbCorpusSnapshot).metadataManifestHash === 'string'
   );
+}
+
+export type ForcedCorpusFreshnessTarget = {
+  readonly snapshot: KbCorpusSnapshot;
+  readonly atLeastGeneration: number;
+};
+
+function isForcedCorpusFreshnessTarget(value: unknown): value is ForcedCorpusFreshnessTarget {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    isKbCorpusSnapshot((value as ForcedCorpusFreshnessTarget).snapshot) &&
+    typeof (value as ForcedCorpusFreshnessTarget).atLeastGeneration === 'number' &&
+    Number.isInteger((value as ForcedCorpusFreshnessTarget).atLeastGeneration) &&
+    (value as ForcedCorpusFreshnessTarget).atLeastGeneration >= 0
+  );
+}
+
+function corpusSnapshotFromTarget(target: KbCorpusSnapshot | ForcedCorpusFreshnessTarget): KbCorpusSnapshot {
+  return isForcedCorpusFreshnessTarget(target) ? target.snapshot : target;
 }
 
 function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
@@ -105,9 +134,14 @@ function renderConsumerId(value: unknown): string {
 }
 
 export class FreshnessTimeout extends Error {
-  constructor(consumerId: string, target: number | KbCorpusSnapshot, timeoutMs: number) {
+  constructor(consumerId: string, target: number | KbCorpusSnapshot | ForcedCorpusFreshnessTarget, timeoutMs: number) {
+    const snapshot = typeof target !== 'number' ? corpusSnapshotFromTarget(target) : null;
     const renderedTarget =
-      typeof target === 'number' ? String(target) : `${target.snapshotId}:${target.contentSeq}/${target.metadataSeq}`;
+      typeof target === 'number'
+        ? String(target)
+        : `${snapshot?.snapshotId}:${snapshot?.contentSeq}/${snapshot?.metadataSeq}${
+            isForcedCorpusFreshnessTarget(target) ? `#${target.atLeastGeneration}` : ''
+          }`;
     super(`waitFreshUntil timed out (consumer=${consumerId}, target=${renderedTarget}, timeoutMs=${timeoutMs})`);
     this.name = 'FreshnessTimeout';
     Object.setPrototypeOf(this, FreshnessTimeout.prototype);
@@ -127,8 +161,19 @@ const SYSTEM_CONSUMER_DRIVER_TIMERS: ConsumerDriverTimers = {
   },
 };
 
+const EMPTY_PROJECTION_INPUT: KbProjectionInput = {
+  index: {
+    entries: {},
+    principles: {},
+    entityMeta: {},
+    relationships: [],
+  },
+  records: [],
+  communityFresh: false,
+};
+
 interface Waiter {
-  target: number | KbCorpusSnapshot;
+  target: number | KbCorpusSnapshot | ForcedCorpusFreshnessTarget;
   resolve: () => void;
   reject: (err: Error) => void;
   timeoutHandle: TimerHandle;
@@ -142,6 +187,7 @@ interface ConsumerState {
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
   pendingCorpusSnapshot: KbCorpusSnapshot | null;
+  pendingForcedCorpusApply: { snapshot: KbCorpusSnapshot; generation: number } | null;
   waiters: Set<Waiter>;
   stopped: boolean;
   stopPromise: Promise<void> | null;
@@ -149,6 +195,7 @@ interface ConsumerState {
   activeController: AbortController | null;
   unregistered: boolean;
   lastApplyError: ConsumerApplyError | null;
+  lastAppliedForceGeneration: number;
 }
 
 export interface StuckConsumerStatus {
@@ -179,6 +226,8 @@ export interface ConsumerDriverOptions {
   readonly db: BetterSqlite3.Database;
   readonly now?: () => Date;
   readonly time?: ConsumerDriverTimers;
+  readonly corpusProjectionReader?: KbCorpusProjectionReader;
+  readonly onTextProjectionSync?: () => void;
 }
 
 export interface UnregisterStoppedConsumerOptions {
@@ -189,7 +238,12 @@ export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
   private readonly timers: ConsumerDriverTimers;
+  private readonly corpusProjectionReader: KbCorpusProjectionReader;
+  private readonly onTextProjectionSync?: () => void;
+  private readonly journalReader: JournalConsumerReadPort;
+  private readonly corpusStateReader: CorpusStateReadPort;
   private readonly consumers = new Map<string, ConsumerState>();
+  private forceGeneration = 0;
   private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], CursorMetadataRow>;
   private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<
     [string, Authority, string, ConsumerRegistrationKind]
@@ -216,6 +270,20 @@ export class ConsumerDriver {
     this.db = opts.db;
     this.now = opts.now ?? (() => nowDate());
     this.timers = opts.time ?? SYSTEM_CONSUMER_DRIVER_TIMERS;
+    this.corpusProjectionReader =
+      opts.corpusProjectionReader ??
+      ({
+        resolveCurrentIndex: () => EMPTY_PROJECTION_INPUT.index,
+        prepareCurrentProjectionInput: async () => EMPTY_PROJECTION_INPUT,
+      } satisfies KbCorpusProjectionReader);
+    this.onTextProjectionSync = opts.onTextProjectionSync;
+    this.journalReader = {
+      readCursor: (consumerId) => this.readJournalCursor(consumerId),
+    };
+    this.corpusStateReader = {
+      readConsumerCursor: (consumerId) => this.readCorpusCursor(consumerId),
+      readCurrentSnapshot: () => readCorpusState(this.db),
+    };
     this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
       'SELECT authority, lane, corpus_interest, registration_kind FROM consumer_cursors WHERE consumer_id = ?',
     );
@@ -350,6 +418,7 @@ export class ConsumerDriver {
       inFlight: null,
       pendingTarget: null,
       pendingCorpusSnapshot: null,
+      pendingForcedCorpusApply: null,
       waiters: new Set(),
       stopped: false,
       stopPromise: null,
@@ -357,10 +426,19 @@ export class ConsumerDriver {
       activeController: null,
       unregistered: false,
       lastApplyError: null,
+      lastAppliedForceGeneration: 0,
     };
 
     this.consumers.set(reg.id, state);
     return handle;
+  }
+
+  getJournalReader(): JournalConsumerReadPort {
+    return this.journalReader;
+  }
+
+  getCorpusStateReader(): CorpusStateReadPort {
+    return this.corpusStateReader;
   }
 
   notify(authority: 'journal', version: number): void;
@@ -396,11 +474,39 @@ export class ConsumerDriver {
     this.notify('corpus', snapshot, laneHint);
   }
 
+  forceCorpusApply(
+    snapshot: KbCorpusSnapshot,
+    options: { readonly reason: 'projection-artifact-lag'; readonly consumers: readonly string[] },
+  ): { readonly generation: number; readonly consumers: readonly string[] } {
+    void options.reason;
+    this.forceGeneration += 1;
+    const generation = this.forceGeneration;
+    const requested = [...new Set(options.consumers)];
+    const consumers: string[] = [];
+
+    for (const consumerId of requested) {
+      const state = this.consumers.get(consumerId);
+      if (state === undefined || state.reg.authority !== 'corpus') {
+        continue;
+      }
+      consumers.push(consumerId);
+      this.scheduleForcedCorpusApply(state, snapshot, generation);
+    }
+
+    return { generation, consumers };
+  }
+
   waitFreshUntil(authority: 'journal', target: number, consumerId: string, timeoutMs?: number): Promise<void>;
   waitFreshUntil(authority: 'corpus', target: KbCorpusSnapshot, consumerId: string, timeoutMs?: number): Promise<void>;
   waitFreshUntil(
+    authority: 'corpus',
+    target: ForcedCorpusFreshnessTarget,
+    consumerId: string,
+    timeoutMs?: number,
+  ): Promise<void>;
+  waitFreshUntil(
     authority: Authority,
-    target: number | KbCorpusSnapshot,
+    target: number | KbCorpusSnapshot | ForcedCorpusFreshnessTarget,
     consumerId: string,
     timeoutMs = 30000,
   ): Promise<void> {
@@ -418,6 +524,9 @@ export class ConsumerDriver {
     if (state.reg.authority !== authority) {
       throw consumerAuthorityMismatchError(consumerId, authority, state.reg.authority);
     }
+    if (state.stopped) {
+      throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
+    }
 
     if (authority === 'journal') {
       if (typeof target !== 'number') {
@@ -428,7 +537,7 @@ export class ConsumerDriver {
         return Promise.resolve();
       }
     } else {
-      if (!isKbCorpusSnapshot(target)) {
+      if (!isKbCorpusSnapshot(target) && !isForcedCorpusFreshnessTarget(target)) {
         throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
       }
       const current = this.readCorpusCursor(consumerId);
@@ -742,6 +851,54 @@ export class ConsumerDriver {
 
       if (state.stopped) {
         state.pendingCorpusSnapshot = null;
+        state.pendingForcedCorpusApply = null;
+        return;
+      }
+
+      if (state.pendingForcedCorpusApply !== null) {
+        const next = state.pendingForcedCorpusApply;
+        state.pendingForcedCorpusApply = null;
+        this.scheduleForcedCorpusApply(state, next.snapshot, next.generation);
+        return;
+      }
+
+      if (state.pendingCorpusSnapshot !== null) {
+        const nextSnapshot = state.pendingCorpusSnapshot;
+        state.pendingCorpusSnapshot = null;
+        this.scheduleCorpusApply(state, nextSnapshot);
+      }
+    })();
+  }
+
+  private scheduleForcedCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot, generation: number): void {
+    if (state.stopped || state.reg.authority !== 'corpus') {
+      return;
+    }
+
+    const reg = state.reg;
+
+    if (state.inFlight) {
+      if (state.pendingForcedCorpusApply === null || generation > state.pendingForcedCorpusApply.generation) {
+        state.pendingForcedCorpusApply = { snapshot: { ...snapshot }, generation };
+      }
+      return;
+    }
+
+    state.inFlight = (async () => {
+      await this.runCorpusApply(state, reg, snapshot, { forceGeneration: generation });
+      state.inFlight = null;
+      state.activeController = null;
+
+      if (state.stopped) {
+        state.pendingCorpusSnapshot = null;
+        state.pendingForcedCorpusApply = null;
+        return;
+      }
+
+      if (state.pendingForcedCorpusApply !== null) {
+        const next = state.pendingForcedCorpusApply;
+        state.pendingForcedCorpusApply = null;
+        this.scheduleForcedCorpusApply(state, next.snapshot, next.generation);
         return;
       }
 
@@ -786,17 +943,31 @@ export class ConsumerDriver {
     state: ConsumerState,
     reg: CorpusConsumerRegistration,
     snapshot: KbCorpusSnapshot,
+    options: { readonly forceGeneration?: number } = {},
   ): Promise<boolean> {
     try {
       const current = this.readCorpusCursor(reg.id);
-      if (!isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
+      if (options.forceGeneration === undefined && !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
         return true;
       }
 
       const controller = new AbortController();
       state.activeController = controller;
-      await reg.apply({ snapshot, db: this.db, signal: controller.signal });
+      const projectionInput = await this.prepareCorpusProjectionInput(controller.signal);
+      await reg.apply({
+        snapshot,
+        journalReader: this.journalReader,
+        corpusStateReader: this.corpusStateReader,
+        projectionInput,
+        signal: controller.signal,
+      });
+      if (reg.projectionSync === 'text-index') {
+        this.onTextProjectionSync?.();
+      }
       this.advanceCorpusCursor(reg, snapshot);
+      if (options.forceGeneration !== undefined) {
+        state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
+      }
       state.lastApplyError = null;
       this.resolveWaiters(state, snapshot);
       return true;
@@ -807,6 +978,10 @@ export class ConsumerDriver {
       backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
       return false;
     }
+  }
+
+  private async prepareCorpusProjectionInput(signal: AbortSignal): Promise<KbProjectionInput> {
+    return this.corpusProjectionReader.prepareCurrentProjectionInput({ signal });
   }
 
   private invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {
@@ -908,6 +1083,7 @@ export class ConsumerDriver {
       // Cursor-only consumers carry no inflight work and no abort controller.
       state.pendingTarget = null;
       state.pendingCorpusSnapshot = null;
+      state.pendingForcedCorpusApply = null;
       this.rejectWaiters(state, waiterError);
       state.stopPromise = Promise.resolve();
       return state.stopPromise;
@@ -918,6 +1094,7 @@ export class ConsumerDriver {
       await state.inFlight;
       state.pendingTarget = null;
       state.pendingCorpusSnapshot = null;
+      state.pendingForcedCorpusApply = null;
       this.rejectWaiters(state, waiterError);
     })();
 
@@ -979,7 +1156,12 @@ export class ConsumerDriver {
   }
 
   private isPending(state: ConsumerState): boolean {
-    return state.inFlight !== null || state.pendingTarget !== null || state.pendingCorpusSnapshot !== null;
+    return (
+      state.inFlight !== null ||
+      state.pendingTarget !== null ||
+      state.pendingCorpusSnapshot !== null ||
+      state.pendingForcedCorpusApply !== null
+    );
   }
 
   private rejectWaiters(state: ConsumerState, err: Error): void {
@@ -995,12 +1177,23 @@ export class ConsumerDriver {
     }
   }
 
-  private corpusTargetReached(state: ConsumerState, target: KbCorpusSnapshot, current: KbCorpusSnapshot): boolean {
+  private corpusTargetReached(
+    state: ConsumerState,
+    target: KbCorpusSnapshot | ForcedCorpusFreshnessTarget,
+    current: KbCorpusSnapshot,
+  ): boolean {
     if (state.reg.authority !== 'corpus') {
       return false;
     }
 
-    return !isSnapshotFresherForInterest(target, current, state.reg.corpusInterest);
+    const snapshot = corpusSnapshotFromTarget(target);
+    if (isSnapshotFresherForInterest(snapshot, current, state.reg.corpusInterest)) {
+      return false;
+    }
+    return (
+      !isForcedCorpusFreshnessTarget(target) ||
+      state.lastAppliedForceGeneration >= target.atLeastGeneration
+    );
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number | KbCorpusSnapshot): void {

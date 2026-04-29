@@ -144,7 +144,22 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
     });
   })();
   const registerConsumer = options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));
-  const consumerDriver: ConsumerDriverPort = { register: registerConsumer };
+  const consumerDriver: ConsumerDriverPort = {
+    register: registerConsumer,
+    getJournalReader: () => ({
+      readCursor: () => 0,
+    }),
+    getCorpusStateReader: () => ({
+      readConsumerCursor: () => ({
+        snapshotId: '',
+        contentSeq: 0,
+        metadataSeq: 0,
+        contentManifestHash: '',
+        metadataManifestHash: '',
+      }),
+      readCurrentSnapshot: () => kb.getCorpusStateSnapshot(),
+    }),
+  };
 
   // Tests model fake backends as Expansions and load them through the same
   // makeHost/manifest path as production code.

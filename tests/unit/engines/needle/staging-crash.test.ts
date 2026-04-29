@@ -17,7 +17,7 @@ import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import type { KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
+import type { KbEngineRuntime, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 
@@ -31,6 +31,21 @@ function createNotifyCorpusMutation(driver: ConsumerDriver) {
       return;
     }
     driver.notifyCorpus(publication.snapshot);
+  };
+}
+
+function createNeedleRuntime(kb: KbRuntime, driver: ConsumerDriver): KbEngineRuntime {
+  return {
+    runtimeDir: kb.runtimeDir,
+    time: kb.time,
+    ids: kb.ids,
+    projectionArtifacts: kb.projectionArtifacts,
+    corpusProjectionReader: kb.corpusProjectionReader,
+    journalReader: driver.getJournalReader(),
+    corpusStateReader: driver.getCorpusStateReader(),
+    vector: kb.vector,
+    embedding: kb.embedding,
+    fts: kb.fts,
   };
 }
 
@@ -362,8 +377,11 @@ describe('needle staging crash replay', () => {
     const firstDriver = new ConsumerDriver({
       db,
       now: () => FIXED_NOW,
+      corpusProjectionReader: firstRuntime.corpusProjectionReader,
     });
+    const firstNeedleRuntime = createNeedleRuntime(firstRuntime, firstDriver);
     let secondDriver: ConsumerDriver | null = null;
+    let secondNeedleRuntime: KbEngineRuntime | null = null;
 
     try {
       await bindEmbedding(firstRuntime, createMockEmbeddingService());
@@ -373,7 +391,7 @@ describe('needle staging crash replay', () => {
         now: () => FIXED_NOW,
       });
       const notifyCorpusMutation = createNotifyCorpusMutation(firstDriver);
-      const firstBackend = createNeedleBackend(firstRuntime, { addonPath });
+      const firstBackend = createNeedleBackend(firstNeedleRuntime, { addonPath });
       firstRuntimeHarness.equip(firstBackend, firstDriver.register(firstBackend));
 
       let crashedStagingDir = '';
@@ -420,7 +438,7 @@ describe('needle staging crash replay', () => {
       writeFileSync(join(crashedStagingDir, 'poison.txt'), 'stale staging residue', 'utf-8');
 
       __setNeedleBackendStagingHookForTests(null);
-      await closeNeedleBackend(firstRuntime);
+      await closeNeedleBackend(firstNeedleRuntime);
       await firstDriver.shutdown();
 
       const secondRuntimeHarness = createRuntimeHarness(markdownRoot, runtimeDir, db);
@@ -429,8 +447,10 @@ describe('needle staging crash replay', () => {
       secondDriver = new ConsumerDriver({
         db,
         now: () => FIXED_NOW,
+        corpusProjectionReader: secondRuntime.corpusProjectionReader,
       });
-      const secondBackend = createNeedleBackend(secondRuntime, { addonPath });
+      secondNeedleRuntime = createNeedleRuntime(secondRuntime, secondDriver);
+      const secondBackend = createNeedleBackend(secondNeedleRuntime, { addonPath });
       secondRuntimeHarness.equip(secondBackend, secondDriver.register(secondBackend));
 
       secondDriver.notifyCorpus(readCorpusState(db));
@@ -462,10 +482,10 @@ describe('needle staging crash replay', () => {
       expect(existsSync(crashedStagingDir)).toBe(false);
     } finally {
       await secondDriver?.shutdown();
-      if (secondRuntime !== null) {
-        await closeNeedleBackend(secondRuntime);
+      if (secondRuntime !== null && secondNeedleRuntime !== null) {
+        await closeNeedleBackend(secondNeedleRuntime);
       }
-      await closeNeedleBackend(firstRuntime);
+      await closeNeedleBackend(firstNeedleRuntime);
       db.close();
     }
   });

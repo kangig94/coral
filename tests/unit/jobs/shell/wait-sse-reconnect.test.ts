@@ -54,7 +54,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { db, eventBus });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-sse-job';
@@ -233,7 +233,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { db, eventBus });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-race-job';

@@ -25,17 +25,12 @@ function createVectorBacked(): { backed: Backed<VectorRetrieval>; retrieval: Vec
 }
 
 describe('createRouter', () => {
-  it('lazily reads the vector binding when invoked, without touching runtime.db', async () => {
+  it('lazily reads the vector binding when invoked', async () => {
     const { backed: vectorBacked, retrieval: vectorRetrieval } = createVectorBacked();
     const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
     vector.bind(vectorBacked, { [Symbol.dispose]() {} }, 'mock-vector');
 
-    const runtime = {
-      vector,
-      get db() {
-        throw new Error('createRouter should not touch runtime.db');
-      },
-    } as unknown as KbRuntime;
+    const runtime = { vector } as unknown as KbRuntime;
 
     const router = createRouter(runtime);
     await router.vector.search([0.1, 0.2], 5);

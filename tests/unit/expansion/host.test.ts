@@ -8,6 +8,31 @@ import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 describe('createExpansionHost', () => {
+  function createConsumerDriver(register: ConsumerDriverPort['register']): ConsumerDriverPort {
+    return {
+      register,
+      getJournalReader: () => ({
+        readCursor: () => 0,
+      }),
+      getCorpusStateReader: () => ({
+        readConsumerCursor: () => ({
+          snapshotId: '',
+          contentSeq: 0,
+          metadataSeq: 0,
+          contentManifestHash: '',
+          metadataManifestHash: '',
+        }),
+        readCurrentSnapshot: () => ({
+          snapshotId: '',
+          contentSeq: 0,
+          metadataSeq: 0,
+          contentManifestHash: '',
+          metadataManifestHash: '',
+        }),
+      }),
+    };
+  }
+
   it('binds through the host scope and holder id', () => {
     const { runtime, kb } = createTestRuntime();
     const scope: Disposable = { [Symbol.dispose]() {} };
@@ -17,7 +42,7 @@ describe('createExpansionHost', () => {
       scope,
       id: 'needle',
       tier: 'installed',
-      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
+      consumerDriver: createConsumerDriver(vi.fn()),
     });
     const binding = createRuntimeBinding<string>('kb.vector');
 
@@ -35,7 +60,7 @@ describe('createExpansionHost', () => {
       scope: { [Symbol.dispose]() {} },
       id: 'needle',
       tier: 'installed',
-      consumerDriver: { register: vi.fn() } as unknown as ConsumerDriverPort,
+      consumerDriver: createConsumerDriver(vi.fn()),
     });
     const binding = createRuntimeBinding<string>('kb.embedding');
 
@@ -55,8 +80,8 @@ describe('createExpansionHost', () => {
     const stop = vi.fn(async () => {});
     const unregister = vi.fn(async () => {});
     const scope: Disposable = { [Symbol.dispose]() {} };
-    const consumerDriver = {
-      register: vi.fn(() => ({
+    const consumerDriver = createConsumerDriver(
+      vi.fn(() => ({
         id: 'consumer-a',
         registrationKind: 'expansion' as const,
         lastApplyError: null,
@@ -64,7 +89,7 @@ describe('createExpansionHost', () => {
         unregister,
         status: () => ({ authority: 'journal' as const, cursor: 0, pending: false, lastApplyError: null }),
       })),
-    } as unknown as ConsumerDriverPort;
+    );
     const host = createExpansionHost({
       runtime,
       kb,
@@ -73,11 +98,10 @@ describe('createExpansionHost', () => {
       tier: 'installed',
       consumerDriver,
     });
-    const reg: ConsumerRegistration = {
+    const reg = {
       id: 'consumer-a',
-      authority: 'journal',
-      kind: 'apply',
-      registrationKind: 'expansion',
+      authority: 'journal' as const,
+      kind: 'apply' as const,
       async apply() {},
     };
 
@@ -94,8 +118,8 @@ describe('createExpansionHost', () => {
   it('derives registrationKind from (tier, kind) — bundled→base, installed apply→expansion, stateless→stateless', () => {
     const { runtime, kb } = createTestRuntime();
     const captured: ConsumerRegistration[] = [];
-    const consumerDriver = {
-      register: vi.fn((reg: ConsumerRegistration) => {
+    const consumerDriver = createConsumerDriver(
+      vi.fn((reg: ConsumerRegistration) => {
         captured.push(reg);
         return {
           id: reg.id,
@@ -106,7 +130,7 @@ describe('createExpansionHost', () => {
           status: () => ({ authority: 'journal' as const, cursor: 0, pending: false, lastApplyError: null }),
         };
       }),
-    } as unknown as ConsumerDriverPort;
+    );
 
     const bundledHost = createExpansionHost({
       runtime,
@@ -121,7 +145,6 @@ describe('createExpansionHost', () => {
         id: 'orama-base',
         authority: 'corpus',
         kind: 'apply',
-        registrationKind: 'base',
         corpusInterest: 'content',
         async apply() {},
       },
@@ -141,7 +164,6 @@ describe('createExpansionHost', () => {
         id: 'needle',
         authority: 'corpus',
         kind: 'apply',
-        registrationKind: 'expansion',
         corpusInterest: 'content',
         async apply() {},
       },
@@ -157,7 +179,7 @@ describe('createExpansionHost', () => {
       consumerDriver,
     });
     installedStatelessHost.registerConsumer(
-      { id: 'gemini', kind: 'stateless', registrationKind: 'stateless' },
+      { id: 'gemini', kind: 'stateless' },
       installedStatelessHost.scope,
     );
 

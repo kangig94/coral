@@ -28,20 +28,22 @@ async function loadMainModule(): Promise<MainModule> {
 }
 
 async function seedKbSearchSnapshot(): Promise<void> {
-  const [{ reindex }, { closeNeedleBackend }, kbPaths, { createTestKbRuntime }] = await Promise.all([
+  const [{ reindex }, { closeNeedleBackend }, kbPaths, { applyBoundCorpusConsumerForTest, createKbTestRuntime }] =
+    await Promise.all([
     import('#src/kb/ops/reindex.js'),
     import('#src/engines/needle/backend.js'),
     import('#src/kb/paths.js'),
-    import('#tests/fixtures/test-runtime.js'),
-  ]);
+    import('#tests/helpers/kb-test-runtime.js'),
+    ]);
   const realRuntime = createRealRuntime('prod');
   // Production threads the backend store db into createKbSubsystem (coordinator/index.ts:180).
   // Mirror that here so the seeded retry queue is visible to the read-only query runtime that
   // opens the same backend store via defaultRegistry.getDb in createDefaultKbQueryRuntime.
-  const kb = createTestKbRuntime({
+  const db = openBackendStoreDb(realRuntime);
+  const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbPaths.kbRuntimeDir('prod'),
-    db: openBackendStoreDb(realRuntime),
+    db,
     runtime: realRuntime,
   });
 
@@ -50,13 +52,10 @@ async function seedKbSearchSnapshot(): Promise<void> {
 
   try {
     await reindex(kb);
-    await kb.fts.read().consumer.apply?.({
-      snapshot: kb.captureCorpusSnapshot(),
-      db: kb.db,
-    });
+    await applyBoundCorpusConsumerForTest(kb, db);
   } finally {
     await closeNeedleBackend(kb);
-    kb.db.close();
+    db.close();
   }
 }
 

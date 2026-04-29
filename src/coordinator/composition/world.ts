@@ -4,6 +4,7 @@ import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from "../../infra/plugin-identity.js";
 import { ProviderRegistry } from '../../providers/registry.js';
+import { providerLookupPortFromCatalog } from '../../providers/catalog.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import type { CoordinatorIdentity } from '../lifecycle.js';
@@ -21,6 +22,7 @@ import { JobStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { composeReducers } from '../../store/reducers.js';
+import { openBackendStoreDb } from '../../store/db.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { sessionsRegistry } from '../../sessions/events.js';
@@ -97,8 +99,10 @@ export function createCoordinatorWorld(
       runtime,
       createDefaultUpcasterRegistry(),
       {
+        db: options.storeDb ?? openBackendStoreDb(runtime),
         eventBus,
         reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+        providers: providerLookupPortFromCatalog(providerRegistry),
       },
     );
   const providerHostManager =

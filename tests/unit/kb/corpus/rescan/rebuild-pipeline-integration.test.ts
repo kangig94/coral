@@ -15,10 +15,11 @@ import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 function allocateRoot(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -32,12 +33,14 @@ function createSeededKbRuntime(): { kb: KbRuntime; root: string } {
   mkdirSync(join(root, 'sources'), { recursive: true });
   mkdirSync(join(root, 'communities'), { recursive: true });
 
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(root);
+  const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,
-    db: createKbTestDb(root),
+    db,
   });
-  openDatabases.push(kb.db);
+  writableDbByRuntime.set(kb, db);
+  openDatabases.push(db);
   return { kb, root };
 }
 
@@ -270,7 +273,7 @@ describe('performRescan failure semantics', () => {
       retryNotBefore: '2026-04-01T00:00:00.000Z',
       retryCount: 0,
     };
-    syncCurateRetryQueue(kb.db, [syntheticPriorRow]);
+    syncCurateRetryQueue(writableDbByRuntime.get(kb)!, [syntheticPriorRow]);
     const queueBefore = readCurateRetryQueue(kb);
     expect(queueBefore).toHaveLength(1);
     expect(queueBefore[0].entryId).toBe('note:synthetic-prior');
@@ -326,7 +329,9 @@ describe('detectRescanInfo unified MutationLane emitter', () => {
     await reindex(kb);
 
     writeFileSync(join(root, 'notes', 'parity-note.md'), noteFrontmatter('beta'), 'utf-8');
-    expect(detectRescanInfo(kb, buildCorpusScanView(kb)).externalMutation).toBe('metadata');
+    await expect(detectRescanInfo(kb, buildCorpusScanView(kb)).then((info) => info.externalMutation)).resolves.toBe(
+      'metadata',
+    );
   });
 
   it('emits "metadata" for an entity-graph-only edit', async () => {
@@ -357,6 +362,8 @@ describe('detectRescanInfo unified MutationLane emitter', () => {
       )}\n`,
       'utf-8',
     );
-    expect(detectRescanInfo(kb, buildCorpusScanView(kb)).externalMutation).toBe('metadata');
+    await expect(detectRescanInfo(kb, buildCorpusScanView(kb)).then((info) => info.externalMutation)).resolves.toBe(
+      'metadata',
+    );
   });
 });

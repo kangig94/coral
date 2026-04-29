@@ -9,7 +9,7 @@ import { update } from '#src/kb/ops/update.js';
 import { persistPreparedSource } from '#src/kb/ops/source-store.js';
 import { promote } from '#src/kb/ops/promote.js';
 import { reindex } from '#src/kb/ops/reindex.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { noteEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
@@ -128,12 +128,13 @@ async function createRuntimeFixture(
   tempRoots.push(root);
   seed(root);
 
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(root);
+  const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,
-    db: createKbTestDb(root),
+    db,
   });
-  openDatabases.push(kb.db);
+  openDatabases.push(db);
 
   if (options.reindexOnBoot !== false) {
     await reindex(kb);

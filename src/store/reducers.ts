@@ -3,11 +3,20 @@ import { type z } from 'zod';
 
 import type { CoralEvent, CoralEventInput, StreamKind } from './envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
+import type { ProviderLookupPort } from '../providers/catalog.js';
 
 type Database = BetterSqlite3.Database;
 
 export type Reducer<T = unknown> = (db: Database, event: CoralEvent<T>) => void;
-export type DomainAppendValidator = (db: Database, inputs: readonly CoralEventInput[]) => void;
+export interface DomainAppendValidationContext {
+  readonly db: Database;
+  readonly providers: ProviderLookupPort;
+}
+
+export type DomainAppendValidator = (
+  ctx: DomainAppendValidationContext,
+  inputs: readonly CoralEventInput[],
+) => void;
 
 /**
  * A single event-type entry: type tag, body schema, and an optional reducer.

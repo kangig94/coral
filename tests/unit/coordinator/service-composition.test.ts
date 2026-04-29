@@ -45,6 +45,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -99,9 +100,14 @@ let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
   return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtime),
     eventBus,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
   });
+}
+
+function createSessionManager(projectRoot: string): SessionManager {
+  return new SessionManager(projectRoot, runtime, undefined, undefined, openTestStoreDb(runtime));
 }
 
 function jobResultPath(jobId: string): string {
@@ -200,7 +206,7 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     coordinatorCommit: (cb) => progressStore.commit(cb),
-    sessionLookup: createSessionLookup(runtime),
+    sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
     subscribeJobEvents,
@@ -629,7 +635,7 @@ describe('ExecutionService', () => {
       realizePluginRoot(ctx);
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -662,7 +668,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -696,7 +702,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -738,7 +744,7 @@ describe('ExecutionService', () => {
 
     it('resumeBySessionId rejects sessions outside the current scope', async () => {
       const otherCtx = createScopedContext('other-project');
-      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
+      const foreignMgr = createSessionManager(otherCtx.projectRoot);
       const foreignEntry = foreignMgr.allocate({
         provider: 'codex',
         name: 'foreign',
@@ -767,7 +773,7 @@ describe('ExecutionService', () => {
         content: 'Persisted instruction',
         channel: 'system' as const,
       };
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -814,7 +820,7 @@ describe('ExecutionService', () => {
     it('resume rejects when the session already has an active job', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.claimForJobSync(entry.sessionId, 'job-1');
       const service = createService(ctx);
@@ -846,7 +852,7 @@ describe('ExecutionService', () => {
       });
       mockState.getNewProvider.mockReturnValue(racingProvider.provider);
 
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
 
@@ -884,7 +890,7 @@ describe('ExecutionService', () => {
         }),
       });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setConversationRef(entry.sessionId, 'thread-stale');
       const service = createService(ctx);
@@ -924,7 +930,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const service = createService(ctx);
 
@@ -942,7 +948,7 @@ describe('ExecutionService', () => {
       realizePluginRoot(ctx);
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate({
         provider: 'codex',
         name: 'architect',
@@ -979,7 +985,7 @@ describe('ExecutionService', () => {
         content: 'Persisted instruction',
         channel: 'system' as const,
       };
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate({
         provider: 'codex',
         name: 'architect',
@@ -1051,7 +1057,7 @@ describe('ExecutionService', () => {
         content: 'Persisted instruction',
         channel: 'system' as const,
       };
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate({
         provider: 'codex',
         name: 'architect',
@@ -1127,7 +1133,7 @@ describe('ExecutionService', () => {
 
     it('forkBySessionId rejects sessions outside the current scope', async () => {
       const otherCtx = createScopedContext('fork-foreign-project');
-      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
+      const foreignMgr = createSessionManager(otherCtx.projectRoot);
       const foreignEntry = foreignMgr.allocate({
         provider: 'codex',
         name: 'foreign',
@@ -1183,7 +1189,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const session = createSessionManager(ctx.projectRoot).get('codex', decision.session);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
@@ -1255,8 +1261,8 @@ describe('ExecutionService', () => {
 
     await waitForTerminalEvent(service, decision.job);
 
-    const workflowSession = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
-    const workDirSession = new SessionManager(workDir, runtime).get('codex', decision.session);
+    const workflowSession = createSessionManager(ctx.projectRoot).get('codex', decision.session);
+    const workDirSession = createSessionManager(workDir).get('codex', decision.session);
 
     expect(seenCwds).toEqual([workDir, workDir]);
     expect(workflowSession?.cwd).toBe(ctx.projectRoot);
@@ -1345,7 +1351,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const session = createSessionManager(ctx.projectRoot).get('codex', decision.session);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
@@ -1420,7 +1426,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const session = createSessionManager(ctx.projectRoot).get('codex', decision.session);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
@@ -1728,7 +1734,7 @@ describe('ExecutionService', () => {
           terminalCommitObserved = true;
           order.push('terminal');
           expect(existsSync(jobResultPath(jobId))).toBe(false);
-          expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
+          expect(createSessionManager(ctx.projectRoot).get('codex', session.sessionId)?.state).toBe('pending');
         }
         return originalCommit(cb);
       });
@@ -1815,7 +1821,7 @@ describe('ExecutionService', () => {
     vi.spyOn(progressStore, 'commit').mockImplementation(() => {
       order.push('terminal');
       expect(existsSync(jobResultPath(jobId))).toBe(false);
-      expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
+      expect(createSessionManager(ctx.projectRoot).get('codex', session.sessionId)?.state).toBe('pending');
       throw new Error('disk full');
     });
     const setNonResumable = vi.spyOn(sessionManager, 'setNonResumable');
@@ -1992,7 +1998,7 @@ describe('ExecutionService', () => {
         const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
 
         const jobId = `recover-exec-${randomUUID()}`;
-        const mgr = new SessionManager(ctx.projectRoot, runtime);
+        const mgr = createSessionManager(ctx.projectRoot);
         const session = mgr.allocate('codex', 'recover', 'gpt-5', ctx.projectRoot);
         trackJob(jobId);
 
@@ -2606,7 +2612,7 @@ describe('ExecutionService adversarial', () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setNonResumable(entry.sessionId);
 
@@ -2640,7 +2646,7 @@ describe('ExecutionService adversarial', () => {
 
     it('rejects with unknown_provider without setting activeJobId on the session', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
 
       const service = createService(ctx);
@@ -2663,7 +2669,7 @@ describe('ExecutionService adversarial', () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
       const service = createService(ctx);
@@ -2715,7 +2721,7 @@ describe('ExecutionService adversarial', () => {
 
     it('rejects with unknown_provider without allocating a new session', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
 
@@ -2737,7 +2743,7 @@ describe('ExecutionService adversarial', () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
       const jobDirsBefore = listJobDirs();
@@ -2769,7 +2775,7 @@ describe('ExecutionService adversarial', () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const mgr = createSessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
       const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;

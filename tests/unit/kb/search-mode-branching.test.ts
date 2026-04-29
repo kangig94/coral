@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as OramaModule from '@orama/orama';
 import type * as NodeOs from 'node:os';
 import type * as RouterModule from '#src/kb/search/router.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
@@ -14,13 +15,15 @@ import {
   seedNeedleRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
   oramaSearch: null as null | ((...args: unknown[]) => unknown),
   createRouter: null as null | ((...args: unknown[]) => unknown),
 }));
+
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -78,13 +81,19 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  const kb = createTestKbRuntime({
+  const db = createKbTestDb(paths.kbRuntimeDir('prod'));
+  const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir('prod'),
-    db: createKbTestDb(paths.kbRuntimeDir('prod')),
+    db,
   });
+  writableDbByRuntime.set(kb, db);
   bindOramaFtsForTest(kb);
   return kb;
+}
+
+async function applyOramaProjection(kb: KbRuntime): Promise<void> {
+  await applyBoundCorpusConsumerForTest(kb, writableDbByRuntime.get(kb)!);
 }
 
 function writeNote(
@@ -174,6 +183,7 @@ describe('kb search mode branching', () => {
     });
 
     await reindex(kb);
+    await applyOramaProjection(kb);
     bindVectorBacked(
       kb,
       {
@@ -181,11 +191,9 @@ describe('kb search mode branching', () => {
       },
       createCorpusHandle(
         seedNeedleRouteState(
-          {
-            db: kb.db,
-            invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
-          },
+          writableDbByRuntime.get(kb)!,
           kb.captureCorpusSnapshot(),
+          { invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot() },
         ),
       ),
     );
@@ -225,6 +233,7 @@ describe('kb search mode branching', () => {
       relationships: [],
     } satisfies EntityGraph);
     await reindex(kb);
+    await applyOramaProjection(kb);
 
     mockState.createRouter = asUnknownHandler(createRouterSpy);
     bindVectorBacked(
@@ -234,11 +243,9 @@ describe('kb search mode branching', () => {
       },
       createCorpusHandle(
         seedNeedleRouteState(
-          {
-            db: kb.db,
-            invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
-          },
+          writableDbByRuntime.get(kb)!,
           kb.captureCorpusSnapshot(),
+          { invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot() },
         ),
       ),
     );

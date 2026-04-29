@@ -1,11 +1,20 @@
 import type BetterSqlite3 from 'better-sqlite3';
+import type { KbRuntime } from '../contract.js';
+import type { ReadonlyDatabase } from '../read-port.js';
 
-export type SqliteTarget = BetterSqlite3.Database | { db: BetterSqlite3.Database };
+export type SqliteTarget =
+  | BetterSqlite3.Database
+  | ReadonlyDatabase
+  | KbRuntime
+  | { db: BetterSqlite3.Database | ReadonlyDatabase };
 
-const statementCache = new WeakMap<BetterSqlite3.Database, Map<string, BetterSqlite3.Statement>>();
+const statementCache = new WeakMap<BetterSqlite3.Database | ReadonlyDatabase, Map<string, BetterSqlite3.Statement>>();
 
-export function resolveSqliteDb(target: SqliteTarget): BetterSqlite3.Database {
-  return 'db' in target ? target.db : target;
+export function resolveSqliteDb(target: SqliteTarget): BetterSqlite3.Database | ReadonlyDatabase {
+  if ('prepare' in target) {
+    return target;
+  }
+  return (target as { db: BetterSqlite3.Database | ReadonlyDatabase }).db;
 }
 
 export function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>(
@@ -24,8 +33,7 @@ export function prepareCached<TParams extends unknown[] = unknown[], TResult = u
     return cached as BetterSqlite3.Statement<TParams, TResult>;
   }
 
-  const statement = db.prepare(sql);
+  const statement = db.prepare(sql) as BetterSqlite3.Statement<TParams, TResult>;
   cache.set(sql, statement);
-  return statement as BetterSqlite3.Statement<TParams, TResult>;
+  return statement;
 }
-

@@ -1,6 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
@@ -11,10 +10,11 @@ import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
   EmbeddingService,
-  KbRuntime,
+  KbEngineRuntime,
+  KbProjectionArtifactFilePort,
+  KbProjectionInput,
   VectorRetrieval as BoundVectorRetrieval,
 } from '../../kb/contract.js';
-import { writeFileAtomic } from '../../kb/corpus/file-atomic.js';
 import {
   getEntry,
   isNoteEntry,
@@ -24,17 +24,15 @@ import {
   type KbIndex,
 } from '../../kb/entry-types.js';
 import { needleAddonPath, needleIndexDir, needleStagingDir } from './paths.js';
-import { loadKbNote, loadKbSource } from '../../kb/read.js';
 import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
-import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../kb/embedding-vector.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
+import { resolveBoundNeedleEmbedder, type ResolvedNeedleEmbedder } from './projection-identity.js';
 import {
   NEEDLE_CONSUMER_ID,
   type NeedleBackend as NeedleBackendContract,
   type NeedleBackendOptions,
 } from './contract.js';
 import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../../kb/search/contract.js';
-import type { EmbeddingSpec } from './store.js';
 import type { Runtime } from '../../runtime/ports.js';
 
 const NEEDLE_STORE_FILE = 'store.db';
@@ -53,11 +51,15 @@ type NeedleApplyContext = CorpusConsumerApplyContext;
 type NeedleCursorView = {
   snapshotId: string;
   contentSeq: number;
+  metadataSeq: number;
   contentManifestHash: string;
+  metadataManifestHash: string;
 };
 
 type NeedleSnapshotManifest = {
-  snapshot: NeedleCursorView;
+  snapshot: NeedleCursorView & {
+    projectionIdentityHash: string;
+  };
   specId: string;
   entryCount: number;
   chunkCount: number;
@@ -86,54 +88,10 @@ type StagedVectorEntry = {
   chunks: ChunkSeed[];
 };
 
-type BoundEmbeddingMetadata = {
-  readonly name?: string;
-  readonly model?: string;
-  readonly dims?: number;
-  readonly normalization?: EmbeddingSpec['normalization'];
-  readonly specId?: string;
-};
-
-type ResolvedNeedleEmbedder = {
-  readonly service: EmbeddingService;
-  readonly spec: Omit<EmbeddingSpec, 'createdAt'>;
-};
-
-const SHARED_NEEDLE_BACKENDS = new WeakMap<KbRuntime, NeedleBackend>();
+const SHARED_NEEDLE_BACKENDS = new WeakMap<object, NeedleBackend>();
 let needleBackendStagingHookForTests: NeedleBackendStagingHook | null = null;
 
-function asNeedleEmbeddingProvider(service: EmbeddingService): EmbeddingService & BoundEmbeddingMetadata {
-  return service as EmbeddingService & BoundEmbeddingMetadata;
-}
-
-function resolveBoundNeedleEmbedder(embedder: Backed<EmbeddingService>): ResolvedNeedleEmbedder {
-  const service = asNeedleEmbeddingProvider(embedder.read());
-  const provider = typeof service.name === 'string' && service.name.length > 0 ? service.name : embedder.consumer.id;
-  const model = typeof service.model === 'string' && service.model.length > 0 ? service.model : provider;
-  const dims = service.dims;
-  if (typeof dims !== 'number' || !Number.isInteger(dims) || dims <= 0) {
-    throw new Error(`Bound embedding service '${embedder.consumer.id}' did not declare a valid dims field.`);
-  }
-
-  const normalization = service.normalization === 'none' ? 'none' : EMBEDDING_NORMALIZATION;
-  const specId =
-    typeof service.specId === 'string' && service.specId.length > 0
-      ? service.specId
-      : computeEmbeddingSpecId(provider, model, dims, normalization);
-
-  return {
-    service,
-    spec: {
-      provider,
-      model,
-      dims,
-      normalization,
-      specId,
-    },
-  };
-}
-
-async function resolveRuntimeNeedleEmbedder(runtime: KbRuntime): Promise<ResolvedNeedleEmbedder | null> {
+async function resolveRuntimeNeedleEmbedder(runtime: KbEngineRuntime): Promise<ResolvedNeedleEmbedder | null> {
   try {
     return resolveBoundNeedleEmbedder(runtime.embedding.read());
   } catch (error) {
@@ -150,7 +108,10 @@ function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManife
     isRecord(value.snapshot) &&
     typeof value.snapshot.snapshotId === 'string' &&
     typeof value.snapshot.contentSeq === 'number' &&
+    typeof value.snapshot.metadataSeq === 'number' &&
     typeof value.snapshot.contentManifestHash === 'string' &&
+    typeof value.snapshot.metadataManifestHash === 'string' &&
+    typeof value.snapshot.projectionIdentityHash === 'string' &&
     typeof value.specId === 'string' &&
     typeof value.entryCount === 'number' &&
     typeof value.chunkCount === 'number'
@@ -182,11 +143,11 @@ function needleHandleDir(runtimeDir: string, handleToken: string): string {
 }
 
 function writeActiveSnapshotId(
-  host: Pick<KbRuntime, 'storagePort' | 'ids'>,
+  files: Pick<KbProjectionArtifactFilePort, 'writeTextAtomic'>,
   runtimeDir: string,
   snapshotId: string,
 ): void {
-  writeFileAtomic(host, needleActivePointerPath(runtimeDir), `${snapshotId}\n`);
+  files.writeTextAtomic(needleActivePointerPath(runtimeDir), `${snapshotId}\n`);
 }
 
 function readSnapshotManifest(runtimeDir: string, snapshotId: string): NeedleSnapshotManifest | null {
@@ -200,14 +161,14 @@ function readSnapshotManifest(runtimeDir: string, snapshotId: string): NeedleSna
 }
 
 function writeSnapshotManifest(
-  host: Pick<KbRuntime, 'storagePort' | 'ids'>,
+  files: Pick<KbProjectionArtifactFilePort, 'writeTextAtomic'>,
   snapshotDir: string,
   manifest: NeedleSnapshotManifest,
 ): void {
-  writeFileAtomic(host, needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
+  files.writeTextAtomic(needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function createHandleToken(runtime: KbRuntime, prefix: string): string {
+function createHandleToken(runtime: KbEngineRuntime, prefix: string): string {
   return `${prefix}-${runtime.time.now()}-${runtime.ids.uuid()}`;
 }
 
@@ -328,7 +289,7 @@ export class NeedleBackend implements NeedleBackendContract {
   private readonly retiredHandles = new Set<ActiveNeedleHandle>();
 
   constructor(
-    private readonly runtime: KbRuntime,
+    private readonly runtime: KbEngineRuntime,
     options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder },
   ) {
     this.id = options.consumerId ?? NEEDLE_CONSUMER_ID;
@@ -349,7 +310,7 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   isSnapshotStale(): boolean {
-    const latest = readCorpusState(this.runtime.db);
+    const latest = this.runtime.corpusStateReader.readCurrentSnapshot();
     const cursor = this.readConsumerCursor();
     return cursor.contentManifestHash !== '' && cursor.contentManifestHash !== latest.contentManifestHash;
   }
@@ -385,7 +346,7 @@ export class NeedleBackend implements NeedleBackendContract {
     }
 
     try {
-      const index = this.runtime.readIndexOrEmpty();
+      const index = this.runtime.corpusProjectionReader.resolveCurrentIndex();
       let candidateK = Math.max(topK, 1);
       const candidateCap = Math.max(topK, VECTOR_CANDIDATE_CAP_MULTIPLIER * topK);
       let chunkHits = await lease.handle.store.searchVector(query, candidateK);
@@ -416,8 +377,6 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   async apply(ctx: NeedleApplyContext): Promise<void> {
-    void ctx.db;
-
     if (this.resolveInstalledAddonPath() === null) {
       return;
     }
@@ -427,7 +386,7 @@ export class NeedleBackend implements NeedleBackendContract {
       throw new Error('KB needle backend requires an embedding provider configuration.');
     }
 
-    const stagingDir = await this.stageSnapshot(ctx.snapshot, embedder);
+    const stagingDir = await this.stageSnapshot(ctx.snapshot, embedder, ctx.projectionInput);
     let preserveStagingDir = false;
     try {
       await needleBackendStagingHookForTests?.({
@@ -464,26 +423,13 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   private readConsumerCursor(): NeedleCursorView {
-    const row = this.runtime.db
-      .prepare(
-        `
-          SELECT snapshot_id, content_seq, content_manifest_hash
-            FROM consumer_cursors
-           WHERE consumer_id = ?
-        `,
-      )
-      .get(this.id) as
-      | {
-          snapshot_id: string | null;
-          content_seq: number | null;
-          content_manifest_hash: string | null;
-        }
-      | undefined;
-
+    const cursor = this.runtime.corpusStateReader.readConsumerCursor(this.id);
     return {
-      snapshotId: row?.snapshot_id ?? '',
-      contentSeq: row?.content_seq ?? 0,
-      contentManifestHash: row?.content_manifest_hash ?? '',
+      snapshotId: cursor.snapshotId,
+      contentSeq: cursor.contentSeq,
+      metadataSeq: cursor.metadataSeq,
+      contentManifestHash: cursor.contentManifestHash,
+      metadataManifestHash: cursor.metadataManifestHash,
     };
   }
 
@@ -495,39 +441,30 @@ export class NeedleBackend implements NeedleBackendContract {
     return (
       manifest.snapshot.snapshotId === cursor.snapshotId &&
       manifest.snapshot.contentSeq === cursor.contentSeq &&
-      manifest.snapshot.contentManifestHash === cursor.contentManifestHash
+      manifest.snapshot.metadataSeq === cursor.metadataSeq &&
+      manifest.snapshot.contentManifestHash === cursor.contentManifestHash &&
+      manifest.snapshot.metadataManifestHash === cursor.metadataManifestHash
     );
   }
 
-  private collectVectorEntries(): StagedVectorEntry[] {
-    const index = this.runtime.readIndexOrEmpty();
-
-    return Object.entries(index.entries)
-      .sort(([leftEntryId], [rightEntryId]) => leftEntryId.localeCompare(rightEntryId))
-      .flatMap(([entryId, entry]) => {
-        if (isNoteEntry(entry)) {
-          return [
-            {
-              entryId: entryId as KbEntryId,
-              chunks: chunkEntry(entry, loadKbNote(this.runtime.storagePort, this.runtime.notePath(entry.slug)).body),
-            },
-          ];
-        }
-        if (isSourceEntry(entry)) {
-          return [
-            {
-              entryId: entryId as KbEntryId,
-              chunks: chunkEntry(entry, loadKbSource(this.runtime.storagePort, this.runtime.sourcePath(entry.slug)).body),
-            },
-          ];
-        }
+  private collectVectorEntries(input: KbProjectionInput): StagedVectorEntry[] {
+    return input.records.flatMap((record) => {
+      if (record.kind !== 'note' && record.kind !== 'source') {
         return [];
-      });
+      }
+      return [
+        {
+          entryId: `${record.kind}:${record.entry.slug}` as KbEntryId,
+          chunks: chunkEntry(record.entry, record.body),
+        },
+      ];
+    });
   }
 
   private async stageSnapshot(
     snapshot: NeedleApplyContext['snapshot'],
     embedder: ResolvedNeedleEmbedder,
+    input: KbProjectionInput,
   ): Promise<string> {
     const desiredSpec = embedder.spec;
     const stagingDir = join(needleStagingDir(this.runtime.runtimeDir), snapshot.snapshotId);
@@ -556,7 +493,7 @@ export class NeedleBackend implements NeedleBackendContract {
         });
       }
 
-      const vectorEntries = this.collectVectorEntries();
+      const vectorEntries = this.collectVectorEntries(input);
       const chunks = vectorEntries.flatMap((entry) => entry.chunks);
       if (chunks.length > 0) {
         const vectors = await embedder.service.embedDocuments(chunks.map((chunk) => chunk.text));
@@ -577,11 +514,14 @@ export class NeedleBackend implements NeedleBackendContract {
       }
 
       await stagedStore.store.buildIndex();
-      writeSnapshotManifest(this.runtime, stagingDir, {
+      writeSnapshotManifest(this.runtime.projectionArtifacts.files, stagingDir, {
         snapshot: {
           snapshotId: snapshot.snapshotId,
           contentSeq: snapshot.contentSeq,
+          metadataSeq: snapshot.metadataSeq,
           contentManifestHash: snapshot.contentManifestHash,
+          metadataManifestHash: snapshot.metadataManifestHash,
+          projectionIdentityHash: embedder.projectionIdentityHash,
         },
         specId: desiredSpec.specId,
         entryCount: vectorEntries.length,
@@ -609,7 +549,7 @@ export class NeedleBackend implements NeedleBackendContract {
         throw new Error(`Needle snapshot ${snapshotId} could not be opened after install.`);
       }
 
-      writeActiveSnapshotId(this.runtime, this.runtime.runtimeDir, snapshotId);
+      writeActiveSnapshotId(this.runtime.projectionArtifacts.files, this.runtime.runtimeDir, snapshotId);
       this.publishActiveHandle(nextHandle);
     } catch (error: unknown) {
       rmSync(finalSnapshotDir, { recursive: true, force: true });
@@ -756,7 +696,7 @@ export class NeedleBackend implements NeedleBackendContract {
 }
 
 /** Returns the shared KB needle backend for a runtime so coordinator wiring stays single-instance. */
-export function createNeedleBackend(runtime: KbRuntime, options: NeedleBackendOptions): NeedleBackend {
+export function createNeedleBackend(runtime: KbEngineRuntime, options: NeedleBackendOptions): NeedleBackend {
   const existing = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (existing !== undefined) {
     existing.configure(options);
@@ -769,13 +709,14 @@ export function createNeedleBackend(runtime: KbRuntime, options: NeedleBackendOp
 }
 
 export async function createNeedleBacked(
-  kbRuntime: KbRuntime,
+  kbRuntime: KbEngineRuntime,
   runtime: Pick<Runtime, 'paths'>,
   embedder: Backed<EmbeddingService>,
+  resolvedEmbedder: ResolvedNeedleEmbedder = resolveBoundNeedleEmbedder(embedder),
 ): Promise<Backed<BoundVectorRetrieval>> {
   const backend = new NeedleBackend(kbRuntime, {
     addonPath: needleAddonPath(runtime),
-    embedder: resolveBoundNeedleEmbedder(embedder),
+    embedder: resolvedEmbedder,
   });
   const retrieval: BoundVectorRetrieval = {
     search(embedding, topK, scope) {
@@ -802,7 +743,7 @@ export function __setNeedleBackendStagingHookForTests(hook: NeedleBackendStaging
 }
 
 /** Releases the shared KB needle backend and any leased snapshot handles for a runtime. */
-export async function closeNeedleBackend(runtime: KbRuntime): Promise<void> {
+export async function closeNeedleBackend(runtime: object): Promise<void> {
   const backend = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (backend === undefined) {
     return;

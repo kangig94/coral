@@ -13,6 +13,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '#src/providers/contract.js';
@@ -136,6 +137,7 @@ describe('coordinator continuity lifecycle integration', () => {
 
   function createService(providerRegistry: { get(name: string): ProviderSpec | undefined; getAll(): ProviderSpec[] }) {
     const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+      db: openTestStoreDb(runtime),
       eventBus,
     });
     const service = new ExecutionService(ctx, {
@@ -148,7 +150,7 @@ describe('coordinator continuity lifecycle integration', () => {
       eventBus,
       providerRegistry: providerRegistry as never,
       pluginRegistry: { discoverPluginRoot: () => null },
-      sessionLookup: createSessionLookup(runtime),
+      sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
       ...createTestJobJournalDeps(progressStore, runtime),
     });
     return { service, progressStore };

@@ -53,6 +53,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -102,7 +103,10 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtime),
+    eventBus,
+  });
 }
 
 function _jobResultPath(jobId: string): string {
@@ -158,7 +162,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    sessionLookup: createSessionLookup(runtime),
+    sessionLookup: createSessionLookup({ db: progressStore.getDb() }),
     ...createTestJobJournalDeps(progressStore, runtime),
   });
 }

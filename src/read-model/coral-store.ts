@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import type { Runtime } from '../runtime/ports.js';
+import type { KbQueryContext } from '../kb/query-runtime.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
 import type { EventsFilter, EventsPage } from '../store/event-queries.js';
@@ -55,7 +56,7 @@ import type {
 import type { SessionEntry } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
-export type CoralStoreRuntime = Pick<Runtime, 'storage' | 'ids'>;
+export type CoralStoreRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
 export type CoralStoreOptions = {
   /**
@@ -133,16 +134,12 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.kb = {
-      search: (args) => searchKnowledgeBase(args, { pluginRoot: this.requirePluginRoot('kb.search') }),
-      diagnose: () => diagnoseKnowledgeBase({ pluginRoot: this.requirePluginRoot('kb.diagnose') }),
+      search: (args) => searchKnowledgeBase(args, this.kbQueryContext('kb.search')),
+      diagnose: () => diagnoseKnowledgeBase(this.kbQueryContext('kb.diagnose')),
       read: (selector) =>
-        readKnowledgeBaseEntry(selector, {
-          projectRoot: this.requireProjectRoot('kb.read'),
-          pluginRoot: this.requirePluginRoot('kb.read'),
-        }),
-      listPrinciples: (args) =>
-        listKnowledgeBasePrinciples(args, { pluginRoot: this.requirePluginRoot('kb.listPrinciples') }),
-      listSources: () => listKnowledgeBaseSources({ pluginRoot: this.requirePluginRoot('kb.listSources') }),
+        readKnowledgeBaseEntry(selector, this.kbQueryContext('kb.read', { requireProjectRoot: true })),
+      listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryContext('kb.listPrinciples')),
+      listSources: () => listKnowledgeBaseSources(this.kbQueryContext('kb.listSources')),
       listMemos: (args) =>
         listKnowledgeBaseMemos(this.requireRuntime('kb.listMemos').storage, this.requireProjectRoot('kb.listMemos'), args),
     };
@@ -207,5 +204,19 @@ export class CoralStore implements StoreReadContext {
       throw new Error(`CoralStore ${operation} requires a runtime port slice.`);
     }
     return this.runtime;
+  }
+
+  private kbQueryContext(operation: string, options: { requireProjectRoot?: boolean } = {}): KbQueryContext {
+    const context: KbQueryContext = {
+      pluginRoot: this.requirePluginRoot(operation),
+      readDb: this.db,
+    };
+    if (options.requireProjectRoot === true) {
+      context.projectRoot = this.requireProjectRoot(operation);
+    }
+    if (this.runtime !== undefined) {
+      context.runtime = this.runtime;
+    }
+    return context;
   }
 }

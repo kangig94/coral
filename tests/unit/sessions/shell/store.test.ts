@@ -28,9 +28,20 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
+const openDbs: Array<ReturnType<typeof openStoreDatabase>> = [];
 
 function resolveScopeKey(projectRoot: string): string {
   return pluginRootNamespace(projectRoot);
+}
+
+function openSessionDb(): ReturnType<typeof openStoreDatabase> {
+  const db = openStoreDatabase({
+    path: ':memory:',
+    storage: runtime.storage,
+    schemasDir: ensureStoreSchemasDir(runtime.storage),
+  });
+  openDbs.push(db);
+  return db;
 }
 
 describe('sessions shell store', () => {
@@ -40,6 +51,13 @@ describe('sessions shell store', () => {
   });
 
   afterEach(() => {
+    for (const db of openDbs.splice(0).reverse()) {
+      try {
+        db.close();
+      } catch {
+        // already closed in-test
+      }
+    }
     rmSync(tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -47,7 +65,7 @@ describe('sessions shell store', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime), workDir };
+    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
   }
 
   function setupWithJournal(projectName: string): {
@@ -58,11 +76,7 @@ describe('sessions shell store', () => {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
 
-    const db = openStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      schemasDir: ensureStoreSchemasDir(runtime.storage),
-    });
+    const db = openSessionDb();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createDefaultUpcasterRegistry();
     const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
@@ -314,7 +328,7 @@ describe('sessions shell store', () => {
       if (shouldThrow) {
         throw appendFailure;
       }
-    });
+    }, undefined, openSessionDb());
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
     const entryBeforeFailure = mgr.readById(entry.sessionId);
 
@@ -568,6 +582,13 @@ describe('sessions shell store adversarial', () => {
   });
 
   afterEach(() => {
+    for (const db of openDbs.splice(0).reverse()) {
+      try {
+        db.close();
+      } catch {
+        // already closed in-test
+      }
+    }
     rmSync(tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -575,7 +596,7 @@ describe('sessions shell store adversarial', () => {
   function setup(name: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, name);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime), workDir };
+    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
   }
 
   it('claimForJobSync returns false for a session that does not exist', () => {
