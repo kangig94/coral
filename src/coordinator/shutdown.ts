@@ -36,10 +36,9 @@ export type LifecycleWiringState = {
 
 export interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'running' | 'draining' | 'stopped'): void;
-  getKbSubsystem(): {
-    curateScheduler: { stop?: () => Promise<void> };
-    kb: KbRuntime;
-  } | null;
+  getKbStatus():
+    | { kind: 'ok'; subsystem: { curateScheduler: { stop?: () => Promise<void> }; kb: KbRuntime } }
+    | { kind: 'unavailable'; reason: string };
 }
 
 type FinalizeLiveAppServerJobsForHandoffContext = {
@@ -177,7 +176,8 @@ export async function runShutdownSequence({
     });
   }
 
-  const kbSubsystem = runtimeState.getKbSubsystem();
+  const kbStatus = runtimeState.getKbStatus();
+  const kbSubsystem = kbStatus.kind === 'ok' ? kbStatus.subsystem : null;
   const curateSchedulerStop = kbSubsystem?.curateScheduler.stop?.bind(kbSubsystem.curateScheduler);
   const kbStopBudgetMs = remainingDrain();
   if (curateSchedulerStop && kbStopBudgetMs >= 500) {

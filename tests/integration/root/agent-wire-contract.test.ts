@@ -70,8 +70,8 @@ function createRuntimeState(): MutableRuntimeState {
   return {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
-    getKbSubsystem: () => null,
-    getKbInitError: () => null,
+    getKbStatus: () => ({ kind: 'unavailable', reason: 'KB not initialized' }),
+    getCurateHealth: () => ({ kind: 'ok' }),
     getLaunchFenceActive: () => launchFenceActive,
     setLifecycle: (state) => {
       lifecycle = state;
@@ -79,8 +79,8 @@ function createRuntimeState(): MutableRuntimeState {
     setStartedAt: (ts) => {
       startedAt = ts;
     },
-    setKbSubsystem: () => {},
-    setKbInitError: () => {},
+    setKbStatus: () => {},
+    setCurateHealth: () => {},
     setLaunchFenceActive: (active) => {
       launchFenceActive = active;
     },

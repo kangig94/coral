@@ -138,23 +138,22 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     code: 'kb_unavailable',
     message: 'Knowledge base is not available. Check backend health for details.',
   };
-  const withKb = <T>(
-    run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
-  ): T | typeof kbUnavailableResult => {
-    const kbSubsystem = runtimeState.getKbSubsystem();
-    if (!kbSubsystem) {
+  type KbSubsystemFromStatus = Extract<ReturnType<typeof runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
+  const withKb = <T>(run: (kbSubsystem: KbSubsystemFromStatus) => T): T | typeof kbUnavailableResult => {
+    const status = runtimeState.getKbStatus();
+    if (status.kind !== 'ok') {
       return kbUnavailableResult;
     }
-    return run(kbSubsystem);
+    return run(status.subsystem);
   };
   const withKbAsync = async <T>(
-    run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => Promise<T>,
+    run: (kbSubsystem: KbSubsystemFromStatus) => Promise<T>,
   ): Promise<T | typeof kbUnavailableResult> => {
-    const kbSubsystem = runtimeState.getKbSubsystem();
-    if (!kbSubsystem) {
+    const status = runtimeState.getKbStatus();
+    if (status.kind !== 'ok') {
       return kbUnavailableResult;
     }
-    return run(kbSubsystem);
+    return run(status.subsystem);
   };
   const kbRefsForOperation = (
     operation: string,
@@ -391,7 +390,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           status = 'ok';
         }
 
-        const kbInitError = runtimeState.getKbInitError();
+        const kbStatus = runtimeState.getKbStatus();
+        const curateHealth = runtimeState.getCurateHealth();
         return {
           status,
           version: identity.version,
@@ -406,8 +406,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
           subsystems: {
-            kb: kbInitError === null ? 'ok' : 'unavailable',
-            ...(kbInitError === null ? {} : { kbError: kbInitError }),
+            kb: kbStatus.kind,
+            ...(kbStatus.kind === 'unavailable' ? { kbReason: kbStatus.reason } : {}),
+            kbCurate: curateHealth.kind,
+            ...(curateHealth.kind === 'degraded' ? { kbCurateReason: curateHealth.reason } : {}),
             discuss: 'ok' as const,
           },
           env,

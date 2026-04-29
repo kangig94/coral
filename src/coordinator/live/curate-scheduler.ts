@@ -7,12 +7,11 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
 import type { MutableRuntimeState } from '../lifecycle.js';
 
-const HEALTH_ERROR_PREFIX = 'Corpus publication queue unhealthy';
 const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CURATE_INTERVAL_MS = 60_000;
 
 export interface CurateSchedulerHealthBridge {
-  attachRuntimeState(runtimeState: Pick<MutableRuntimeState, 'getKbInitError' | 'setKbInitError'>): void;
+  attachRuntimeState(runtimeState: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'>): void;
   onCorpusPublishFailure(failure: KbCorpusPublishFailure): void;
   onCorpusPublishSuccess(): void;
 }
@@ -20,7 +19,7 @@ export interface CurateSchedulerHealthBridge {
 export function createCurateSchedulerHealthBridge(
   failureThreshold = DEFAULT_FAILURE_THRESHOLD,
 ): CurateSchedulerHealthBridge {
-  let runtimeState: Pick<MutableRuntimeState, 'getKbInitError' | 'setKbInitError'> | null = null;
+  let runtimeState: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'> | null = null;
 
   return {
     attachRuntimeState(nextRuntimeState) {
@@ -31,13 +30,14 @@ export function createCurateSchedulerHealthBridge(
         return;
       }
 
-      runtimeState.setKbInitError(
-        `${HEALTH_ERROR_PREFIX} after ${failure.consecutivePublishFailureCount} consecutive ${failure.stage} failures: ${errorMessage(failure.error)}`,
-      );
+      runtimeState.setCurateHealth({
+        kind: 'degraded',
+        reason: `Corpus publication queue unhealthy after ${failure.consecutivePublishFailureCount} consecutive ${failure.stage} failures: ${errorMessage(failure.error)}`,
+      });
     },
     onCorpusPublishSuccess() {
-      if (runtimeState?.getKbInitError()?.startsWith(HEALTH_ERROR_PREFIX)) {
-        runtimeState.setKbInitError(null);
+      if (runtimeState?.getCurateHealth().kind === 'degraded') {
+        runtimeState.setCurateHealth({ kind: 'ok' });
       }
     },
   };

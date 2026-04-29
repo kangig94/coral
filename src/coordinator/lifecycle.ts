@@ -61,34 +61,51 @@ export interface CoordinatorIdentity {
   readonly log: (message: string) => void;
 }
 
+/**
+ * KB availability status. Spec §16(a) single source of truth: set exactly
+ * once at boot by the KB-init aggregator. Curate publish-health degradation
+ * is a separate concept (`CurateHealth`) and does NOT flip this field.
+ */
+export type KbStatus =
+  | { kind: 'ok'; subsystem: KnowledgeBaseRuntime }
+  | { kind: 'unavailable'; reason: string };
+
+/**
+ * Curate publication-queue health. Mutated only by the curate-scheduler
+ * health bridge after N consecutive corpus-publish failures; reset on the
+ * next publish success. Surfaced separately on `/health` so curate
+ * degradation does not gate unrelated KB IPC ops.
+ */
+export type CurateHealth = { kind: 'ok' } | { kind: 'degraded'; reason: string };
+
 export interface ReadonlyRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
-  getKbSubsystem(): KnowledgeBaseRuntime | null;
-  getKbInitError(): string | null;
+  getKbStatus(): KbStatus;
+  getCurateHealth(): CurateHealth;
   getLaunchFenceActive(): boolean;
 }
 
 export interface MutableRuntimeState extends ReadonlyRuntimeState {
   setLifecycle(state: LifecycleState): void;
   setStartedAt(ts: number): void;
-  setKbSubsystem(kb: KnowledgeBaseRuntime | null): void;
-  setKbInitError(error: string | null): void;
+  setKbStatus(status: KbStatus): void;
+  setCurateHealth(health: CurateHealth): void;
   setLaunchFenceActive(active: boolean): void;
 }
 
 export function createRuntimeState(startedAt: number): MutableRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
-  let kbSubsystem: KnowledgeBaseRuntime | null = null;
-  let kbInitError: string | null = null;
+  let kbStatus: KbStatus = { kind: 'unavailable', reason: 'KB not initialized' };
+  let curateHealth: CurateHealth = { kind: 'ok' };
   let launchFenceActive = false;
 
   return {
     getLifecycle: () => lifecycle,
     getStartedAt: () => currentStartedAt,
-    getKbSubsystem: () => kbSubsystem,
-    getKbInitError: () => kbInitError,
+    getKbStatus: () => kbStatus,
+    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
     setLifecycle: (state) => {
       lifecycle = state;
@@ -96,11 +113,11 @@ export function createRuntimeState(startedAt: number): MutableRuntimeState {
     setStartedAt: (ts) => {
       currentStartedAt = ts;
     },
-    setKbSubsystem: (kb) => {
-      kbSubsystem = kb;
+    setKbStatus: (status) => {
+      kbStatus = status;
     },
-    setKbInitError: (error) => {
-      kbInitError = error;
+    setCurateHealth: (health) => {
+      curateHealth = health;
     },
     setLaunchFenceActive: (active) => {
       launchFenceActive = active;
@@ -402,11 +419,11 @@ async function runLifecycleStartup({
         timePort: runtime.time,
         idsPort: runtime.ids,
       });
-      runtimeState.setKbSubsystem(kbSub);
+      runtimeState.setKbStatus({ kind: 'ok', subsystem: kbSub });
     } catch (error: unknown) {
       const message = errorMessage(error);
       backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
-      runtimeState.setKbInitError(message);
+      runtimeState.setKbStatus({ kind: 'unavailable', reason: message });
     }
     assertStartupStillActive();
 
@@ -456,7 +473,8 @@ async function runLifecycleStartup({
 
     idleTimer.startWatching(
       () => {
-        const curateRunning = runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false;
+        const status = runtimeState.getKbStatus();
+        const curateRunning = status.kind === 'ok' && status.subsystem.curateScheduler.isRunning();
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&

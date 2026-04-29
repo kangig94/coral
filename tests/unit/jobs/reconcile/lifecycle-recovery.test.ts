@@ -129,13 +129,17 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let kbSubsystem: ReturnType<typeof createMockKbSubsystem> | null = null;
+  let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
   let launchFenceActive = false;
 
   const runtimeState = {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
-    getKbSubsystem: () => kbSubsystem as never,
-    getKbInitError: () => null,
+    getKbStatus: () =>
+      kbSubsystem === null
+        ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
+        : ({ kind: 'ok', subsystem: kbSubsystem } as never),
+    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
@@ -143,10 +147,12 @@ function createRuntimeStateMock() {
     setStartedAt: vi.fn((ts: number) => {
       startedAt = ts;
     }),
-    setKbSubsystem: vi.fn((kb: ReturnType<typeof createMockKbSubsystem> | null) => {
-      kbSubsystem = kb;
+    setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> } | { kind: 'unavailable'; reason: string }) => {
+      kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
     }),
-    setKbInitError: vi.fn(),
+    setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
+      curateHealth = health;
+    }),
     setLaunchFenceActive: vi.fn((active: boolean) => {
       launchFenceActive = active;
     }),

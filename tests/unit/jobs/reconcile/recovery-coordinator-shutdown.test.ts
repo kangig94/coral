@@ -116,7 +116,7 @@ function createFakeIdleTimer() {
 function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
-  let kbSubsystem: {
+  type KbSub = {
     kb: unknown;
     curateScheduler: {
       start: ReturnType<typeof vi.fn>;
@@ -125,14 +125,19 @@ function createRuntimeStateMock() {
       isRunning(): boolean;
       stop: ReturnType<typeof vi.fn>;
     };
-  } | null = null;
+  };
+  let kbSubsystem: KbSub | null = null;
+  let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
   let launchFenceActive = false;
 
   const runtimeState = {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
-    getKbSubsystem: () => kbSubsystem as never,
-    getKbInitError: () => null,
+    getKbStatus: () =>
+      kbSubsystem === null
+        ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
+        : ({ kind: 'ok', subsystem: kbSubsystem } as never),
+    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
@@ -140,10 +145,12 @@ function createRuntimeStateMock() {
     setStartedAt: vi.fn((ts: number) => {
       startedAt = ts;
     }),
-    setKbSubsystem: vi.fn((kb: typeof kbSubsystem) => {
-      kbSubsystem = kb;
+    setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: KbSub } | { kind: 'unavailable'; reason: string }) => {
+      kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
     }),
-    setKbInitError: vi.fn(),
+    setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
+      curateHealth = health;
+    }),
     setLaunchFenceActive: vi.fn((active: boolean) => {
       launchFenceActive = active;
     }),

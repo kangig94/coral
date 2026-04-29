@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
-import { createCoordinatorCurateScheduler } from '#src/coordinator/live/curate-scheduler.js';
+import {
+  createCoordinatorCurateScheduler,
+  createCurateSchedulerHealthBridge,
+} from '#src/coordinator/live/curate-scheduler.js';
+import type { CurateHealth, MutableRuntimeState } from '#src/coordinator/lifecycle.js';
 
 function createInnerScheduler() {
   return {
@@ -53,6 +57,39 @@ describe('coordinator curate scheduler', () => {
     await scheduler.stop();
     expect(inner.stop).toHaveBeenCalledTimes(1);
     db.close();
+  });
+
+  it('routes corpus publish failures past the threshold to runtime curateHealth', () => {
+    let curateHealth: CurateHealth = { kind: 'ok' };
+    const stateStub: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'> = {
+      getCurateHealth: () => curateHealth,
+      setCurateHealth: (next) => {
+        curateHealth = next;
+      },
+    };
+    const bridge = createCurateSchedulerHealthBridge(3);
+    bridge.attachRuntimeState(stateStub);
+
+    bridge.onCorpusPublishFailure({
+      stage: 'publish',
+      error: new Error('boom'),
+      consecutivePublishFailureCount: 2,
+    } as never);
+    expect(curateHealth).toEqual({ kind: 'ok' });
+
+    bridge.onCorpusPublishFailure({
+      stage: 'publish',
+      error: new Error('boom'),
+      consecutivePublishFailureCount: 3,
+    } as never);
+    expect(curateHealth.kind).toBe('degraded');
+    if (curateHealth.kind === 'degraded') {
+      expect(curateHealth.reason).toContain('Corpus publication queue unhealthy');
+      expect(curateHealth.reason).toContain('boom');
+    }
+
+    bridge.onCorpusPublishSuccess();
+    expect(curateHealth).toEqual({ kind: 'ok' });
   });
 
   it('respects CORAL_CURATE_INTERVAL_MS overrides', async () => {

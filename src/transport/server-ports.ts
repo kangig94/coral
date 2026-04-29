@@ -40,7 +40,9 @@ export type HealthSnapshot = {
   env: Record<string, string>;
   subsystems: {
     kb: 'ok' | 'unavailable';
-    kbError?: string;
+    kbReason?: string;
+    kbCurate: 'ok' | 'degraded';
+    kbCurateReason?: string;
     discuss: 'ok';
   };
 };

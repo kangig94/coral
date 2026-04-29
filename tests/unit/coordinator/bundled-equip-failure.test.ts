@@ -251,12 +251,13 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
 
     try {
       const info = await core.lifecycleController.start();
-      const initError = core.runtimeState.getKbInitError();
+      const kbStatus = core.runtimeState.getKbStatus();
 
       expect(core.runtimeState.getLifecycle()).toBe('running');
-      expect(initError).toContain('broken-orama');
-      expect(initError).toContain('boot-equip-boom');
-      expect(core.runtimeState.getKbSubsystem()).toBeNull();
+      expect(kbStatus.kind).toBe('unavailable');
+      const reason = kbStatus.kind === 'unavailable' ? kbStatus.reason : '';
+      expect(reason).toContain('broken-orama');
+      expect(reason).toContain('boot-equip-boom');
 
       const health = await requestIpcMethod<Record<string, unknown>>(
         info.socketPath,
@@ -266,7 +267,8 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
       );
       expect(health.subsystems).toMatchObject({
         kb: 'unavailable',
-        kbError: initError,
+        kbReason: reason,
+        kbCurate: 'ok',
       });
 
       const kbSearch = await requestIpcMethod<Record<string, unknown>>(

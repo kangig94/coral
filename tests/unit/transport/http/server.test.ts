@@ -557,6 +557,11 @@ describe('execution backend server', () => {
     };
   }
 
+  function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
+    const status = state.getKbStatus();
+    return status.kind === 'ok' ? status.subsystem : null;
+  }
+
   function createRuntimeStateMock(): {
     runtimeState: MutableCoordinatorRuntimeState;
     setLifecycle: ReturnType<typeof vi.fn>;
@@ -564,12 +569,17 @@ describe('execution backend server', () => {
     let lifecycle: LifecycleState = 'starting';
     let startedAt = 0;
     let kbSubsystem: ReturnType<typeof createMockKbSubsystem> | null = null;
+    let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
     let launchFenceActive = false;
 
     const runtimeState = {
       getLifecycle: () => lifecycle,
       getStartedAt: () => startedAt,
-      getKbSubsystem: () => kbSubsystem as never,
+      getKbStatus: () =>
+        kbSubsystem === null
+          ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
+          : ({ kind: 'ok', subsystem: kbSubsystem } as never),
+      getCurateHealth: () => curateHealth,
       getLaunchFenceActive: () => launchFenceActive,
       setLifecycle: vi.fn((state: LifecycleState) => {
         lifecycle = state;
@@ -577,11 +587,12 @@ describe('execution backend server', () => {
       setStartedAt: vi.fn((ts: number) => {
         startedAt = ts;
       }),
-      setKbSubsystem: vi.fn((kb: ReturnType<typeof createMockKbSubsystem> | null) => {
-        kbSubsystem = kb;
+      setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> } | { kind: 'unavailable'; reason: string }) => {
+        kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
       }),
-      getKbInitError: () => null,
-      setKbInitError: vi.fn(),
+      setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
+        curateHealth = health;
+      }),
       setLaunchFenceActive: vi.fn((active: boolean) => {
         launchFenceActive = active;
       }),
@@ -696,7 +707,7 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect(body.subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
+    expect(body.subsystems).toMatchObject({ kb: 'ok', kbCurate: 'ok', discuss: 'ok' });
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -716,7 +727,8 @@ describe('execution backend server', () => {
     expect(body.status).toBe('ok');
     const subsystems = body.subsystems as Record<string, unknown>;
     expect(subsystems.kb).toBe('unavailable');
-    expect(subsystems.kbError).toBe('simulated KB init failure');
+    expect(subsystems.kbReason).toBe('simulated KB init failure');
+    expect(subsystems.kbCurate).toBe('ok');
     stderrSpy.mockRestore();
   });
 
@@ -1347,7 +1359,12 @@ describe('execution backend server', () => {
 
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
-      runtimeState.setKbSubsystem(options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem);
+      const kbForOptions = options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem;
+      runtimeState.setKbStatus(
+        kbForOptions === null
+          ? { kind: 'unavailable', reason: 'KB not initialized' }
+          : { kind: 'ok', subsystem: kbForOptions as never },
+      );
 
       const readOnlyInvocationContext = {
         projectRoot: '',
@@ -1359,23 +1376,22 @@ describe('execution backend server', () => {
         code: 'kb_unavailable',
         message: 'Knowledge base is not available. Check backend health for details.',
       };
-      const withKb = <T>(
-        run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T,
-      ): T | typeof kbUnavailableResult => {
-        const kbSubsystem = runtimeState.getKbSubsystem();
-        if (!kbSubsystem) {
+      type KbSubFromStatus = Extract<ReturnType<typeof runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
+      const withKb = <T>(run: (kbSubsystem: KbSubFromStatus) => T): T | typeof kbUnavailableResult => {
+        const status = runtimeState.getKbStatus();
+        if (status.kind !== 'ok') {
           return kbUnavailableResult;
         }
-        return run(kbSubsystem);
+        return run(status.subsystem);
       };
       const withKbAsync = async <T>(
-        run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => Promise<T>,
+        run: (kbSubsystem: KbSubFromStatus) => Promise<T>,
       ): Promise<T | typeof kbUnavailableResult> => {
-        const kbSubsystem = runtimeState.getKbSubsystem();
-        if (!kbSubsystem) {
+        const status = runtimeState.getKbStatus();
+        if (status.kind !== 'ok') {
           return kbUnavailableResult;
         }
-        return run(kbSubsystem);
+        return run(status.subsystem);
       };
       const service = executionService as any;
 
@@ -1440,7 +1456,8 @@ describe('execution backend server', () => {
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
             subsystems: {
-              kb: runtimeState.getKbSubsystem() ? ('ok' as const) : ('unavailable' as const),
+              kb: runtimeState.getKbStatus().kind,
+              kbCurate: runtimeState.getCurateHealth().kind,
               discuss: 'ok' as const,
             },
           }),
@@ -1642,31 +1659,33 @@ describe('execution backend server', () => {
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
       };
-      const withKb = <T>(
-        run: (kbSubsystem: NonNullable<ReturnType<typeof created.runtimeState.getKbSubsystem>>) => T,
-      ): T | { ok: false; code: string; message: string } => {
-        const kbSubsystem = created.runtimeState.getKbSubsystem();
-        if (!kbSubsystem) {
+      type KbSubFromStatus = Extract<
+        ReturnType<typeof created.runtimeState.getKbStatus>,
+        { kind: 'ok' }
+      >['subsystem'];
+      const withKb = <T>(run: (kbSubsystem: KbSubFromStatus) => T): T | { ok: false; code: string; message: string } => {
+        const status = created.runtimeState.getKbStatus();
+        if (status.kind !== 'ok') {
           return {
             ok: false,
             code: 'kb_unavailable',
             message: 'Knowledge base is not available. Check backend health for details.',
           };
         }
-        return run(kbSubsystem);
+        return run(status.subsystem);
       };
       const withKbAsync = async <T>(
-        run: (kbSubsystem: NonNullable<ReturnType<typeof created.runtimeState.getKbSubsystem>>) => Promise<T>,
+        run: (kbSubsystem: KbSubFromStatus) => Promise<T>,
       ): Promise<T | { ok: false; code: string; message: string }> => {
-        const kbSubsystem = created.runtimeState.getKbSubsystem();
-        if (!kbSubsystem) {
+        const status = created.runtimeState.getKbStatus();
+        if (status.kind !== 'ok') {
           return {
             ok: false,
             code: 'kb_unavailable',
             message: 'Knowledge base is not available. Check backend health for details.',
           };
         }
-        return run(kbSubsystem);
+        return run(status.subsystem);
       };
       created.deps.discuss = {
         seed: (args: unknown) => mockDiscussTools.handleDiscussSeed(args),
@@ -1998,7 +2017,7 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/entries with typed query coercion', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&scope=notes&top_k=5`, {
@@ -2031,7 +2050,7 @@ describe('execution backend server', () => {
           ),
         },
       });
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&mode=vector`, {
@@ -2055,7 +2074,7 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/diagnose through KB diagnose reads', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/diagnose`, {
@@ -2099,7 +2118,7 @@ describe('execution backend server', () => {
               }),
             }),
             started.deps.runtime,
-            started.deps.runtimeState.getKbSubsystem(),
+            readKbSubsystem(started.deps.runtimeState),
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -2125,7 +2144,7 @@ describe('execution backend server', () => {
       },
     ])('routes GET $path through per-kind KB readers', async ({ path, expectedBody, handlerName }) => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
@@ -2207,7 +2226,7 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/sources through source list', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/sources`, {
@@ -2228,7 +2247,7 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/principles with typed query coercion', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/principles?q=contract&top_k=5&verbose=true`, {
@@ -2336,7 +2355,7 @@ describe('execution backend server', () => {
       async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
         await withBaseCoralEnv(async () => {
           const started = await startMockedRouteServer();
-          const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+          const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
           try {
             const response = await fetch(`${started.baseUrl}${path}`, {
@@ -2431,7 +2450,7 @@ describe('execution backend server', () => {
 
     it('routes PUT /kb/notes/:slug with the slug from the URL', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/notes/contracts%2Foverview`, {
@@ -2474,7 +2493,7 @@ describe('execution backend server', () => {
       },
     ])('routes DELETE $path through the matching KB delete handler', async ({ path, expectedBody, handlerName }) => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
@@ -2686,6 +2705,26 @@ describe('execution backend server', () => {
           code: 'kb_unavailable',
           message: 'Knowledge base is not available. Check backend health for details.',
         });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('keeps KB IPC ops flowing when curate health is degraded but kbStatus is ok (§16(a))', async () => {
+      const started = await startMockedRouteServer();
+      started.deps.runtimeState.setCurateHealth({ kind: 'degraded', reason: 'simulated curate degradation' });
+
+      try {
+        const response = await fetch(`${started.baseUrl}/kb/entries?q=hello`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          route: 'kb:search',
+          args: { query: 'hello' },
+        });
+        expect(started.kbTools.handleKbSearch).toHaveBeenCalledTimes(1);
       } finally {
         await _closeHttpServer(started.server);
       }
