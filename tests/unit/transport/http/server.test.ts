@@ -525,6 +525,7 @@ describe('execution backend server', () => {
         embedding,
         retryPendingCorpusPublication: vi.fn(async () => {}),
         withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
+        mutationLockDiagnostics: vi.fn(() => ({ blocked: false })),
         ensureOramaIndex: vi.fn(async () => ({
           db: {} as never,
           tokenizer: {} as never,

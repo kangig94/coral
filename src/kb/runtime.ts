@@ -21,6 +21,7 @@ import {
   createKbMutationLock,
   DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
   type KbMutationLockContext,
+  type KbMutationLockDiagnostics,
   type KbMutationLockOptions,
 } from './corpus/mutation-lock.js';
 import { captureEntityGraphManifestDelta, createManifestAuthority } from './corpus/manifest-authority.js';
@@ -390,7 +391,10 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private async runRebuildOnce(): Promise<void> {
-    await this.withMutationLock(async (mutation) => {
+    // Cooperative: the destructured `signal` is the composed signal from the
+    // mutation-lock (caller signal + internal deadline). Phase 6 threads it
+    // into `performRescan` for `'scan'` / `'repair'` checkpoints.
+    await this.withMutationLock(async (mutation, { signal: _signal }) => {
       const state = this.readIndexStateIfPresent();
       if (!this.textArtifactsNeedRebuild(state)) {
         return;
@@ -401,10 +405,17 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async withMutationLock<T>(
-    fn: (mutation: KbMutationEffects) => Promise<T> | T,
+    fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
     options: KbMutationLockOptions = {},
   ): Promise<T> {
-    return this.mutationLockController.withMutationLock(() => fn(this.mutationEffects), options);
+    return this.mutationLockController.withMutationLock(
+      (_lockCtx, args) => fn(this.mutationEffects, args),
+      options,
+    );
+  }
+
+  mutationLockDiagnostics(): KbMutationLockDiagnostics {
+    return this.mutationLockController.diagnostics();
   }
 
   async retryPendingCorpusPublication(): Promise<void> {

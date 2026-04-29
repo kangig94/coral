@@ -67,6 +67,7 @@ function createMockKb(order?: string[]) {
       order?.push('withMutationLock:end');
       return result;
     }),
+    mutationLockDiagnostics: vi.fn(() => ({ blocked: false })),
     ensureCorpusFreshness: vi.fn(async () => {
       order?.push('ensureCorpusFreshness');
       return {

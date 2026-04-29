@@ -270,10 +270,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     expansionLifecycleService,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
-    // Phase 3 stub. Phase 4 replaces with the real KbRuntime
-    // mutation-lock diagnostics so /health.subsystems.kb.mutationBlocked
-    // reports stuck mutations.
-    getMutationBlocked: () => ({ blocked: false }),
+    getMutationBlocked: () => currentKbRuntime?.mutationLockDiagnostics() ?? { blocked: false },
     createKbSubsystemFn: async (ctx) => {
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,

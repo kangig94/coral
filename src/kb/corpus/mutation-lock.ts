@@ -4,15 +4,38 @@ import type { CorpusSnapshot } from './snapshot.js';
 export const DEFAULT_MUTATION_LOCK_TIMEOUT_MS = 30_000;
 
 /**
+ * Cooperative grace window between deadline abort and recording the blocked
+ * diagnostic. Cooperative `fn` paths usually settle within microseconds of
+ * the abort signal; the grace prevents transient deadline-then-settle from
+ * surfacing as `mutationBlocked` on `/health`.
+ */
+const MUTATION_DEADLINE_GRACE_MS = 100;
+
+/**
  * Options for a single `withMutationLock` call.
  *
  * `timeoutMs` overrides the runtime default — use a longer window for heavy
  * paths (e.g. `kb reindex`, `kb source import`) that legitimately exceed 30s.
- * The hard upper bound prevents a wedged operation from stalling every queued
- * caller indefinitely (spec §6.4 deadline policy).
+ * The deadline aborts the composed signal but does NOT release the lock; the
+ * lock transfers to the next caller only when `fn` actually settles
+ * (success/failure/abort propagation). Stuck non-cooperative mutations
+ * surface on `/health.subsystems.kb.mutationBlocked` instead.
+ *
+ * `signal` lets callers compose external aborts (e.g. user `coral-cli abort`)
+ * with the internal deadline. Both abort the same composed signal that `fn`
+ * receives; reasons remain distinguishable — caller's `signal.reason`
+ * propagates verbatim while the deadline aborts with
+ * `{ kind: 'mutation_deadline', timeoutMs }`.
  */
 export interface KbMutationLockOptions {
   timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/** Reason value attached to the deadline abort on the composed signal. */
+export interface KbMutationDeadlineReason {
+  kind: 'mutation_deadline';
+  timeoutMs: number;
 }
 
 export interface KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta = unknown> {
@@ -40,6 +63,7 @@ export interface KbMutationLockRunner<
 }
 
 export interface KbMutationLockTimePort {
+  now(): number;
   setTimeout(fn: () => void, ms: number): TimerHandle;
   clearTimeout(handle: TimerHandle | null): void;
 }
@@ -51,21 +75,30 @@ export interface CreateKbMutationLockOptions {
   time: KbMutationLockTimePort;
 }
 
-export class KbMutationStuckError extends Error {
-  readonly code = 'kb_mutation_stuck';
-  readonly timeoutMs: number;
-  readonly previousReason?: string;
+/**
+ * Snapshot of mutation-lock diagnostic state. `blocked: true` means a
+ * deadline has aborted the active mutation but `fn` has not yet settled,
+ * and the cooperative grace window has elapsed. Cleared as soon as `fn`
+ * settles (success or failure or abort propagation).
+ */
+export type KbMutationLockDiagnostics =
+  | { blocked: false }
+  | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
 
-  constructor(timeoutMs: number, previousReason?: string) {
-    const detail = previousReason ? ` (previous: ${previousReason})` : '';
-    super(`KB mutation lock exceeded ${timeoutMs}ms${detail}.`);
-    this.name = 'KbMutationStuckError';
-    this.timeoutMs = timeoutMs;
-    if (previousReason !== undefined) {
-      this.previousReason = previousReason;
-    }
-    Object.setPrototypeOf(this, KbMutationStuckError.prototype);
-  }
+export interface KbMutationLockController<
+  TIndex,
+  TPublication extends { snapshot: CorpusSnapshot },
+  TLane,
+  TOpaqueDelta = unknown,
+> {
+  withMutationLock<TResult>(
+    fn: (
+      lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
+      args: { signal: AbortSignal },
+    ) => Promise<TResult> | TResult,
+    options?: KbMutationLockOptions,
+  ): Promise<TResult>;
+  diagnostics(): KbMutationLockDiagnostics;
 }
 
 export function createKbMutationLock<
@@ -76,16 +109,17 @@ export function createKbMutationLock<
 >(
   runner: KbMutationLockRunner<TIndex, TPublication, TLane, TOpaqueDelta>,
   controllerOptions: CreateKbMutationLockOptions,
-): {
-  withMutationLock<TResult>(fn: () => Promise<TResult> | TResult, options?: KbMutationLockOptions): Promise<TResult>;
-} {
+): KbMutationLockController<TIndex, TPublication, TLane, TOpaqueDelta> {
   const defaultTimeoutMs = controllerOptions.defaultTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS;
   const time = controllerOptions.time;
-  let lastReason: string | undefined;
+  let blockedState: { owner: string; signaledAtMs: number } | null = null;
 
   return {
     async withMutationLock<TResult>(
-      fn: () => Promise<TResult> | TResult,
+      fn: (
+        lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
+        args: { signal: AbortSignal },
+      ) => Promise<TResult> | TResult,
       options: KbMutationLockOptions = {},
     ): Promise<TResult> {
       const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
@@ -108,24 +142,58 @@ export function createKbMutationLock<
       };
       runner.setActiveContext(lockContext);
 
+      // Compose caller-supplied signal + internal deadline timer onto a single
+      // signal handed to `fn`. Aborting either source aborts the composed
+      // signal; reasons stay distinguishable (caller reason vs deadline reason)
+      // because the deadline only aborts when the caller hasn't already.
+      const callerSignal = options.signal;
+      const composedController = new AbortController();
+      const onCallerAbort = (): void => {
+        if (!composedController.signal.aborted) {
+          composedController.abort(callerSignal?.reason);
+        }
+      };
+      if (callerSignal !== undefined) {
+        if (callerSignal.aborted) {
+          composedController.abort(callerSignal.reason);
+        } else {
+          callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+      }
+
+      let graceHandle: TimerHandle | null = null;
+      const deadlineReason: KbMutationDeadlineReason = { kind: 'mutation_deadline', timeoutMs };
+      const deadlineHandle: TimerHandle = time.setTimeout(() => {
+        if (!composedController.signal.aborted) {
+          composedController.abort(deadlineReason);
+        }
+        const signaledAtMs = time.now();
+        graceHandle = time.setTimeout(() => {
+          // Owner is captured at grace-end time, not deadline time, so a
+          // cooperative `fn` that settles inside the grace window never
+          // surfaces on `/health.subsystems.kb.mutationBlocked`.
+          blockedState = {
+            owner: lockContext.pendingMutationReason ?? 'unknown',
+            signaledAtMs,
+          };
+        }, MUTATION_DEADLINE_GRACE_MS);
+      }, timeoutMs);
+
       let succeeded = false;
       let result!: TResult;
       let deferredError: unknown = null;
 
-      let timeoutHandle: TimerHandle | null = null;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutHandle = time.setTimeout(() => {
-          reject(new KbMutationStuckError(timeoutMs, lastReason));
-        }, timeoutMs);
-      });
-
       try {
-        result = await Promise.race([Promise.resolve().then(() => fn()), timeoutPromise]);
+        result = await fn(lockContext, { signal: composedController.signal });
         succeeded = true;
       } catch (error: unknown) {
         deferredError = error;
       } finally {
-        time.clearTimeout(timeoutHandle);
+        time.clearTimeout(deadlineHandle);
+        time.clearTimeout(graceHandle);
+        callerSignal?.removeEventListener('abort', onCallerAbort);
+        blockedState = null;
+
         try {
           if (succeeded) {
             await runner.finalizePendingMutation(lockContext);
@@ -139,7 +207,6 @@ export function createKbMutationLock<
         if (succeeded && lockContext.publication !== null) {
           runner.enqueuePublication(lockContext.publication);
         }
-        lastReason = lockContext.pendingMutationReason;
         release();
         if (runner.hasQueuedPublications()) {
           void runner.processPublishQueue();
@@ -147,15 +214,23 @@ export function createKbMutationLock<
       }
 
       if (deferredError !== null) {
-        if (deferredError instanceof KbMutationStuckError) {
-          throw deferredError;
-        }
         throw deferredError instanceof Error
           ? deferredError
           : new Error('KB mutation lock finalization failed.', { cause: deferredError });
       }
 
       return result;
+    },
+    diagnostics(): KbMutationLockDiagnostics {
+      if (blockedState === null) {
+        return { blocked: false };
+      }
+      return {
+        blocked: true,
+        owner: blockedState.owner,
+        ageMs: Math.max(0, time.now() - blockedState.signaledAtMs),
+        signaledAtMs: blockedState.signaledAtMs,
+      };
     },
   };
 }

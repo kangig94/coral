@@ -9,8 +9,11 @@ export const KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const startedAt = kb.time.now();
 
+  // Cooperative: the destructured `signal` is the composed signal from the
+  // mutation-lock (caller signal + internal deadline). Phase 6 threads it
+  // into `performRescan` for `'scan'` / `'repair'` checkpoints.
   const counts = await kb.withMutationLock(
-    async (mutation) => {
+    async (mutation, { signal: _signal }) => {
       const startState = kb.readIndexState();
       return performRescan(kb, mutation, {
         contentSeq: startState.contentSeq,

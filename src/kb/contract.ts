@@ -6,7 +6,7 @@ import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../run
 import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
-import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
+import type { KbMutationLockDiagnostics, KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { FtsSearchResult, VectorRetrievalResult } from './search/contract.js';
@@ -152,7 +152,19 @@ export interface KbRuntime {
   captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;
   ensureCorpusFreshness(options?: EnsureCorpusFreshnessOptions): Promise<KbIndex>;
-  withMutationLock<T>(fn: (mutation: KbMutationEffects) => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
+  withMutationLock<T>(
+    fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
+    options?: KbMutationLockOptions,
+  ): Promise<T>;
+  /**
+   * Mutation-lock diagnostics for `/health.subsystems.kb.mutationBlocked`.
+   * Returns `{ blocked: false }` while no mutation has aborted past the
+   * cooperative grace window, otherwise the stuck owner snapshot. Owner is
+   * `'unknown'` when the deadline fires before the mutation has called
+   * `recordMutationCommitted` (documented signal that the operation is
+   * stuck before the write phase).
+   */
+  mutationLockDiagnostics(): KbMutationLockDiagnostics;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;
   invalidateKbCache(): void;
