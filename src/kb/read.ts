@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -32,8 +31,8 @@ export type KbReadPathResolver = {
 };
 
 export type KbReadOptions = {
+  storage: KbReadStorage;
   projectRoot?: string;
-  storage?: KbReadStorage;
   paths?: KbReadPathResolver;
 };
 
@@ -57,11 +56,6 @@ export type KbLoadedCommunity = CommunityFrontmatter & {
   body: string;
 };
 
-const nodeStorage: KbReadStorage = {
-  existsSync,
-  readFileSync,
-};
-
 const MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
 function resolveReadPaths(paths?: KbReadPathResolver): KbReadPathResolver {
@@ -71,8 +65,8 @@ function resolveReadPaths(paths?: KbReadPathResolver): KbReadPathResolver {
   return paths;
 }
 
-export function loadKbNote(notePath: string): KbLoadedNote {
-  const raw = readFileSync(notePath, 'utf-8');
+export function loadKbNote(storage: Pick<StoragePort, 'readFileSync'>, notePath: string): KbLoadedNote {
+  const raw = storage.readFileSync(notePath, 'utf-8');
   return {
     raw,
     frontmatter: parseFrontmatter(raw),
@@ -81,8 +75,8 @@ export function loadKbNote(notePath: string): KbLoadedNote {
   };
 }
 
-export function loadKbSource(sourcePath: string): KbLoadedSource {
-  const raw = readFileSync(sourcePath, 'utf-8');
+export function loadKbSource(storage: Pick<StoragePort, 'readFileSync'>, sourcePath: string): KbLoadedSource {
+  const raw = storage.readFileSync(sourcePath, 'utf-8');
   const frontmatter = parseSourceFrontmatter(raw);
   return {
     raw,
@@ -92,8 +86,8 @@ export function loadKbSource(sourcePath: string): KbLoadedSource {
   };
 }
 
-export function loadKbCommunity(communityPath: string): KbLoadedCommunity {
-  const raw = readFileSync(communityPath, 'utf-8');
+export function loadKbCommunity(storage: Pick<StoragePort, 'readFileSync'>, communityPath: string): KbLoadedCommunity {
+  const raw = storage.readFileSync(communityPath, 'utf-8');
   const frontmatter = parseCommunityFrontmatter(raw);
   return {
     ...frontmatter,
@@ -220,14 +214,13 @@ function readCandidateEntry(
   };
 }
 
-export function readEntry(input: KbReadInput, options: string | KbReadOptions = {}): KbReadResult {
-  const resolved = typeof options === 'string' ? { projectRoot: options } : options;
-  const storage = resolved.storage ?? nodeStorage;
-  const paths = resolveReadPaths(resolved.paths);
+export function readEntry(input: KbReadInput, options: KbReadOptions): KbReadResult {
+  const storage = options.storage;
+  const paths = resolveReadPaths(options.paths);
   const selector = parseKbSelector(input.note);
 
   for (const candidate of expandKbReadSelector(selector)) {
-    const entry = readCandidateEntry(candidate, storage, paths, resolved.projectRoot);
+    const entry = readCandidateEntry(candidate, storage, paths, options.projectRoot);
     if (entry !== null) {
       return entry;
     }

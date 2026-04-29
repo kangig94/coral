@@ -467,7 +467,7 @@ describe('execution backend server', () => {
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
     runtime = createRealRuntime('prod');
-    JOBS_DIR = jobsDir();
+    JOBS_DIR = jobsDir(runtime.env);
     rmSync(JOBS_DIR, { recursive: true, force: true });
   });
 

@@ -68,17 +68,17 @@ export type CurateBootstrapAssignment = {
   rewrittenSources: ScannedSource[];
 };
 
-function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
-  return sortedMarkdownEntries(kb.notesDir()).map((entry) => stripMdExt(entry));
+function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir' | 'storagePort'>): string[] {
+  return sortedMarkdownEntries(kb.storagePort, kb.notesDir()).map((entry) => stripMdExt(entry));
 }
 
-function sortedSourceNames(kb: Pick<KbRuntime, 'sourcesDir'>): string[] {
-  return sortedMarkdownEntries(kb.sourcesDir()).map((entry) => stripMdExt(entry));
+function sortedSourceNames(kb: Pick<KbRuntime, 'sourcesDir' | 'storagePort'>): string[] {
+  return sortedMarkdownEntries(kb.storagePort, kb.sourcesDir()).map((entry) => stripMdExt(entry));
 }
 
-function scanNote(kb: Pick<KbRuntime, 'notePath'>, note: string): ScannedNote {
+function scanNote(kb: Pick<KbRuntime, 'notePath' | 'storagePort'>, note: string): ScannedNote {
   const path = kb.notePath(note);
-  const loaded = loadKbNote(path);
+  const loaded = loadKbNote(kb.storagePort, path);
   return {
     note,
     path,
@@ -88,9 +88,9 @@ function scanNote(kb: Pick<KbRuntime, 'notePath'>, note: string): ScannedNote {
   };
 }
 
-function scanSource(kb: Pick<KbRuntime, 'sourcePath'>, slug: string): ScannedSource {
+function scanSource(kb: Pick<KbRuntime, 'sourcePath' | 'storagePort'>, slug: string): ScannedSource {
   const path = kb.sourcePath(slug);
-  const loaded = loadKbSource(path);
+  const loaded = loadKbSource(kb.storagePort, path);
   return {
     slug,
     path,
@@ -207,7 +207,7 @@ function syncIndexSource(
 }
 
 export function scanCorpus(
-  kb: Pick<KbRuntime, 'time' | 'notesDir' | 'notePath' | 'sourcesDir' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'time' | 'notesDir' | 'notePath' | 'sourcesDir' | 'sourcePath' | 'storagePort'>,
   detectedAt = nowIsoString(kb.time),
 ): CurateBootstrapScan {
   const scannedNotes: ScannedNote[] = [];
@@ -309,13 +309,17 @@ export function assignEntrySeqs(
   };
 }
 
-export function rewriteFrontmatter(rewrittenNotes: ScannedNote[], rewrittenSources: ScannedSource[]): void {
+export function rewriteFrontmatter(
+  kb: Pick<KbRuntime, 'storagePort' | 'ids'>,
+  rewrittenNotes: ScannedNote[],
+  rewrittenSources: ScannedSource[],
+): void {
   for (const scannedNote of rewrittenNotes) {
-    writeFileAtomic(scannedNote.path, replaceFrontmatter(scannedNote.content, scannedNote.frontmatter));
+    writeFileAtomic(kb, scannedNote.path, replaceFrontmatter(scannedNote.content, scannedNote.frontmatter));
   }
 
   for (const scannedSource of rewrittenSources) {
-    writeFileAtomic(scannedSource.path, replaceSourceFrontmatter(scannedSource.content, scannedSource.frontmatter));
+    writeFileAtomic(kb, scannedSource.path, replaceSourceFrontmatter(scannedSource.content, scannedSource.frontmatter));
   }
 }
 
@@ -398,7 +402,7 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
       retryQueue,
     );
 
-    rewriteFrontmatter(rewrittenNotes, rewrittenSources);
+    rewriteFrontmatter(kb, rewrittenNotes, rewrittenSources);
     syncIndex(kb, nextIndex, scannedNotes, scannedSources);
     reconcileSeqs(kb, indexState, highestAssignedEntrySeq);
 

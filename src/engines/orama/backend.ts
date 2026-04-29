@@ -451,7 +451,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     if (isNoteEntry(entry)) {
       let loaded: ReturnType<typeof loadKbNote>;
       try {
-        loaded = loadKbNote(this.runtime.notePath(entry.slug));
+        loaded = loadKbNote(this.runtime.storagePort, this.runtime.notePath(entry.slug));
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           return null;
@@ -468,7 +468,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     if (isSourceEntry(entry)) {
       let loaded: ReturnType<typeof loadKbSource>;
       try {
-        loaded = loadKbSource(this.runtime.sourcePath(entry.slug));
+        loaded = loadKbSource(this.runtime.storagePort, this.runtime.sourcePath(entry.slug));
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           return null;
@@ -510,7 +510,10 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
 /** Creates the shared Orama projection wrapper for a KB runtime. */
 export function createOramaBaseProjection(
   runtime: KbRuntime,
-  snapshotStore: OramaSnapshotStore = new OramaSnapshotStore(runtime.runtimeDir),
+  snapshotStore: OramaSnapshotStore = new OramaSnapshotStore(
+    { storage: runtime.storagePort, ids: runtime.ids },
+    runtime.runtimeDir,
+  ),
 ): OramaBaseProjection {
   return new OramaBaseProjection(runtime, snapshotStore);
 }

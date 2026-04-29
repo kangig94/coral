@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { detectClaudeCli } from '../cli-detection.js';
 import type {
   ArtifactCleanupRuntime,
+  PreflightRuntime,
   ProviderAppServerContract,
   ProviderRecoveryContract,
   ProviderServerLease,
@@ -25,8 +26,8 @@ async function brokerRpc<R = unknown>(
   return lease.rpc<R>(method, params as unknown as Record<string, unknown>);
 }
 
-export async function claudePreflight(): Promise<void> {
-  const cli = await detectClaudeCli();
+export async function claudePreflight(runtime: PreflightRuntime): Promise<void> {
+  const cli = await detectClaudeCli(runtime.process);
   if (!cli.available) {
     throw new Error(`Claude CLI not available: ${cli.error}`);
   }

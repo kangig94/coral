@@ -1,17 +1,28 @@
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { IdPort, StoragePort } from '../../runtime/ports.js';
 
-export function writeFileAtomic(filePath: string, payload: string): void {
+export type FileAtomicStorage = Pick<StoragePort, 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync'>;
+export type FileAtomicIds = Pick<IdPort, 'uuid'>;
+
+/**
+ * The KbRuntime port slice that callers passing `kb` directly satisfy without
+ * unpacking. Avoids `{ storage: kb.storagePort, ids: kb.ids }` boilerplate.
+ */
+export type FileAtomicHost = {
+  readonly storagePort: FileAtomicStorage;
+  readonly ids: FileAtomicIds;
+};
+
+export function writeFileAtomic(host: FileAtomicHost, filePath: string, payload: string): void {
   const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+  host.storagePort.mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.${host.ids.uuid()}.tmp`;
 
   try {
-    writeFileSync(tmpPath, payload, 'utf-8');
-    renameSync(tmpPath, filePath);
+    host.storagePort.writeFileSync(tmpPath, payload, { encoding: 'utf-8' });
+    host.storagePort.renameSync(tmpPath, filePath);
   } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
+    host.storagePort.rmSync(tmpPath, { force: true });
     throw error;
   }
 }

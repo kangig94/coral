@@ -342,7 +342,7 @@ export function handleKbRead(
   try {
     return kbSuccess(
       readEntry(parsed.data, {
-        projectRoot: ctx.projectRoot,
+        ...(ctx.projectRoot === undefined ? {} : { projectRoot: ctx.projectRoot }),
         storage: runtime.storage,
         paths: kbReadPaths(kbSubsystem),
       }),
@@ -447,7 +447,7 @@ export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBas
   });
 }
 
-export function handleKbMemo(args: KbArgs, ctx: InvocationContext): KbToolResult {
+export function handleKbMemo(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const parsed = kbMemoSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -459,7 +459,7 @@ export function handleKbMemo(args: KbArgs, ctx: InvocationContext): KbToolResult
   }
 
   return runKbSyncAction(() =>
-    writeMemo(ctx.projectRoot, {
+    writeMemo({ storagePort: runtime.storage, ids: runtime.ids }, ctx.projectRoot, {
       topic: parsed.data.topic,
       content: parsed.data.content,
       owner: parsed.data.owner,
@@ -467,7 +467,7 @@ export function handleKbMemo(args: KbArgs, ctx: InvocationContext): KbToolResult
   );
 }
 
-export function handleKbMemoList(args: KbArgs, ctx: InvocationContext): KbToolResult {
+export function handleKbMemoList(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const parsed = kbMemoListSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -478,30 +478,31 @@ export function handleKbMemoList(args: KbArgs, ctx: InvocationContext): KbToolRe
     return owner.result;
   }
 
-  return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
+  return runKbSyncAction(() => listMemos(runtime.storage, ctx.projectRoot, owner.owner));
 }
 
-export function handleKbMemoDelete(args: KbArgs, ctx: InvocationContext): KbToolResult {
+export function handleKbMemoDelete(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const parsed = kbMemoDeleteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return handleKbMemoDeleteConsolidated(parsed.data, ctx);
+  return handleKbMemoDeleteConsolidated(parsed.data, ctx, runtime);
 }
 
-export function handleKbMemoPurge(args: KbArgs, ctx: InvocationContext): KbToolResult {
+export function handleKbMemoPurge(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const parsed = kbMemoPurgeSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return handleKbMemoDeleteConsolidated({ owner: parsed.data.owner, all: true }, ctx);
+  return handleKbMemoDeleteConsolidated({ owner: parsed.data.owner, all: true }, ctx, runtime);
 }
 
 export function handleKbMemoDeleteConsolidated(
   args: { pattern?: string; owner?: string; all?: boolean },
   ctx: InvocationContext,
+  runtime: KbToolRuntime,
 ): KbToolResult {
   const parsed = kbMemoDeleteConsolidatedSchema.safeParse(args);
   if (!parsed.success) {
@@ -521,8 +522,8 @@ export function handleKbMemoDeleteConsolidated(
 
   const { pattern } = parsed.data;
   if (pattern !== undefined) {
-    return runKbSyncAction(() => deleteMemos(ctx.projectRoot, { pattern, owner: owner.owner }));
+    return runKbSyncAction(() => deleteMemos(runtime.storage, ctx.projectRoot, { pattern, owner: owner.owner }));
   }
 
-  return runKbSyncAction(() => purgeMemos(ctx.projectRoot, owner.owner));
+  return runKbSyncAction(() => purgeMemos(runtime.storage, ctx.projectRoot, owner.owner));
 }

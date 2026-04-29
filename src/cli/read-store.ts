@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-
 import { pluginRootNamespace } from "../infra/plugin-identity.js";
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
@@ -113,7 +111,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const flavor = readBuildFlavor(pluginRoot ?? projectRoot);
   const runtime = createRealRuntime(flavor);
   const dbPath = runtime.paths.coral.store.dbFile;
-  const hasStore = existsSync(dbPath);
+  const hasStore = runtime.storage.existsSync(dbPath);
   const namespace = pluginRoot
     ? (() => {
         try {
@@ -138,6 +136,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
 
   return {
     store: new CoralStore(db, createDefaultStoreReadContext(), {
+      runtime,
       namespace,
       projectRoot,
       ...(pluginRoot ? { pluginRoot } : {}),

@@ -63,6 +63,7 @@ export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRunt
     ...(options.corpusPublishCallbacks === undefined ? {} : { corpusPublishCallbacks: options.corpusPublishCallbacks }),
     ...(options.readOnlyOrama === undefined ? {} : { readOnlyOrama: options.readOnlyOrama }),
     envPort: runtime.env,
+    ids: runtime.ids,
     storage: runtime.storage,
     spawnCli: options.spawnCli ?? TEST_SPAWN_CLI_NOOP,
     processPort: runtime.process,

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 import {
@@ -243,7 +242,7 @@ export async function commitMetadataTargetsLocked(
       let raw: string;
 
       try {
-        raw = readFileSync(notePath, 'utf-8');
+        raw = kb.storagePort.readFileSync(notePath, 'utf-8');
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -276,7 +275,7 @@ export async function commitMetadataTargetsLocked(
       };
       const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
-      writeFileAtomic(notePath, nextRaw);
+      writeFileAtomic(kb, notePath, nextRaw);
       mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(target.slug, nextRaw));
       wroteMarkdown = true;
 
@@ -303,7 +302,7 @@ export async function commitMetadataTargetsLocked(
     let raw: string;
 
     try {
-      raw = readFileSync(sourcePath, 'utf-8');
+      raw = kb.storagePort.readFileSync(sourcePath, 'utf-8');
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -336,7 +335,7 @@ export async function commitMetadataTargetsLocked(
     };
     const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
-    writeFileAtomic(sourcePath, nextRaw);
+    writeFileAtomic(kb, sourcePath, nextRaw);
     mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(target.slug, nextRaw));
     wroteMarkdown = true;
 

@@ -1,23 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as NodeFs from 'node:fs';
 import type * as KbPathsModule from '#src/kb/paths.js';
 
 let mockInjectMd = '';
 let mockInjectMdError: Error | null = null;
 
-vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof NodeFs>('node:fs');
-  return {
-    ...actual,
-    readFileSync: vi.fn((path: string, encoding?: string) => {
-      if (typeof path === 'string' && path.endsWith('INJECT.md')) {
-        if (mockInjectMdError) throw mockInjectMdError;
-        return mockInjectMd;
-      }
-      return actual.readFileSync(path, encoding as BufferEncoding);
-    }),
-  };
-});
+const mockStorage = {
+  readFileSync: vi.fn((path: string, _encoding: 'utf-8') => {
+    if (path.endsWith('INJECT.md')) {
+      if (mockInjectMdError) throw mockInjectMdError;
+      return mockInjectMd;
+    }
+    throw new Error(`unexpected read: ${path}`);
+  }),
+};
 
 vi.mock('#src/kb/paths.js', async () => {
   const actual = await vi.importActual<typeof KbPathsModule>('#src/kb/paths.js');
@@ -49,7 +44,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner only\n<!-- OWNER_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
     expect(result).toContain('base');
     expect(result).not.toContain('owner only');
     expect(result).toContain('rest');
@@ -59,7 +54,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
     expect(result).toContain('session content');
   });
 
@@ -67,7 +62,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', coralEnv: {} });
     expect(result).toContain('base');
     expect(result).not.toContain('session content');
     expect(result).toContain('rest');
@@ -87,7 +82,7 @@ describe('resolveInjectMd', () => {
     ].join('\n');
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', coralEnv: {} });
     expect(result).toContain('top');
     expect(result).not.toContain('owner stuff');
     expect(result).toContain('middle');
@@ -99,7 +94,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'owner: {{SESSION_ID}}';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'my-session', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'my-session', coralEnv: {} });
     expect(result).toContain('owner: my-session');
   });
 
@@ -107,7 +102,7 @@ describe('resolveInjectMd', () => {
     mockInjectMdError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ workingDirectory: '/wd', ownerSessionId: 'sess', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'sess', coralEnv: {} });
     expect(result).toBe('');
   });
 });

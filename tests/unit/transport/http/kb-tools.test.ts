@@ -110,8 +110,23 @@ const testRuntime = {
       error.code = 'ENOENT';
       throw error;
     },
+    readdirSync: vi.fn(() => []),
+    statSync: vi.fn(() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    renameSync: vi.fn(),
+    rmSync: vi.fn(),
+    unlinkSync: vi.fn(),
   },
-};
+  ids: {
+    uuid: () => 'test-uuid',
+  },
+} as never;
 
 function expectInvalidRequest(result: unknown): void {
   expect(result).toMatchObject({
@@ -165,10 +180,10 @@ describe('kb-tools', () => {
     ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbSubsystem())],
     ['diagnose', () => handleKbDiagnose({ extra: true }, createKbSubsystem())],
     ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbSubsystem())],
-    ['memo', () => handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext)],
-    ['memo-list', () => handleKbMemoList({ owner: 'owner-a', extra: true }, testContext)],
-    ['memo-delete', () => handleKbMemoDelete({ pattern: '*', owner: 'owner-a', extra: true }, testContext)],
-    ['memo-purge', () => handleKbMemoPurge({ owner: 'owner-a', extra: true }, testContext)],
+    ['memo', () => handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext, testRuntime)],
+    ['memo-list', () => handleKbMemoList({ owner: 'owner-a', extra: true }, testContext, testRuntime)],
+    ['memo-delete', () => handleKbMemoDelete({ pattern: '*', owner: 'owner-a', extra: true }, testContext, testRuntime)],
+    ['memo-purge', () => handleKbMemoPurge({ owner: 'owner-a', extra: true }, testContext, testRuntime)],
   ])('rejects undeclared fields for %s', async (_name, run) => {
     expectInvalidRequest(await run());
   });
@@ -457,9 +472,9 @@ level: 1
       count: 1,
     });
 
-    const result = handleKbMemoDeleteConsolidated({ pattern: '2026*', owner: 'owner-a' }, testContext);
+    const result = handleKbMemoDeleteConsolidated({ pattern: '2026*', owner: 'owner-a' }, testContext, testRuntime);
 
-    expect(mockState.deleteMemos).toHaveBeenCalledWith(testContext.projectRoot, {
+    expect(mockState.deleteMemos).toHaveBeenCalledWith(testRuntime.storage, testContext.projectRoot, {
       pattern: '2026*',
       owner: 'owner-a',
     });
@@ -475,9 +490,9 @@ level: 1
   it('consolidates memo delete purge mode', () => {
     mockState.purgeMemos.mockReturnValue({ deleted: 2 });
 
-    const result = handleKbMemoDeleteConsolidated({ all: true, owner: 'owner-a' }, testContext);
+    const result = handleKbMemoDeleteConsolidated({ all: true, owner: 'owner-a' }, testContext, testRuntime);
 
-    expect(mockState.purgeMemos).toHaveBeenCalledWith(testContext.projectRoot, 'owner-a');
+    expect(mockState.purgeMemos).toHaveBeenCalledWith(testRuntime.storage, testContext.projectRoot, 'owner-a');
     expect(result).toEqual({
       ok: true,
       data: { deleted: 2 },
@@ -488,7 +503,7 @@ level: 1
     [{ pattern: '2026*', all: true }, 'both modes'],
     [{ owner: 'owner-a' }, 'neither mode'],
   ])('rejects consolidated memo delete when %s is provided', (args, _mode) => {
-    expectInvalidRequest(handleKbMemoDeleteConsolidated(args, testContext));
+    expectInvalidRequest(handleKbMemoDeleteConsolidated(args, testContext, testRuntime));
   });
 
   it('still validates memo owners after Zod parsing', () => {
@@ -499,6 +514,7 @@ level: 1
         owner: 'invalid owner',
       },
       testContext,
+      testRuntime,
     );
 
     expect(result).toMatchObject({

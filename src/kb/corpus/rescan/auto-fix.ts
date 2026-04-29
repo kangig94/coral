@@ -379,7 +379,7 @@ function applyPreparedMarkdownFixLocked(
   mutationLane: 'both' | 'metadata',
   reason: string,
 ): void {
-  writeFileAtomic(target.path, prepared.content);
+  writeFileAtomic(kb, target.path, prepared.content);
   mutation.queueManifestAuthorityDelta(captureRepairTargetManifestDeltas(target, prepared.content));
   commitIndexUpdate(kb, prepared.updateIndex);
 
@@ -496,24 +496,27 @@ function readMarkdownRepairTarget<T extends Omit<MarkdownRepairTarget, 'path' | 
   }
 }
 
-function collectActiveCorpusEntryIds(kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir'>): ReadonlySet<KbEntryId> {
+function collectActiveCorpusEntryIds(
+  kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'storagePort'>,
+): ReadonlySet<KbEntryId> {
   const activeEntryIds = new Set<KbEntryId>();
+  const storage = kb.storagePort;
 
-  for (const filename of sortedMarkdownEntries(kb.notesDir())) {
+  for (const filename of sortedMarkdownEntries(storage, kb.notesDir())) {
     const parsed = parseKbEntryId(noteEntryId(stripMdExt(filename)));
     if (parsed !== null) {
       activeEntryIds.add(parsed);
     }
   }
 
-  for (const filename of sortedMarkdownEntries(kb.sourcesDir())) {
+  for (const filename of sortedMarkdownEntries(storage, kb.sourcesDir())) {
     const parsed = parseKbEntryId(sourceEntryId(stripMdExt(filename)));
     if (parsed !== null) {
       activeEntryIds.add(parsed);
     }
   }
 
-  for (const filename of sortedMarkdownEntries(kb.communitiesDir())) {
+  for (const filename of sortedMarkdownEntries(storage, kb.communitiesDir())) {
     const parsed = parseKbEntryId(communityEntryId(stripMdExt(filename)));
     if (parsed !== null) {
       activeEntryIds.add(parsed);

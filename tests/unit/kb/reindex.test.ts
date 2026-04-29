@@ -260,7 +260,7 @@ Shared retrieval patterns.
       entityMeta: {},
       relationships: [],
     });
-    expect(readEntry({ note: 'communities:graph-rag' }, { paths: createReadPaths(paths) })).toEqual({
+    expect(readEntry({ note: 'communities:graph-rag' }, { storage: kb.storagePort, paths: createReadPaths(paths) })).toEqual({
       kind: 'community',
       note: 'graph-rag',
       title: 'Graph RAG',

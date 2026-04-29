@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../../infra/time.js';
 import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
@@ -27,21 +26,21 @@ export async function promote(
   const topic = assertNoteSlug(input.topic, 'topic');
 
   let memoPath = memoPathFromContext(projectRoot, memo);
-  if (!existsSync(memoPath) && !memo.endsWith('.md')) {
+  if (!rt.storagePort.existsSync(memoPath) && !memo.endsWith('.md')) {
     memoPath = memoPathFromContext(projectRoot, `${memo}.md`);
   }
   const note = `${domain}-${topic}`;
   const notePath = rt.notePath(note);
-  if (!existsSync(memoPath)) {
+  if (!rt.storagePort.existsSync(memoPath)) {
     throw new Error(`Memo file not found: ${memoPath}`);
   }
 
   const result = await rt.withMutationLock(async (mutation) => {
-    if (existsSync(notePath)) {
+    if (rt.storagePort.existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
 
-    const memoContent = readFileSync(memoPath, 'utf-8');
+    const memoContent = rt.storagePort.readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
     const entrySeq = currentEntrySeq(rt.readIndexState()) + 1;
     const createdAt = nowIsoString(rt.time);
@@ -56,7 +55,7 @@ export async function promote(
     };
     const noteContent = serializeNote(noteMeta, title, content);
 
-    writeFileAtomic(notePath, noteContent);
+    writeFileAtomic(rt, notePath, noteContent);
     mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(note, noteContent));
 
     commitIndexUpdate(rt, (index) => {
@@ -72,7 +71,7 @@ export async function promote(
     });
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.');
 
-    rmSync(memoPath, { force: true });
+    rt.storagePort.rmSync(memoPath, { force: true });
     return { path: notePath };
   });
 

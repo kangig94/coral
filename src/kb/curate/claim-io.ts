@@ -39,7 +39,7 @@ function excerptSourceBody(body: string): string {
 
 export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): CurateClaimedEntry {
   if (candidate.kind === 'note') {
-    const { title, body } = loadKbNote(kb.notePath(candidate.slug));
+    const { title, body } = loadKbNote(kb.storagePort, kb.notePath(candidate.slug));
 
     return {
       kind: 'note',
@@ -52,7 +52,7 @@ export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): Cura
     };
   }
 
-  const { raw, title, body } = loadKbSource(kb.sourcePath(candidate.slug));
+  const { raw, title, body } = loadKbSource(kb.storagePort, kb.sourcePath(candidate.slug));
   return {
     kind: 'source',
     entryId: candidate.entryId,

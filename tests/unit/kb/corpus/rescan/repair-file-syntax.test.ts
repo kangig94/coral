@@ -10,7 +10,7 @@ describe('repair fixtures: file syntax', () => {
       fixture: 'file-syntax-conflict-markers',
       classification: 'needs-manual',
       assertFailure(harness) {
-        const loaded = loadKbNote(harness.path('notes/conflict-markers-note.md'));
+        const loaded = loadKbNote(harness.storage, harness.path('notes/conflict-markers-note.md'));
         expect(loaded.body).toContain('<<<<<<< ours');
         expect(loaded.body).toContain('>>>>>>> theirs');
       },
@@ -37,7 +37,7 @@ describe('repair fixtures: file syntax', () => {
       fixture: 'file-syntax-malformed-markdown',
       classification: 'needs-manual',
       assertFailure(harness) {
-        const loaded = loadKbNote(harness.path('notes/malformed-markdown-note.md'));
+        const loaded = loadKbNote(harness.storage, harness.path('notes/malformed-markdown-note.md'));
         expect(loaded.body).toContain('```ts');
         expect(loaded.body).not.toContain('\n```\n');
       },

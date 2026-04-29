@@ -10,6 +10,7 @@ import type {
   KbSearchResponse,
   KbSourceListResult,
 } from './entry-types.js';
+import type { MemoStorage } from './ops/memo.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import {
   createDefaultKbQueryRuntime,
@@ -40,8 +41,10 @@ export function readKnowledgeBaseEntry(
   selector: KbReadInput,
   context: KbQueryContext,
 ): KbReadResult {
+  const kb = createDefaultKbQueryRuntime(context);
   return readEntry(selector, {
     projectRoot: resolveQueryProjectRoot(context),
+    storage: kb.storagePort,
     paths: createDefaultKbReadPaths(context),
   });
 }
@@ -66,8 +69,9 @@ export function diagnoseKnowledgeBase(context: KbQueryContext): KbDiagnoseResult
 }
 
 export function listKnowledgeBaseMemos(
+  storage: MemoStorage,
   projectRoot: string,
   args: KbMemoListInput = {},
 ): KbMemoListResult {
-  return listMemos(projectRoot, args.owner);
+  return listMemos(storage, projectRoot, args.owner);
 }

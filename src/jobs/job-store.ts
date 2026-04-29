@@ -78,7 +78,7 @@ export class JobStore implements JobProgressStore {
 
   constructor(
     private readonly namespace: string,
-    private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>,
+    private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
     upcasters: UpcasterRegistry,
     options: JobStoreOptions = {},
   ) {
@@ -149,7 +149,7 @@ export class JobStore implements JobProgressStore {
   }
 
   jobDir(jobId: string): string {
-    return join(jobsDir(), jobId);
+    return join(jobsDir(this.runtime.env), jobId);
   }
 
   getChangeSeq(): number {

@@ -144,7 +144,10 @@ export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
     previous[Symbol.dispose]();
   }
 
-  const snapshotStore = new OramaSnapshotStore(runtime.runtimeDir);
+  const snapshotStore = new OramaSnapshotStore(
+    { storage: runtime.storagePort, ids: runtime.ids },
+    runtime.runtimeDir,
+  );
   const projection = createOramaBaseProjection(runtime, snapshotStore);
   const ftsBacked = createOramaFtsBacked(runtime, projection);
   const scope = createScope();

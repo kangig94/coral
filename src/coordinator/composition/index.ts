@@ -292,7 +292,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
       readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),
       listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
-      listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx)),
+      listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx, runtime)),
       listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
       createNote: async (args, ctx) => {
         const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx));
@@ -332,12 +332,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         return result;
       },
       createMemo: (args, ctx) => {
-        const result = withKb(() => handleKbMemo(args, ctx));
+        const result = withKb(() => handleKbMemo(args, ctx, runtime));
         recordHostedKbFailure('memo_create', args, ctx, result);
         return result;
       },
       deleteMemos: (args, ctx) => {
-        const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx));
+        const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx, runtime));
         recordHostedKbFailure('memo_delete', args, ctx, result);
         return result;
       },

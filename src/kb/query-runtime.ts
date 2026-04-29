@@ -100,6 +100,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
     runtimeDir: kbRuntimeDir(flavor),
     db: getDefaultKbQueryDb(context),
     envPort: runtime.env,
+    ids: runtime.ids,
     storage: runtime.storage,
     spawnCli: createReadOnlyKbSpawnCli(),
     processPort: runtime.process,

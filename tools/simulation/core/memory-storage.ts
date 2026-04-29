@@ -341,16 +341,16 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(normalized === '/' ? '/' : parentPath(normalized));
   }
 
-  readdirSync(path: string, options: { withFileTypes: true }): DirentLike[] {
-    if (!options.withFileTypes) {
-      throw new Error('InMemoryStorage.readdirSync requires withFileTypes: true');
-    }
+  readdirSync(path: string): string[];
+  readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
+  readdirSync(path: string, options?: { withFileTypes: true }): string[] | DirentLike[] {
     const normalized = normalizePathForStorage(path);
     this.requireDirectory(normalized);
 
-    return [...(this.childIndex.get(normalized) ?? [])]
-      .sort((left, right) => left.localeCompare(right))
-      .map((name) => {
+    const sortedNames = [...(this.childIndex.get(normalized) ?? [])].sort((left, right) => left.localeCompare(right));
+
+    if (options?.withFileTypes === true) {
+      return sortedNames.map((name) => {
         const childPathValue = childPath(normalized, name);
         return {
           name,
@@ -358,6 +358,36 @@ export class InMemoryStorage implements StoragePort {
           isFile: () => this.files.has(childPathValue),
         };
       });
+    }
+
+    return sortedNames;
+  }
+
+  lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean } {
+    const normalized = normalizePathForStorage(path);
+    if (this.files.has(normalized)) {
+      return {
+        isDirectory: () => false,
+        isFile: () => true,
+        isSymbolicLink: () => false,
+      };
+    }
+    if (this.directories.has(normalized)) {
+      return {
+        isDirectory: () => true,
+        isFile: () => false,
+        isSymbolicLink: () => false,
+      };
+    }
+    throw createErrnoError('ENOENT', normalized);
+  }
+
+  realpathSync(path: string): string {
+    const normalized = normalizePathForStorage(path);
+    if (!this.files.has(normalized) && !this.directories.has(normalized)) {
+      throw createErrnoError('ENOENT', normalized);
+    }
+    return normalized;
   }
 
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };

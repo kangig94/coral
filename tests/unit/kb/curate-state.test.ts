@@ -692,7 +692,7 @@ describe('curate state', () => {
       expect(parseFrontmatter(readFileSync(needsSeqPath, 'utf-8')).entrySeq).toBeUndefined();
       expect(readFileSync(sourcePath, 'utf-8')).not.toContain('entrySeq:');
 
-      rewriteFrontmatter(assignment.rewrittenNotes, assignment.rewrittenSources);
+      rewriteFrontmatter(runtime, assignment.rewrittenNotes, assignment.rewrittenSources);
 
       expect(parseFrontmatter(readFileSync(needsSeqPath, 'utf-8')).entrySeq).toBe(10);
       expect(readFileSync(sourcePath, 'utf-8')).toContain('entrySeq: 11');

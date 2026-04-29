@@ -4,7 +4,7 @@ import { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFinge
 import { readCurateState, type CurateState } from '../state/index.js';
 
 export function areCommunityDocumentsFresh(
-  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
   state?: CurateState,
 ): boolean {
@@ -18,7 +18,7 @@ export function areCommunityDocumentsFresh(
 
 function isCommunityStateFreshForIndex(
   state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
-  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): boolean {
   const communityEntries = Object.values(index.entries).filter(isCommunityEntry);

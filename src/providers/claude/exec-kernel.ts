@@ -52,7 +52,7 @@ export const claudeExecKernel: Provider = (request, runtime) =>
       throw new Error('fork requires conversationRef');
     }
 
-    const prepared = buildPreparedClaudeRequest(request);
+    const prepared = buildPreparedClaudeRequest(request, runtime.storage);
     const result = await executeClaudeFork(request.conversationRef, prepared.prompt, {
       model: prepared.model,
       workingDirectory: request.cwd,

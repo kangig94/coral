@@ -53,7 +53,7 @@ afterEach(async () => {
   previousHome = undefined;
 
   for (const jobId of createdJobIds.splice(0)) {
-    rmSync(join(jobsDir(), jobId), { recursive: true, force: true });
+    rmSync(join(jobsDir(createRealRuntime('prod').env), jobId), { recursive: true, force: true });
   }
 
   for (const root of tempRoots.splice(0)) {

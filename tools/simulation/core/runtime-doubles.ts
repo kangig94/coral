@@ -155,6 +155,10 @@ export class SealedEnv implements EnvPort {
     return this.fullEnv.HOME ?? this.fullEnv.USERPROFILE ?? DEFAULT_HOME;
   }
 
+  tmpdir(): string {
+    return this.fullEnv.TMPDIR ?? '/tmp';
+  }
+
   fullSnapshot(): Readonly<Record<string, string>> {
     return this.fullEnv;
   }

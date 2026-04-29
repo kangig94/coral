@@ -252,7 +252,7 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
-  storage?: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync'>;
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync'>;
   env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;

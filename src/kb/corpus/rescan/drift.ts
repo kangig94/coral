@@ -238,7 +238,7 @@ function detectStructuredTextDrift(
     {
       entryId: noteEntryId,
       loadEntry: (file) => {
-        const loaded = loadKbNote(file.path);
+        const loaded = loadKbNote(kb.storagePort, file.path);
         const next = buildNoteIndexEntry({
           slug: file.slug,
           title: loaded.title,

@@ -220,8 +220,8 @@ function stubRuntimeRecord(
 ): void {
   progressStore.appendRuntimeStarted(options.jobId, {
     pid: options.pid,
-    stdoutPath: join(jobsDir(), options.jobId, 'stdout'),
-    stderrPath: join(jobsDir(), options.jobId, 'stderr'),
+    stdoutPath: join(jobsDir(runtime.env), options.jobId, 'stdout'),
+    stderrPath: join(jobsDir(runtime.env), options.jobId, 'stderr'),
     startTime: options.startTime ?? '2026-04-17T00:00:00.000Z',
   });
 }

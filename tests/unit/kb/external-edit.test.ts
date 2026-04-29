@@ -220,7 +220,10 @@ function seedCorpus(kb: KbRuntime): {
 }
 
 async function readStoredOramaDocuments(kb: KbRuntime): Promise<Map<string, StoredOramaDocument>> {
-  const orama = await new OramaSnapshotStore(kb.runtimeDir).loadIfPresent();
+  const orama = await new OramaSnapshotStore(
+    { storage: kb.storagePort, ids: kb.ids },
+    kb.runtimeDir,
+  ).loadIfPresent();
   expect(orama).not.toBeNull();
   if (orama === null) {
     throw new Error('Expected persisted Orama snapshot to exist.');

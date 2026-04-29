@@ -10,7 +10,7 @@ describe('repair fixtures: frontmatter shape', () => {
       fixture: 'frontmatter-shape-unterminated-yaml',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(() => loadKbNote(harness.path('notes/unterminated-yaml-note.md'))).toThrow('Missing YAML frontmatter');
+        expect(() => loadKbNote(harness.storage, harness.path('notes/unterminated-yaml-note.md'))).toThrow('Missing YAML frontmatter');
       },
       expectedIncidents: [
         expectedDetectedIncident({
@@ -32,7 +32,7 @@ describe('repair fixtures: frontmatter shape', () => {
       fixture: 'frontmatter-shape-yaml-parse-error',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(() => loadKbNote(harness.path('notes/yaml-parse-error-note.md'))).toThrow(/yaml/i);
+        expect(() => loadKbNote(harness.storage, harness.path('notes/yaml-parse-error-note.md'))).toThrow(/yaml/i);
       },
       expectedIncidents: [
         expectedDetectedIncident({
@@ -53,7 +53,7 @@ describe('repair fixtures: frontmatter shape', () => {
       fixture: 'frontmatter-shape-missing-required-fields',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(() => loadKbSource(harness.path('sources/missing-required-fields-source.md'))).toThrow(
+        expect(() => loadKbSource(harness.storage, harness.path('sources/missing-required-fields-source.md'))).toThrow(
           'title must be a string',
         );
       },

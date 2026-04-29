@@ -63,7 +63,7 @@ describe('repair fixtures: reference integrity', () => {
       fixture: 'reference-integrity-orphan-principle-refs',
       classification: 'needs-manual',
       assertFailure(harness) {
-        const loaded = loadKbNote(harness.path('notes/orphan-principle-note.md'));
+        const loaded = loadKbNote(harness.storage, harness.path('notes/orphan-principle-note.md'));
         expect(loaded.frontmatter.principles).toEqual(['missing-principle']);
         expect(existsSync(harness.path('principles/missing-principle.md'))).toBe(false);
       },

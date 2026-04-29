@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
@@ -72,7 +70,7 @@ export interface CreateKbRuntimeOptions {
   db: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   time?: Pick<TimePort, 'now'>;
-  ids?: Pick<IdPort, 'uuid'>;
+  ids: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
   storage: StoragePort;
   spawnCli: SpawnCliFn;
@@ -149,7 +147,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.time = time ?? SYSTEM_TIME_PORT;
-    this.ids = ids ?? { uuid: () => randomUUID() };
+    this.ids = ids;
     this.storagePort = storage;
     this.corpusStorage = createCorpusStorage(storage);
     this.spawnCli = spawnCli;
@@ -162,6 +160,8 @@ class KbRuntimeImpl implements KbRuntime {
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.indexStore = new KbIndexStore({
       runtimeDir: this.runtimeDir,
+      storage,
+      ids,
       onStateChange: (previous, next) => {
         this.capturePublicationFromStateChange(previous, next);
       },
@@ -173,7 +173,7 @@ class KbRuntimeImpl implements KbRuntime {
       },
     });
 
-    mkdirSync(this.runtimeDir, { recursive: true });
+    storage.mkdirSync(this.runtimeDir, { recursive: true });
 
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
@@ -223,7 +223,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   readEntityGraph(): EntityGraph | null {
-    return readEntityGraphFile(this.entityGraphPath());
+    return readEntityGraphFile(this.storagePort, this.entityGraphPath());
   }
 
   async writeEntityGraph(graph: EntityGraph): Promise<void> {
@@ -233,7 +233,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private writeEntityGraphLocked(graph: EntityGraph): void {
-    const { normalized, raw } = writeEntityGraphFile(this.entityGraphPath(), graph);
+    const { normalized, raw } = writeEntityGraphFile(this, this.entityGraphPath(), graph);
     this.queueManifestAuthorityDelta(captureEntityGraphManifestDelta(raw));
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 

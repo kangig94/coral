@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { resolveInjectMd } from '../inject.js';
 import type { ProviderRequest } from '../contract.js';
+import type { StoragePort } from '../../runtime/ports.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { PermissionMode } from './control-protocol.js';
@@ -80,11 +81,13 @@ export function buildPreparedClaudeRequest(
     ProviderRequest,
     'prompt' | 'instruction' | 'systemPrompt' | 'cwd' | 'coralEnv' | 'model' | 'effort' | 'bypassPermissions'
   >,
+  storage: Pick<StoragePort, 'readFileSync'>,
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
   const injectMd = resolveInjectMd({
+    storage,
     workingDirectory: request.cwd,
     ownerSessionId: request.coralEnv?.CORAL_OWNER,
     coralEnv: request.coralEnv,

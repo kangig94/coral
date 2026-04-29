@@ -1,4 +1,3 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import {
   captureRemovedSourceManifestDeltas,
@@ -24,7 +23,7 @@ import { currentEntrySeq } from '../index-state.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
   const stagedPath = assertWithin(kb.sourceImportStageDir(), candidate, 'KB source staged markdown path');
-  const stagedStat = lstatSync(stagedPath);
+  const stagedStat = kb.storagePort.lstatSync(stagedPath);
   if (stagedStat.isSymbolicLink()) {
     throw new Error('KB source staged markdown path must not be a symlink');
   }
@@ -33,8 +32,8 @@ function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): strin
   }
 
   return assertWithin(
-    realpathSync(kb.sourceImportStageDir()),
-    realpathSync(stagedPath),
+    kb.storagePort.realpathSync(kb.sourceImportStageDir()),
+    kb.storagePort.realpathSync(stagedPath),
     'KB source staged markdown path',
   );
 }
@@ -51,17 +50,17 @@ export async function persistPreparedSource(
     const principlePath = kb.principlePath(normalizedSlug);
     const stagedCandidate = assertWithin(kb.sourceImportStageDir(), stagedPath, 'KB source staged markdown path');
 
-    if (existsSync(filePath)) {
+    if (kb.storagePort.existsSync(filePath)) {
       throw new Error(`KB source already exists: ${filePath}`);
     }
 
-    if (existsSync(principlePath)) {
+    if (kb.storagePort.existsSync(principlePath)) {
       throw new Error(`KB principle already exists: ${principlePath}`);
     }
 
     try {
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
-      const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
+      const renderedSource = kb.storagePort.readFileSync(resolvedStagedPath, 'utf-8');
       const parsedMeta = parseSourceFrontmatter(renderedSource);
       const entrySeq = currentEntrySeq(kb.readIndexState()) + 1;
       const persistedMeta = {
@@ -70,7 +69,7 @@ export async function persistPreparedSource(
       };
       const persistedSource = replaceSourceFrontmatter(renderedSource, persistedMeta);
 
-      writeFileAtomic(filePath, persistedSource);
+      writeFileAtomic(kb, filePath, persistedSource);
       mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(normalizedSlug, persistedSource));
 
       commitIndexUpdate(kb, (index) => {
@@ -85,7 +84,7 @@ export async function persistPreparedSource(
       });
       recordContentAndMetadataMutation(kb, 'KB text snapshot is stale after kb_source_import.');
     } finally {
-      rmSync(stagedCandidate, { force: true });
+      kb.storagePort.rmSync(stagedCandidate, { force: true });
     }
 
     return { slug: normalizedSlug, path: filePath };
@@ -98,7 +97,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
 
   return rt.withMutationLock(async (mutation) => {
     try {
-      rmSync(sourcePath);
+      rt.storagePort.rmSync(sourcePath);
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         throw new Error(`KB source not found: ${slug}`, { cause: error });

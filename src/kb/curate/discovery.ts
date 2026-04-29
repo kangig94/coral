@@ -1,6 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../infra/json.js';
 import type { KbRuntime } from '../contract.js';
@@ -182,12 +179,13 @@ export function selectDiscoveryBatch(
 }
 
 export function buildDiscoveryPrompt(
+  kb: Pick<KbRuntime, 'storagePort' | 'ids' | 'envPort'>,
   notes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryPromptResult {
   const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
-  const corpusPath = join(tmpdir(), `coral-discovery-${randomUUID()}.md`);
-  writeFileSync(corpusPath, noteBlocks.join('\n\n'));
+  const corpusPath = join(kb.envPort.tmpdir(), `coral-discovery-${kb.ids.uuid()}.md`);
+  kb.storagePort.writeFileSync(corpusPath, noteBlocks.join('\n\n'));
 
   const principleEntries = Object.entries(existingPrinciples)
     .sort(([left], [right]) => compareLocale(left, right))

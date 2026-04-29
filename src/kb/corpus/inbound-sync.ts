@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
+import type { StoragePort } from '../../runtime/ports.js';
 import type { GitSyncPathChange, GitSyncResult } from '../curate/git-sync.js';
 import { noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';
@@ -49,6 +49,7 @@ type InboundSyncTarget = Pick<
   | 'sourcePath'
   | 'communityPath'
   | 'principlePath'
+  | 'storagePort'
 >;
 
 export type InboundSyncMutationDiff = {
@@ -122,12 +123,17 @@ export function isGitSyncResult(value: unknown): value is GitSyncResult {
   return isRecord(value) && typeof value.kind === 'string';
 }
 
-function captureNoteFileSnapshot(dirPath: string): Map<string, { contentHash: string; metadataHash: string }> {
+type SnapshotStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
+
+function captureNoteFileSnapshot(
+  storage: SnapshotStorage,
+  dirPath: string,
+): Map<string, { contentHash: string; metadataHash: string }> {
   const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
 
-  for (const entry of sortedMarkdownEntries(dirPath)) {
+  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
     const slug = stripMdExt(entry);
-    const raw = readFileSync(join(dirPath, entry), 'utf-8');
+    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
     try {
       snapshot.set(slug, {
         contentHash: computeContentSurfaceHash({
@@ -150,12 +156,15 @@ function captureNoteFileSnapshot(dirPath: string): Map<string, { contentHash: st
   return snapshot;
 }
 
-function captureSourceFileSnapshot(dirPath: string): Map<string, { contentHash: string; metadataHash: string }> {
+function captureSourceFileSnapshot(
+  storage: SnapshotStorage,
+  dirPath: string,
+): Map<string, { contentHash: string; metadataHash: string }> {
   const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
 
-  for (const entry of sortedMarkdownEntries(dirPath)) {
+  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
     const slug = stripMdExt(entry);
-    const raw = readFileSync(join(dirPath, entry), 'utf-8');
+    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
     try {
       const { title, ...metadata } = parseSourceFrontmatter(raw);
       snapshot.set(slug, {
@@ -179,19 +188,22 @@ function captureSourceFileSnapshot(dirPath: string): Map<string, { contentHash: 
   return snapshot;
 }
 
-function captureMarkdownFileHashes(dirPath: string): Map<string, string> {
+function captureMarkdownFileHashes(storage: SnapshotStorage, dirPath: string): Map<string, string> {
   const snapshot = new Map<string, string>();
 
-  for (const entry of sortedMarkdownEntries(dirPath)) {
-    snapshot.set(stripMdExt(entry), createHash('sha256').update(readFileSync(join(dirPath, entry), 'utf-8')).digest('hex'));
+  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
+    snapshot.set(
+      stripMdExt(entry),
+      createHash('sha256').update(storage.readFileSync(join(dirPath, entry), 'utf-8')).digest('hex'),
+    );
   }
 
   return snapshot;
 }
 
-function captureEntityGraphHash(filePath: string): string | null {
+function captureEntityGraphHash(storage: SnapshotStorage, filePath: string): string | null {
   try {
-    return createHash('sha256').update(readFileSync(filePath, 'utf-8')).digest('hex');
+    return createHash('sha256').update(storage.readFileSync(filePath, 'utf-8')).digest('hex');
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return null;
@@ -201,12 +213,13 @@ function captureEntityGraphHash(filePath: string): string | null {
 }
 
 export function captureCorpusFilesystemSnapshot(target: InboundSyncTarget): CorpusFilesystemSnapshot {
+  const storage = target.storagePort;
   return {
-    notes: captureNoteFileSnapshot(target.notesDir()),
-    sources: captureSourceFileSnapshot(target.sourcesDir()),
-    principles: captureMarkdownFileHashes(target.principlesDir()),
-    communities: captureMarkdownFileHashes(target.communitiesDir()),
-    entityGraphHash: captureEntityGraphHash(target.entityGraphPath()),
+    notes: captureNoteFileSnapshot(storage, target.notesDir()),
+    sources: captureSourceFileSnapshot(storage, target.sourcesDir()),
+    principles: captureMarkdownFileHashes(storage, target.principlesDir()),
+    communities: captureMarkdownFileHashes(storage, target.communitiesDir()),
+    entityGraphHash: captureEntityGraphHash(storage, target.entityGraphPath()),
   };
 }
 
@@ -287,12 +300,13 @@ function captureInboundSyncTrackedPathDeltas(
   trackedPath: InboundSyncTrackedPath,
   mode: 'present' | 'deleted',
 ): ManifestAuthorityDelta[] {
+  const storage = target.storagePort;
   if (trackedPath.kind === 'note') {
     if (mode === 'deleted') {
       return captureRemovedNoteManifestDeltas(trackedPath.slug);
     }
     try {
-      return captureNoteManifestDeltas(trackedPath.slug, readFileSync(target.notePath(trackedPath.slug), 'utf-8'));
+      return captureNoteManifestDeltas(trackedPath.slug, storage.readFileSync(target.notePath(trackedPath.slug), 'utf-8'));
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedNoteManifestDeltas(trackedPath.slug);
@@ -306,7 +320,7 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedSourceManifestDeltas(trackedPath.slug);
     }
     try {
-      return captureSourceManifestDeltas(trackedPath.slug, readFileSync(target.sourcePath(trackedPath.slug), 'utf-8'));
+      return captureSourceManifestDeltas(trackedPath.slug, storage.readFileSync(target.sourcePath(trackedPath.slug), 'utf-8'));
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedSourceManifestDeltas(trackedPath.slug);
@@ -320,7 +334,7 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedCommunityManifestDelta(trackedPath.slug);
     }
     try {
-      return captureCommunityManifestDelta(trackedPath.slug, readFileSync(target.communityPath(trackedPath.slug), 'utf-8'));
+      return captureCommunityManifestDelta(trackedPath.slug, storage.readFileSync(target.communityPath(trackedPath.slug), 'utf-8'));
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedCommunityManifestDelta(trackedPath.slug);
@@ -334,7 +348,7 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedPrincipleManifestDelta(trackedPath.slug);
     }
     try {
-      return capturePrincipleManifestDelta(trackedPath.slug, readFileSync(target.principlePath(trackedPath.slug), 'utf-8'));
+      return capturePrincipleManifestDelta(trackedPath.slug, storage.readFileSync(target.principlePath(trackedPath.slug), 'utf-8'));
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedPrincipleManifestDelta(trackedPath.slug);
@@ -348,7 +362,7 @@ function captureInboundSyncTrackedPathDeltas(
   }
 
   try {
-    return captureEntityGraphManifestDelta(readFileSync(target.entityGraphPath(), 'utf-8'));
+    return captureEntityGraphManifestDelta(storage.readFileSync(target.entityGraphPath(), 'utf-8'));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return captureEntityGraphManifestDelta(null);
@@ -502,6 +516,7 @@ export function detectInboundSyncMutationFromFullCollectors(
 type InboundIndexPaths = {
   notePath(note: string): string;
   sourcePath(source: string): string;
+  storagePort: Pick<StoragePort, 'readFileSync'>;
 };
 
 export function buildInboundSyncIndexDelta(
@@ -517,7 +532,7 @@ export function buildInboundSyncIndexDelta(
       const notePath = paths.notePath(slug);
 
       try {
-        const { frontmatter, title } = loadKbNote(notePath);
+        const { frontmatter, title } = loadKbNote(paths.storagePort, notePath);
         nextIndex.entries[entryId] = buildNoteIndexEntry({
           slug,
           title,
@@ -537,7 +552,7 @@ export function buildInboundSyncIndexDelta(
       const sourcePath = paths.sourcePath(slug);
 
       try {
-        const { frontmatter } = loadKbSource(sourcePath);
+        const { frontmatter } = loadKbSource(paths.storagePort, sourcePath);
         nextIndex.entries[entryId] = buildSourceIndexEntry({
           slug,
           ...frontmatter,

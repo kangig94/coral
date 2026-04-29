@@ -7,11 +7,13 @@ import {
   existsSync,
   fdatasyncSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -19,7 +21,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { homedir as osHomedir } from 'node:os';
+import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/path/compose.js';
 import { resolveProjectSource } from "../infra/project-source.js";
@@ -155,7 +157,21 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),
     mkdirSync: (path, options) => mkdirSync(path, options),
     rmSync: (path, options) => rmSync(path, options),
-    readdirSync: (path, options) => readdirSync(path, options),
+    readdirSync: ((path: string, options?: { withFileTypes: true }) => {
+      if (options?.withFileTypes === true) {
+        return readdirSync(path, options);
+      }
+      return readdirSync(path);
+    }) as StoragePort['readdirSync'],
+    lstatSync: (path) => {
+      const stats = lstatSync(path);
+      return {
+        isDirectory: () => stats.isDirectory(),
+        isFile: () => stats.isFile(),
+        isSymbolicLink: () => stats.isSymbolicLink(),
+      };
+    },
+    realpathSync: (path) => realpathSync(path),
     statSync: ((path: string, options?: { bigint: true }) => {
       if (options?.bigint === true) {
         const stats = statSync(path, { bigint: true });
@@ -409,6 +425,7 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
   const env: EnvPort = {
     get: (key) => capturedEnv.fullEnv[key],
     homedir: () => osHomedir(),
+    tmpdir: () => osTmpdir(),
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,
     arch: () => capturedEnv.arch,

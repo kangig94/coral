@@ -29,9 +29,12 @@ export interface StoragePort {
   renameSync(oldPath: string, newPath: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
+  readdirSync(path: string): string[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
   statSync(path: string, options: { bigint: true }): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+  lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
+  realpathSync(path: string): string;
   existsSync(path: string): boolean;
   openSync(path: string, flags: string): number;
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
@@ -48,6 +51,7 @@ export interface StoragePort {
 export interface EnvPort {
   get(key: string): string | undefined;
   homedir(): string;
+  tmpdir(): string;
   pid(): number;
   platform(): string;
   arch(): string;

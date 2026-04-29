@@ -1,6 +1,5 @@
-import { execFile } from 'node:child_process';
-
 import { readProcessEnv } from '../infra/process-env.js';
+import type { ProcessPort } from '../runtime/ports.js';
 
 export type CliInfo =
   | { available: false; error: string }
@@ -12,6 +11,8 @@ export type AuthProbeResult =
   | { authState: 'authenticated' }
   | { authState: 'unknown' }
   | { authState: 'unauthenticated'; authError: string };
+
+export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'>;
 
 export type CliDetectorConfig = {
   binaryName: string;
@@ -25,7 +26,10 @@ export type CliDetectorConfig = {
   readEnv?: (key: string) => string | undefined;
 };
 
-export function createCliDetector(config: CliDetectorConfig): {
+export function createCliDetector(
+  processPort: CliDetectorProcessPort,
+  config: CliDetectorConfig,
+): {
   detect: () => Promise<CliInfo>;
   resetCache: () => void;
 } {
@@ -79,56 +83,46 @@ export function createCliDetector(config: CliDetectorConfig): {
     }
   }
 
-  function queryCliVersion(): Promise<CliInfo> {
-    return new Promise<CliInfo>((resolve) => {
-      execFile(config.binaryName, [...config.versionArgs], { timeout: 10_000, encoding: 'utf8' }, (err, stdout) => {
-        if (err) {
-          resolve({ available: false, error: config.notFoundMessage });
-          return;
-        }
-
-        resolve({ available: true, version: stdout.trim(), authState: 'unknown' });
-      });
+  async function queryCliVersion(): Promise<CliInfo> {
+    const result = await processPort.exec(config.binaryName, [...config.versionArgs], {
+      timeout: 10_000,
+      encoding: 'utf-8',
     });
+    if (result.error || (result.status !== null && result.status !== 0)) {
+      return { available: false, error: config.notFoundMessage };
+    }
+    return { available: true, version: result.stdout.trim(), authState: 'unknown' };
   }
 
-  function queryAuthState(): Promise<AuthProbeResult> {
+  async function queryAuthState(): Promise<AuthProbeResult> {
     if ((config.readEnv ?? readProcessEnv)(config.authEnvVar)?.trim()) {
-      return Promise.resolve({ authState: 'authenticated' });
+      return { authState: 'authenticated' };
     }
 
-    return new Promise<AuthProbeResult>((resolve) => {
-      execFile(
-        config.binaryName,
-        [...config.authCommand],
-        { timeout: 5_000, encoding: 'utf8' },
-        (err, stdout, stderr) => {
-          if (!err) {
-            if (!config.parseAuthOutput) {
-              resolve({ authState: 'authenticated' });
-              return;
-            }
-
-            const parsed = config.parseAuthOutput(stdout);
-            if (parsed !== null) {
-              resolve(parsed);
-              return;
-            }
-          }
-
-          const output = `${stdout}\n${stderr}`;
-          if (config.authErrorPattern.test(output)) {
-            resolve({
-              authState: 'unauthenticated',
-              authError: config.authErrorMessage,
-            });
-            return;
-          }
-
-          resolve({ authState: 'unknown' });
-        },
-      );
+    const result = await processPort.exec(config.binaryName, [...config.authCommand], {
+      timeout: 5_000,
+      encoding: 'utf-8',
     });
+    const succeeded = !result.error && result.status === 0;
+    if (succeeded) {
+      if (!config.parseAuthOutput) {
+        return { authState: 'authenticated' };
+      }
+      const parsed = config.parseAuthOutput(result.stdout);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (config.authErrorPattern.test(output)) {
+      return {
+        authState: 'unauthenticated',
+        authError: config.authErrorMessage,
+      };
+    }
+
+    return { authState: 'unknown' };
   }
 }
 
@@ -190,5 +184,19 @@ export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   parseAuthOutput: parseClaudeAuthStatus,
 });
 
-const claudeDetector = createCliDetector(CLAUDE_DETECTOR_CONFIG);
-export const detectClaudeCli = claudeDetector.detect;
+/**
+ * Module-level cached Claude detector. The factory is invoked once with the
+ * caller's process port so subsequent `detectClaudeCli()` calls reuse the
+ * same detector (and its in-flight cache). Tests can `resetClaudeCliDetector`
+ * to swap port implementations.
+ */
+let claudeDetector: ReturnType<typeof createCliDetector> | null = null;
+
+export function detectClaudeCli(processPort: CliDetectorProcessPort): Promise<CliInfo> {
+  claudeDetector ??= createCliDetector(processPort, CLAUDE_DETECTOR_CONFIG);
+  return claudeDetector.detect();
+}
+
+export function resetClaudeCliDetector(): void {
+  claudeDetector = null;
+}

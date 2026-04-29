@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
@@ -158,7 +157,7 @@ function ensurePrincipleDocumentLocked(
   const nextIndex = cloneKbIndex(kb.readIndex());
 
   try {
-    const liveStatement = extractPrincipleStatement(readFileSync(principlePath, 'utf-8'));
+    const liveStatement = extractPrincipleStatement(kb.storagePort.readFileSync(principlePath, 'utf-8'));
     if (liveStatement !== entry.statement) {
       return { status: 'conflict', state };
     }
@@ -178,7 +177,7 @@ function ensurePrincipleDocumentLocked(
 
   recordMetadataMutation(kb, CURATE_STALE_REASON);
   const principleDocument = serializePrincipleDocument(entry.statement, entry.createdAt);
-  writeFileAtomic(principlePath, principleDocument);
+  writeFileAtomic(kb, principlePath, principleDocument);
   mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, principleDocument));
   nextIndex.principles[entry.principle] = entry.statement;
   kb.writeIndex(nextIndex);
@@ -256,7 +255,7 @@ export async function runPrincipleDiscovery(
   const batch = preparedBatch.batch;
   const eligibleNotes = loadEligibleDiscoveryNotes(kb, batch.selected);
 
-  const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
+  const { prompt, corpusPath } = buildDiscoveryPrompt(kb, eligibleNotes, currentIndex.principles);
   let raw: string;
   try {
     raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
@@ -310,7 +309,7 @@ export async function runPrincipleDiscovery(
         const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
         let rawPrinciple: string;
         try {
-          rawPrinciple = readFileSync(principlePath, 'utf-8');
+          rawPrinciple = kb.storagePort.readFileSync(principlePath, 'utf-8');
         } catch {
           state = removePendingDiscoveryLocked(kb, state, entry);
           continue;
@@ -331,7 +330,7 @@ export async function runPrincipleDiscovery(
           entry.statement,
           '',
         ].join('\n');
-        writeFileAtomic(principlePath, nextRaw);
+        writeFileAtomic(kb, principlePath, nextRaw);
         mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, nextRaw));
         recordMetadataMutation(kb, CURATE_STALE_REASON);
         const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());

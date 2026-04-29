@@ -15,7 +15,7 @@ export async function applyNoteUpdateLocked(
   input: { note: string; title?: string; content?: string },
 ): Promise<{ path: string }> {
   const notePath = rt.notePath(input.note);
-  const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(notePath);
+  const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(rt.storagePort, notePath);
   const nextTitle = input.title ?? existingTitle;
   const nextContent = input.content ?? existingBody;
 
@@ -27,7 +27,7 @@ export async function applyNoteUpdateLocked(
   const nextFrontmatter = { ...frontmatter, updatedAt };
   const nextRaw = serializeNote(nextFrontmatter, nextTitle, nextContent);
 
-  writeFileAtomic(notePath, nextRaw);
+  writeFileAtomic(rt, notePath, nextRaw);
   mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(input.note, nextRaw));
 
   commitIndexUpdate(rt, (index) => {

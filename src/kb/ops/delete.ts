@@ -1,4 +1,3 @@
-import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
@@ -12,7 +11,7 @@ export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ d
 
   return rt.withMutationLock(async (mutation) => {
     try {
-      rmSync(notePath);
+      rt.storagePort.rmSync(notePath);
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         throw new Error(`KB note not found: ${note}`, { cause: error });

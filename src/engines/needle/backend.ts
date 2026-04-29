@@ -181,8 +181,12 @@ function needleHandleDir(runtimeDir: string, handleToken: string): string {
   return join(needleIndexDir(runtimeDir), 'handles', handleToken);
 }
 
-function writeActiveSnapshotId(runtimeDir: string, snapshotId: string): void {
-  writeFileAtomic(needleActivePointerPath(runtimeDir), `${snapshotId}\n`);
+function writeActiveSnapshotId(
+  host: Pick<KbRuntime, 'storagePort' | 'ids'>,
+  runtimeDir: string,
+  snapshotId: string,
+): void {
+  writeFileAtomic(host, needleActivePointerPath(runtimeDir), `${snapshotId}\n`);
 }
 
 function readSnapshotManifest(runtimeDir: string, snapshotId: string): NeedleSnapshotManifest | null {
@@ -195,8 +199,12 @@ function readSnapshotManifest(runtimeDir: string, snapshotId: string): NeedleSna
   }
 }
 
-function writeSnapshotManifest(snapshotDir: string, manifest: NeedleSnapshotManifest): void {
-  writeFileAtomic(needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
+function writeSnapshotManifest(
+  host: Pick<KbRuntime, 'storagePort' | 'ids'>,
+  snapshotDir: string,
+  manifest: NeedleSnapshotManifest,
+): void {
+  writeFileAtomic(host, needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 function createHandleToken(runtime: KbRuntime, prefix: string): string {
@@ -499,7 +507,7 @@ export class NeedleBackend implements NeedleBackendContract {
           return [
             {
               entryId: entryId as KbEntryId,
-              chunks: chunkEntry(entry, loadKbNote(this.runtime.notePath(entry.slug)).body),
+              chunks: chunkEntry(entry, loadKbNote(this.runtime.storagePort, this.runtime.notePath(entry.slug)).body),
             },
           ];
         }
@@ -507,7 +515,7 @@ export class NeedleBackend implements NeedleBackendContract {
           return [
             {
               entryId: entryId as KbEntryId,
-              chunks: chunkEntry(entry, loadKbSource(this.runtime.sourcePath(entry.slug)).body),
+              chunks: chunkEntry(entry, loadKbSource(this.runtime.storagePort, this.runtime.sourcePath(entry.slug)).body),
             },
           ];
         }
@@ -567,7 +575,7 @@ export class NeedleBackend implements NeedleBackendContract {
       }
 
       await stagedStore.store.buildIndex();
-      writeSnapshotManifest(stagingDir, {
+      writeSnapshotManifest(this.runtime, stagingDir, {
         snapshot: {
           snapshotId: snapshot.snapshotId,
           contentSeq: snapshot.contentSeq,
@@ -599,7 +607,7 @@ export class NeedleBackend implements NeedleBackendContract {
         throw new Error(`Needle snapshot ${snapshotId} could not be opened after install.`);
       }
 
-      writeActiveSnapshotId(this.runtime.runtimeDir, snapshotId);
+      writeActiveSnapshotId(this.runtime, this.runtime.runtimeDir, snapshotId);
       this.publishActiveHandle(nextHandle);
     } catch (error: unknown) {
       rmSync(finalSnapshotDir, { recursive: true, force: true });

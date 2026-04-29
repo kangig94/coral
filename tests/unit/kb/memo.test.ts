@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 
+import { createRealRuntime } from '#src/runtime/real.js';
+
+const realRuntime = createRealRuntime('prod');
+const memoStorage = realRuntime.storage;
+
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
@@ -62,7 +67,7 @@ Second line
     utimesSync(timestampedMemo, timestampedTime, timestampedTime);
     utimesSync(untimestampedMemo, untimestampedTime, untimestampedTime);
 
-    expect(listMemos(projectRoot)).toEqual({
+    expect(listMemos(memoStorage, projectRoot)).toEqual({
       memos: [
         {
           filename: 'untimestamped.md',
@@ -83,7 +88,7 @@ Second line
     const projectRoot = join(mockState.tmpHome, 'fresh-project');
     mkdirSync(projectRoot, { recursive: true });
 
-    expect(listMemos(projectRoot)).toEqual({ memos: [] });
+    expect(listMemos(memoStorage, projectRoot)).toEqual({ memos: [] });
   });
 
   it('returns an empty delete result when the memo directory does not exist', async () => {
@@ -91,7 +96,7 @@ Second line
     const projectRoot = join(mockState.tmpHome, 'fresh-project');
     mkdirSync(projectRoot, { recursive: true });
 
-    expect(deleteMemos(projectRoot, { pattern: '*' })).toEqual({
+    expect(deleteMemos(memoStorage, projectRoot, { pattern: '*' })).toEqual({
       deleted: [],
       count: 0,
     });
@@ -111,13 +116,13 @@ Second line
     writeFileSync(join(dir, 'axb.md'), 'wild', 'utf-8');
     writeFileSync(join(dir, 'ignore.txt'), 'ignore', 'utf-8');
 
-    expect(deleteMemos(projectRoot, { pattern: 'a.b*' })).toEqual({
+    expect(deleteMemos(memoStorage, projectRoot, { pattern: 'a.b*' })).toEqual({
       deleted: ['a.b.md'],
       count: 1,
     });
     expect(existsSync(join(dir, 'axb.md'))).toBe(true);
 
-    expect(deleteMemos(projectRoot, { pattern: '*' })).toEqual({
+    expect(deleteMemos(memoStorage, projectRoot, { pattern: '*' })).toEqual({
       deleted: ['a.md', 'axb.md', 'b.md'],
       count: 3,
     });
@@ -136,7 +141,7 @@ Second line
     writeFileSync(join(dir, 'b.md'), 'b', 'utf-8');
     writeFileSync(join(dir, 'ignore.txt'), 'ignore', 'utf-8');
 
-    expect(purgeMemos(projectRoot)).toEqual({ deleted: 2 });
+    expect(purgeMemos(memoStorage, projectRoot)).toEqual({ deleted: 2 });
     expect(existsSync(join(dir, 'a.md'))).toBe(false);
     expect(existsSync(join(dir, 'b.md'))).toBe(false);
     expect(existsSync(join(dir, 'ignore.txt'))).toBe(true);
@@ -147,6 +152,6 @@ Second line
     const projectRoot = join(mockState.tmpHome, 'fresh-project');
     mkdirSync(projectRoot, { recursive: true });
 
-    expect(purgeMemos(projectRoot)).toEqual({ deleted: 0 });
+    expect(purgeMemos(memoStorage, projectRoot)).toEqual({ deleted: 0 });
   });
 });

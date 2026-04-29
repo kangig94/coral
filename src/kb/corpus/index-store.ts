@@ -1,8 +1,8 @@
-import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord, isStringArray } from '../../infra/json.js';
+import type { IdPort, StoragePort } from '../../runtime/ports.js';
 import type { KbIndexState } from '../contract.js';
 import {
   communityEntryId,
@@ -24,7 +24,7 @@ import {
   normalizeCommunityChildren,
   normalizeCommunityParent,
 } from './frontmatter.js';
-import { writeFileAtomic } from './file-atomic.js';
+import { writeFileAtomic, type FileAtomicHost } from './file-atomic.js';
 import {
   assertCommunitySlug,
   assertNonEmptyText,
@@ -61,8 +61,8 @@ export function isFreshTextSnapshot(state: KbIndexState | null): state is KbInde
   return state !== null && state.textStaleReason === undefined;
 }
 
-export function writeJsonAtomic(filePath: string, value: unknown): void {
-  writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
+export function writeJsonAtomic(host: FileAtomicHost, filePath: string, value: unknown): void {
+  writeFileAtomic(host, filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -316,14 +316,19 @@ export function parseIndexState(value: unknown): KbIndexState {
 
 export interface KbIndexStoreOptions {
   runtimeDir: string;
+  storage: Pick<StoragePort, 'readFileSync' | 'rmSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync'>;
+  ids: Pick<IdPort, 'uuid'>;
   onStateChange?: (previous: KbIndexStateSnapshot, next: KbIndexStateSnapshot) => void;
   onIndexCorruption?: () => void;
 }
 
 export class KbIndexStore {
   private indexCache: { index: KbIndex | null } | null = null;
+  private readonly host: FileAtomicHost;
 
-  constructor(private readonly options: KbIndexStoreOptions) {}
+  constructor(private readonly options: KbIndexStoreOptions) {
+    this.host = { storagePort: options.storage, ids: options.ids };
+  }
 
   readIndex(): KbIndex | null {
     if (this.indexCache !== null) {
@@ -332,14 +337,14 @@ export class KbIndexStore {
 
     const path = this.indexPath();
     try {
-      const raw = readFileSync(path, 'utf-8');
+      const raw = this.options.storage.readFileSync(path, 'utf-8');
       let parsed: KbIndex;
       try {
         parsed = parseIndex(JSON.parse(raw) as unknown);
       } catch {
         this.indexCache = { index: null };
         this.options.onIndexCorruption?.();
-        rmSync(path, { force: true });
+        this.options.storage.rmSync(path, { force: true });
         return null;
       }
       this.indexCache = { index: parsed };
@@ -355,7 +360,7 @@ export class KbIndexStore {
 
   persistIndexToDisk(index: KbIndex): KbIndex {
     const normalized = parseIndex(index);
-    writeJsonAtomic(this.indexPath(), normalized);
+    writeJsonAtomic(this.host, this.indexPath(), normalized);
     return normalized;
   }
 
@@ -369,14 +374,14 @@ export class KbIndexStore {
 
   readIndexStateIfPresent(): KbIndexState | null {
     try {
-      const raw = readFileSync(this.indexStatePath(), 'utf-8');
+      const raw = this.options.storage.readFileSync(this.indexStatePath(), 'utf-8');
       const parsedRaw = JSON.parse(raw) as unknown;
       return parseIndexState(parsedRaw);
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return null;
       }
-      rmSync(this.indexStatePath(), { force: true });
+      this.options.storage.rmSync(this.indexStatePath(), { force: true });
       return null;
     }
   }
@@ -388,7 +393,7 @@ export class KbIndexStore {
   writeIndexState(state: KbIndexState): void {
     const previousSnapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
     const normalizedState = parseIndexState(state);
-    writeJsonAtomic(this.indexStatePath(), normalizedState);
+    writeJsonAtomic(this.host, this.indexStatePath(), normalizedState);
     this.options.onStateChange?.(previousSnapshot, captureIndexStateSnapshot(normalizedState));
   }
 

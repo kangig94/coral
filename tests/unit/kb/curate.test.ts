@@ -598,7 +598,9 @@ describe('curate', () => {
 
     it('builds a discovery prompt with corpus file, truncated note bodies, and merge/refine instructions', () => {
       const longBody = 'x'.repeat(5000);
+      const realRuntime = createRealRuntime('prod');
       const { prompt, corpusPath } = buildDiscoveryPrompt(
+        { storagePort: realRuntime.storage, ids: realRuntime.ids, envPort: realRuntime.env },
         [
           buildClaimedNote({
             slug: 'coral-alpha',

@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { unlinkIfExists } from '../../../infra/fs-errors.js';
 import {
@@ -32,16 +31,17 @@ function renderChildrenSection(children: string[]): string {
   return ['## Children', '', ...children.map((child) => `- ${child}`)].join('\n');
 }
 
-export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir'>): {
+export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir' | 'storagePort'>): {
   generated: ExistingGeneratedCommunity[];
   reservedSlugs: Set<string>;
 } {
   const generated: ExistingGeneratedCommunity[] = [];
   const reservedSlugs = new Set<string>();
+  const storage = kb.storagePort;
 
-  for (const entry of sortedMarkdownEntries(kb.communitiesDir())) {
+  for (const entry of sortedMarkdownEntries(storage, kb.communitiesDir())) {
     const slug = stripMdExt(entry);
-    const raw = readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
+    const raw = storage.readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
 
     try {
       const frontmatter = parseCommunityFrontmatter(raw);
@@ -140,7 +140,7 @@ export function generateCommunityFiles(
 
   for (const community of priorGeneratedCommunities) {
     const communityPath = kb.communityPath(community.slug);
-    if (!existsSync(communityPath)) {
+    if (!kb.storagePort.existsSync(communityPath)) {
       continue;
     }
 
@@ -151,7 +151,7 @@ export function generateCommunityFiles(
   }
 
   for (const document of documents) {
-    writeFileAtomic(kb.communityPath(document.slug), document.content);
+    writeFileAtomic(kb, kb.communityPath(document.slug), document.content);
     mutation.queueManifestAuthorityDelta(captureCommunityManifestDelta(document.slug, document.content));
     onWrite?.();
     wroteFiles = true;

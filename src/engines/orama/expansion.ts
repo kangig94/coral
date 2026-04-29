@@ -6,7 +6,10 @@ import { OramaSnapshotStore } from './snapshot.js';
 
 const oramaExpansion: Expansion = (host) => {
   if (host.kb.fts.heldBy === undefined) {
-    const snapshotStore = new OramaSnapshotStore(host.kb.runtimeDir);
+    const snapshotStore = new OramaSnapshotStore(
+      { storage: host.kb.storagePort, ids: host.kb.ids },
+      host.kb.runtimeDir,
+    );
     const projection = createOramaBaseProjection(host.kb, snapshotStore);
     host.registerConsumer(projection, host.scope);
     host.bind(host.kb.fts, createOramaFtsBacked(host.kb, projection));

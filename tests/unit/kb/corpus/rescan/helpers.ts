@@ -44,6 +44,7 @@ export interface RepairFixtureHarness {
   readonly tempDir: string;
   readonly markdownRoot: string;
   readonly kb: KbRuntime;
+  readonly storage: KbRuntime['storagePort'];
   path(relativePath: string): string;
   readText(relativePath: string): string;
   detect(): DetectedIncident[];
@@ -84,6 +85,7 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
     tempDir,
     markdownRoot,
     kb,
+    storage: kb.storagePort,
     path(relativePath: string): string {
       return join(markdownRoot, relativePath);
     },
@@ -208,7 +210,7 @@ function scanMarkdownDirectory(
   relativeDir: string,
 ) {
   const dirPath = join(markdownRoot, relativeDir);
-  return sortedMarkdownEntries(dirPath).map((entry) =>
+  return sortedMarkdownEntries(createRealRuntime('prod').storage, dirPath).map((entry) =>
     createCorpusMarkdownFileScan({
       kind,
       path: join(dirPath, entry),

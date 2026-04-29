@@ -43,7 +43,7 @@ function trimSummaryExcerpt(body: string, maxChars: number): string {
 }
 
 function selectRepresentativeDocuments(
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
   members: string[],
 ): RepresentativeDocument[] {
@@ -85,7 +85,9 @@ function selectRepresentativeDocuments(
 
   return candidates.map((candidate) => {
     const loaded =
-      candidate.kind === 'note' ? loadKbNote(kb.notePath(candidate.slug)) : loadKbSource(kb.sourcePath(candidate.slug));
+      candidate.kind === 'note'
+        ? loadKbNote(kb.storagePort, kb.notePath(candidate.slug))
+        : loadKbSource(kb.storagePort, kb.sourcePath(candidate.slug));
 
     return {
       kind: candidate.kind,
@@ -183,7 +185,7 @@ function parentSummaryFingerprintPayload(
 export function computeCommunitySummaryInputFingerprintForCommunity(
   community: SummaryCommunity,
   communitiesBySlug: ReadonlyMap<string, SummaryCommunity>,
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): string {
   if (community.children === undefined || community.children.length === 0) {
@@ -199,7 +201,7 @@ export function computeCommunitySummaryInputFingerprintForCommunity(
 
 export function computeCommunitySummaryInputFingerprints(
   communities: SummaryCommunity[],
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): Record<string, string> {
   const communitiesBySlug = new Map(communities.map((community) => [community.slug, community] as const));
@@ -289,7 +291,7 @@ function normalizeGeneratedSummary(raw: string): string | undefined {
 
 export async function generateCommunitySummary(options: {
   community: SummaryCommunity;
-  kb: Pick<KbRuntime, 'notePath' | 'sourcePath'>;
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
   index: KbIndex;
   childCommunities?: ChildCommunitySummary[];
   priorCommunity?: { summary?: string };

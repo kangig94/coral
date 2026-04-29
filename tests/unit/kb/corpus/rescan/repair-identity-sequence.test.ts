@@ -10,8 +10,8 @@ describe('repair fixtures: identity sequence', () => {
       fixture: 'identity-sequence-entryseq-collision',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(loadKbNote(harness.path('notes/collision-alpha.md')).frontmatter.entrySeq).toBe(21);
-        expect(loadKbSource(harness.path('sources/collision-beta.md')).frontmatter.entrySeq).toBe(21);
+        expect(loadKbNote(harness.storage, harness.path('notes/collision-alpha.md')).frontmatter.entrySeq).toBe(21);
+        expect(loadKbSource(harness.storage, harness.path('sources/collision-beta.md')).frontmatter.entrySeq).toBe(21);
       },
       expectedIncidents: [
         expectedDetectedIncident({
@@ -43,7 +43,7 @@ describe('repair fixtures: identity sequence', () => {
       fixture: 'identity-sequence-entryseq-format',
       classification: 'auto-fixable',
       assertFailure(harness) {
-        expect(() => loadKbNote(harness.path('notes/entryseq-format-note.md'))).toThrow(
+        expect(() => loadKbNote(harness.storage, harness.path('notes/entryseq-format-note.md'))).toThrow(
           'entrySeq must be a positive integer',
         );
       },
@@ -51,7 +51,7 @@ describe('repair fixtures: identity sequence', () => {
         const raw = harness.readText('notes/entryseq-format-note.md');
         expect(raw).toContain('entrySeq: 31');
         expect(raw).not.toContain('entrySeq: "31"');
-        expect(loadKbNote(harness.path('notes/entryseq-format-note.md')).frontmatter.entrySeq).toBe(31);
+        expect(loadKbNote(harness.storage, harness.path('notes/entryseq-format-note.md')).frontmatter.entrySeq).toBe(31);
       },
       expectedIncidents: [
         expectedDetectedIncident({

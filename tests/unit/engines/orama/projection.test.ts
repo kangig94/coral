@@ -127,8 +127,14 @@ async function expectCanonicalEquivalent(
   deltaRuntime: ReturnType<typeof createKbRuntime>,
   fullRuntime: ReturnType<typeof createKbRuntime>,
 ): Promise<void> {
-  const deltaProjection = createOramaBaseProjection(deltaRuntime, new OramaSnapshotStore(deltaRuntime.runtimeDir));
-  const fullProjection = createOramaBaseProjection(fullRuntime, new OramaSnapshotStore(fullRuntime.runtimeDir));
+  const deltaProjection = createOramaBaseProjection(
+    deltaRuntime,
+    new OramaSnapshotStore({ storage: deltaRuntime.storagePort, ids: deltaRuntime.ids }, deltaRuntime.runtimeDir),
+  );
+  const fullProjection = createOramaBaseProjection(
+    fullRuntime,
+    new OramaSnapshotStore({ storage: fullRuntime.storagePort, ids: fullRuntime.ids }, fullRuntime.runtimeDir),
+  );
 
   for (const query of QUERY_PANEL) {
     const deltaTextHits = canonicalizeHits((await deltaProjection.search(query, TOP_K, 'all')).hits);
@@ -287,7 +293,10 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
 }
 
 async function installCurrentFullSnapshot(runtime: ReturnType<typeof createKbRuntime>): Promise<void> {
-  const projection = createOramaBaseProjection(runtime, new OramaSnapshotStore(runtime.runtimeDir));
+  const projection = createOramaBaseProjection(
+    runtime,
+    new OramaSnapshotStore({ storage: runtime.storagePort, ids: runtime.ids }, runtime.runtimeDir),
+  );
   const preparedProjection = await projection.prepareFullSnapshotForCurrentCorpus(runtime.readIndexOrEmpty());
   await projection.installFullSnapshot(runtime.captureCorpusSnapshot(), preparedProjection);
 }

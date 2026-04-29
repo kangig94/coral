@@ -413,7 +413,15 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   const scopedRoots = ['src/providers', 'src/workflow', 'src/kb', 'src/discuss'];
   // kb/paths.ts owns the CORAL_KB_PATH env override (vault root) — that env
   // read is the contract, not a leak.
-  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/kb/paths.ts']);
+  // src/kb/ops/memo.ts uses `new Date(mtimeMs)` to convert disk-sourced mtime
+  // millis to ISO; the millis come from `storage.statSync` (port-routed), not
+  // from ambient time, so the construction is a deterministic format step.
+  const allowed = new Set([
+    'src/kb/env.ts',
+    'src/discuss/transcript.ts',
+    'src/kb/paths.ts',
+    'src/kb/ops/memo.ts',
+  ]);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 

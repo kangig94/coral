@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import type { StoragePort } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
 import { noteEntryId, sourceEntryId } from '../entry-types.js';
 import { stripMdExt } from '../paths.js';
@@ -27,7 +27,7 @@ export type FullManifestSurfaceHashes = {
 
 type ManifestAuthorityTarget = Pick<
   KbRuntime,
-  'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'
+  'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath' | 'storagePort'
 >;
 
 export interface ManifestAuthority {
@@ -314,34 +314,35 @@ export function captureEntityGraphManifestDelta(raw: string | null): ManifestAut
 export function collectFullManifestSurfaceHashes(target: ManifestAuthorityTarget): FullManifestSurfaceHashes {
   const content = new Map<string, string>();
   const metadata = new Map<string, string>();
+  const storage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = target.storagePort;
 
-  for (const entry of sortedMarkdownEntries(target.notesDir())) {
+  for (const entry of sortedMarkdownEntries(storage, target.notesDir())) {
     const slug = stripMdExt(entry);
-    const raw = readFileSync(join(target.notesDir(), entry), 'utf-8');
+    const raw = storage.readFileSync(join(target.notesDir(), entry), 'utf-8');
     applyDeltasToSurfaceHashes(content, metadata, captureNoteManifestDeltas(slug, raw));
   }
 
-  for (const entry of sortedMarkdownEntries(target.sourcesDir())) {
+  for (const entry of sortedMarkdownEntries(storage, target.sourcesDir())) {
     const slug = stripMdExt(entry);
-    const raw = readFileSync(join(target.sourcesDir(), entry), 'utf-8');
+    const raw = storage.readFileSync(join(target.sourcesDir(), entry), 'utf-8');
     applyDeltasToSurfaceHashes(content, metadata, captureSourceManifestDeltas(slug, raw));
   }
 
-  for (const entry of sortedMarkdownEntries(target.communitiesDir())) {
+  for (const entry of sortedMarkdownEntries(storage, target.communitiesDir())) {
     const slug = stripMdExt(entry);
     applyDeltasToSurfaceHashes(
       content,
       metadata,
-      captureCommunityManifestDelta(slug, readFileSync(join(target.communitiesDir(), entry), 'utf-8')),
+      captureCommunityManifestDelta(slug, storage.readFileSync(join(target.communitiesDir(), entry), 'utf-8')),
     );
   }
 
-  for (const entry of sortedMarkdownEntries(target.principlesDir())) {
+  for (const entry of sortedMarkdownEntries(storage, target.principlesDir())) {
     const slug = stripMdExt(entry);
     applyDeltasToSurfaceHashes(
       content,
       metadata,
-      capturePrincipleManifestDelta(slug, readFileSync(join(target.principlesDir(), entry), 'utf-8')),
+      capturePrincipleManifestDelta(slug, storage.readFileSync(join(target.principlesDir(), entry), 'utf-8')),
     );
   }
 
@@ -349,7 +350,7 @@ export function collectFullManifestSurfaceHashes(target: ManifestAuthorityTarget
     applyDeltasToSurfaceHashes(
       content,
       metadata,
-      captureEntityGraphManifestDelta(readFileSync(target.entityGraphPath(), 'utf-8')),
+      captureEntityGraphManifestDelta(storage.readFileSync(target.entityGraphPath(), 'utf-8')),
     );
   } catch (error: unknown) {
     if (!isNoEntryError(error)) {

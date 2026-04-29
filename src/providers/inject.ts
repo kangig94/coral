@@ -1,13 +1,14 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { kbRoot } from '../kb/paths.js';
 import { projectDataDir, resolveProjectSource } from '../infra/project-source.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { isOwnerId } from '../infra/identifiers.js';
+import type { StoragePort } from '../runtime/ports.js';
 
 declare const __PLUGIN_ROOT__: string;
 
 export interface ResolveInjectMdOptions {
+  storage: Pick<StoragePort, 'readFileSync'>;
   workingDirectory?: string;
   ownerSessionId?: string;
   /** CORAL_* env snapshot. Source for CORAL_KB_PATH override. */
@@ -23,11 +24,11 @@ function pluginRoot(): string {
   return __PLUGIN_ROOT__;
 }
 
-function getInjectMd(): string {
+function getInjectMd(storage: Pick<StoragePort, 'readFileSync'>): string {
   if (injectMdCache !== undefined) return injectMdCache;
 
   try {
-    injectMdCache = readFileSync(join(pluginRoot(), 'INJECT.md'), 'utf-8');
+    injectMdCache = storage.readFileSync(join(pluginRoot(), 'INJECT.md'), 'utf-8');
   } catch {
     injectMdCache = '';
   }
@@ -44,7 +45,7 @@ function stripOwnerOnly(text: string): string {
 }
 
 export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
-  const md = getInjectMd();
+  const md = getInjectMd(opts.storage);
   if (!md) return '';
 
   const { workingDirectory, ownerSessionId, coralEnv } = opts;
