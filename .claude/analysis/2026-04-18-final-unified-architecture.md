@@ -241,7 +241,7 @@ The unified design uses three load-bearing primitives:
 // runtime/binding.ts — the cell.
 interface RuntimeBinding<T> {
   read(): T;                                          // returns bound value; throws `binding_empty` if unbound
-  bind(value: T, scope: Disposable): void;            // single-occupancy; throws CoralSetupError('binding-occupied') if already bound
+  bind(value: T, scope: Disposable): void;            // single-occupancy; throws CoralSetupError('binding_occupied') if already bound
   readonly heldBy?: string;
 }
 function createRuntimeBinding<T>(name: string): RuntimeBinding<T>;
@@ -293,7 +293,7 @@ Load-bearing invariants (also tracked in §16 #43, #43a, #43b, #43c, #43d):
 - **Routing reads `binding.read().read(...)`** — one indirection. No literal union, no priority compare, no readiness poll at the routing layer.
 - **Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot.** The pass runs after installed-engine recovery and fills only empty slots. Every binding is filled by an Expansion under a scope; no binding is created with an initial value (#43a).
 - **Expansion bodies call `host.bind(binding, backed)`** under their own scope; `scope.dispose()` is the only un-bind path.
-- **Single-occupancy is structural**: `RuntimeBinding.bind` throws `CoralSetupError('binding-occupied', { heldBy })` if already held. Invariant #43 is enforced inside the primitive, not by lifecycle bookkeeping.
+- **Single-occupancy is structural**: `RuntimeBinding.bind` throws `CoralSetupError('binding_occupied', { heldBy })` if already held. Invariant #43 is enforced inside the primitive, not by lifecycle bookkeeping.
 - **Readiness is a comparison**: `backed.consumer.cursor ≥ runtime.authorities.<kind>.version`. No `isReady()` / `waitForReady()` on the `Backed<T>` contract. The only readiness primitive is `waitFreshUntil(authority, version, consumerId)` from §9.4 (#43c).
 - **Capability deps via `host.require(binding)`** — inline at expansion top, throws `CoralSetupError` before any `bind`.
 - **`kb.embedding` is a peer-category slot.** All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) have no initial binding values. Embedders are bundled or installed engines like any other, discovered structurally through `EngineManifest.fills?.includes('kb.embedding')`.
@@ -950,7 +950,7 @@ The repair pipeline runs during rescan + curate passes. It classifies each detec
 
 **Status note (current state)**: this section describes two surfaces that exist together by intent — the spec's earlier framing conflated them. They have distinct concerns and distinct lifetimes:
 
-1. **Classification-driven repair pipeline** (`src/kb/corpus/repair/{detect,classify,fix,pending-retry,corpus-scan,incident-ids}.ts`). This is the redesigned surface that owns *individual entry diagnosis + classified fix dispatch* per the table above. As of this writing, the structural skeleton is in place and `pending-retry.ts` is wired into KB freshness — `pendingRepairNeedsRetry` gates `KbRuntime.ensureCorpusFreshness` via the `kb_curate_retry_queue` SQL table. End-to-end wiring of `detect → classify → fix` into the runtime drain loop is forward work; until that lands, malformed-entry detection during bulk reload (#2 below) covers the gap.
+1. **Classification-driven repair pipeline** (`src/kb/corpus/rescan/{auto-fix,drift,index,projections,scan,storage}.ts` plus `rescan/incidents/{catalog,file-syntax,frontmatter,identity,references}.ts`). This is the surface that owns *individual entry diagnosis + classified fix dispatch* per the table above. As of this writing, the rescan tree is in place and wired into KB freshness — `KbRuntime.ensureCorpusFreshness` (`src/kb/runtime.ts`) is gated by `textArtifactsNeedRebuild()` and runs `performRescan` under the Corpus mutation lock when needed. End-to-end automated dispatch of every classified outcome through the runtime drain loop is forward work; until that lands, malformed-entry detection during bulk reload (#2 below) covers the gap.
 
 2. **Derived-index cache maintenance** (`src/kb/curate/text-artifacts/`). This is *not* repair — it owns the drift detection and bulk rebuild of the derived `index.json` + `orama-index.json` artifacts vs the Corpus markdown. `detectTextArtifactRebuildInfo` answers "is the cached index stale?"; `rebuildTextArtifacts` reloads the derived snapshot from current markdown. The shallow `pendingRepair[]` it produces during reload is a side-effect of try/catching parse errors per file, persisted to `curate-state.json` and synced to `kb_curate_retry_queue` by `curate/state/store.ts`. This is structural cache machinery, not ad-hoc repair, and remains load-bearing.
 
@@ -960,7 +960,6 @@ Both surfaces converge at `kb_curate_retry_queue` — the SQL table that tracks 
 
 ```ts
 workflow.plan.declared  { plan: WorkflowPlan }
-workflow.plan.revised   { plan: WorkflowPlan }
 workflow.drain.entered  { firstFailureSlotId, drainDeadline }
 workflow.completed
   | { outcome: 'completed'; stepDetails: WorkflowStepDetail[] }
@@ -1005,7 +1004,6 @@ type WorkflowStepDetail = {
 **Why plan as a separate stream-kind**:
 - Plan is a durable aggregate with semantics (dependencies, slot IDs) independent of any single job execution.
 - Child jobs reference `refs.workflowSlotId` and `refs.workflowId`; the plan lives ONCE on the workflow stream, not duplicated on every child launch.
-- `workflow.plan.revised` (future) can add/modify slots without touching child events — plans evolve without rewriting history.
 - Launch-time syntax-shaped metadata (`stepIndex`, `atomIndex`, label) is encoded in `slotId` and `agent`, not duplicated on child launches. Completion `stepDetails` separately records execution summaries for completed atoms, including step/atom indices and label alongside output.
 - Workflow completion is a stream-level fact. The `causeRef` on `workflow.completed` points to the failing child's terminal event when relevant — no wrapped fault variant needed.
 
@@ -1684,6 +1682,7 @@ When subdividing:
 
 **Subdivision rejection** — a few cases where subdividing makes the tree *worse*:
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
+  - *Exception*: `infra/path/` is permitted as a cohesive path-composition subsystem (already 5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to subsystems where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
 - The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a *minimum* shape — `events.ts` (event vocabulary + DomainEventRegistry) and `read-queries.ts` (query API) at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
   - `projections.ts` exists when the domain projects events to SQL tables and owns DB-write reducers (sessions/discuss/workflow). When it exists, it ALSO holds view builders and projection reads.
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (a state-machine pattern — currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
@@ -2207,11 +2206,11 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil('journal', version, consumerId)` — a condition-variable wake, never a polling loop.
 41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listExpansion` is status observation, not a readiness waiter.
 42. Expansion failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
-43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding-occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
+43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding_occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
 43a. Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot, after installed-engine recovery, filling only empty slots. Every binding is filled by an Expansion under a scope; no binding is created with an initial value. Tier (bundled vs installed) controls lifecycle (when equipped, who can unequip), not invocation mechanism.
 43b. An `Expansion` is a function `(host: ExpansionHost) => void | Promise<void>`. Expansions do not export `id`, `priority`, `slots`, `requires`, `install`, `uninstall`, `activate`, or `deactivate` fields on a contract object. Identity is the import specifier; priority is registration order; binding fill is `host.bind(binding, backed)`; capability deps are `host.require(binding)`; install is a CLI-tier concern that runs before the Expansion is loaded; deactivation is `scope.dispose()`.
 43c. `Backed<T>` readiness is a comparison: `backed.consumer.cursor ≥ <authority version>`. No `Backed<T>` exposes a boolean `isReady()` or `waitForReady()` method on its public contract. The only readiness primitive in the system is the coordinator-owned `ConsumerDriver.waitFreshUntil(authority, version, consumerId)` from §9.4 (see invariants #41a/#41b). Routing the wait through ConsumerDriver — rather than a per-authority accessor on `Runtime` — keeps freshness coordination a single-writer concern owned by the layer that already owns `notify(authority, version)` fan-out; expansion-tier consumers receive the same primitive without a parallel access path.
-43d. `kb.embedding` is a peer-category slot. All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) start empty; embedders are bundled or installed engines like any other. Switching embedders requires `coral-cli expansion unequip <current>` then `coral-cli expansion equip <new>` (structural single-occupancy via `binding-occupied`). `BUNDLED_ENGINES` carries ≥1 entry whose Expansion body fills `kb.embedding` so the binding is fillable.
+43d. `kb.embedding` is a peer-category slot. All three KB slots (`kb.fts`, `kb.vector`, `kb.embedding`) start empty; embedders are bundled or installed engines like any other. Switching embedders requires `coral-cli expansion unequip <current>` then `coral-cli expansion equip <new>` (structural single-occupancy via `binding_occupied`). `BUNDLED_ENGINES` carries ≥1 entry whose Expansion body fills `kb.embedding` so the binding is fillable.
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `tests/helpers/rebuild-projections.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. Unused public facades stay deleted. Tests and integration code import the real contract or owner module directly instead of preserving `api.ts` barrels that production never imports.
