@@ -1,15 +1,14 @@
 import { load, save, type RawData } from '@orama/orama';
-import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { FileAtomicHost } from '../../kb/corpus/file-atomic.js';
 import { writeJsonAtomic } from '../../kb/corpus/index-store.js';
 import type { IdPort, StoragePort } from '../../runtime/ports.js';
-import { oramaSnapshotDir } from './paths.js';
+import { ORAMA_INDEX_FILE, oramaIndexPath } from './paths.js';
 import { createOramaDb } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 
-export const ORAMA_INDEX_FILE = 'orama-index.json';
+export { ORAMA_INDEX_FILE };
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
@@ -37,7 +36,7 @@ export class OramaSnapshotStore {
   }
 
   hasPersistedSnapshot(): boolean {
-    return this.ports.storage.existsSync(this.oramaIndexPath());
+    return this.ports.storage.existsSync(oramaIndexPath(this.runtimeDir));
   }
 
   getCache(): KbCachedOramaIndex | null {
@@ -53,12 +52,12 @@ export class OramaSnapshotStore {
   }
 
   removeSnapshot(): void {
-    this.ports.storage.rmSync(this.oramaIndexPath(), { force: true });
+    this.ports.storage.rmSync(oramaIndexPath(this.runtimeDir), { force: true });
   }
 
   async load(): Promise<KbCachedOramaIndex> {
     const { db, tokenizer } = await createOramaDb();
-    const raw = JSON.parse(this.ports.storage.readFileSync(this.oramaIndexPath(), 'utf-8')) as RawData;
+    const raw = JSON.parse(this.ports.storage.readFileSync(oramaIndexPath(this.runtimeDir), 'utf-8')) as RawData;
     load(db, raw);
     return { db, tokenizer };
   }
@@ -83,10 +82,6 @@ export class OramaSnapshotStore {
 
   persist(db: KbOramaDb): void {
     const snapshot = save(db) as unknown as RawData;
-    writeJsonAtomic(this.host, this.oramaIndexPath(), snapshot);
-  }
-
-  oramaIndexPath(): string {
-    return join(oramaSnapshotDir(this.runtimeDir), ORAMA_INDEX_FILE);
+    writeJsonAtomic(this.host, oramaIndexPath(this.runtimeDir), snapshot);
   }
 }

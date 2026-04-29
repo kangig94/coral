@@ -807,7 +807,19 @@ job.terminal.recorded  { terminal: JobTerminal, diagnostics?, continuity? }
 
 **Why the queue split (`queued` vs `admitted`)**: queueing is a first-class state, not an implementation detail. `queued` names the reason (host lock, seat exhaustion) for observability; `admitted` names the transition. Projections can answer "how long was this job queued" without log-grepping.
 
-Each job stream records **exactly one** `job.terminal.recorded` body, and that body is last on that job stream. `job.launch.rejected` and `job.aborted` are causal/domain events that can precede the terminal body; they are not substitutes for the terminal body.
+**Lifecycle ordering on a job stream** (enforced at append by `src/jobs/projections.ts` and validated by invariant tests):
+
+| Position | Required body | Notes |
+|---|---|---|
+| First | `job.launch.requested` | Exactly one. No other body may precede it on the stream. |
+| Mid (optional) | `job.launch.rejected` | Terminal-causing in its own right; must be followed by exactly one `job.terminal.recorded { failed { causeRef → this rejected } }` and nothing else. No `queue.*` / `runtime.*` / `progress.*` / `aborted` after a `rejected`. |
+| Mid | `job.queue.queued` then `job.queue.admitted` | Both optional, but if `queued` appears, `admitted` (or a terminal) must follow. `admitted` never appears without a preceding `queued` on the same stream. |
+| Mid | `job.runtime.started` | At most one in production; appears after `admitted` (if the job queued) or directly after `requested` (if admission was immediate). |
+| Mid (any number) | `job.progress.emitted` | Multiple allowed. May carry `kind: 'domain'` failure detail (§7.3) — the terminal then points back via self-stream `causeRef`. |
+| Mid (optional) | `job.aborted` | Records the abort cause on-stream; the terminal still must follow. Multiple `aborted` events are not appended (the registry suppresses re-aborts). |
+| Last | `job.terminal.recorded` | Exactly one, and last (§8.3 #1, invariant #8). After the terminal, no further bodies append to this stream. |
+
+`job.launch.rejected` and `job.aborted` are causal/domain events that can precede the terminal body; they are not substitutes for the terminal body. Multiple `runtime.started` bodies on the same stream are a recovery anomaly recorded as `job.progress.emitted { kind: 'recovery_parse_failed' }`, not silently coalesced.
 
 **`job.progress.emitted` carries domain-specific failure detail**: when an internal KB job (source import, explicit reindex/curation step, etc.) hits a terminal-causing failure, the failure is recorded as a rich progress event. In the implementation's discriminated progress body this is `kind: 'domain'`; `stage` names the semantic stage (e.g., `kb_operation_failed`); `detail` carries domain payload (e.g., `{ operation, entryId, cause }`). The terminal outcome then uses `failed { causeRef }` pointing back at this progress event on the same stream — self-stream causeRef is the normal pattern for job-local failure chains.
 Provider-hosted KB work inside an already-running job reports non-terminal failures with `stage: 'hosted_kb_operation_failed'` and does not cause the hosting job terminal. This is why there is no separate `kb/<id>` stream: KB content is Corpus authority, while slow process-like KB attempts and KB work hosted by a running job report their failures on the hosting `job/<id>` stream. Fast direct KB commands that do not create a job return structured command errors instead of becoming Journal truth.
@@ -893,6 +905,8 @@ Project memos are deliberately outside this tree. They live under the project da
 - `metadataSeq` — monotonic counter; increments on metadata-only changes (tags, frontmatter).
 
 These are analogous to `events.seq` on the Journal side but version the whole Corpus rather than counting discrete events. Consumers track their cursor against these counters and catch up via manifest diff (not event replay).
+
+The seq pair is the **operator-facing** view of Corpus freshness. The full freshness identity passed to `CorpusConsumer.apply` and `waitFreshUntil('corpus', ...)` is `CorpusSnapshot = { snapshotId, contentSeq, metadataSeq, contentManifestHash, metadataManifestHash }` (§9.2). The manifest hashes detect identity changes that bypass the seq counters — external Obsidian edits absorbed by lazy rescan, git pull, repair pipeline rewrites — so consumer cursors stay correct without depending on every external mutation to bump a coordinator-owned counter.
 
 **Mutations** (coordinator-mediated, via CLI):
 
@@ -1384,6 +1398,39 @@ rewrites downstream terminal outcome.
 
 Providers emit **bodies only**. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the journal. This keeps providers pure: they never touch envelopes, seqs, or the journal directly.
 
+### 8.2a Provider terminal vs persisted terminal — `failureCause` materialization
+
+The provider-side terminal carries a different failure shape from the persisted journal terminal because providers cannot construct a `CauseRef` (no Journal seq access). The split:
+
+```ts
+// Provider-side body (src/providers/contract.ts)
+type ProviderTerminalEventBody = {
+  kind: 'terminal';
+  terminal: { outcome: ProviderTerminalOutcome; ... };
+  diagnostics: JobDiagnostics;
+  failureCause?: ProviderFailureCause;   // populated iff outcome.kind === 'failed'
+};
+
+type ProviderTerminalOutcome =
+  | { kind: 'completed' }
+  | { kind: 'aborted'; reason: AbortReason }
+  | { kind: 'provider_exit'; code: number; note?: string }
+  | { kind: 'failed' }                   // ← no causeRef on provider side; failureCause sibling carries the payload
+  | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
+
+type ProviderFailureCause =              // discriminated by 'type' (the domain event name)
+  | { type: 'session.adapter_unparseable'; body: { provider, exitCode, stdout, stderr, parseError } }
+  | { type: 'session.provider_failed';    body: { provider, reason: 'session_unavailable' | 'request_failed', message } };
+```
+
+The coordinator's `terminal-materializer` (`src/coordinator/services/terminal-materializer.ts`) maps provider-side to persisted inside a single `commit(cb)` closure:
+
+1. **`completed` / `aborted` / `provider_exit`** — pass through unchanged; no domain event appended; persisted `JobTerminal.outcome` mirrors provider-side.
+2. **`failed`** — `failureCause` is required (the materializer throws `Provider terminal failed without a canonical failureCause` if absent). The materializer routes by `failureCause.type` to the matching domain event constructor (`sessionAdapterUnparseableEvent`, `sessionProviderFailedEvent`), appends the domain event to its owning stream (e.g., `session/<id>`) inside the same commit closure, captures the returned `seq`, and persists `JobTerminal.failed { causeRef: { stream: { kind: 'session', id }, seq } }` on the job stream. Both events share one transaction — the cause and the terminal are durable as a unit or neither is.
+3. **`job_fault: wrapper_lost`** — synthesized by `compose()` (§8.3 #1) when the provider stream closes without `terminal`. Materializer plans this as `JobLifecycleFault('wrapper_lost')` directly on the job terminal; no domain event is appended on a foreign stream because there isn't one to point at.
+
+**Why the split**: providers must stay pure (no journal handles). Domain events must stay first-class (no fault payload duplication on the job terminal — invariant #11). The materializer is the only place these two contracts meet, and it does so transactionally.
+
 ### 8.3 Invariants
 
 1. Every provider stream emits exactly one `terminal`, and it is last. **`compose()` (`src/providers/contract.ts`) is the home of the enforcement** — it owns the chain end-to-end and synthesizes `JobLifecycleFault('wrapper_lost')` when the kernel closes without `terminal`. Per-middleware defensive checks are not the right home.
@@ -1391,6 +1438,7 @@ Providers emit **bodies only**. The coordinator wraps each body in an envelope (
 3. Generic middleware never rewrites a downstream terminal outcome.
 4. Abort enters once through `runtime.signal`; no extra public interrupt surface.
 5. Terminal body never mutates session state — session state is mutated only by `continuity` bodies.
+6. A provider terminal with `outcome.kind === 'failed'` MUST carry a non-null `failureCause`; the materializer rejects malformed terminals at the boundary so no malformed `JobTerminal.failed` ever reaches the journal.
 
 ---
 
@@ -1482,16 +1530,29 @@ Corpus projections are maintained by `CorpusConsumer`s with snapshot-based conte
 ```ts
 interface CorpusConsumer {
   id: string;
-  apply(ctx: { contentSeq: number; metadataSeq: number; signal: AbortSignal }): Promise<void>;
+  apply(ctx: { snapshot: CorpusSnapshot; db: BetterSqlite3.Database; signal: AbortSignal }): Promise<void>;
   // Implementation:
-  //   1. Acquire Corpus mutation lock, capture text snapshot at target versions.
-  //   2. Build desired manifest (per-entry content hashes).
+  //   1. The coordinator builds `snapshot` while the Corpus mutation lock is held
+  //      (§6.4) and notifies after release; `apply` runs OUTSIDE the lock.
+  //   2. Build desired manifest (per-entry content hashes) from the snapshot view.
   //   3. Diff against last-applied manifest persisted alongside the consumer's storage.
-  //   4. Re-embed / re-index only changed entries.
+  //   4. Re-embed / re-index only changed entries (heavy work; never under any lock).
   //   5. Atomic snapshot swap.
-  //   6. Release lock; persist new cursor after swap.
+  //   6. Persist new cursor after swap.
 }
+
+type CorpusSnapshot = {
+  snapshotId: string;            // stable hash over (seqs + manifests); equality across runs
+  contentSeq: number;
+  metadataSeq: number;
+  contentManifestHash: string;   // detects same-seq identity changes (e.g. external rebuild)
+  metadataManifestHash: string;
+};
 ```
+
+**Why `snapshot` and not just `(contentSeq, metadataSeq)`**: consumers diff at the entry level, so they need stable access to the Corpus view at the target versions, not only the version pair. The richer identity (`snapshotId` + manifest hashes) also detects same-seq identity changes that arise from rescan/repair/git-pull paths where seq does not advance but content does. `db` is a read-only handle to the journal substrate that hosts `consumer_cursors`; consumers persist their cursor through it after the atomic swap.
+
+**Lock discipline (canonical, see §6.4 and invariant #19)**: the Corpus mutation lock contains only authoritative writes, version bumps, and lightweight metadata/index state. `CorpusConsumer.apply` is invoked AFTER the lock releases. A consumer that promised retrieval freshness participates in `waitFreshUntil('corpus', snapshot, consumerId)` only after its cursor advances to a snapshot whose stable identity ≥ the awaited target.
 
 Projection types:
 
@@ -2241,9 +2302,10 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 37. An Expansion loads via dynamic import; its heavy dependencies enter the process only after `/equip` completes.
 38. Expansion is **never prompted or nagged**. Base-tier commands never surface "equip X to unlock" hints. Discovery is curiosity-driven (`/equip --list`, internally `coral-cli expansion list`; docs), not system-driven.
 39. Expansion catalog entries are **tool-named** (`needle`), not capability-named (`kb`).
-40. Projection consumers carry durable cursors in `consumer_cursors`. Two journal-consumer shapes plus the corpus-consumer shape: **base journal projection consumers** (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) are **cursor-only** — their projection rows are written by the commit-time reducer inside `BEGIN IMMEDIATE` (§3.3, §12.1), and `ConsumerDriver.notify(authority, version)` advances the cursor directly with no `apply()` body in production; **expansion-tier journal consumers** use range-based replay through `apply({ upToSeq, signal })`; **corpus consumers** use snapshot-based content-hash diff through `apply({ contentSeq, metadataSeq, signal })`. Updates flow via in-process async push (`ConsumerDriver.notify(authority, version)` after authoritative write).
+40. Projection consumers carry durable cursors in `consumer_cursors`. Two journal-consumer shapes plus the corpus-consumer shape: **base journal projection consumers** (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) are **cursor-only** — their projection rows are written by the commit-time reducer inside `BEGIN IMMEDIATE` (§3.3, §12.1), and `ConsumerDriver.notify(authority, version)` advances the cursor directly with no `apply()` body in production; **expansion-tier journal consumers** use range-based replay through `apply({ upToSeq, signal })`; **corpus consumers** use snapshot-based content-hash diff through `apply({ snapshot, db, signal })`, where `snapshot: CorpusSnapshot` carries `snapshotId`, both seq counters, and per-lane manifest hashes (§9.2). Updates flow via in-process async push (`ConsumerDriver.notify(authority, version)` after authoritative write).
 41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil('journal', version, consumerId)` — a condition-variable wake, never a polling loop. `waitFreshUntil` targets only journal/corpus authorities; stateless provider lifecycle ids are rejected structurally (no cursor row, no version axis to wait on — the registration is not a freshness target).
-41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', version, consumerId)`; `listExpansion` is status observation, not a readiness waiter.
+41b. Corpus consumer freshness is eventually consistent relative to Corpus writes. Commands with explicit retrieval readiness use `waitFreshUntil('corpus', snapshot, consumerId)` where `snapshot: CorpusSnapshot` (§9.2); `listExpansion` is status observation, not a readiness waiter.
+41c. **`waitFreshUntil` operational bounds**: the call has a **default 30-second timeout** (`timeoutMs?: number`, default `30000`); callers with heavier readiness contracts (e.g. `kb source import`, `kb reindex`) pass an explicit longer value. Errors surface as documented `CoralSetupError` codes, never thrown raw: `consumer_not_registered` (unknown id), `consumer_wait_fresh_invalid_target` (target is a stateless lifecycle id), `consumer_authority_mismatch` (id registered against a different authority), `consumer_wait_unsupported` (target shape mismatches the registered authority — number for journal, `CorpusSnapshot` for corpus). On timeout the call rejects with a dedicated `FreshnessTimeout` Error (`src/coordinator/consumer-driver.ts`) whose message includes `consumerId`, the rendered target, and `timeoutMs`; rejection removes only that waiter and does not invalidate the consumer cursor, abort `apply()`, or affect subsequent `waitFreshUntil` calls. `waitFreshUntil` never wakes spuriously: the wake is driven by `ConsumerDriver.notify` after authoritative writes, with no polling fallback.
 42. Expansion failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap. If a caller explicitly waits for that consumer as part of a readiness contract, the wait/job reports the readiness failure while the Corpus commit remains durable.
 43. Each `RuntimeBinding<T>` accepts at most one bound value at a time. Attempting to bind a binding currently held by another scope fails with structured `CoralSetupError('binding_occupied', { heldBy })`. Single-occupancy is enforced inside the binding primitive (`runtime/binding.ts`), not by lifecycle bookkeeping. The error surfaces to the user as: "binding `<name>` is held by `<holder>` — run `/equip uninstall <holder>` first" (skill grammar; routes internally to `coral-cli expansion unequip <holder>`).
 43a. Bundled engines are Expansions that auto-equip as a fallback pass at coordinator boot, after installed-engine recovery, filling only empty slots. Every binding is filled by an Expansion under a scope; no binding is created with an initial value. Tier (bundled vs installed) controls lifecycle (when equipped, who can unequip), not invocation mechanism.
