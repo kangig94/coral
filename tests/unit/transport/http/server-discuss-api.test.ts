@@ -14,7 +14,7 @@ import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { ProgressStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/job-store.js';
 import {
   appendPersistedEvents,
   cleanupDiscussHarnesses,
@@ -156,7 +156,7 @@ describe('server discuss API', () => {
     service = createExecutionServiceStub(),
     runtime?: Runtime,
     resolveProjectSourceFn?: (projectRoot: string) => string,
-    progressStore?: ProgressStore,
+    progressStore?: JobStore,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createCoordinatorServer({
       runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,

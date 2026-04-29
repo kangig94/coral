@@ -7,7 +7,7 @@ import {
 } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { JobAdmissionPort, LaunchPool } from '../../jobs/contracts/admission.js';
 import type { QueuedJobAbortPort } from '../../jobs/contracts/job-runner.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';

@@ -7,7 +7,7 @@ import { renderEntries } from '#src/discuss/transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#src/discuss/session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { nowIsoString } from '#src/infra/time.js';
@@ -49,7 +49,7 @@ type SimulationDiscussHarness = {
   pluginRoot: string;
   source: string;
   store: DiscussSessionStore;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   registry: DiscussContextRegistry;
   context: DiscussContext;
   invocationCtx: InvocationContext;
@@ -122,7 +122,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const source = runtime.paths.projectSource(projectRoot);
-  const progressStore = new ProgressStore(
+  const progressStore = new JobStore(
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),

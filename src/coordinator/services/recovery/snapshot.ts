@@ -1,10 +1,10 @@
 import { formatError } from '../../../infra/error-format.js';
-import type { ProgressStore } from '../../../jobs/job-store.js';
+import type { JobStore } from '../../../jobs/job-store.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
 import type { RecoveryJobFacts, RecoveryProjectionSnapshot, RecoverySessionFacts } from '../../../jobs/reconcile/plan.js';
 
 export function buildRecoverySnapshot(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   namespace: string,
   log: (message: string) => void,
   sessionLookup: SessionLookup,

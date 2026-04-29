@@ -1,9 +1,9 @@
-import type { CoralEventInput } from '../../store/envelope.js';
+import type { CoralEventInput } from '../store/envelope.js';
 import type {
   SessionAdapterUnparseableFault,
   SessionInterruptedFault,
   SessionProviderFailedFault,
-} from '../fault.js';
+} from './fault.js';
 
 export interface SessionFaultEventOptions {
   readonly sessionId: string;

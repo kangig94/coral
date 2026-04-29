@@ -5,7 +5,7 @@ import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';
 import { KbJobRecorder, normalizeKbFailureDetail } from './kb-job-recorder.js';
 

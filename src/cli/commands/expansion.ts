@@ -11,7 +11,7 @@ import {
   type InstallResponse,
   type InstallResult,
 } from '../expansion/contract.js';
-import { createCliExpansionActivation } from '../expansion-activation.js';
+import { createCliExpansionActivation } from '../expansion/index.js';
 
 const EXPANSION_COMMAND_NAME = 'expansion';
 

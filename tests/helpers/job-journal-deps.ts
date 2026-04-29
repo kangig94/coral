@@ -1,4 +1,4 @@
-import type { ProgressStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/job-store.js';
 import type { JobProgress } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { commit } from '#src/store/append.js';
@@ -9,7 +9,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
 
-export function createTestJobJournalDeps(progressStore: ProgressStore, runtime: Pick<Runtime, 'time'>) {
+export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<Runtime, 'time'>) {
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;

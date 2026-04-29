@@ -1,7 +1,7 @@
 import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInput } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobStatus } from '../records.js';
-import type { ProgressStore } from '../job-store.js';
+import type { JobStore } from '../job-store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
@@ -13,7 +13,7 @@ function jobRecoveryNeedsDomainEvent(fault: JobRecoveryError): boolean {
   return fault.kind === 'missing_launch_record' || fault.kind === 'recovery_parse_failed';
 }
 
-export function listLiveJobs(progressStore: ProgressStore, namespace: string): JobStatus[] {
+export function listLiveJobs(progressStore: JobStore, namespace: string): JobStatus[] {
   const results: JobStatus[] = [];
 
   for (const jobId of progressStore.listJobIds()) {
@@ -33,7 +33,7 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 }
 
 export function markJobAsError(
-  progressStore: Pick<ProgressStore, 'commit' | 'readLaunchProjection'>,
+  progressStore: Pick<JobStore, 'commit' | 'readLaunchProjection'>,
   status: JobStatus,
   fault: JobRecoveryError,
   _log: (message: string) => void,

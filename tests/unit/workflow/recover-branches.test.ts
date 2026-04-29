@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
@@ -71,7 +71,7 @@ function createHarness(options: {
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
   const runtime = new SimulationRuntime();
-  const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
+  const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
   const atomJobId = plan.slots[0].slotId;
   commitWorkflowEvents(

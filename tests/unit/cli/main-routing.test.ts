@@ -92,7 +92,7 @@ vi.mock('#src/cli/follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
 }));
 
-vi.mock('#src/cli/expansion-activation.js', () => ({
+vi.mock('#src/cli/expansion/index.js', () => ({
   createCliExpansionActivation: () => ({
     list: mockState.expansionList,
     info: mockState.expansionInfo,

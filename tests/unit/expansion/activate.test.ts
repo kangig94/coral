@@ -33,7 +33,7 @@ vi.mock('#src/transport/ipc/client.js', async () => {
   };
 });
 
-import { createCliExpansionActivation } from '#src/cli/expansion-activation.js';
+import { createCliExpansionActivation } from '#src/cli/expansion/index.js';
 
 function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}): CoordinatorDiscoveryRecord {
   return {
@@ -182,7 +182,7 @@ describe('expansion activation', () => {
       const [{ writeDiscoveryRecord }, { createCliExpansionActivation: createFreshActivation }, { createRealRuntime }] =
         await Promise.all([
           import('#src/infra/backend-discovery.js'),
-          import('#src/cli/expansion-activation.js'),
+          import('#src/cli/expansion/index.js'),
           import('#src/runtime/real.js'),
         ]);
       const request = vi.fn().mockResolvedValue({ expansions: [] });

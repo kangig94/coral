@@ -1,14 +1,14 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import type { EngineManifest } from '../expansion/contract.js';
-import { BUNDLED_ENGINES } from '../expansion/bundled.js';
-import { readDiscoveryRecord } from '../infra/backend-discovery.js';
-import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import { createRealRuntime } from '../runtime/real.js';
-import type { Runtime } from '../runtime/ports.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
-import { createIpcClient } from '../transport/ipc/client.js';
-import { ensure } from '../transport/ipc/ensure.js';
+import type { EngineManifest } from '../../expansion/contract.js';
+import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
+import { resolveBuildFlavor } from '../../infra/build-flavor.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import type { Runtime } from '../../runtime/ports.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
+import { createIpcClient } from '../../transport/ipc/client.js';
+import { ensure } from '../../transport/ipc/ensure.js';
 import {
   equipExpansionResultSchema,
   listExpansionResultSchema,
@@ -23,10 +23,10 @@ import {
   type InstallResponse,
   type InstallResult,
   type ReadBindingResult,
-} from '../coordinator/expansion/rpc.js';
-import { encodeInstallError } from './expansion/contract.js';
-import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './expansion/install.js';
-import { runExpansionOnboarding, type OnboardingContext } from './expansion/onboarding.js';
+} from '../../coordinator/expansion/rpc.js';
+import { encodeInstallError } from './contract.js';
+import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './install.js';
+import { runExpansionOnboarding, type OnboardingContext } from './onboarding.js';
 
 function resolvePluginRoot(): string | undefined {
   if (typeof process.env.CLAUDE_PLUGIN_ROOT === 'string' && process.env.CLAUDE_PLUGIN_ROOT.length > 0) {

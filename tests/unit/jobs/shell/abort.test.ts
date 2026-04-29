@@ -42,7 +42,7 @@ import {
   type SpawnProviderServerFn,
 } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
@@ -101,8 +101,8 @@ let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
-function createProgressStore(namespace = 'test-ns'): ProgressStore {
-  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+function createProgressStore(namespace = 'test-ns'): JobStore {
+  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
 }
 
 function _jobResultPath(jobId: string): string {
@@ -136,7 +136,7 @@ function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' 
 function createService(
   ctx: InvocationContext,
   options: {
-    progressStore?: ProgressStore;
+    progressStore?: JobStore;
     bundleHash?: string;
     backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
@@ -503,7 +503,7 @@ function _createClaimedJob(
 ): {
   jobId: string;
   sessionId: string;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   sessionManager: SessionManager;
 } {
   const { progressStore, sessionManager } =

@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { markJobAsError } from '#src/jobs/reconcile/recovery-effects.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -25,8 +25,8 @@ function createDb(): Database.Database {
   return db;
 }
 
-function createProgressStore(db: Database.Database): ProgressStore {
-  return new ProgressStore(
+function createProgressStore(db: Database.Database): JobStore {
+  return new JobStore(
     'tests',
     {
       time: { now: () => NOW.getTime() },

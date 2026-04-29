@@ -7,7 +7,7 @@ import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type { ProgressStore } from '../jobs/job-store.js';
+import type { JobStore } from '../jobs/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';
@@ -46,7 +46,7 @@ type RecoveredWorkflowFinalization = {
 
 type ResumeWorkflowDeps = {
   db: BetterSqlite3.Database;
-  progressStore: Pick<ProgressStore, 'readStatus'> & StoreReadContext;
+  progressStore: Pick<JobStore, 'readStatus'> & StoreReadContext;
   executionSvc: WorkflowExecutionPort;
   ctx: InvocationContext;
   workflowId: string;
@@ -495,7 +495,7 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
 
 export async function resumeAll(options: {
   db: BetterSqlite3.Database;
-  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
+  progressStore: Pick<JobStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;

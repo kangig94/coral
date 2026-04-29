@@ -3,7 +3,7 @@ import { errorMessage, formatError } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
 import { listLiveJobs } from '../jobs/reconcile/recovery-effects.js';
 import { isAppServerRuntime } from '../jobs/records.js';
-import type { ProgressStore } from '../jobs/job-store.js';
+import type { JobStore } from '../jobs/job-store.js';
 import type { KbRuntime } from '../kb/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
@@ -43,7 +43,7 @@ export interface ShutdownRuntimeState {
 }
 
 type FinalizeLiveAppServerJobsForHandoffContext = {
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   namespace: string;
   pluginRoot: string;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -104,7 +104,7 @@ type RunShutdownSequenceContext = {
   providerHostManager: ProviderHostManager;
   expansionLifecycleService?: ExpansionLifecycleService | null;
   terminateAllFn: () => void;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   pluginRoot: string;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };

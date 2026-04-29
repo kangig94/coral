@@ -21,7 +21,7 @@ import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import type { AcceptedAdmission, JobAdmissionPort, LaunchPool, QueuedHandle } from '../contracts/admission.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../contracts/progress-store.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../contracts/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';

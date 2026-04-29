@@ -5,7 +5,7 @@ import type { ProviderFailureCause } from '../../providers/fault.js';
 import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
   appendJobTerminalRecorded,
   failedTerminalOutcome,
@@ -20,7 +20,7 @@ import {
   sessionAdapterUnparseableEvent,
   sessionInterruptedEvent,
   sessionProviderFailedEvent,
-} from '../../sessions/shell/session-fault-events.js';
+} from '../../sessions/event-builders.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;

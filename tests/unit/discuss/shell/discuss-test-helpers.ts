@@ -25,7 +25,7 @@ import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { commitJobInputs } from '#tests/helpers/job-commits.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -97,7 +97,7 @@ export type DiscussHarness = {
   registry: DiscussContextRegistry;
   service: ExecutionService;
   runtime: Runtime;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   cleanup: () => void;
 };
 
@@ -130,7 +130,7 @@ function snapshotBelongsToSource(
 
 function createProgressStoreDiscussJournal(
   resolveProjectSource: (projectRoot: string) => string,
-  progressStore: ProgressStore,
+  progressStore: JobStore,
 ): DiscussSessionJournal {
   const readCtx = createDefaultStoreReadContext();
 
@@ -166,7 +166,7 @@ function createProgressStoreDiscussJournal(
 
 export function createDiscussContextOptions(
   runtime: Pick<Runtime, 'ids' | 'env' | 'time'>,
-  progressStore?: Pick<ProgressStore, 'readStatus'>,
+  progressStore?: Pick<JobStore, 'readStatus'>,
 ): DiscussContextConstructionOptions {
   return {
     runtime: {
@@ -199,7 +199,7 @@ export function createDiscussHarness(
   const runtime = resolvedOptions.runtime ?? new SimulationRuntime();
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
-  const progressStore = new ProgressStore(
+  const progressStore = new JobStore(
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),

@@ -1,24 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type { JobPhase } from '../jobs/phase.js';
-import type { JobTerminal } from '../jobs/records.js';
+import type { DiscussEventBusEvents } from '../discuss/event-bus.js';
 import { backendLog } from '../infra/backend-log.js';
+import type { JobEventBusEvents } from '../jobs/event-bus.js';
+import type { SessionEventBusEvents } from '../sessions/event-bus.js';
 
-export type EventBusEvents = {
-  'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };
-  'job:phase_changed': { jobId: string; phase: JobPhase; previousPhase: JobPhase };
-  'job:progress': { jobId: string; seq: number; message: string };
-  'job:completed': {
-    jobId: string;
-    result: JobTerminal;
-    costUsd?: number;
-    tokenUsage?: {
-      inputTokens?: number;
-      outputTokens?: number;
-    };
-  };
-  'session:released': { sessionId: string; jobId: string };
-  'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
-};
+export type EventBusEvents = JobEventBusEvents & SessionEventBusEvents & DiscussEventBusEvents;
 
 const MAX_EVENT_BUS_LISTENERS = 100;
 

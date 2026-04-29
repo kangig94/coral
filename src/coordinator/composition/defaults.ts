@@ -21,7 +21,7 @@ import {
   listen as defaultListen,
   markJobsAsError,
 } from '../lifecycle.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
@@ -58,7 +58,7 @@ export type ResolvedBackendDefaults = BackendEagerDefaults & BackendWorldBoundDe
 export type BackendDefaultsBindings = {
   readonly bindHost: string;
   readonly advertiseHost?: string;
-  readonly progressStore: ProgressStore;
+  readonly progressStore: JobStore;
   readonly launchCoordinator: Pick<LaunchCoordinator, 'terminateAll'>;
   readonly log: (message: string) => void;
 };
@@ -146,7 +146,7 @@ export function resolveCoordinatorDefaults(
   options: CoordinatorCoreOptions,
   runtime: Runtime,
   pluginRoot?: string,
-  progressStore?: ProgressStore,
+  progressStore?: JobStore,
 ): BackendDefaultsPlan {
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   if (pluginRoot !== undefined && pluginRoot !== resolvedPluginRoot) {

@@ -1,6 +1,6 @@
 import type { ProviderRequest, ProviderSpec } from '../../providers/contract.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import type { TerminalWriteOptions } from './progress-store.js';
+import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
 import type { LaunchDecision } from '../launch.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';

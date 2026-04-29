@@ -83,5 +83,3 @@ export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: n
     cursor: totalCursor,
   };
 }
-
-export { compactLiveWatchBuffer as compactWatchBuffer } from './live-registry.js';

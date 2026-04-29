@@ -11,7 +11,7 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
@@ -223,7 +223,7 @@ describe('agent wire contract', () => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
     const pluginRegistry = createPluginRegistry({
       storage: runtime.storage,
       env: runtime.env,

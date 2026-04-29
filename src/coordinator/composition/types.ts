@@ -21,7 +21,7 @@ import type {
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
 } from '../lifecycle.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ExecutionServiceDeps } from '../contracts.js';
@@ -49,7 +49,7 @@ type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
 export type CoordinatorCoreOptions = {
   runtime: Runtime;
   bootSnapshot?: CoordinatorBootSnapshot;
-  progressStore?: ProgressStore;
+  progressStore?: JobStore;
   pluginRoot?: string;
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
@@ -97,7 +97,7 @@ export type CoordinatorCoreResult = {
   idleTimer: IdleTimer;
   discussRegistry: DiscussContextRegistry;
   runtimeState: MutableCoordinatorRuntimeState;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   eventBus: TypedEventBus;
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;

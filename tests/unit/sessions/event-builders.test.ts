@@ -4,7 +4,7 @@ import {
   sessionAdapterUnparseableEvent,
   sessionInterruptedEvent,
   sessionProviderFailedEvent,
-} from '#src/sessions/shell/session-fault-events.js';
+} from '#src/sessions/event-builders.js';
 
 const OPTIONS = {
   sessionId: 'session-1',

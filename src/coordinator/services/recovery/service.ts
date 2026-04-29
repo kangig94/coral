@@ -17,7 +17,7 @@ import { nowIsoString } from '../../../infra/time.js';
 import type { ProviderCatalog } from '../../../providers/catalog.js';
 import type { ExecutionProviderServerAttachment, ExecutionProviderHostManager } from '../../contracts.js';
 import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/progress-store.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';

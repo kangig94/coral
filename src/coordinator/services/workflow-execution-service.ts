@@ -4,7 +4,7 @@ import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { SessionWorkflowPort } from '../../sessions/contracts.js';
 import type { CommitEventsFn } from '../../store/append.js';
 import { type WorkflowCommand } from '../../workflow/input.js';

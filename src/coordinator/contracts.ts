@@ -1,7 +1,7 @@
 import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
 import type { LaunchCoordinatorPort, LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
-import type { JobProgressStore } from '../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import type { JobProgress } from '../jobs/records.js';
 import type { LaunchReadiness } from '../jobs/launch-readiness.js';

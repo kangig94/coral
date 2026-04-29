@@ -3,7 +3,7 @@ import { isAppServerRuntime } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../../providers/catalog.js';
-import type { ProgressStore } from '../../../jobs/job-store.js';
+import type { JobStore } from '../../../jobs/job-store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime, TimerHandle } from '../../../runtime/ports.js';
@@ -41,7 +41,7 @@ export interface RecoveryCoordinator {
 }
 
 type RecoveryCoordinatorContext = {
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   runtime: Runtime;
   runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
@@ -55,7 +55,7 @@ type StartupRecoveryContext = {
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;

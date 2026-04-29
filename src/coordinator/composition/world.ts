@@ -17,7 +17,7 @@ import {
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
-import { ProgressStore } from '../../jobs/job-store.js';
+import { JobStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { composeReducers } from '../../store/reducers.js';
@@ -41,7 +41,7 @@ export interface CoordinatorWorld {
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
   readonly discussRegistry: DiscussContextRegistry;
-  readonly progressStore: ProgressStore;
+  readonly progressStore: JobStore;
   readonly providerHostManager: ProviderHostManager;
   readonly pluginRoot: string;
   readonly now: () => number;
@@ -92,7 +92,7 @@ export function createCoordinatorWorld(
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const progressStore =
     options.progressStore ??
-    new ProgressStore(
+    new JobStore(
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),

@@ -1,7 +1,7 @@
 import type { AppServerRuntime, JobLaunch, JobRuntime } from '../records.js';
 import type { JobTerminalInput } from '../terminal/result.js';
 import type { JobPhase } from '../phase.js';
-import type { TerminalWriteOptions } from '../contracts/progress-store.js';
+import type { TerminalWriteOptions } from '../contracts/job-store.js';
 
 export interface RecoveryCapableService {
   finalizeInterruptedAppServerJob(

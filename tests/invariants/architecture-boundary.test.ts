@@ -154,7 +154,7 @@ const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const NEEDLE_BACKEND_TARGET = 'src/engines/needle/backend.ts';
-const SESSION_FAULT_EVENTS = 'src/sessions/shell/session-fault-events.ts';
+const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
 const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
@@ -506,7 +506,7 @@ describe('architecture boundary guard', () => {
       'move the service dependency to a domain-owned contract or inject the shell implementation from the composition root.',
       (target) =>
         isWithinPath(target, JOBS_SHELL_ROOT) ||
-        (isWithinPath(target, SESSIONS_SHELL_ROOT) && target !== SESSION_FAULT_EVENTS) ||
+        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
         target.startsWith('src/discuss/shell/'),
     );
 
@@ -516,7 +516,7 @@ describe('architecture boundary guard', () => {
     const violations = collectViolations(
       SESSION_FAULT_EVENTS,
       'session fault event builders own only session event vocabulary',
-      'keep runtime access and cross-domain orchestration outside sessions/shell/session-fault-events.ts.',
+      'keep runtime access and cross-domain orchestration outside sessions/event-builders.ts.',
       (target) =>
         isWithinPath(target, COORDINATOR_ROOT) || isWithinPath(target, JOBS_ROOT) || isWithinPath(target, RUNTIME_ROOT),
     );
@@ -532,7 +532,7 @@ describe('architecture boundary guard', () => {
       'depend on pure event builders, jobs-owned recording helpers, or lower-level contracts.',
       (target) =>
         isWithinPath(target, JOBS_SHELL_ROOT) ||
-        (isWithinPath(target, SESSIONS_SHELL_ROOT) && target !== SESSION_FAULT_EVENTS) ||
+        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
         target.startsWith('src/coordinator/live/'),
     );
 
@@ -958,7 +958,7 @@ describe('architecture boundary guard', () => {
     const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
     const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
     const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/job-store.ts'), 'utf8');
-    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/contracts/progress-store.ts'), 'utf8');
+    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/contracts/job-store.ts'), 'utf8');
     const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read-queries.ts'), 'utf8');
     const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
 

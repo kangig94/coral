@@ -6,7 +6,7 @@ import { parseAgentRef, resolveAgent } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
@@ -87,7 +87,7 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderSpec(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
       const executionSvc = new ExecutionService(
         { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
         {

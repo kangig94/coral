@@ -8,7 +8,7 @@ import type * as NodeOs from 'node:os';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator, type SpawnProviderServerFn } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
@@ -135,7 +135,7 @@ describe('coordinator continuity lifecycle integration', () => {
   });
 
   function createService(providerRegistry: { get(name: string): ProviderSpec | undefined; getAll(): ProviderSpec[] }) {
-    const progressStore = new ProgressStore(TEST_BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
       eventBus,
     });
     const service = new ExecutionService(ctx, {

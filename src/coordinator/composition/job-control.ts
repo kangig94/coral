@@ -3,7 +3,7 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/job-store.js';
 import type { CoordinatorWorld } from './world.js';
 import type { ScopeCheckResult } from '../../transport/rpc/ports.js';
 
@@ -12,7 +12,7 @@ type CreateBackendControlDeps = {
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
   backendNamespace: string;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
 };
 
 export function createCoordinatorControl({

@@ -1,12 +1,12 @@
 import type { AppendedEvent } from '#src/store/append.js';
-import type { ProgressStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/job-store.js';
 import type { JobTerminalInput } from '#src/jobs/terminal/result.js';
 import type { JobTerminalDiagnostics } from '#src/jobs/terminal/result.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 
-export function commitJobInputs(store: ProgressStore, inputs: readonly CoralEventInput[]): AppendedEvent[] {
+export function commitJobInputs(store: JobStore, inputs: readonly CoralEventInput[]): AppendedEvent[] {
   return store.commit((c) => {
     for (const input of inputs) {
       c.append(input);
@@ -15,12 +15,12 @@ export function commitJobInputs(store: ProgressStore, inputs: readonly CoralEven
   });
 }
 
-export function commitJobInput(store: ProgressStore, input: CoralEventInput): AppendedEvent[] {
+export function commitJobInput(store: JobStore, input: CoralEventInput): AppendedEvent[] {
   return commitJobInputs(store, [input]);
 }
 
 export function commitJobTerminal(
-  store: ProgressStore,
+  store: JobStore,
   jobId: string,
   sessionId: string | null,
   terminal: JobTerminalInput,

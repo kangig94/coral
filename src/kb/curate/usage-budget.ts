@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StoragePort } from '../../runtime/ports.js';
 
@@ -9,18 +8,16 @@ const USAGE_WK_THRESHOLD = 100;
 export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 
 export type UsageBudgetOptions = {
+  storage: UsageBudgetStorage;
   homeDir?: string;
   now?: () => number;
-  storage?: UsageBudgetStorage;
 };
 
-const nodeStorage: UsageBudgetStorage = { readFileSync };
-
 export function isUsageBudgetExhausted({
+  storage,
   homeDir,
   now = Date.now,
-  storage = nodeStorage,
-}: UsageBudgetOptions = {}): boolean {
+}: UsageBudgetOptions): boolean {
   if (homeDir === undefined) {
     return false;
   }

@@ -1,6 +1,6 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TerminalOutcome } from '../outcome.js';
-import type { ProgressStore } from '../job-store.js';
+import type { JobStore } from '../job-store.js';
 import { appendJobTerminalRecorded } from '../terminal/recording.js';
 
 /**
@@ -15,7 +15,7 @@ import { appendJobTerminalRecorded } from '../terminal/recording.js';
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  progressStore: Pick<ProgressStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'>,
+  progressStore: Pick<JobStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'>,
   log: (message: string) => void,
 ): number {
   const db = progressStore.getDb();

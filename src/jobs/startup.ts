@@ -1,4 +1,4 @@
-import type { ProgressStore } from './job-store.js';
+import type { JobStore } from './job-store.js';
 import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
@@ -9,7 +9,7 @@ export type JobsStartupContext = {
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;

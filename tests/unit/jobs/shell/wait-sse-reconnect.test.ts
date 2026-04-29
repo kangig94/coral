@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -54,7 +54,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-sse-job';
@@ -233,7 +233,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-race-job';

@@ -177,7 +177,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
 }
 
 function stubLaunchRecord(
-  progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
+  progressStore: InstanceType<LoadedModules['progressStoreModule']['JobStore']>,
   overrides: {
     jobId: string;
     sessionId: string;
@@ -210,7 +210,7 @@ function stubLaunchRecord(
 }
 
 function stubRuntimeRecord(
-  progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
+  progressStore: InstanceType<LoadedModules['progressStoreModule']['JobStore']>,
   runtime: Runtime,
   options: {
     jobId: string;
@@ -246,7 +246,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const { modules, runtime, pluginRoot, projectRoot } = options;
   const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
   const eventBus = new modules.eventBusModule.TypedEventBus();
-  const progressStore = new modules.progressStoreModule.ProgressStore(
+  const progressStore = new modules.progressStoreModule.JobStore(
     namespace,
     runtime,
     createDefaultUpcasterRegistry(),

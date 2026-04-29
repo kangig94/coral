@@ -2,7 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { CommitEventsFn } from '../../store/append.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 import { releaseSessionJobClaim } from '../../sessions/job-release.js';

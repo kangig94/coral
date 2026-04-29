@@ -23,7 +23,7 @@ import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
-import { ProgressStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/job-store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -104,8 +104,8 @@ function jobResultPath(jobId: string): string {
 function createProgressStore(
   namespace = 'test-ns',
   runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time'> = runtime,
-): ProgressStore {
-  return new ProgressStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
+): JobStore {
+  return new JobStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
   });
 }
@@ -355,7 +355,7 @@ async function loadExecutionModules(): Promise<{
 }
 
 function stubLaunchRecord(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   overrides: {
     jobId: string;
     sessionId: string;
@@ -388,7 +388,7 @@ function stubLaunchRecord(
 }
 
 function stubRuntimeRecord(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   overrides: {
     jobId: string;
     pid?: number;
@@ -406,7 +406,7 @@ function stubRuntimeRecord(
 }
 
 function stubSessionProjection(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   overrides: {
     sessionId: string;
     provider: string;

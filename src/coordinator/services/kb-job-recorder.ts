@@ -2,7 +2,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
-import type { JobProgressStore } from '../../jobs/contracts/progress-store.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { KbRef } from '../../store/envelope.js';

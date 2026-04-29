@@ -23,10 +23,10 @@ import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
-import type { InitJobOptions, JobProgressStore } from './contracts/progress-store.js';
+import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
 
-export type ProgressStoreOptions = {
+export type JobStoreOptions = {
   eventBus?: JobEventBus;
   db?: Database;
   reducers?: ComposedReducers;
@@ -80,7 +80,7 @@ export class JobStore implements JobProgressStore {
     private readonly namespace: string,
     private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>,
     upcasters: UpcasterRegistry,
-    options: ProgressStoreOptions = {},
+    options: JobStoreOptions = {},
   ) {
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
@@ -116,7 +116,7 @@ export class JobStore implements JobProgressStore {
       // error if real-disk state is incompatible — so we can fall back to
       // :memory: here without masking real production bugs. Tests that point a
       // real Runtime at a dev box's stale ~/.coral DB still get a working
-      // store rather than a hard failure during ProgressStore construction.
+      // store rather than a hard failure during JobStore construction.
       if (path === ':memory:') {
         throw error;
       }
@@ -679,5 +679,3 @@ export class JobStore implements JobProgressStore {
     return row?.count ?? 0;
   }
 }
-
-export { JobStore as ProgressStore };

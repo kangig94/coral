@@ -1,3 +1,4 @@
+import type { SessionEventBusEvents } from '../sessions/event-bus.js';
 import type { JobPhase } from './phase.js';
 import type { JobTerminal } from './records.js';
 
@@ -14,31 +15,35 @@ export type JobEventBusEvents = {
       outputTokens?: number;
     };
   };
-  'session:released': { sessionId: string; jobId: string };
 };
 
+// JobStore listens for session releases to drive wait-stream completion. The
+// event itself is owned by the sessions domain; the bus surface accepts the
+// union of slices that jobs subscribers actually observe.
+type JobObservedEvents = JobEventBusEvents & Pick<SessionEventBusEvents, 'session:released'>;
+
 export interface JobEventBus {
-  on<K extends keyof JobEventBusEvents>(event: K, listener: (payload: JobEventBusEvents[K]) => void): this;
-  off<K extends keyof JobEventBusEvents>(event: K, listener: (payload: JobEventBusEvents[K]) => void): this;
-  emit<K extends keyof JobEventBusEvents>(event: K, payload: JobEventBusEvents[K]): boolean;
+  on<K extends keyof JobObservedEvents>(event: K, listener: (payload: JobObservedEvents[K]) => void): this;
+  off<K extends keyof JobObservedEvents>(event: K, listener: (payload: JobObservedEvents[K]) => void): this;
+  emit<K extends keyof JobObservedEvents>(event: K, payload: JobObservedEvents[K]): boolean;
 }
 
 class NoopJobEventBus implements JobEventBus {
-  on<K extends keyof JobEventBusEvents>(
+  on<K extends keyof JobObservedEvents>(
     _event: K,
-    _listener: (payload: JobEventBusEvents[K]) => void,
+    _listener: (payload: JobObservedEvents[K]) => void,
   ): this {
     return this;
   }
 
-  off<K extends keyof JobEventBusEvents>(
+  off<K extends keyof JobObservedEvents>(
     _event: K,
-    _listener: (payload: JobEventBusEvents[K]) => void,
+    _listener: (payload: JobObservedEvents[K]) => void,
   ): this {
     return this;
   }
 
-  emit<K extends keyof JobEventBusEvents>(_event: K, _payload: JobEventBusEvents[K]): boolean {
+  emit<K extends keyof JobObservedEvents>(_event: K, _payload: JobObservedEvents[K]): boolean {
     return false;
   }
 }

@@ -27,7 +27,7 @@ import { sendJson } from '../../../src/transport/http/handler.js';
 import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
-import { ProgressStore } from '../../../src/jobs/job-store.js';
+import { JobStore } from '../../../src/jobs/job-store.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
@@ -397,7 +397,7 @@ export type SimulationBackend = {
   backend: SimulationController;
   runtime: SimulationRuntime;
   eventBus: TypedEventBus;
-  progressStore: ProgressStore;
+  progressStore: JobStore;
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   pluginRoot: string;
@@ -428,7 +428,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
   const storeDb = openBackendStoreDb(runtime, { path: ':memory:' });
-  const progressStore = new ProgressStore(
+  const progressStore = new JobStore(
     namespace,
     runtime,
     createDefaultUpcasterRegistry(),

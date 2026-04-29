@@ -16,7 +16,7 @@ import { createReplacementBackendOwnershipChecker } from './ownership-checker.js
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
 import { StartupInterruptedError } from './startup-error.js';
-import type { ProgressStore } from '../jobs/job-store.js';
+import type { JobStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -153,7 +153,7 @@ export function waitForInflightDrain(
 }
 
 export function cleanupStaleJobs(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   currentBundleHash: string,
   log: (message: string) => void,
   storage: Pick<Runtime['storage'], 'rmSync'>,
@@ -175,7 +175,7 @@ export function cleanupStaleJobs(
 }
 
 export function markJobsAsError(
-  progressStore: ProgressStore,
+  progressStore: JobStore,
   namespace: string,
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
@@ -251,7 +251,7 @@ export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => P
 export type StartupRecoveryDeps = {
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
-  readonly progressStore: ProgressStore;
+  readonly progressStore: JobStore;
   readonly providerRegistry: ProviderRegistry;
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -273,7 +273,7 @@ export type LifecycleDeps = {
   readonly backendPid: number;
   readonly runtimeState: MutableRuntimeState;
   readonly idleTimer: IdleTimer;
-  readonly progressStore: ProgressStore;
+  readonly progressStore: JobStore;
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
   readonly eventBus: TypedEventBus;
