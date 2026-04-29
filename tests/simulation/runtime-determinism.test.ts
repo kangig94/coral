@@ -88,6 +88,8 @@ function registerConsumer(driver: ConsumerDriver): void {
   driver.register({
     id: CONSUMER_ID,
     authority: 'journal',
+    kind: 'apply',
+    registrationKind: 'expansion',
     apply: async ({ db, fromSeq, upToSeq }) => {
       const rows = db
         .prepare('SELECT seq FROM events WHERE seq > ? AND seq <= ? ORDER BY seq')

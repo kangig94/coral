@@ -151,6 +151,8 @@ function createNeedleConsumer(options: {
   return {
     id: NEEDLE_CONSUMER_ID,
     authority: 'corpus',
+    kind: 'apply',
+    registrationKind: 'expansion',
     corpusInterest: 'content',
     async apply({ snapshot, db }) {
       db.prepare(

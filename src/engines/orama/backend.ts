@@ -157,6 +157,8 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   readonly id = ORAMA_BASE_CONSUMER_ID;
   readonly authority = 'corpus';
   readonly corpusInterest = 'content';
+  readonly kind = 'apply';
+  registrationKind: 'base' | 'expansion' = 'base';
   onApplyFailure?: (error: ConsumerApplyError) => void;
   private readonly warningSet = new Set<string>();
 
@@ -169,7 +171,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     // Spec §12.3 lazy non-blocking rescan: kick a background rebuild on
     // staleness but project against the current index now. A subsequent
     // notify-cycle will pick up the rebuilt index when it lands.
-    await this.runtime.ensureCorpusFreshness({ wait: false });
+    await this.runtime.ensureCorpusFreshness({ wait: false, signal: ctx.signal });
     const preparedProjection = await this.prepareFullSnapshotForCurrentCorpus();
     await this.installFullSnapshot(ctx.snapshot, preparedProjection);
     this.runtime.recordIndexSyncSuccess();

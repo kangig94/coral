@@ -144,8 +144,15 @@ interface ConsumerState {
   waiters: Set<Waiter>;
   stopped: boolean;
   stopPromise: Promise<void> | null;
+  stopRequestedAt: number | null;
+  activeController: AbortController | null;
   unregistered: boolean;
   lastApplyError: ConsumerApplyError | null;
+}
+
+export interface StuckConsumerStatus {
+  readonly id: string;
+  readonly elapsedSinceStopMs: number;
 }
 
 interface CursorMetadataRow {
@@ -345,6 +352,8 @@ export class ConsumerDriver {
       waiters: new Set(),
       stopped: false,
       stopPromise: null,
+      stopRequestedAt: null,
+      activeController: null,
       unregistered: false,
       lastApplyError: null,
     };
@@ -401,6 +410,9 @@ export class ConsumerDriver {
     const state = this.consumers.get(consumerId);
     if (!state) {
       throw consumerNotRegisteredError(consumerId);
+    }
+    if (state.reg.kind === 'stateless') {
+      throw documentedCoralSetupError('consumer_wait_fresh_invalid_target', { id: consumerId });
     }
     if (state.reg.authority !== authority) {
       throw consumerAuthorityMismatchError(consumerId, authority, state.reg.authority);
@@ -465,6 +477,25 @@ export class ConsumerDriver {
     this.consumers.clear();
   }
 
+  /**
+   * Reports apply-bearing consumers (journal-apply or corpus) whose stop has
+   * been requested but whose `inFlight` hasn't settled yet. Used by /health
+   * `subsystems.kb.consumerStuck` so operators can apply their own grace
+   * policy.  Stateless and cursor-only consumers never appear here — they
+   * have no in-flight work after stop.
+   */
+  stuckConsumers(): StuckConsumerStatus[] {
+    const now = this.now().getTime();
+    const stuck: StuckConsumerStatus[] = [];
+    for (const state of this.consumers.values()) {
+      if (state.stopRequestedAt === null || state.inFlight === null) {
+        continue;
+      }
+      stuck.push({ id: state.reg.id, elapsedSinceStopMs: Math.max(0, now - state.stopRequestedAt) });
+    }
+    return stuck;
+  }
+
   unregisterStoppedConsumer(consumerId: string, options: UnregisterStoppedConsumerOptions = {}): void {
     const state = this.consumers.get(consumerId);
     if (!state) {
@@ -479,7 +510,13 @@ export class ConsumerDriver {
   }
 
   private assertValidRegistration(reg: ConsumerRegistration): void {
-    const regLike = reg as { id?: unknown; authority?: unknown };
+    const regLike = reg as { id?: unknown; authority?: unknown; kind?: unknown };
+    if (regLike.kind === 'stateless') {
+      if (reg.registrationKind !== undefined && !isRegistrationKind(reg.registrationKind)) {
+        throw documentedCoralSetupError('consumer_registration_kind_invalid', { id: reg.id });
+      }
+      return;
+    }
     if (regLike.authority !== 'journal' && regLike.authority !== 'corpus') {
       throw consumerAuthorityMismatchError(
         renderConsumerId(regLike.id),
@@ -502,6 +539,22 @@ export class ConsumerDriver {
   }
 
   private assertExistingRegistrationMatches(state: ConsumerState, reg: ConsumerRegistration): void {
+    if (state.reg.kind !== reg.kind) {
+      throw consumerRegistrationKindMismatchError(reg.id, reg.registrationKind, state.registrationKind);
+    }
+
+    if (reg.kind === 'stateless') {
+      if (reg.registrationKind !== undefined && state.registrationKind !== reg.registrationKind) {
+        throw consumerRegistrationKindMismatchError(reg.id, reg.registrationKind, state.registrationKind);
+      }
+      return;
+    }
+
+    // Both sides are non-stateless past this point (kind mismatch already thrown).
+    if (state.reg.kind === 'stateless') {
+      throw consumerRegistrationKindMismatchError(reg.id, reg.registrationKind, state.registrationKind);
+    }
+
     if (state.reg.authority !== reg.authority) {
       throw consumerAuthorityMismatchError(reg.id, reg.authority, state.reg.authority);
     }
@@ -524,11 +577,18 @@ export class ConsumerDriver {
     allowRegistrationKindUpdate = true,
     preloadedRow?: CursorMetadataRow,
   ): ConsumerRegistrationKind {
-    const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
-    const requestedKind = reg.registrationKind;
-    if (requestedKind === 'stateless' && row === undefined) {
+    if (reg.kind === 'stateless') {
+      const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
+      if (row !== undefined) {
+        // Stateless re-registration after a prior cursor-bearing registration:
+        // wipe the cursor row, since stateless owns no cursor.
+        this.deleteCursorRowStmt.run(reg.id);
+      }
       return 'stateless';
     }
+
+    const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
+    const requestedKind = reg.registrationKind;
 
     if (row) {
       if (row.authority !== reg.authority) {
@@ -546,10 +606,6 @@ export class ConsumerDriver {
         if (!allowRegistrationKindUpdate) {
           throw consumerRegistrationKindMismatchError(reg.id, requestedKind, storedKind);
         }
-        if (requestedKind === 'stateless') {
-          this.deleteCursorRowStmt.run(reg.id);
-          return requestedKind;
-        }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);
         return requestedKind;
       }
@@ -563,7 +619,7 @@ export class ConsumerDriver {
   }
 
   private insertCursorRow(reg: ConsumerRegistration, registrationKind: ConsumerRegistrationKind): void {
-    if (registrationKind === 'stateless') {
+    if (reg.kind === 'stateless' || registrationKind === 'stateless') {
       return;
     }
     const nowIso = this.now().toISOString();
@@ -602,6 +658,17 @@ export class ConsumerDriver {
       return;
     }
 
+    if (state.reg.kind === 'cursor') {
+      // Cursor-only consumers (base journal projections) advance the persisted
+      // cursor directly. Spec §3.3 commit-time reducer is the authoritative
+      // writer; the driver here only maintains the cursor row that
+      // `waitFreshUntil` reads.
+      this.advanceJournalCursor(state.reg, target);
+      state.lastApplyError = null;
+      this.resolveWaiters(state, target);
+      return;
+    }
+
     if (state.inFlight) {
       if (state.pendingTarget === null || target > state.pendingTarget) {
         state.pendingTarget = target;
@@ -612,6 +679,7 @@ export class ConsumerDriver {
     state.inFlight = (async () => {
       const succeeded = await this.runJournalApply(state, target);
       state.inFlight = null;
+      state.activeController = null;
 
       if (state.stopped) {
         state.pendingTarget = null;
@@ -657,6 +725,7 @@ export class ConsumerDriver {
       // If no snapshot was parked, the consumer waits for the next notify.
       await this.runCorpusApply(state, snapshot);
       state.inFlight = null;
+      state.activeController = null;
 
       if (state.stopped) {
         state.pendingCorpusSnapshot = null;
@@ -673,10 +742,7 @@ export class ConsumerDriver {
 
   private async runJournalApply(state: ConsumerState, target: number): Promise<boolean> {
     try {
-      if (state.reg.authority !== 'journal') {
-        return true;
-      }
-      if (state.registrationKind === 'stateless' || state.reg.apply === undefined) {
+      if (state.reg.kind !== 'apply' || state.reg.authority !== 'journal') {
         return true;
       }
 
@@ -687,7 +753,9 @@ export class ConsumerDriver {
         return true;
       }
 
-      await state.reg.apply({ fromSeq, upToSeq, db: this.db });
+      const controller = new AbortController();
+      state.activeController = controller;
+      await state.reg.apply({ fromSeq, upToSeq, db: this.db, signal: controller.signal });
       this.advanceJournalCursor(state.reg, upToSeq);
       state.lastApplyError = null;
       this.resolveWaiters(state, upToSeq);
@@ -703,10 +771,7 @@ export class ConsumerDriver {
 
   private async runCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot): Promise<boolean> {
     try {
-      if (state.reg.authority !== 'corpus') {
-        return true;
-      }
-      if (state.registrationKind === 'stateless' || state.reg.apply === undefined) {
+      if (state.reg.kind !== 'apply' || state.reg.authority !== 'corpus') {
         return true;
       }
 
@@ -715,7 +780,9 @@ export class ConsumerDriver {
         return true;
       }
 
-      await state.reg.apply({ snapshot, db: this.db });
+      const controller = new AbortController();
+      state.activeController = controller;
+      await state.reg.apply({ snapshot, db: this.db, signal: controller.signal });
       this.advanceCorpusCursor(state.reg, snapshot);
       state.lastApplyError = null;
       this.resolveWaiters(state, snapshot);
@@ -730,12 +797,16 @@ export class ConsumerDriver {
   }
 
   private invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {
-    if (state.reg.onApplyFailure === undefined) {
+    if (state.reg.kind === 'stateless') {
+      return;
+    }
+    const onApplyFailure = state.reg.onApplyFailure;
+    if (onApplyFailure === undefined) {
       return;
     }
 
     try {
-      state.reg.onApplyFailure(applyError);
+      onApplyFailure(applyError);
     } catch (callbackErr) {
       backendLog.error(`ConsumerDriver onApplyFailure failed (${state.reg.id})`, callbackErr);
     }
@@ -807,6 +878,29 @@ export class ConsumerDriver {
     }
 
     state.stopped = true;
+    state.stopRequestedAt = this.now().getTime();
+
+    if (state.reg.kind === 'stateless') {
+      const onStop = state.reg.onStop;
+      state.stopPromise = (async () => {
+        if (onStop !== undefined) {
+          await onStop();
+        }
+        this.rejectWaiters(state, waiterError);
+      })();
+      return state.stopPromise;
+    }
+
+    if (state.reg.kind === 'cursor') {
+      // Cursor-only consumers carry no inflight work and no abort controller.
+      state.pendingTarget = null;
+      state.pendingCorpusSnapshot = null;
+      this.rejectWaiters(state, waiterError);
+      state.stopPromise = Promise.resolve();
+      return state.stopPromise;
+    }
+
+    state.activeController?.abort('shutdown');
     state.stopPromise = (async () => {
       await state.inFlight;
       state.pendingTarget = null;
@@ -845,6 +939,9 @@ export class ConsumerDriver {
   }
 
   private statusFor(state: ConsumerState): ConsumerHandleStatus {
+    if (state.reg.kind === 'stateless') {
+      return { kind: 'stateless', pending: false };
+    }
     if (state.reg.authority === 'journal') {
       return {
         authority: 'journal',

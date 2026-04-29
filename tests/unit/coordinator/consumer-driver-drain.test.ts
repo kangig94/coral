@@ -30,11 +30,13 @@ function createDb(): InstanceType<typeof Database> {
 
 function createRegistration(
   id: string,
-  apply: JournalConsumerRegistration['apply'],
+  apply: Extract<JournalConsumerRegistration, { kind: 'apply' }>['apply'],
 ): JournalConsumerRegistration {
   return {
     id,
     authority: 'journal',
+    kind: 'apply',
+    registrationKind: 'expansion',
     apply,
   };
 }

@@ -43,6 +43,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'consumer_unregister_requires_stop'
   | 'consumer_interest_invalid'
   | 'consumer_registration_kind_invalid'
+  | 'consumer_wait_fresh_invalid_target'
   | 'expansion_install_path_unwritable'
   | 'binding_empty'
   | 'kb_unavailable'
@@ -154,6 +155,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Consumer ${stringContextValue(context, 'id', 'this consumer')} registration kind is invalid.`,
     remediation: 'Internal error: invalid consumer registration kind. Report it with the code if persistent.',
+  },
+  consumer_wait_fresh_invalid_target: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} cannot satisfy waitFreshUntil — stateless provider lifecycle registrations have no cursor.`,
+    remediation:
+      'Use waitFreshUntil only with journal or corpus authority consumers. Stateless provider lifecycle registrations are not freshness targets.',
   },
   expansion_install_path_unwritable: {
     userMessage: (context) =>

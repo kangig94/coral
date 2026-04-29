@@ -126,24 +126,26 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     register(_reg: ConsumerRegistration): ConsumerHandle {
       return {
         id: _reg.id,
-        registrationKind: 'base',
+        registrationKind: _reg.kind === 'stateless' ? 'stateless' : 'base',
         lastApplyError: null,
         async stop() {},
         async unregister() {},
         status: () =>
-          _reg.authority === 'corpus'
-            ? {
-                authority: 'corpus',
-                corpusInterest: _reg.corpusInterest,
-                snapshotId: null,
-                contentSeq: 0,
-                metadataSeq: 0,
-                contentManifestHash: null,
-                metadataManifestHash: null,
-                pending: false,
-                lastApplyError: null,
-              }
-            : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
+          _reg.kind === 'stateless'
+            ? { kind: 'stateless', pending: false }
+            : _reg.authority === 'corpus'
+              ? {
+                  authority: 'corpus',
+                  corpusInterest: _reg.corpusInterest,
+                  snapshotId: null,
+                  contentSeq: 0,
+                  metadataSeq: 0,
+                  contentManifestHash: null,
+                  metadataManifestHash: null,
+                  pending: false,
+                  lastApplyError: null,
+                }
+              : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
       };
     },
   };

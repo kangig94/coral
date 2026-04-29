@@ -73,24 +73,26 @@ export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRunt
 
 function createHandle(reg: ConsumerRegistration): ConsumerHandle {
   const status: ConsumerHandleStatus =
-    reg.authority === 'corpus'
-      ? {
-          authority: 'corpus',
-          corpusInterest: reg.corpusInterest,
-          snapshotId: null,
-          contentSeq: 0,
-          metadataSeq: 0,
-          contentManifestHash: null,
-          metadataManifestHash: null,
-          pending: false,
-          lastApplyError: null,
-        }
-      : {
-          authority: 'journal',
-          cursor: 0,
-          pending: false,
-          lastApplyError: null,
-        };
+    reg.kind === 'stateless'
+      ? { kind: 'stateless', pending: false }
+      : reg.authority === 'corpus'
+        ? {
+            authority: 'corpus',
+            corpusInterest: reg.corpusInterest,
+            snapshotId: null,
+            contentSeq: 0,
+            metadataSeq: 0,
+            contentManifestHash: null,
+            metadataManifestHash: null,
+            pending: false,
+            lastApplyError: null,
+          }
+        : {
+            authority: 'journal',
+            cursor: 0,
+            pending: false,
+            lastApplyError: null,
+          };
 
   return {
     id: reg.id,

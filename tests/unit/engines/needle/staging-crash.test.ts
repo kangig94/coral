@@ -215,8 +215,10 @@ function createRuntimeHarness(
           consumer: {
             id: handle.id,
             authority: 'corpus',
+            kind: 'apply',
+            registrationKind: handle.registrationKind === 'stateless' ? 'expansion' : handle.registrationKind,
             corpusInterest: 'content',
-            registrationKind: handle.registrationKind,
+            apply: async () => {},
           },
         },
         bindingScope,

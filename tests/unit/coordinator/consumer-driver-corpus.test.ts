@@ -97,6 +97,8 @@ describe('ConsumerDriver corpus registrations', () => {
     const contentConsumer: CorpusConsumerRegistration = {
       id: 'corpus-content',
       authority: 'corpus',
+      kind: 'apply',
+      registrationKind: 'expansion',
       corpusInterest: 'content',
       async apply({ snapshot }) {
         calls.push({ id: 'content', snapshot });
@@ -105,6 +107,8 @@ describe('ConsumerDriver corpus registrations', () => {
     const metadataConsumer: CorpusConsumerRegistration = {
       id: 'corpus-metadata',
       authority: 'corpus',
+      kind: 'apply',
+      registrationKind: 'expansion',
       corpusInterest: 'metadata',
       async apply({ snapshot }) {
         calls.push({ id: 'metadata', snapshot });
@@ -238,6 +242,8 @@ describe('ConsumerDriver corpus registrations', () => {
         driver.register({
           id: 'corpus-proj',
           authority: 'corpus',
+          kind: 'apply',
+          registrationKind: 'expansion',
           corpusInterest: 'content',
           async apply() {},
         }),
@@ -246,6 +252,8 @@ describe('ConsumerDriver corpus registrations', () => {
         driver.register({
           id: 'corpus-proj',
           authority: 'corpus',
+          kind: 'apply',
+          registrationKind: 'expansion',
           corpusInterest: 'content',
           async apply() {},
         }),
@@ -281,6 +289,8 @@ describe('ConsumerDriver corpus registrations', () => {
       driver.register({
         id: 'corpus-both',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'both',
         async apply({ snapshot }) {
           calls.push(snapshot);
@@ -339,6 +349,8 @@ describe('ConsumerDriver corpus registrations', () => {
       driver.register({
         id: 'corpus-retry',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'both',
         async apply({ snapshot }) {
           if (snapshot.snapshotId === 'snapshot-fail') {
@@ -400,6 +412,8 @@ describe('ConsumerDriver corpus registrations', () => {
       driver.register({
         id: 'corpus-both',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'both',
         async apply({ snapshot }) {
           calls.push(snapshot);

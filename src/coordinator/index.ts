@@ -28,7 +28,6 @@ import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
-import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
@@ -44,7 +43,10 @@ import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 
-export type CoordinatorServerOptions = Omit<CoordinatorCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
+export type CoordinatorServerOptions = Omit<
+  CoordinatorCoreOptions,
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked'
+> & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
 };
@@ -267,6 +269,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     ...coreOptions,
     runtime,
     expansionLifecycleService,
+    getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
+    // Phase 3 stub. Phase 4 replaces with the real KbRuntime
+    // mutation-lock diagnostics so /health.subsystems.kb.mutationBlocked
+    // reports stuck mutations.
+    getMutationBlocked: () => ({ blocked: false }),
     createKbSubsystemFn: async (ctx) => {
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
@@ -368,10 +375,34 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const db = getStoreDb();
       const driver = getConsumerDriver();
 
-      registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
-      registerJournalProjectionConsumer(driver, db, 'sessions', sessionsRegistry);
-      registerJournalProjectionConsumer(driver, db, 'discuss', discussRegistry);
-      registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
+      // Base journal projection consumers register cursor-only — projection
+      // state is written by the commit-time reducer (spec §3.3); the cursor
+      // row exists so `waitFreshUntil` can resolve callers waiting on a
+      // specific journal seq.
+      driver.register({
+        id: 'jobs',
+        authority: 'journal',
+        kind: 'cursor',
+        registrationKind: 'base',
+      });
+      driver.register({
+        id: 'sessions',
+        authority: 'journal',
+        kind: 'cursor',
+        registrationKind: 'base',
+      });
+      driver.register({
+        id: 'discuss',
+        authority: 'journal',
+        kind: 'cursor',
+        registrationKind: 'base',
+      });
+      driver.register({
+        id: 'workflow',
+        authority: 'journal',
+        kind: 'cursor',
+        registrationKind: 'base',
+      });
       assertStartupStillActive();
 
       const currentMaxSeq = getCurrentJournalSeq();

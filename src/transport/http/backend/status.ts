@@ -6,7 +6,7 @@ import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
 } from '../sse.js';
-import { isBackendHealth } from './health.js';
+import { isBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus = {
@@ -18,6 +18,7 @@ export type BackendStatus = {
   active: number;
   activeJobs: number;
   inflightRequests: number;
+  subsystems: BackendHealth['subsystems'];
 } | {
   status: 'shutting_down';
 };

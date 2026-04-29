@@ -76,6 +76,8 @@ describe('createExpansionHost', () => {
     const reg: ConsumerRegistration = {
       id: 'consumer-a',
       authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
       async apply() {},
     };
 
@@ -89,7 +91,7 @@ describe('createExpansionHost', () => {
     expect(unregister).toHaveBeenCalledTimes(1);
   });
 
-  it('derives registrationKind from (tier, hasApply) — bundled→base, installed+apply→expansion, installed-no-apply→stateless', () => {
+  it('derives registrationKind from (tier, kind) — bundled→base, installed apply→expansion, stateless→stateless', () => {
     const { runtime, kb } = createTestRuntime();
     const captured: ConsumerRegistration[] = [];
     const consumerDriver = {
@@ -115,7 +117,14 @@ describe('createExpansionHost', () => {
       consumerDriver,
     });
     bundledHost.registerConsumer(
-      { id: 'orama-base', authority: 'corpus', corpusInterest: 'content', async apply() {} },
+      {
+        id: 'orama-base',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
+        corpusInterest: 'content',
+        async apply() {},
+      },
       bundledHost.scope,
     );
 
@@ -128,7 +137,14 @@ describe('createExpansionHost', () => {
       consumerDriver,
     });
     installedApplyHost.registerConsumer(
-      { id: 'needle', authority: 'corpus', corpusInterest: 'content', async apply() {} },
+      {
+        id: 'needle',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
+        corpusInterest: 'content',
+        async apply() {},
+      },
       installedApplyHost.scope,
     );
 
@@ -141,7 +157,7 @@ describe('createExpansionHost', () => {
       consumerDriver,
     });
     installedStatelessHost.registerConsumer(
-      { id: 'gemini', authority: 'journal' },
+      { id: 'gemini', kind: 'stateless', registrationKind: 'stateless' },
       installedStatelessHost.scope,
     );
 

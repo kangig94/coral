@@ -252,7 +252,8 @@ const onnxExpansion: Expansion = async (host) => {
   const service = new LocalOnnxProvider(model, ONNX_MODELS[model].dims, runtimeModule, modelFilePath);
   const consumer = {
     id: host.id,
-    authority: 'journal' as const,
+    kind: 'stateless' as const,
+    registrationKind: 'stateless' as const,
   };
   const provider: Backed<EmbeddingService> = {
     read: () => service,

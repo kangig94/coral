@@ -41,18 +41,18 @@ function bindingNameOf<T>(binding: RuntimeBinding<T>, error: unknown): string {
 }
 
 /**
- * Derives `registrationKind` from the (tier, hasApply) triple. Engine code
- * intentionally does NOT declare `registrationKind` so the kind is bound to
- * lifecycle, not engine identity:
- *  - bundled                   → 'base'       (auto-equips at boot, owns the cursor)
- *  - installed && apply !== undefined → 'expansion'  (projection consumer)
- *  - installed && apply === undefined → 'stateless' (embedders / service consumers)
+ * Derives `registrationKind` from `(tier, reg.kind)`. Engine code declares
+ * `kind` (`'cursor' | 'apply' | 'stateless'`) on the registration; the host
+ * decides the lifecycle/storage tier:
+ *  - stateless registrations               → 'stateless' (no cursor, no apply)
+ *  - bundled tier (cursor or apply)        → 'base'      (auto-equips at boot, owns the cursor)
+ *  - installed tier (cursor or apply)      → 'expansion' (projection consumer)
  */
 function deriveRegistrationKind(tier: ExpansionTier, reg: ConsumerRegistration): ConsumerRegistrationKind {
-  if (tier === 'bundled') {
-    return 'base';
+  if (reg.kind === 'stateless') {
+    return 'stateless';
   }
-  return reg.apply !== undefined ? 'expansion' : 'stateless';
+  return tier === 'bundled' ? 'base' : 'expansion';
 }
 
 export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {

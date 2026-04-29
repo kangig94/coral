@@ -51,8 +51,9 @@ function createCorpusConsumer(
   return {
     id,
     authority: 'corpus' as const,
+    kind: 'apply' as const,
+    registrationKind: registrationKind === 'stateless' ? 'expansion' : registrationKind,
     corpusInterest: 'content' as const,
-    registrationKind,
     apply,
   };
 }

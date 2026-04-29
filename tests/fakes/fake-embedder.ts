@@ -31,7 +31,7 @@ const fakeEmbedder: Expansion = (host) => {
     read: () => service,
     consumer: {
       id: 'test-embedder',
-      authority: 'journal',
+      kind: 'stateless',
       registrationKind: 'stateless',
     },
   };

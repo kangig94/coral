@@ -47,6 +47,8 @@ const SYNTHETIC_VECTOR_SOURCE = `
       consumer: {
         id: 'needle-vector',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'content',
         apply: async () => {},
       },
@@ -65,6 +67,8 @@ const SYNTHETIC_FTS_SOURCE = `
       consumer: {
         id: 'orama-fts-only-base',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
         corpusInterest: 'content',
         apply: async () => {},
       },
@@ -81,6 +85,8 @@ const SYNTHETIC_BUNDLED_VECTOR_SOURCE = `
       consumer: {
         id: 'bundled-vector-base',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
         corpusInterest: 'content',
         apply: async () => {},
       },

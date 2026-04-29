@@ -310,8 +310,9 @@ describe('agent wire contract', () => {
           inflightRequests: idleTimer.inflightRequests,
           env: {},
           subsystems: {
-            kb: 'unavailable',
-            discuss: 'ok',
+            kb: { kind: 'unavailable' as const },
+            kbCurate: 'ok' as const,
+            discuss: 'ok' as const,
           },
         }),
       },

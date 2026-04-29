@@ -315,6 +315,8 @@ function aggregateVectorHits(
 export class NeedleBackend implements NeedleBackendContract {
   readonly authority = 'corpus';
   readonly corpusInterest = 'content';
+  readonly kind = 'apply';
+  registrationKind: 'base' | 'expansion' = 'expansion';
   readonly id: string;
   onApplyFailure?: (error: ConsumerApplyError) => void;
 

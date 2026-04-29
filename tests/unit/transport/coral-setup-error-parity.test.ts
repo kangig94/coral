@@ -96,7 +96,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
         queueDepth: 0,
         inflightRequests: 0,
         env: {},
-        subsystems: { kb: 'ok', discuss: 'ok' },
+        subsystems: { kb: { kind: 'ok' as const }, kbCurate: 'ok' as const, discuss: 'ok' as const },
       }),
     },
     events: {

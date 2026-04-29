@@ -392,6 +392,27 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
         const kbStatus = runtimeState.getKbStatus();
         const curateHealth = runtimeState.getCurateHealth();
+        const consumerStuck = options.getConsumerStuck();
+        const mutationBlocked = options.getMutationBlocked();
+        const kbHealth: {
+          kind: 'ok' | 'unavailable';
+          reason?: string;
+          mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
+          consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+        } = {
+          kind: kbStatus.kind,
+          ...(kbStatus.kind === 'unavailable' ? { reason: kbStatus.reason } : {}),
+          ...(mutationBlocked.blocked
+            ? {
+                mutationBlocked: {
+                  owner: mutationBlocked.owner,
+                  ageMs: mutationBlocked.ageMs,
+                  signaledAtMs: mutationBlocked.signaledAtMs,
+                },
+              }
+            : {}),
+          ...(consumerStuck.length > 0 ? { consumerStuck } : {}),
+        };
         return {
           status,
           version: identity.version,
@@ -406,8 +427,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
           subsystems: {
-            kb: kbStatus.kind,
-            ...(kbStatus.kind === 'unavailable' ? { kbReason: kbStatus.reason } : {}),
+            kb: kbHealth,
             kbCurate: curateHealth.kind,
             ...(curateHealth.kind === 'degraded' ? { kbCurateReason: curateHealth.reason } : {}),
             discuss: 'ok' as const,

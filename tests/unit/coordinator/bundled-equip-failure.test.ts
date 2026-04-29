@@ -43,7 +43,8 @@ const PARTIAL_BIND_THEN_THROW_SOURCE = `
       }),
       consumer: {
         id: 'partial-fts',
-        authority: 'journal',
+        kind: 'stateless',
+        registrationKind: 'stateless',
       },
     });
     throw new Error('mid-bind failure');
@@ -67,6 +68,8 @@ const SUCCESS_BUNDLED_SOURCE = `
       consumer: {
         id: 'success-engine-base',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
         corpusInterest: 'content',
         apply: async () => {},
       },
@@ -247,6 +250,8 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
       registerBuiltInProvidersFn: () => {},
       recoverPersistedDiscussFn: async () => [],
       runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+      getMutationBlocked: () => ({ blocked: false }),
     });
 
     try {
@@ -266,8 +271,7 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         { timeoutMs: 1_000 },
       );
       expect(health.subsystems).toMatchObject({
-        kb: 'unavailable',
-        kbReason: reason,
+        kb: { kind: 'unavailable', reason },
         kbCurate: 'ok',
       });
 

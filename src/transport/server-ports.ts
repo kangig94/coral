@@ -39,8 +39,12 @@ export type HealthSnapshot = {
   inflightRequests: number;
   env: Record<string, string>;
   subsystems: {
-    kb: 'ok' | 'unavailable';
-    kbReason?: string;
+    kb: {
+      kind: 'ok' | 'unavailable';
+      reason?: string;
+      mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
+      consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+    };
     kbCurate: 'ok' | 'degraded';
     kbCurateReason?: string;
     discuss: 'ok';

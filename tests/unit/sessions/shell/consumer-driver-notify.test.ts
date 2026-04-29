@@ -16,7 +16,6 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 
@@ -55,7 +54,13 @@ describe('sessions consumer-driver notify', () => {
   it('projects the appended session after SessionManager uses the coordinator-bound appender', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    registerJournalProjectionConsumer(driver, db, 'sessions', sessionsRegistry);
+    // Cursor-only base consumer; commit-time reducer writes projection_sessions.
+    driver.register({
+      id: 'sessions',
+      authority: 'journal',
+      kind: 'cursor',
+      registrationKind: 'base',
+    });
 
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createDefaultUpcasterRegistry();

@@ -54,8 +54,9 @@ function createPorts(): HttpHandlerPorts {
         inflightRequests: 0,
         env: {},
         subsystems: {
-          kb: 'ok',
-          discuss: 'ok',
+          kb: { kind: 'ok' as const },
+          kbCurate: 'ok' as const,
+          discuss: 'ok' as const,
         },
       }),
     },

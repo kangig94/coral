@@ -20,7 +20,7 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 function createDriver(
-  apply: JournalConsumerRegistration['apply'] = async () => {},
+  apply: Extract<JournalConsumerRegistration, { kind: 'apply' }>['apply'] = async () => {},
 ): { db: InstanceType<typeof Database>; driver: ConsumerDriver; consumerId: string } {
   const db = createDb();
   const driver = new ConsumerDriver({ db });
@@ -29,6 +29,8 @@ function createDriver(
   driver.register({
     id: consumerId,
     authority: 'journal',
+    kind: 'apply',
+    registrationKind: 'expansion',
     apply,
   });
 
@@ -110,6 +112,8 @@ describe('ConsumerDriver waitFreshUntil', () => {
     driver.register({
       id: consumerId,
       authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
       apply: async () => {},
     });
 

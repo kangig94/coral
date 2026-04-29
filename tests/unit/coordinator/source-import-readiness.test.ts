@@ -18,7 +18,14 @@ function makeBoundBinding(name: string, consumerId: string): RuntimeBinding<Back
         read: (() => {
           throw new Error('unused in tests');
         }) as never,
-        consumer: { id: consumerId, authority: 'corpus' },
+        consumer: {
+          id: consumerId,
+          authority: 'corpus',
+          kind: 'apply',
+          registrationKind: 'expansion',
+          corpusInterest: 'content',
+          apply: async () => {},
+        },
       }) as unknown as Backed,
     bind: () => {
       throw new Error('unused in tests');

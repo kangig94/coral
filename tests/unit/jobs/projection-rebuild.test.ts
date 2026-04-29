@@ -10,7 +10,6 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -25,11 +24,19 @@ function createDb(): InstanceType<typeof Database> {
   return db;
 }
 
-describe('jobs projection rebuild (live ConsumerDriver)', () => {
-  it('replays historical job events into projection_jobs byte-identically through notify + waitFreshUntil', async () => {
+describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consumer)', () => {
+  it('commit-time reducer writes projection_jobs and the cursor-only consumer advances on notify + waitFreshUntil', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, now: () => NOW });
-    registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
+    // Base journal projection consumers register cursor-only — projection
+    // state is written by the commit-time reducer (spec §3.3); the cursor
+    // row exists so `waitFreshUntil` can resolve callers.
+    driver.register({
+      id: 'jobs',
+      authority: 'journal',
+      kind: 'cursor',
+      registrationKind: 'base',
+    });
 
     try {
       const appended = commitInputs(
@@ -115,25 +122,14 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
         ],
         {
           now: () => NOW,
-          reducers: composeReducers(),
+          reducers: composeReducers(jobsRegistry),
           upcasters: createDefaultUpcasterRegistry(),
         },
       );
 
-      expect(
-        db
-          .prepare(
-            `SELECT job_id
-               FROM projection_jobs
-              WHERE job_id = ?`,
-          )
-          .get('job-1'),
-      ).toBeUndefined();
-
-      const target = appended.at(-1)?.seq ?? 0;
-      driver.notify('journal', target);
-      await driver.waitFreshUntil('journal', target, 'jobs');
-
+      // Spec §3.3: commit-time reducer is the authoritative writer for base
+      // journal projections — projection_jobs is populated synchronously
+      // during commit, before any notify.
       expect(
         db
           .prepare(
@@ -156,8 +152,17 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
         }),
         parent_workflow_job_id: 'job-parent',
         workflow_slot: 'workflow-slot-1',
-        last_seq: target,
+        last_seq: appended.at(-1)?.seq ?? 0,
       });
+
+      const target = appended.at(-1)?.seq ?? 0;
+      driver.notify('journal', target);
+      await driver.waitFreshUntil('journal', target, 'jobs');
+
+      const cursorRow = db
+        .prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?')
+        .get('jobs') as { cursor: number } | undefined;
+      expect(cursorRow?.cursor).toBe(target);
     } finally {
       await driver.shutdown();
       db.close();

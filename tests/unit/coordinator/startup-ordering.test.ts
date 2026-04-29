@@ -34,6 +34,8 @@ function createMockKb(order?: string[]) {
   const baseConsumer = {
     id: MOCK_BASE_CONSUMER_ID,
     authority: 'corpus' as const,
+    kind: 'apply' as const,
+    registrationKind: 'base' as const,
     corpusInterest: 'content' as const,
     apply: vi.fn(async () => {}),
   };

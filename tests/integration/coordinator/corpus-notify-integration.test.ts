@@ -184,6 +184,8 @@ async function createHarness(options?: {
   const contentConsumer: CorpusConsumerRegistration = {
     id: 'content-proj',
     authority: 'corpus',
+    kind: 'apply',
+    registrationKind: 'expansion',
     corpusInterest: 'content',
     async apply({ snapshot }) {
       contentCalls.push({ ...snapshot });
@@ -192,6 +194,8 @@ async function createHarness(options?: {
   const metadataConsumer: CorpusConsumerRegistration = {
     id: 'metadata-proj',
     authority: 'corpus',
+    kind: 'apply',
+    registrationKind: 'expansion',
     corpusInterest: 'metadata',
     async apply({ snapshot }) {
       metadataCalls.push({ ...snapshot });

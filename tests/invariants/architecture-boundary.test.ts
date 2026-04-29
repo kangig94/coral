@@ -108,6 +108,7 @@ const RETIRED_STORE_READ_CONTEXT = ['src', 'store', 'read-context.ts'].join('/')
 const RETIRED_STORE_PATHS = ['src', 'store', 'paths.ts'].join('/');
 const RETIRED_STORE_CAUSE_REF = ['src', 'store', 'cause-ref.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
+const RETIRED_STORE_PROJECTION_CONSUMER = ['src', 'store', 'projection-consumer.ts'].join('/');
 const RETIRED_STORE_SCHEMA_SQL = ['src', 'store', 'schema.sql'].join('/');
 const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('/');
 const RETIRED_STORE_MIGRATIONS_DIR = ['src', 'store', 'migrations'].join('/');
@@ -910,6 +911,7 @@ describe('architecture boundary guard', () => {
       RETIRED_STORE_PATHS,
       RETIRED_STORE_CAUSE_REF,
       RETIRED_STORE_CORPUS_STATE,
+      RETIRED_STORE_PROJECTION_CONSUMER,
       RETIRED_STORE_SCHEMA_SQL,
       RETIRED_STORE_MIGRATIONS_MODULE,
       RETIRED_STORE_MIGRATIONS_DIR,
@@ -954,6 +956,19 @@ describe('architecture boundary guard', () => {
   });
   it('unit and invariant tests do not carry quarantine residue', () => {
     expect(collectTestQuarantineResidue()).toEqual([]);
+  });
+  it('the retired projection-consumer module must remain deleted and absent from src/ imports', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_STORE_PROJECTION_CONSUMER);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_STORE_PROJECTION_CONSUMER))).toBe(false);
+
+    const offenders: string[] = [];
+    for (const filePath of PRODUCTION_FILE_PATHS) {
+      const source = readFileSync(filePath, 'utf8');
+      if (source.includes('registerJournalProjectionConsumer') || source.includes('applyProjectionRange')) {
+        offenders.push(toCanonicalSrcPath(REPO_ROOT, filePath));
+      }
+    }
+    expect(offenders).toEqual([]);
   });
   it('store schema baseline no longer contains projection_kb residue', () => {
     const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schemas/001_initial.sql'), 'utf8');

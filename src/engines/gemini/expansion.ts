@@ -159,7 +159,8 @@ const geminiExpansion: Expansion = (host) => {
   const service = new GeminiEmbeddingProvider(apiKey);
   const consumer = {
     id: host.id,
-    authority: 'journal' as const,
+    kind: 'stateless' as const,
+    registrationKind: 'stateless' as const,
   };
   const provider: Backed<EmbeddingService> = {
     read: () => service,

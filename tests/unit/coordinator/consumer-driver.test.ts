@@ -58,6 +58,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     const failing: JournalConsumerRegistration = {
       id: 'failing-consumer',
       authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
       onApplyFailure,
       async apply() {
         throw new Error('boom');
@@ -66,6 +68,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     const healthy: JournalConsumerRegistration = {
       id: 'healthy-consumer',
       authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
       async apply({ fromSeq, upToSeq }) {
         healthyCalls.push({ fromSeq, upToSeq });
       },
@@ -124,6 +128,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       driver.register({
         id: 'coalesced-consumer',
         authority: 'journal',
+        kind: 'apply',
+        registrationKind: 'expansion',
         apply,
       });
 
@@ -160,6 +166,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const handle = driver.register({
         id: 'expansion-consumer',
         authority: 'journal',
+        kind: 'apply',
         registrationKind: 'expansion',
         async apply({ fromSeq, upToSeq }) {
           applyCalls.push({ fromSeq, upToSeq });
@@ -204,6 +211,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const handle = driver.register({
         id: 'stoppable-consumer',
         authority: 'journal',
+        kind: 'apply',
+        registrationKind: 'expansion',
         apply,
       });
 
@@ -233,6 +242,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const handle = driver.register({
         id: 'base-consumer',
         authority: 'journal',
+        kind: 'apply',
+        registrationKind: 'expansion',
         apply: async () => {},
       });
 
@@ -259,6 +270,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const journalHandle = driver.register({
         id: 'journal-status',
         authority: 'journal',
+        kind: 'apply',
+        registrationKind: 'expansion',
         async apply() {
           if (journalShouldFail) {
             throw new Error('journal boom');
@@ -268,6 +281,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const contentHandle = driver.register({
         id: 'corpus-status-content',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'content',
         async apply() {
           if (corpusShouldFail) {
@@ -278,6 +293,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const metadataHandle = driver.register({
         id: 'corpus-status-metadata',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'metadata',
         async apply() {
           if (corpusShouldFail) {
@@ -288,6 +305,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       const bothHandle = driver.register({
         id: 'corpus-status-both',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'both',
         async apply() {
           if (corpusShouldFail) {
@@ -441,6 +460,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       driver.register({
         id: 'expansion-cursor',
         authority: 'journal',
+        kind: 'apply',
         registrationKind: 'expansion',
         async apply() {},
       });

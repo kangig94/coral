@@ -12,7 +12,6 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
@@ -32,7 +31,13 @@ describe('workflow consumer-driver notify', () => {
   it('projects the workflow after a coordinator-bound append', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
+    // Cursor-only base consumer; commit-time reducer writes projection_workflows.
+    driver.register({
+      id: 'workflow',
+      authority: 'journal',
+      kind: 'cursor',
+      registrationKind: 'base',
+    });
 
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);

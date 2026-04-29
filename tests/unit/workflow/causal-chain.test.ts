@@ -25,13 +25,12 @@ import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
-import { jobsRegistry } from '#src/jobs/events.js';
-import { workflowRegistry } from '#src/workflow/events.js';
-import { registerJournalProjectionConsumer } from '#src/store/projection-consumer.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
@@ -144,8 +143,9 @@ function setup(): {
   const db = new Database(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   const driver = new ConsumerDriver({ db, now: () => NOW });
-  registerJournalProjectionConsumer(driver, db, 'jobs', jobsRegistry);
-  registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
+  // Cursor-only base consumers; commit-time reducer writes projections.
+  driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
+  driver.register({ id: 'workflow', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   const readCtx: StoreReadContext = {
     schemas: new Map(),
     upcasters: createDefaultUpcasterRegistry(),
@@ -158,7 +158,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
   const append = (events: CoralEventInput[]): number => {
     const result = commitInputs(db, events, {
       now: () => NOW,
-      reducers: composeReducers(),
+      reducers: composeReducers(jobsRegistry, workflowRegistry),
       upcasters: createDefaultUpcasterRegistry(),
     });
     return result.at(-1)?.seq ?? 0;
@@ -259,7 +259,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
+      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
     ).at(-1)?.seq ?? 0;
   const workflowCompletedSeq =
     commitInputs(
@@ -277,7 +277,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
+      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
     ).at(-1)?.seq ?? 0;
   const workflowJobTerminalSeq =
     commitInputs(
@@ -300,7 +300,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(), upcasters: createDefaultUpcasterRegistry() },
+      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
     ).at(-1)?.seq ?? 0;
 
   driver.notify('journal', workflowJobTerminalSeq);

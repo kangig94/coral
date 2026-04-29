@@ -15,7 +15,10 @@ function createVectorBacked(): { backed: Backed<VectorRetrieval>; retrieval: Vec
       consumer: {
         id: 'mock-vector',
         authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
         corpusInterest: 'content',
+        apply: async () => {},
       },
     },
   };

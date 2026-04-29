@@ -499,6 +499,8 @@ describe('execution backend server', () => {
     const baseConsumer = {
       id: MOCK_BASE_CONSUMER_ID,
       authority: 'corpus' as const,
+      kind: 'apply' as const,
+      registrationKind: 'base' as const,
       corpusInterest: 'content' as const,
       apply: vi.fn(async () => {}),
     };
@@ -707,7 +709,7 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect(body.subsystems).toMatchObject({ kb: 'ok', kbCurate: 'ok', discuss: 'ok' });
+    expect(body.subsystems).toMatchObject({ kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' });
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -726,8 +728,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(200);
     expect(body.status).toBe('ok');
     const subsystems = body.subsystems as Record<string, unknown>;
-    expect(subsystems.kb).toBe('unavailable');
-    expect(subsystems.kbReason).toBe('simulated KB init failure');
+    expect(subsystems.kb).toMatchObject({ kind: 'unavailable', reason: 'simulated KB init failure' });
     expect(subsystems.kbCurate).toBe('ok');
     stderrSpy.mockRestore();
   });
@@ -1456,7 +1457,7 @@ describe('execution backend server', () => {
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
             subsystems: {
-              kb: runtimeState.getKbStatus().kind,
+              kb: { kind: runtimeState.getKbStatus().kind },
               kbCurate: runtimeState.getCurateHealth().kind,
               discuss: 'ok' as const,
             },
@@ -4870,8 +4871,9 @@ describe('execution backend server', () => {
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
             subsystems: {
-              kb: 'ok',
-              discuss: 'ok',
+              kb: { kind: 'ok' as const },
+              kbCurate: 'ok' as const,
+              discuss: 'ok' as const,
             },
           }),
         },

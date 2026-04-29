@@ -84,6 +84,22 @@ export type CoordinatorCoreOptions = {
   providerRegistry?: ProviderRegistry;
   expansionLifecycleService?: ExpansionLifecycleService;
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
+  /**
+   * Reports apply-bearing consumers (journal-apply or corpus) whose stop
+   * has been requested but whose `inFlight` hasn't settled. Surfaces in
+   * `/health.subsystems.kb.consumerStuck`. Cursor-only and stateless
+   * consumers never appear here (no inflight after stop).
+   */
+  getConsumerStuck: () => Array<{ id: string; elapsedSinceStopMs: number }>;
+  /**
+   * Reports the mutation lock state when a deadline has aborted a
+   * mutation but `fn` has not yet settled. Phase 3 wires this with a stub
+   * (always `{ blocked: false }`); Phase 4 supplies the real KbRuntime
+   * mutation-lock diagnostics.
+   */
+  getMutationBlocked: () =>
+    | { blocked: false }
+    | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
