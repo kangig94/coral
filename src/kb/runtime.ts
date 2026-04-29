@@ -375,7 +375,7 @@ class KbRuntimeImpl implements KbRuntime {
       // and do not block readiness callers. Boot's `wait: true` on the next
       // coordinator picks up the staleness.
       if (signal?.aborted !== true) {
-        this.rebuildInFlight ??= this.runRebuildOnce().finally(() => {
+        this.rebuildInFlight ??= this.runRebuildOnce(signal).finally(() => {
           this.rebuildInFlight = null;
         });
 
@@ -390,18 +390,21 @@ class KbRuntimeImpl implements KbRuntime {
     return this.readIndex() ?? emptyIndex();
   }
 
-  private async runRebuildOnce(): Promise<void> {
-    // Cooperative: the destructured `signal` is the composed signal from the
-    // mutation-lock (caller signal + internal deadline). Phase 6 threads it
-    // into `performRescan` for `'scan'` / `'repair'` checkpoints.
-    await this.withMutationLock(async (mutation, { signal: _signal }) => {
-      const state = this.readIndexStateIfPresent();
-      if (!this.textArtifactsNeedRebuild(state)) {
-        return;
-      }
+  private async runRebuildOnce(signal?: AbortSignal): Promise<void> {
+    // The destructured `lockSignal` is the composed signal from the mutation
+    // lock (caller signal + internal deadline). It threads into `performRescan`
+    // so `'scan'` / `'repair'` checkpoints honor user aborts and deadline aborts.
+    await this.withMutationLock(
+      async (mutation, { signal: lockSignal }) => {
+        const state = this.readIndexStateIfPresent();
+        if (!this.textArtifactsNeedRebuild(state)) {
+          return;
+        }
 
-      await performRescan(this, mutation, captureIndexStateSnapshot(state));
-    });
+        await performRescan(this, mutation, captureIndexStateSnapshot(state), { signal: lockSignal });
+      },
+      { ...(signal === undefined ? {} : { signal }) },
+    );
   }
 
   async withMutationLock<T>(

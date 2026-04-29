@@ -16,12 +16,15 @@ interface RescanGate {
   release: (counts?: rescanModule.RescanCounts) => void;
   wasInvoked: () => boolean;
   callCount: () => number;
+  receivedSignals: () => Array<AbortSignal | undefined>;
 }
 
 function installGatedRescan(): RescanGate {
   const calls: Array<{ resolve: (counts: rescanModule.RescanCounts) => void }> = [];
-  vi.spyOn(rescanModule, 'performRescan').mockImplementation(async (kb, _mutation, startState) => {
+  const signals: Array<AbortSignal | undefined> = [];
+  vi.spyOn(rescanModule, 'performRescan').mockImplementation(async (kb, _mutation, startState, options) => {
     void startState;
+    signals.push(options?.signal);
     // Mark the index state as fresh so subsequent freshness checks short-circuit.
     kb.recordReindexSuccess(startState, null);
     return new Promise((resolve) => {
@@ -38,6 +41,7 @@ function installGatedRescan(): RescanGate {
     },
     wasInvoked: () => calls.length > 0,
     callCount: () => calls.length,
+    receivedSignals: () => signals,
   };
 }
 
@@ -204,5 +208,30 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     gate.release();
     await readiness;
     expect(readinessResolved).toBe(true);
+  });
+
+  it('threads the caller signal into performRescan via withMutationLock composition', async () => {
+    // AC9 / Phase 6: ensureCorpusFreshness({ signal }) must reach performRescan
+    // through runRebuildOnce + withMutationLock so `'scan'` / `'repair'`
+    // checkpoints can honor user aborts.
+    const gate = installGatedRescan();
+    const kb = makeRuntime();
+
+    const controller = new AbortController();
+    await kb.ensureCorpusFreshness({ wait: false, signal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gate.callCount()).toBe(1);
+    const [received] = gate.receivedSignals();
+    // The signal handed to performRescan is the composed (caller + deadline)
+    // mutation-lock signal — not the literal caller signal — but it must
+    // become aborted as soon as the caller aborts.
+    expect(received).toBeDefined();
+    expect(received?.aborted).toBe(false);
+    controller.abort('test_user_abort');
+    expect(received?.aborted).toBe(true);
+
+    gate.release();
   });
 });

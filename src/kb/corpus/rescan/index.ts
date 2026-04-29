@@ -2,6 +2,7 @@ import { readCurateState, writeCurateState } from '../../curate/state/index.js';
 import { prepareCommunityTopologyRefresh } from '../../curate/community/topology-refresh.js';
 import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, readCurateRetryQueue } from '../../curate/retry.js';
+import { throwIfAborted } from '../../../runtime/abort.js';
 import { applyDetectedIncidentFixesLocked } from './auto-fix.js';
 import { detectRescanInfo } from './drift.js';
 import {
@@ -30,12 +31,24 @@ export type RescanCounts = Pick<
  * a fresh `KbIndex` plus typed incidents, applies auto-fixes (manual incidents enqueue),
  * and bumps the freshness state. Either commits the whole rescan or throws — partial
  * state cannot escape under the lock.
+ *
+ * `signal` is the composed mutation-lock callback signal (caller signal + internal
+ * deadline). Honored at named checkpoints — `'scan'` before the corpus scan and
+ * `'repair'` before incident auto-fix — so a user `coral-cli abort` lands at a
+ * deterministic boundary instead of mid-scan. Mid-`buildCorpusScanView` interruption
+ * is intentionally out of scope (spec §6.4 / Phase 6 risk row).
  */
 export async function performRescan(
   kb: KbRuntime,
   mutation: KbMutationEffects,
   startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<RescanCounts> {
+  const { signal } = options;
+  if (signal !== undefined) {
+    throwIfAborted(signal, 'scan');
+  }
+
   const initialScan = buildCorpusScanView(kb);
   const notes = loadNotes(initialScan);
   const sources = loadSources(initialScan);
@@ -66,6 +79,9 @@ export async function performRescan(
   const incidents = projectIncidents(finalScan);
   syncRetryQueueAgainstIncidents(kb, incidents);
   if (incidents.length > 0) {
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'repair');
+    }
     const gitSync = createGitSyncController({
       kb,
       spawnCli: kb.spawnCli,

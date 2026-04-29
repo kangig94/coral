@@ -50,10 +50,13 @@ export async function persistPreparedSource(
   slug: string,
   options?: { signal?: AbortSignal },
 ): Promise<{ slug: string; path: string }> {
-  // Phase 5 / AC8 threads the caller's AbortSignal from the KB job. Phase 6
-  // / AC9 will honor it at the `'persist'` checkpoint.
-  void options;
+  // The caller's signal threads into `withMutationLock` so the `'persist'`
+  // critical section receives a composed (caller + deadline) signal. The
+  // service-level `'persist'` fence above this call covers the pre-lock
+  // checkpoint; downstream `fn` body work is non-cancellable filesystem I/O
+  // by design (atomic write either commits or rolls back).
   const normalizedSlug = assertSourceSlug(slug, 'source');
+  const signal = options?.signal;
 
   return kb.withMutationLock(
     async (mutation) => {
@@ -100,7 +103,10 @@ export async function persistPreparedSource(
 
       return { slug: normalizedSlug, path: filePath };
     },
-    { timeoutMs: KB_SOURCE_IMPORT_MUTATION_LOCK_TIMEOUT_MS },
+    {
+      timeoutMs: KB_SOURCE_IMPORT_MUTATION_LOCK_TIMEOUT_MS,
+      ...(signal === undefined ? {} : { signal }),
+    },
   );
 }
 

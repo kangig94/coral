@@ -4,6 +4,7 @@ import { persistPreparedSource } from '../../kb/ops/source-store.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
+import { isAbortError, throwIfAborted } from '../../runtime/abort.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -49,7 +50,8 @@ export interface KbSourceImportServiceDeps {
 
 type KbSourceImportRunResult =
   | { ok: true; data: KbSourceImportCompleted }
-  | { ok: false; message: string; detail?: unknown };
+  | { ok: false; aborted: true; message: string }
+  | { ok: false; aborted?: false; message: string; detail?: unknown };
 
 type ParseKbSourceImportRequestResult = { ok: true; data: KbSourceImportRequest } | { ok: false; message: string };
 
@@ -137,6 +139,9 @@ export class KbSourceImportService {
       if (result.ok) {
         return kbSuccess(result.data);
       }
+      if (result.aborted === true) {
+        return kbError('kb_source_import_aborted', result.message, { job: jobId });
+      }
       return kbError('kb_source_import_failed', result.message, {
         job: jobId,
         ...(result.detail === undefined ? {} : { detail: result.detail }),
@@ -153,6 +158,7 @@ export class KbSourceImportService {
     signal: AbortSignal,
   ): Promise<KbSourceImportRunResult> {
     try {
+      throwIfAborted(signal, 'convert');
       const prepared = await prepareSourceImport(
         request.filePath,
         request.slug,
@@ -161,8 +167,10 @@ export class KbSourceImportService {
         this.deps.runtime,
         { signal },
       );
+      throwIfAborted(signal, 'persist');
       const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug, { signal });
       kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      throwIfAborted(signal, 'readiness');
       const snapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       await this.deps.waitForReadiness({
         kb: kbSubsystem.kb,
@@ -171,6 +179,12 @@ export class KbSourceImportService {
         signal,
       });
 
+      // Pre-terminal abort fence: closes the narrow race where a user
+      // `coral-cli abort` lands between `fn` body completion and terminal
+      // commit. Without this, the terminal would commit `completed` while
+      // `abort` returns `aborted=true`, producing the misleading
+      // "aborted but completed" UX.
+      throwIfAborted(signal, 'finalize');
       this.recorder.appendCompleted(jobId, startedAtMs, `Imported: ${persisted.path}`);
       return {
         ok: true,
@@ -183,6 +197,10 @@ export class KbSourceImportService {
         },
       };
     } catch (error: unknown) {
+      if (isUserAbort(error)) {
+        this.recorder.appendAborted(jobId, startedAtMs, 'user_abort');
+        return { ok: false, aborted: true, message: error.message };
+      }
       const detail = normalizeKbFailureDetail(error);
       this.recorder.appendOperationFailureWithTerminal({
         jobId,
@@ -204,4 +222,15 @@ export class KbSourceImportService {
       };
     }
   }
+}
+
+/**
+ * Only `AbortError` whose `reason === 'user_abort'` maps to the user-abort
+ * terminal outcome (spec §6.4 / AC9). Mutation-lock deadline aborts surface as
+ * `AbortError` with `reason = { kind: 'mutation_deadline', timeoutMs }` and
+ * intentionally fall through to the failed-terminal recorder — they never
+ * map to `aborted/user_abort`.
+ */
+function isUserAbort(error: unknown): error is { reason: 'user_abort'; message: string } {
+  return isAbortError(error) && error.reason === 'user_abort';
 }
