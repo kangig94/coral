@@ -1,14 +1,20 @@
 // AC9 / Phase 6: KB pipeline checkpoint honor through the real `jobs.abort`
-// path. Two concerns are tested here:
+// path. Cases:
 //
 //   1) Positive: dispatch source-import or reindex, pause at a controllable
 //      named checkpoint, fire abort through `AbortRegistry.abort`, release
 //      the checkpoint, and assert the job's terminal outcome is
-//      `aborted/user_abort` within bounded time.
+//      `aborted/user_abort` within bounded time. Covers `convert`, `scan`,
+//      and `readiness` stages.
 //
 //   2) Negative: trigger the mutation-lock deadline signal for KB work and
 //      assert the terminal outcome is NOT `aborted/user_abort` — it must
 //      record a failed/causeRef outcome instead.
+//
+// Lives under `tests/integration/` because it touches real fs (mkdtempSync),
+// real SQLite handles, and polling loops with wall-clock timeouts. Thread-
+// pool unit config (parallel workers) makes that pattern fragile; the
+// integration config runs single-fork with a 120s timeout.
 
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -147,11 +153,51 @@ async function awaitTerminalOutcome(
   }
 }
 
+/**
+ * Wraps an `AbortRegistry` so the next `register(jobId, ...)` call fires
+ * `abort([jobId])` synchronously after the controller is bound. This forces
+ * the upcoming run() body to see `signal.aborted === true` at its very first
+ * `throwIfAborted` checkpoint — the convert / scan stage — without needing
+ * to win a microtask race.
+ */
+function abortOnNextRegister(registry: AbortRegistry): void {
+  const original = registry.register.bind(registry);
+  vi.spyOn(registry, 'register').mockImplementationOnce((jobId, onAbort) => {
+    const id = original(jobId, onAbort);
+    registry.abort([id]);
+    return id;
+  });
+}
+
 describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
   let world: ServiceWorld;
 
   beforeEach(() => {
     world = makeWorld();
+  });
+
+  it('user_abort at the scan checkpoint records terminal aborted/user_abort', async () => {
+    // Scan-stage coverage: pre-abort the controller so `reindex(...)`'s
+    // first signal-aware checkpoint inside `withMutationLock` rejects with
+    // `AbortError(reason='user_abort')`. The service catch arm maps that
+    // to the user-abort terminal outcome.
+    abortOnNextRegister(world.abortRegistry);
+
+    const reindexService = new KbReindexService({
+      runtime: world.runtime,
+      progressStore: world.progressStore,
+      backendNamespace: 'test-ns',
+      bundleHash: 'bundle-a',
+      abortRegistry: world.abortRegistry as unknown as JobAbortRegistryPort,
+      waitForReadiness: async () => {},
+    });
+
+    const runPromise = reindexService.run({ projectRoot: world.markdownRoot }, world.kbSubsystem);
+    const jobId = await awaitJobId(world);
+    await runPromise;
+
+    const outcome = await awaitTerminalOutcome(world.progressStore, jobId);
+    expect(outcome).toEqual({ kind: 'aborted', reason: 'user_abort' });
   });
 
   it('user_abort during readiness wait records terminal aborted/user_abort', async () => {
@@ -227,6 +273,39 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
 
   beforeEach(() => {
     world = makeWorld();
+  });
+
+  it('user_abort at the convert checkpoint records terminal aborted/user_abort', async () => {
+    // Convert-stage coverage: stage a real markdown file, but pre-abort the
+    // controller via `abortOnNextRegister` so `run()`'s first
+    // `throwIfAborted(signal, 'convert')` rejects before `prepareSourceImport`
+    // is reached. The catch arm records the user-abort terminal.
+    const stagedFile = join(world.runtimeDir, 'incoming.md');
+    writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', 'utf-8');
+
+    abortOnNextRegister(world.abortRegistry);
+
+    const importService = new KbSourceImportService({
+      runtime: world.runtime,
+      progressStore: world.progressStore,
+      backendNamespace: 'test-ns',
+      bundleHash: 'bundle-a',
+      abortRegistry: world.abortRegistry as unknown as JobAbortRegistryPort,
+      waitForReadiness: async () => {},
+    });
+
+    const started = await importService.start(
+      { filePath: stagedFile, readiness: 'base-search', async: true },
+      { projectRoot: world.markdownRoot },
+      world.kbSubsystem,
+    );
+    expect(started.ok).toBe(true);
+    if (started.ok === false) throw new Error('expected start ok');
+
+    const jobId = await awaitJobId(world);
+
+    const outcome = await awaitTerminalOutcome(world.progressStore, jobId);
+    expect(outcome).toEqual({ kind: 'aborted', reason: 'user_abort' });
   });
 
   it('user_abort during readiness wait records terminal aborted/user_abort', async () => {

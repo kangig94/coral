@@ -41,6 +41,16 @@ export interface KbMutationDeadlineReason {
 export interface KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta = unknown> {
   startIndex: TIndex;
   pendingMutationLane: TLane | null;
+  /**
+   * Operator-facing identifier of the in-flight write (e.g. `note_write`,
+   * `source_import`). Captured at grace-end time and surfaced through
+   * `KbMutationLockDiagnostics.owner` on `/health.subsystems.kb.mutationBlocked`.
+   * Writers set this immediately after acquiring the lock so a deadline that
+   * fires after the work begins reports the right owner. The fallback
+   * sentinel `'unknown'` (see `?? 'unknown'` below) means the deadline + grace
+   * window elapsed before any write set this field — typically a writer that
+   * blocked on initial bookkeeping rather than the actual mutation.
+   */
   pendingMutationReason?: string;
   publication: TPublication | null;
   pendingOpaqueDeltas: TOpaqueDelta[];
@@ -171,7 +181,9 @@ export function createKbMutationLock<
         graceHandle = time.setTimeout(() => {
           // Owner is captured at grace-end time, not deadline time, so a
           // cooperative `fn` that settles inside the grace window never
-          // surfaces on `/health.subsystems.kb.mutationBlocked`.
+          // surfaces on `/health.subsystems.kb.mutationBlocked`. The
+          // `'unknown'` sentinel means the deadline fired before any write
+          // committed `pendingMutationReason` — see JSDoc on the field.
           blockedState = {
             owner: lockContext.pendingMutationReason ?? 'unknown',
             signaledAtMs,

@@ -4,7 +4,7 @@ import { persistPreparedSource } from '../../kb/ops/source-store.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
-import { isAbortError, throwIfAborted } from '../../runtime/abort.js';
+import { isUserAbort, throwIfAborted } from '../../runtime/abort.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -222,15 +222,4 @@ export class KbSourceImportService {
       };
     }
   }
-}
-
-/**
- * Only `AbortError` whose `reason === 'user_abort'` maps to the user-abort
- * terminal outcome (spec §6.4 / AC9). Mutation-lock deadline aborts surface as
- * `AbortError` with `reason = { kind: 'mutation_deadline', timeoutMs }` and
- * intentionally fall through to the failed-terminal recorder — they never
- * map to `aborted/user_abort`.
- */
-function isUserAbort(error: unknown): error is { reason: 'user_abort'; message: string } {
-  return isAbortError(error) && error.reason === 'user_abort';
 }

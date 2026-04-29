@@ -1085,6 +1085,8 @@ describe('architecture boundary guard', () => {
     const forbiddenPatterns: Array<[RegExp, string]> = [
       [/\bfunction\s+isAbortError\b/u, 'function isAbortError'],
       [/\bconst\s+isAbortError\s*=/u, 'const isAbortError'],
+      [/\bfunction\s+isUserAbort\b/u, 'function isUserAbort'],
+      [/\bconst\s+isUserAbort\s*=/u, 'const isUserAbort'],
       [/\bcreateAbortError\b/u, 'createAbortError'],
       [/\.name\s*=\s*['"]AbortError['"]/u, ".name = 'AbortError'"],
     ];

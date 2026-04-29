@@ -7,6 +7,7 @@ import type {
   ConsumerHandleStatus,
   ConsumerRegistration,
   ConsumerRegistrationKind,
+  JournalApplyRegistration,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
@@ -550,19 +551,21 @@ export class ConsumerDriver {
       return;
     }
 
-    // Both sides are non-stateless past this point (kind mismatch already thrown).
-    if (state.reg.kind === 'stateless') {
-      throw consumerRegistrationKindMismatchError(reg.id, reg.registrationKind, state.registrationKind);
-    }
+    // Past this point: `reg.kind ∈ {'cursor','apply'}` and `state.reg.kind`
+    // matches (kind-mismatch threw above). TS doesn't track equality between
+    // the two independent discriminants, so cast `state.reg` to the same
+    // non-stateless union as `reg` for the authority/corpusInterest reads
+    // below.
+    const stateReg = state.reg as JournalConsumerRegistration | CorpusConsumerRegistration;
 
-    if (state.reg.authority !== reg.authority) {
-      throw consumerAuthorityMismatchError(reg.id, reg.authority, state.reg.authority);
+    if (stateReg.authority !== reg.authority) {
+      throw consumerAuthorityMismatchError(reg.id, reg.authority, stateReg.authority);
     }
 
     if (
-      state.reg.authority === 'corpus' &&
+      stateReg.authority === 'corpus' &&
       reg.authority === 'corpus' &&
-      state.reg.corpusInterest !== reg.corpusInterest
+      stateReg.corpusInterest !== reg.corpusInterest
     ) {
       throw consumerInterestMismatchError(reg.id);
     }
@@ -669,6 +672,11 @@ export class ConsumerDriver {
       return;
     }
 
+    // Past this point `state.reg` is `JournalApplyRegistration` —
+    // authority='journal' && kind='apply'. Capture once so the in-flight
+    // closure has a typed reference without re-narrowing.
+    const reg = state.reg;
+
     if (state.inFlight) {
       if (state.pendingTarget === null || target > state.pendingTarget) {
         state.pendingTarget = target;
@@ -677,7 +685,7 @@ export class ConsumerDriver {
     }
 
     state.inFlight = (async () => {
-      const succeeded = await this.runJournalApply(state, target);
+      const succeeded = await this.runJournalApply(state, reg, target);
       state.inFlight = null;
       state.activeController = null;
 
@@ -707,10 +715,15 @@ export class ConsumerDriver {
       return;
     }
 
+    // Past the authority filter `state.reg` is `CorpusConsumerRegistration`
+    // (kind='apply' is the only corpus shape). Capture once for the in-flight
+    // closure so it doesn't re-narrow.
+    const reg = state.reg;
+
     if (state.inFlight) {
       if (
         state.pendingCorpusSnapshot === null ||
-        isSnapshotFresherForInterest(snapshot, state.pendingCorpusSnapshot, state.reg.corpusInterest)
+        isSnapshotFresherForInterest(snapshot, state.pendingCorpusSnapshot, reg.corpusInterest)
       ) {
         state.pendingCorpusSnapshot = { ...snapshot };
       }
@@ -723,7 +736,7 @@ export class ConsumerDriver {
       // failure would silently drop a newer notify and leave the consumer
       // stale at the pre-failure cursor until the next mutation arrives.
       // If no snapshot was parked, the consumer waits for the next notify.
-      await this.runCorpusApply(state, snapshot);
+      await this.runCorpusApply(state, reg, snapshot);
       state.inFlight = null;
       state.activeController = null;
 
@@ -740,13 +753,13 @@ export class ConsumerDriver {
     })();
   }
 
-  private async runJournalApply(state: ConsumerState, target: number): Promise<boolean> {
+  private async runJournalApply(
+    state: ConsumerState,
+    reg: JournalApplyRegistration,
+    target: number,
+  ): Promise<boolean> {
     try {
-      if (state.reg.kind !== 'apply' || state.reg.authority !== 'journal') {
-        return true;
-      }
-
-      const fromSeq = this.readJournalCursor(state.reg.id);
+      const fromSeq = this.readJournalCursor(reg.id);
       const upToSeq = Math.max(fromSeq, target);
 
       if (upToSeq <= fromSeq) {
@@ -755,8 +768,8 @@ export class ConsumerDriver {
 
       const controller = new AbortController();
       state.activeController = controller;
-      await state.reg.apply({ fromSeq, upToSeq, db: this.db, signal: controller.signal });
-      this.advanceJournalCursor(state.reg, upToSeq);
+      await reg.apply({ fromSeq, upToSeq, db: this.db, signal: controller.signal });
+      this.advanceJournalCursor(reg, upToSeq);
       state.lastApplyError = null;
       this.resolveWaiters(state, upToSeq);
       return true;
@@ -764,26 +777,26 @@ export class ConsumerDriver {
       const applyError = toConsumerApplyError(err, this.now().toISOString());
       state.lastApplyError = applyError;
       this.invokeApplyFailureCallback(state, applyError);
-      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
+      backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
       return false;
     }
   }
 
-  private async runCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot): Promise<boolean> {
+  private async runCorpusApply(
+    state: ConsumerState,
+    reg: CorpusConsumerRegistration,
+    snapshot: KbCorpusSnapshot,
+  ): Promise<boolean> {
     try {
-      if (state.reg.kind !== 'apply' || state.reg.authority !== 'corpus') {
-        return true;
-      }
-
-      const current = this.readCorpusCursor(state.reg.id);
-      if (!isSnapshotFresherForInterest(snapshot, current, state.reg.corpusInterest)) {
+      const current = this.readCorpusCursor(reg.id);
+      if (!isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
         return true;
       }
 
       const controller = new AbortController();
       state.activeController = controller;
-      await state.reg.apply({ snapshot, db: this.db, signal: controller.signal });
-      this.advanceCorpusCursor(state.reg, snapshot);
+      await reg.apply({ snapshot, db: this.db, signal: controller.signal });
+      this.advanceCorpusCursor(reg, snapshot);
       state.lastApplyError = null;
       this.resolveWaiters(state, snapshot);
       return true;
@@ -791,7 +804,7 @@ export class ConsumerDriver {
       const applyError = toConsumerApplyError(err, this.now().toISOString());
       state.lastApplyError = applyError;
       this.invokeApplyFailureCallback(state, applyError);
-      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
+      backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
       return false;
     }
   }

@@ -212,8 +212,8 @@ Installed expansion activation is tracked in an explicit durable expansion regis
 Consumers subscribe to an **authority** (Journal or Corpus, §2). Each authority has its own monotonic version:
 - Journal authority → version is `events.seq`. Two consumer kinds with distinct freshness mechanics:
   - **Base journal projection consumers** (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) are **cursor-only**: their projection rows are already written by the commit-time reducer inside the same `BEGIN IMMEDIATE` that appends the events (§3.3, §12.1). `notify(authority, version)` advances their durable cursor in `consumer_cursors` directly — no `apply()` body runs in production. They expose freshness through the same `waitFreshUntil` primitive but never re-read the event range.
-  - **Expansion-tier journal consumers** (added by an installed engine that subscribes to journal events for its own derived state) use range-based replay through `apply({ upToSeq })`.
-- Corpus authority → version is `contentSeq` (or `metadataSeq` for metadata-only changes). Corpus consumers use snapshot-based content-hash diff through `apply({ contentSeq, metadataSeq })`.
+  - **Expansion-tier journal consumers** (added by an installed engine that subscribes to journal events for its own derived state) use range-based replay through `apply(ctx: { upToSeq, signal })`.
+- Corpus authority → version is `contentSeq` (or `metadataSeq` for metadata-only changes). Corpus consumers use snapshot-based content-hash diff through `apply(ctx: { contentSeq, metadataSeq, signal })`.
 
 `ConsumerDriver` owns both flows. For both kinds it receives `notify(authority, version)` signals after an authoritative write and exposes `waitFreshUntil(authority, version, consumerId)` as a condition-variable wake (not polling). For cursor-only registrations the driver advances the cursor directly and resolves waiters; for apply-kind registrations (expansion-tier journal consumers and corpus consumers) the driver drains in a single-in-flight microtask (backpressure-safe) and persists the cursor only after successful `apply()` completes. Journal waiters target `events.seq`; Corpus waiters target `contentSeq` / `metadataSeq`. `coral-cli expansion list` is status observation, not the freshness primitive. Apply-kind consumer `apply()` must be **idempotent** (§16 #44) — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`). Cursor-only base journal consumers do not face this hazard because no `apply()` runs outside the commit transaction.
 
@@ -1404,7 +1404,7 @@ Journal projections come in two shapes that share authority and cursor mechanics
 
 **Base journal projections** (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) are written by the commit-time reducer inside `BEGIN IMMEDIATE` (§3.3, §12.1). The consumer is **cursor-only**: it owns no `apply()` body in production — `ConsumerDriver` advances its `consumer_cursors` row directly on `notify(authority, version)`. The consumer's role is to surface freshness through `waitFreshUntil`, not to re-execute the reducer.
 
-**Expansion-tier journal consumers** (added by an installed engine that derives its own state from journal events) use range-based replay through `apply({ upToSeq })`. They are the only journal consumers that run `apply` in production.
+**Expansion-tier journal consumers** (added by an installed engine that derives its own state from journal events) use range-based replay through `apply(ctx: { upToSeq, signal })`. They are the only journal consumers that run `apply` in production.
 
 ```ts
 type JournalConsumer = JournalCursorConsumer | JournalApplyConsumer;
@@ -1482,7 +1482,7 @@ Corpus projections are maintained by `CorpusConsumer`s with snapshot-based conte
 ```ts
 interface CorpusConsumer {
   id: string;
-  apply(signal: { contentSeq: number; metadataSeq: number }): Promise<void>;
+  apply(ctx: { contentSeq: number; metadataSeq: number; signal: AbortSignal }): Promise<void>;
   // Implementation:
   //   1. Acquire Corpus mutation lock, capture text snapshot at target versions.
   //   2. Build desired manifest (per-entry content hashes).

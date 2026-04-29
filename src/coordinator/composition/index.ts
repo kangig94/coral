@@ -405,6 +405,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const curateHealth = runtimeState.getCurateHealth();
         const consumerStuck = options.getConsumerStuck();
         const mutationBlocked = options.getMutationBlocked();
+        // `mutationBlocked` and `consumerStuck` are diagnostic fields that
+        // appear on `/health.subsystems.kb` only when something is wrong:
+        // omitted when healthy so the green path stays compact and operators
+        // can grep for these keys to find blocked writers / stuck consumers.
         const kbHealth: {
           kind: 'ok' | 'unavailable';
           reason?: string;

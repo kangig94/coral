@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AbortError, isAbortError, throwIfAborted } from '#src/runtime/abort.js';
+import { AbortError, isAbortError, isUserAbort, throwIfAborted } from '#src/runtime/abort.js';
 
 describe('AbortError', () => {
   it('constructs with stage and preserves reason via cause + reason field', () => {
@@ -99,23 +99,19 @@ describe('throwIfAborted', () => {
   });
 });
 
-// Phase 7 — AbortError reason mapping. The KB services key the
-// `aborted/user_abort` terminal outcome on a strict `reason === 'user_abort'`
-// equality check (`isAbortError(err) && err.reason === 'user_abort'`).
-// This decision predicate is exercised through the real services in
-// `tests/unit/coordinator/services/kb-pipeline-checkpoint-honor.test.ts`.
+// AbortError reason mapping. The KB services key the
+// `aborted/user_abort` terminal outcome on the centralized `isUserAbort`
+// predicate from `src/runtime/abort.ts`. This decision predicate is
+// exercised end-to-end through the real services in
+// `tests/integration/coordinator/services/kb-pipeline-checkpoint-honor.test.ts`.
 // These tests pin the same predicate at the unit level so the mapping
 // contract is visible alongside the abort vocabulary itself: user aborts
 // route to `aborted/user_abort`; deadline / cooperative / unknown reasons
 // never do.
-describe('AbortError reason mapping (user_abort vs mutation_deadline)', () => {
-  function mapsToUserAbort(err: unknown): boolean {
-    return isAbortError(err) && err.reason === 'user_abort';
-  }
-
+describe('isUserAbort (user_abort vs mutation_deadline vs unrelated)', () => {
   it("'user_abort' reason maps to user-abort outcome", () => {
     const err = new AbortError({ stage: 'readiness', reason: 'user_abort' });
-    expect(mapsToUserAbort(err)).toBe(true);
+    expect(isUserAbort(err)).toBe(true);
   });
 
   it('mutation_deadline reason NEVER maps to user-abort outcome', () => {
@@ -123,13 +119,21 @@ describe('AbortError reason mapping (user_abort vs mutation_deadline)', () => {
       stage: 'mutation_lock',
       reason: { kind: 'mutation_deadline', timeoutMs: 30_000 },
     });
-    expect(mapsToUserAbort(err)).toBe(false);
+    expect(isUserAbort(err)).toBe(false);
   });
 
-  it("`shutdown` and other non-user reasons NEVER map to user-abort outcome", () => {
-    expect(mapsToUserAbort(new AbortError({ stage: 'apply', reason: 'shutdown' }))).toBe(false);
-    expect(mapsToUserAbort(new AbortError({ stage: 'finalize' }))).toBe(false);
-    expect(mapsToUserAbort(new Error('boom'))).toBe(false);
+  it('`shutdown` and other non-user reasons NEVER map to user-abort outcome', () => {
+    expect(isUserAbort(new AbortError({ stage: 'apply', reason: 'shutdown' }))).toBe(false);
+    expect(isUserAbort(new AbortError({ stage: 'finalize' }))).toBe(false);
+    expect(isUserAbort(new AbortError({ stage: 'apply' }))).toBe(false); // undefined reason
+  });
+
+  it('non-AbortError values NEVER map to user-abort outcome', () => {
+    expect(isUserAbort(new Error('boom'))).toBe(false);
+    expect(isUserAbort(undefined)).toBe(false);
+    expect(isUserAbort(null)).toBe(false);
+    expect(isUserAbort('user_abort')).toBe(false);
+    expect(isUserAbort({ reason: 'user_abort' })).toBe(false);
   });
 
   it('user_abort reason flowing through throwIfAborted preserves the mapping', () => {
@@ -142,6 +146,15 @@ describe('AbortError reason mapping (user_abort vs mutation_deadline)', () => {
     } catch (err) {
       caught = err;
     }
-    expect(mapsToUserAbort(caught)).toBe(true);
+    expect(isUserAbort(caught)).toBe(true);
+  });
+
+  it('narrows to AbortError so callers can read .message on the narrowed value', () => {
+    const err: unknown = new AbortError({ stage: 'readiness', reason: 'user_abort' });
+    if (isUserAbort(err)) {
+      // `err` is narrowed to AbortError & { reason: 'user_abort' }.
+      expect(typeof err.message).toBe('string');
+      expect(err.reason).toBe('user_abort');
+    }
   });
 });

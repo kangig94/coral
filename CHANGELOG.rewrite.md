@@ -384,3 +384,25 @@ Phase 7 closes the remaining cleanup items and lands coordinator-owned equipment
 - AC18 — updated architecture-layering, coordinator-topology, consumer-driver, and manifest-authority fixtures so the invariant suite matches the landed equipment seam and `ConsumerHandle` shape.
 
 **Verification**: `npm run lint` clean; `npm run build` clean; targeted equipment / skill / race / fixture suites green; full `npm test` reached `1825/1827` with 2 pre-existing timing flakes that still pass in isolation.
+
+## Apply-Contract Reform (post Phase 7)
+
+Tightens the consumer-registration contract and the abort vocabulary that flows from CLI through coordinator services into KB pipeline checkpoints. User-visible changes:
+
+- `coral-cli abort <kb-job-id>` now produces a real `aborted/user_abort` terminal for KB internal jobs (`kb.source_import`, `kb.reindex`). Previously these jobs registered an abort callback but did not wire the resulting signal through `prepareSourceImport` / `reindex` / `waitForReadiness`, so a CLI abort showed up as a stalled `running` status with no terminal — operators had to wait for the deadline. Convert / persist / readiness / finalize stages on source-import and scan / repair / readiness on reindex now honor the signal at named checkpoints; first-checkpoint cancellation observes `terminal.outcome = { kind: 'aborted', reason: 'user_abort' }`. Mutation-lock deadline aborts (reason `{ kind: 'mutation_deadline', timeoutMs }`) intentionally still fall through to `failed` — only `reason === 'user_abort'` maps to the user-abort terminal.
+
+- `/health.subsystems.kb` is now an object with optional diagnostic fields, not a flat status string + sibling field.
+
+  - Old shape: `{ kb: 'ok' | 'unavailable', kbReason?: string }`.
+  - New shape: `{ kb: { kind: 'ok' | 'unavailable', reason?: string, mutationBlocked?: { owner, ageMs, signaledAtMs }, consumerStuck?: Array<{ id, elapsedSinceStopMs }> } }`.
+  - Migration: `subsystems.kb === 'ok'` → `subsystems.kb.kind === 'ok'`; `subsystems.kbReason` → `subsystems.kb.reason`. The `mutationBlocked` and `consumerStuck` fields are omitted from the response when nothing is wrong, so the green-path JSON stays compact and operators can grep for those keys to find blocked writers / stuck consumers. `mutationBlocked.owner === 'unknown'` is a sentinel meaning the mutation deadline + cooperative-grace window elapsed before any writer committed `pendingMutationReason` — typically a write that blocked on bookkeeping rather than the actual mutation.
+
+- New `CoralSetupError` code `consumer_wait_fresh_invalid_target` rejects `waitFreshUntil(<stateless-id>, ...)` structurally. Stateless provider lifecycle registrations (e.g. embedder providers, ONNX) own no cursor and have no version axis to wait on; the error makes the misuse visible at the boundary instead of silently hanging the caller.
+
+**Internal touch-ups landed in the same reform**:
+
+- Abort vocabulary centralized: `isUserAbort(err): err is AbortError & { reason: 'user_abort' }` lives at `src/runtime/abort.ts` (re-exported from `src/runtime/errors.ts`); local copies in coordinator KB services were removed and are now blocked by the architecture-boundary invariant.
+- `CorpusConsumer.apply(ctx)` shape unified across spec §2.8 / §9.2 / §16 #40 / glossary — the parameter is `ctx: { snapshot, db, signal }` (apply-kind contract from `src/store/consumer-contract.ts`), not the misnamed `apply(signal: { contentSeq, metadataSeq })` from earlier drafts.
+- `runJournalApply` / `runCorpusApply` opening guards in `consumer-driver.ts` were unreachable from production schedulers (authority + kind already filtered before the call); the run methods now accept the typed registration directly so the dead guards drop and TS narrowing follows the shape.
+- `tests/unit/coordinator/services/kb-pipeline-checkpoint-honor.test.ts` moved to `tests/integration/` — real fs + SQLite + polling loops are integration-shaped and the integration suite runs single-fork.
+- AC9 checkpoint coverage extended to `convert` (source-import) and `scan` (reindex) stages, in addition to the existing `readiness`-stage test.

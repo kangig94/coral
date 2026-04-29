@@ -488,7 +488,7 @@ describe('ExpansionLifecycleService', () => {
             embedDocuments: async () => [],
             embedQuery: async () => new Float32Array([0]),
           }),
-          consumer: { id: 'traced-embedder', authority: 'journal' },
+          consumer: { id: 'traced-embedder', kind: 'stateless', registrationKind: 'stateless' },
         });
       };
     `;
@@ -547,7 +547,7 @@ describe('ExpansionLifecycleService', () => {
             embedDocuments: async () => [],
             embedQuery: async () => new Float32Array([0]),
           }),
-          consumer: { id: 'slow-embedder', authority: 'journal' },
+          consumer: { id: 'slow-embedder', kind: 'stateless', registrationKind: 'stateless' },
         });
       };
     `;

@@ -11,7 +11,7 @@
 
 import { isRecord } from '../infra/json.js';
 
-export { AbortError, isAbortError, throwIfAborted } from './abort.js';
+export { AbortError, isAbortError, isUserAbort, throwIfAborted } from './abort.js';
 
 export interface CoralSetupErrorInit {
   code: string;
