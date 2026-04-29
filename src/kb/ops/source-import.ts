@@ -359,7 +359,11 @@ export async function prepareSourceImport(
   log: (msg: string) => void,
   runtimeRoot: string,
   runtime: SourceImportRuntime = createDefaultSourceImportRuntime(),
+  options?: { signal?: AbortSignal },
 ): Promise<PreparedSourceImport> {
+  // Phase 5 / AC8 threads the caller's AbortSignal from the KB job. Phase 6
+  // / AC9 will honor it at `'convert'` / `'persist'` checkpoints.
+  void options;
   const ext = extname(filePath).toLowerCase();
   const ctx: SourceImportContext = { runtime, runtimeRoot };
   const converter = resolveConverter(ext);

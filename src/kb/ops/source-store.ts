@@ -48,7 +48,11 @@ export async function persistPreparedSource(
   kb: KbRuntime,
   stagedPath: string,
   slug: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{ slug: string; path: string }> {
+  // Phase 5 / AC8 threads the caller's AbortSignal from the KB job. Phase 6
+  // / AC9 will honor it at the `'persist'` checkpoint.
+  void options;
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
   return kb.withMutationLock(

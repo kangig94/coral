@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { KbJobRecorder } from '#src/coordinator/services/kb-job-recorder.js';
 import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
@@ -571,6 +572,7 @@ describe('journal commit atomicity invariant', () => {
         progressStore,
         backendNamespace: 'test-ns',
         bundleHash: 'bundle-a',
+        abortRegistry: new AbortRegistry(runtime.ids),
       });
 
       const { jobId, startedAtMs } = recorder.startInternalJob({

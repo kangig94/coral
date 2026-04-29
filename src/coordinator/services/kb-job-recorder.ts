@@ -1,5 +1,6 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
+import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
 import type { TerminalOutcome } from '../../jobs/outcome.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -16,11 +17,25 @@ export interface KbJobRecorderDeps {
   progressStore: JobProgressStore;
   backendNamespace: string;
   bundleHash: string;
+  abortRegistry: JobAbortRegistryPort;
 }
 
+/**
+ * Run handle for an internal KB job.
+ *
+ * `signal` aborts when an operator runs `coral-cli abort <jobId>` — the
+ * coordinator-owned `abortRegistry` triggers the registered callback, which
+ * calls `controller.abort('user_abort')`. Honor it at named checkpoints in
+ * the pipeline.
+ *
+ * `finalize()` deregisters the controller from `abortRegistry`. Idempotent —
+ * call it on terminal record OR on cleanup; safe to call more than once.
+ */
 export interface StartedKbInternalJob {
   jobId: string;
   startedAtMs: number;
+  signal: AbortSignal;
+  finalize: () => void;
 }
 
 export function normalizeKbFailureDetail(error: unknown): KbFailureDetail {
@@ -83,7 +98,21 @@ export class KbJobRecorder {
       startTime: nowIsoString(this.deps.runtime.time),
     });
 
-    return { jobId, startedAtMs };
+    // The callback owns the `'user_abort'` reason because
+    // `AbortRegistry.abort()` calls `controller.abort()` without a reason —
+    // setting it here is what lets downstream `AbortError.reason` map to
+    // `terminal { outcome: aborted, reason: 'user_abort' }` (Phase 6 / AC9).
+    const controller = new AbortController();
+    this.deps.abortRegistry.register(jobId, () => controller.abort('user_abort'));
+
+    let finalized = false;
+    const finalize = (): void => {
+      if (finalized) return;
+      finalized = true;
+      this.deps.abortRegistry.remove(jobId);
+    };
+
+    return { jobId, startedAtMs, signal: controller.signal, finalize };
   }
 
   appendMessage(jobId: string, projectRoot: string, message: string): void {

@@ -70,6 +70,7 @@ import { createExpansionRpc, createUnavailableExpansionRpc } from '../expansion/
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
 import { KbReindexService } from '../services/kb-reindex-service.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
+import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 
 export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
   const runtime = options.runtime;
@@ -100,12 +101,19 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     runtime,
     getExecutionService: services.getExecutionService,
   });
+  // Coordinator-owned abort registry for internal KB jobs (source-import,
+  // reindex). Shared with `createCoordinatorControl.abortJobs` so
+  // `coral-cli abort <kb-job-id>` reaches the KB job's AbortController —
+  // distinct from per-ExecutionService provider job registries.
+  const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+
   const control = createCoordinatorControl({
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
     backendNamespace: world.namespace,
     progressStore: world.progressStore,
+    internalJobAbortRegistry,
   });
   const kbSourceImportService = new KbSourceImportService({
     runtime,
@@ -113,6 +121,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+    abortRegistry: internalJobAbortRegistry,
   });
   const kbReindexService = new KbReindexService({
     runtime,
@@ -120,12 +129,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
     waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+    abortRegistry: internalJobAbortRegistry,
   });
   const kbJobRecorder = new KbJobRecorder({
     runtime,
     progressStore: world.progressStore,
     backendNamespace: world.namespace,
     bundleHash: identity.bundleHash,
+    abortRegistry: internalJobAbortRegistry,
   });
 
   const readOnlyInvocationContext = {

@@ -1,5 +1,5 @@
 // Bundles abort/scope job-control (lifecycleController-bound) with the drain admission gate (idleTimer-bound) as one control-plane helper. The two halves share zero state; if drain logic grows beyond the current 4 lines, split into job-control.ts + drain-gate.ts rather than packing more concerns here.
-import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
+import type { AbortResult, JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
@@ -13,6 +13,10 @@ type CreateBackendControlDeps = {
   getLifecycleController: () => LifecycleController | null;
   backendNamespace: string;
   progressStore: JobStore;
+  /** Coordinator-owned abort registry for internal KB jobs (source-import,
+   * reindex). Consulted before returning `notFound` so that
+   * `coral-cli abort <kb-job-id>` reaches the KB job's AbortController. */
+  internalJobAbortRegistry: JobAbortRegistryPort;
 };
 
 export function createCoordinatorControl({
@@ -20,6 +24,7 @@ export function createCoordinatorControl({
   listExecutionServices,
   getLifecycleController,
   progressStore,
+  internalJobAbortRegistry,
 }: CreateBackendControlDeps): {
   abortJobs: (jobIds: string[]) => AbortResult;
   scopeCheckJobs: (jobIds: string[], projectRoot: string, currentNamespace: string) => ScopeCheckResult;
@@ -45,6 +50,15 @@ export function createCoordinatorControl({
     for (const service of listExecutionServices()) {
       if (pending.size === 0) break;
       const result = service.abort([...pending]);
+      for (const jobId of result.aborted) {
+        if (!pending.has(jobId)) continue;
+        pending.delete(jobId);
+        aborted.push(jobId);
+      }
+    }
+
+    if (pending.size > 0) {
+      const result = internalJobAbortRegistry.abort([...pending]);
       for (const jobId of result.aborted) {
         if (!pending.has(jobId)) continue;
         pending.delete(jobId);

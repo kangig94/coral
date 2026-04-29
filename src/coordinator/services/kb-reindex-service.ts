@@ -1,6 +1,7 @@
 import { reindex } from '../../kb/ops/reindex.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ReindexResult } from '../../kb/entry-types.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -13,6 +14,7 @@ export interface KbReindexServiceDeps {
   backendNamespace: string;
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
+  abortRegistry: JobAbortRegistryPort;
 }
 
 type KbReindexRunResult = { ok: true; data: ReindexResult } | { ok: false; message: string; detail?: unknown };
@@ -25,20 +27,24 @@ export class KbReindexService {
   }
 
   async run(ctx: { projectRoot: string }, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
-    const { jobId, startedAtMs } = this.recorder.startInternalJob({
+    const { jobId, startedAtMs, signal, finalize } = this.recorder.startInternalJob({
       projectRoot: ctx.projectRoot,
       operation: 'kb.reindex',
       request: {},
     });
 
-    const result = await this.runReindex(jobId, ctx.projectRoot, kbSubsystem, startedAtMs);
-    if (result.ok) {
-      return kbSuccess(result.data);
+    try {
+      const result = await this.runReindex(jobId, ctx.projectRoot, kbSubsystem, startedAtMs, signal);
+      if (result.ok) {
+        return kbSuccess(result.data);
+      }
+      return kbError('kb_reindex_failed', result.message, {
+        job: jobId,
+        ...(result.detail === undefined ? {} : { detail: result.detail }),
+      });
+    } finally {
+      finalize();
     }
-    return kbError('kb_reindex_failed', result.message, {
-      job: jobId,
-      ...(result.detail === undefined ? {} : { detail: result.detail }),
-    });
   }
 
   private async runReindex(
@@ -46,14 +52,16 @@ export class KbReindexService {
     projectRoot: string,
     kbSubsystem: KnowledgeBaseRuntime,
     startedAtMs: number,
+    signal: AbortSignal,
   ): Promise<KbReindexRunResult> {
     try {
-      const result = await reindex(kbSubsystem.kb);
+      const result = await reindex(kbSubsystem.kb, { signal });
       if (!('warning' in result)) {
         await this.deps.waitForReadiness({
           kb: kbSubsystem.kb,
           readiness: 'base-search',
           snapshot: kbSubsystem.kb.getCorpusStateSnapshot(),
+          signal,
         });
       }
 

@@ -5,6 +5,7 @@ import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
+import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../jobs/launch.js';
 import { KbJobRecorder, normalizeKbFailureDetail } from './kb-job-recorder.js';
@@ -34,6 +35,7 @@ export type KbSourceImportReadinessWaiter = (params: {
   kb: KbRuntime;
   readiness: SourceImportReadiness;
   snapshot: KbCorpusSnapshot;
+  signal?: AbortSignal;
 }) => Promise<void>;
 
 export interface KbSourceImportServiceDeps {
@@ -42,6 +44,7 @@ export interface KbSourceImportServiceDeps {
   backendNamespace: string;
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
+  abortRegistry: JobAbortRegistryPort;
 }
 
 type KbSourceImportRunResult =
@@ -110,7 +113,7 @@ export class KbSourceImportService {
     ctx: { projectRoot: string },
     kbSubsystem: KnowledgeBaseRuntime,
   ): KbToolResult | Promise<KbToolResult> {
-    const { jobId, startedAtMs } = this.recorder.startInternalJob({
+    const { jobId, startedAtMs, signal, finalize } = this.recorder.startInternalJob({
       projectRoot: ctx.projectRoot,
       operation: 'kb.source_import',
       request: {
@@ -120,7 +123,7 @@ export class KbSourceImportService {
       },
     });
 
-    const run = this.run(jobId, request, ctx, kbSubsystem, startedAtMs);
+    const run = this.run(jobId, request, ctx, kbSubsystem, startedAtMs, signal).finally(finalize);
     if (request.async) {
       void run;
       return kbSuccess({
@@ -147,6 +150,7 @@ export class KbSourceImportService {
     ctx: { projectRoot: string },
     kbSubsystem: KnowledgeBaseRuntime,
     startedAtMs: number,
+    signal: AbortSignal,
   ): Promise<KbSourceImportRunResult> {
     try {
       const prepared = await prepareSourceImport(
@@ -155,14 +159,16 @@ export class KbSourceImportService {
         (line) => this.recorder.appendMessage(jobId, ctx.projectRoot, line),
         kbSubsystem.kb.runtimeDir,
         this.deps.runtime,
+        { signal },
       );
-      const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug);
+      const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug, { signal });
       kbSubsystem.curateScheduler.scheduleDeferredCommit();
       const snapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       await this.deps.waitForReadiness({
         kb: kbSubsystem.kb,
         readiness: request.readiness,
         snapshot,
+        signal,
       });
 
       this.recorder.appendCompleted(jobId, startedAtMs, `Imported: ${persisted.path}`);
