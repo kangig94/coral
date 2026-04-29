@@ -314,6 +314,69 @@ describe('ConsumerDriver corpus registrations', () => {
     }
   });
 
+  it('retries against a snapshot parked during a failed apply rather than discarding it', async () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db });
+    const firstApplyStarted = createDeferred<void>();
+    const releaseFirstApply = createDeferred<void>();
+    const calls: Array<{ snapshot: CorpusSnapshot; outcome: 'fail' | 'ok' }> = [];
+    const failingSnapshot = buildSnapshot({
+      snapshotId: 'snapshot-fail',
+      contentSeq: 1,
+      metadataSeq: 1,
+      contentManifestHash: 'content-hash-1',
+      metadataManifestHash: 'metadata-hash-1',
+    });
+    const newerSnapshot = buildSnapshot({
+      snapshotId: 'snapshot-newer',
+      contentSeq: 2,
+      metadataSeq: 2,
+      contentManifestHash: 'content-hash-2',
+      metadataManifestHash: 'metadata-hash-2',
+    });
+
+    try {
+      driver.register({
+        id: 'corpus-retry',
+        authority: 'corpus',
+        corpusInterest: 'both',
+        async apply({ snapshot }) {
+          if (snapshot.snapshotId === 'snapshot-fail') {
+            calls.push({ snapshot, outcome: 'fail' });
+            firstApplyStarted.resolve();
+            await releaseFirstApply.promise;
+            throw new Error('apply failed for snapshot-fail');
+          }
+          calls.push({ snapshot, outcome: 'ok' });
+        },
+      });
+
+      // First apply is in-flight; while it is still running, a newer notify
+      // arrives and parks into pendingCorpusSnapshot.
+      driver.notify('corpus', failingSnapshot);
+      await firstApplyStarted.promise;
+      driver.notify('corpus', newerSnapshot);
+
+      // Release the failing apply. The driver must retry against the parked
+      // newer snapshot rather than discarding it.
+      releaseFirstApply.resolve();
+      await driver.drainAll();
+
+      expect(calls.map((entry) => entry.snapshot.snapshotId)).toEqual([
+        'snapshot-fail',
+        'snapshot-newer',
+      ]);
+      expect(readCursorRow(db, 'corpus-retry')).toMatchObject({
+        snapshot_id: 'snapshot-newer',
+        content_seq: 2,
+        metadata_seq: 2,
+      });
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
   it('treats a replayed older snapshot as a no-op for both-interest consumers', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });

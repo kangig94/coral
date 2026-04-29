@@ -650,15 +650,15 @@ export class ConsumerDriver {
     }
 
     state.inFlight = (async () => {
-      const succeeded = await this.runCorpusApply(state, snapshot);
+      // Both success and failure paths retry against any snapshot parked
+      // while N was in-flight. Clearing pendingCorpusSnapshot on apply
+      // failure would silently drop a newer notify and leave the consumer
+      // stale at the pre-failure cursor until the next mutation arrives.
+      // If no snapshot was parked, the consumer waits for the next notify.
+      await this.runCorpusApply(state, snapshot);
       state.inFlight = null;
 
       if (state.stopped) {
-        state.pendingCorpusSnapshot = null;
-        return;
-      }
-
-      if (!succeeded) {
         state.pendingCorpusSnapshot = null;
         return;
       }

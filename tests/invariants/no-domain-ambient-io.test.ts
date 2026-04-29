@@ -10,6 +10,12 @@
 //
 // `createHash` from `node:crypto` is pure compute (deterministic, no I/O, no
 // randomness) and stays — the invariant does not flag it.
+//
+// Bare-global timers (`setTimeout`, `setInterval`, `clearTimeout`,
+// `clearInterval`) are also forbidden: domain modules must reach the time
+// port (`kb.time.setTimeout`, `runtime.time.setInterval`, etc.). Member
+// access on `.time.` is allowed; bare identifiers leak ambient timer state
+// past the Runtime boundary.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -17,9 +23,23 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs'] as const;
+const TIMER_SCOPED_ROOTS = [
+  'src/kb',
+  'src/jobs',
+  'src/sessions',
+  'src/discuss',
+  'src/workflow',
+  'src/providers',
+] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
   'src/providers/claude-appserver/server.ts',
+]);
+const TIMER_EXEMPT_FILES = new Set<string>([
+  // Local port interface: the `setTimeout` / `clearTimeout` identifiers here
+  // are method signatures defining a structural alias for the runtime time
+  // port, not runtime calls. The controller receives the port through DI.
+  'src/kb/corpus/mutation-lock.ts',
 ]);
 
 function listSourceFiles(root: string): string[] {
@@ -60,6 +80,38 @@ function importsNodeOs(source: string): boolean {
 
 function importsNodeChildProcess(source: string): boolean {
   return /from\s+['"]node:child_process['"]/u.test(source) || /import\s+['"]node:child_process['"]/u.test(source);
+}
+
+/**
+ * Strips TypeScript line comments, block comments, and string literals from
+ * a source so identifier scans never trip on quoted names or commented
+ * examples. Backtick strings drop their interpolations as well — for the
+ * timer scan we only care about whether the bare identifier appears in
+ * executable / declarative code, not inside a template literal payload.
+ */
+function stripCommentsAndStrings(source: string): string {
+  let result = source.replace(/\/\*[\s\S]*?\*\//gu, '');
+  result = result.replace(/(^|\n)\s*\/\/[^\n]*/gu, '$1');
+  result = result.replace(/'(?:\\.|[^'\\])*'/gu, "''");
+  result = result.replace(/"(?:\\.|[^"\\])*"/gu, '""');
+  result = result.replace(/`(?:\\.|\$\{[^}]*\}|[^`\\])*`/gu, '``');
+  return result;
+}
+
+/**
+ * Returns the bare-global timer identifiers found in a source file (after
+ * stripping comments and string literals). A bare identifier is one that
+ * is NOT preceded by `.` — member access (`time.setTimeout`) is allowed.
+ */
+function findBareTimerIdentifiers(source: string): string[] {
+  const cleaned = stripCommentsAndStrings(source);
+  const pattern = /(^|[^.\w$])(setTimeout|setInterval|clearTimeout|clearInterval)\b/gu;
+  const found: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(cleaned)) !== null) {
+    found.push(match[2]);
+  }
+  return found;
 }
 
 /**
@@ -133,6 +185,21 @@ describe('domain modules use Runtime ports for ambient I/O', () => {
         if (EXEMPT_FILES.has(canonical)) continue;
         if (importsNodeCryptoRandomness(readSource(filePath))) {
           violations.push(canonical);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('no domain file uses bare-global setTimeout / setInterval / clearTimeout / clearInterval (use kb.time / runtime.time)', () => {
+    const violations: Array<{ file: string; identifiers: string[] }> = [];
+    for (const root of TIMER_SCOPED_ROOTS) {
+      for (const filePath of listSourceFiles(root)) {
+        const canonical = canonicalSrcPath(filePath);
+        if (TIMER_EXEMPT_FILES.has(canonical)) continue;
+        const identifiers = findBareTimerIdentifiers(readSource(filePath));
+        if (identifiers.length > 0) {
+          violations.push({ file: canonical, identifiers });
         }
       }
     }

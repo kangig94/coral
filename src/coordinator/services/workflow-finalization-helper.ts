@@ -1,3 +1,4 @@
+import type { CauseRef, CauseRefToken } from '../../causality/cause-ref.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workflow/events.js';
@@ -7,6 +8,20 @@ export interface WorkflowFinalizationRecording {
   readonly sessionId?: string | null;
   readonly namespace?: string;
   readonly project?: string;
+}
+
+/**
+ * Spec §7.4 fault precedence: if `causeRef` is set the originating domain
+ * event already exists, so we point at it directly. `lifecycleFault` is
+ * reserved for wrapper-local failures with no originating domain event —
+ * appended only when `causeRef` is absent.
+ */
+export function selectFinalCauseRef<Scope>(
+  c: CommitContext<Scope>,
+  workflowJobId: string,
+  intent: Extract<WorkflowFinalizationIntent, { outcome: 'failed' }>,
+): CauseRef | CauseRefToken<Scope> {
+  return intent.causeRef ?? c.append(workflowLifecycleFaultEvent(workflowJobId, intent.lifecycleFault));
 }
 
 export function composeWorkflowFinalization<Scope>(
@@ -51,7 +66,7 @@ export function composeWorkflowFinalization<Scope>(
     return;
   }
 
-  const causeRef = intent.causeRef ?? c.append(workflowLifecycleFaultEvent(workflowJobId, intent.lifecycleFault));
+  const causeRef = selectFinalCauseRef(c, workflowJobId, intent);
   const workflowCompleted = c.append(
     workflowCompletedEvent(workflowJobId, {
       outcome: 'failed',

@@ -5,7 +5,7 @@ import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
 import { formatZodError } from '../validation.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
-import { createLineFramer } from '../line-framing.js';
+import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
@@ -376,7 +376,28 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
     });
 
     const onData = (chunk: Buffer | string) => {
-      for (const frame of framer.push(chunk)) {
+      let frames: string[];
+      try {
+        frames = framer.push(chunk);
+      } catch (error: unknown) {
+        if (error instanceof FrameTooLargeError) {
+          rpcPorts.identity.log(`IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`);
+          if (!socket.destroyed) {
+            writeEnvelope(
+              socket,
+              transportErrorResponse('Request frame too large', {
+                code: error.code,
+                maxFrameBytes: error.maxFrameBytes,
+                observedBytes: error.observedBytes,
+              }),
+            );
+            socket.destroy();
+          }
+          return;
+        }
+        throw error;
+      }
+      for (const frame of frames) {
         if (frame.trim().length === 0) {
           continue;
         }

@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import type { TimerHandle } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
 import { runCurateClaude } from './operations.js';
 import type { GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
@@ -45,7 +46,7 @@ export function createGitSyncController({
   spawnCli: SpawnCliFn;
 } & GitSyncRuntimePicks): GitSyncController {
   let cachedIsGitRepo: boolean | null = null;
-  let deferredCommitTimer: NodeJS.Timeout | null = null;
+  let deferredCommitTimer: TimerHandle | null = null;
   const root = kb.markdownRoot;
 
   function git(args: string[], timeoutMs = 15000): string {
@@ -386,7 +387,7 @@ export function createGitSyncController({
     if (!isGitRepo() || deferredCommitTimer !== null) {
       return;
     }
-    deferredCommitTimer = setTimeout(() => {
+    deferredCommitTimer = kb.time.setTimeout(() => {
       deferredCommitTimer = null;
       void gitAutoCommitAsync('auto: kb mutation');
     }, DEFERRED_COMMIT_DELAY_MS);
@@ -395,7 +396,7 @@ export function createGitSyncController({
 
   function cancelDeferredCommit(): void {
     if (deferredCommitTimer !== null) {
-      clearTimeout(deferredCommitTimer);
+      kb.time.clearTimeout(deferredCommitTimer);
       deferredCommitTimer = null;
     }
   }

@@ -306,7 +306,7 @@ export function createRecoveryCoordinator({
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }
 
-      const snapshot = buildRecoverySnapshot(progressStore, namespace, log, ctx.sessionLookup);
+      const snapshot = buildRecoverySnapshot(progressStore, namespace, log, ctx.sessionLookup, runtime.process);
       const plan = planRecovery(snapshot);
 
       for (const action of [...plan.register, ...plan.cleanup]) {

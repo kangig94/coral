@@ -488,15 +488,6 @@ function createActualRecoveryService(
   );
 }
 
-async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Timed out waiting for condition');
-}
-
 async function stopLifecycleController(controller: {
   shutdown: (reason: string) => Promise<void>;
   waitForShutdown: () => Promise<void>;
@@ -890,7 +881,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('11. dead adopted durable jobs finalize as wrapper_lost', async () => {
+  it('11. same-namespace running jobs with dead pids finalize as wrapper_lost at planner time', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-dead-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -902,17 +893,7 @@ describe('lifecycle recovery', () => {
       createDefaultUpcasterRegistry(),
       { eventBus },
     );
-    const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
-    const service = createActualRecoveryService(modules, {
-      progressStore,
-      eventBus,
-      launchCoordinator,
-      providerRegistry,
-      pluginRoot,
-      projectRoot,
-    });
-    const completeSpy = vi.spyOn(service, 'completeRecoveredJob');
+    const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
       jobId: 'dead-running',
@@ -938,20 +919,21 @@ describe('lifecycle recovery', () => {
       pluginRoot,
       progressStore,
       eventBus,
-      launchCoordinator,
-      providerRegistry,
-      servicesByProjectRoot: new Map([[projectRoot, service]]),
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
     });
 
     try {
       await controller.start();
-      await waitForCondition(() => progressStore.readStatus('dead-running')?.phase === 'error');
-      expect(completeSpy).toHaveBeenCalledWith(
-        'dead-running',
-        'dead-running-session',
-        { content: '', outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
-        'error',
-      );
+      // Planner detects the dead pid and emits markError(wrapper_lost) directly,
+      // so the runtime poll in finalizeDeadAdoptedJob never runs and
+      // adoptRunningJob is never invoked.
+      expect(progressStore.readStatus('dead-running')).toMatchObject({
+        backendNamespace: namespace,
+        phase: 'error',
+        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+      });
+      expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
     } finally {
       await stopLifecycleController(controller);
     }

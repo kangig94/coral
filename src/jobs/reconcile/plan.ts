@@ -36,6 +36,14 @@ export interface RecoveryProjectionSnapshot {
   readJob(jobId: string): RecoveryJobFacts;
   listSessionRefs(): Array<{ sessionId: string; provider: string }>;
   readSession(sessionId: string): RecoverySessionFacts | null;
+  /**
+   * Probes whether the given pid is still live. Mirrors the cross-namespace
+   * adoption probe (§12.1): a same-namespace `running` / `launching` job whose
+   * pid is gone is wrapper_lost, not a recoverable runtime. Returning `true`
+   * for non-pid runtimes (app-server, internal kb) is safe — the planner
+   * only consults this for durable-cli runtimes that carry a pid.
+   */
+  isPidAlive(pid: number): boolean;
 }
 
 export type RecoveryAction =
@@ -72,7 +80,11 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
   const markStaleRunning: CleanupAction[] = [];
 
   for (const jobId of jobIds) {
-    const planned = planJobRecovery(snapshot.readJob(jobId), snapshot.currentNamespace);
+    const planned = planJobRecovery(
+      snapshot.readJob(jobId),
+      snapshot.currentNamespace,
+      (pid) => snapshot.isPidAlive(pid),
+    );
     if (planned === null) continue;
 
     switch (planned.bucket) {
@@ -108,7 +120,11 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
   };
 }
 
-function planJobRecovery(facts: RecoveryJobFacts, currentNamespace: string): PlannedRecoveryAction | null {
+function planJobRecovery(
+  facts: RecoveryJobFacts,
+  currentNamespace: string,
+  isPidAlive: (pid: number) => boolean,
+): PlannedRecoveryAction | null {
   const status = facts.status;
 
   if (status === null) {
@@ -194,19 +210,47 @@ function planJobRecovery(facts: RecoveryJobFacts, currentNamespace: string): Pla
     facts.hasRuntimeStart &&
     (status.phase === 'launching' || status.phase === 'running')
   ) {
-    return facts.launchRecord === null || facts.runtimeRecord === null
-      ? null
-      : {
-          bucket: facts.hasTerminalRecord ? 'staleDead' : 'running',
-          action: {
-            type: 'registerRunning',
-            jobId: facts.jobId,
-            launchRecord: facts.launchRecord,
-            runtimeRecord: facts.runtimeRecord,
-          },
-        };
+    if (facts.launchRecord === null || facts.runtimeRecord === null) {
+      return null;
+    }
+
+    // Spec §12.1: a projected `running` / `launching` job whose pid is gone
+    // is wrapper_lost, not recoverable runtime. Cross-namespace adoption
+    // already enforces this for foreign jobs; same-namespace probes here so
+    // a dead pid does not silently re-register and stick the job forever.
+    const pid = readDurableRuntimePid(facts.runtimeRecord);
+    if (pid !== null && !isPidAlive(pid)) {
+      return {
+        bucket: 'staleRunning',
+        action: {
+          type: 'markError',
+          jobId: facts.jobId,
+          fault: { kind: 'wrapper_lost' },
+          status,
+        },
+      };
+    }
+
+    return {
+      bucket: facts.hasTerminalRecord ? 'staleDead' : 'running',
+      action: {
+        type: 'registerRunning',
+        jobId: facts.jobId,
+        launchRecord: facts.launchRecord,
+        runtimeRecord: facts.runtimeRecord,
+      },
+    };
   }
 
+  return null;
+}
+
+function readDurableRuntimePid(runtime: JobRuntime): number | null {
+  // Durable-cli runtime records carry a numeric pid; app-server and internal
+  // kb runtimes do not. The planner only probes pids it has.
+  if ('pid' in runtime && typeof runtime.pid === 'number') {
+    return runtime.pid;
+  }
   return null;
 }
 

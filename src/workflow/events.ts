@@ -170,6 +170,52 @@ function workflowPlanDeclaredDuplicate(workflowId: string, where: string): Coral
   });
 }
 
+/**
+ * Spec §6.5: workflow stream identity is the truth → a workflow has exactly
+ * one completion. A second `workflow.completed` would silently overwrite the
+ * first via `upsertProjectionWorkflow`, hiding both terminals behind the
+ * surviving row. Reject duplicate completions at append time — covers both
+ * pre-existing completions on the stream and a second completion in the
+ * same batch.
+ */
+export const validateWorkflowCompletedOnce: DomainAppendValidator = (db, inputs) => {
+  const completedInBatch = new Set<string>();
+
+  for (const input of inputs) {
+    if (input.type !== 'workflow.completed') continue;
+
+    const workflowId = input.stream.id;
+    if (completedInBatch.has(workflowId)) {
+      throw workflowCompletedDuplicate(workflowId, 'batch');
+    }
+    completedInBatch.add(workflowId);
+
+    const existing = db
+      .prepare(
+        `SELECT seq
+           FROM events
+          WHERE stream_kind = 'workflow'
+            AND stream_id = ?
+            AND type = 'workflow.completed'
+          LIMIT 1`,
+      )
+      .get(workflowId) as { seq: number } | undefined;
+
+    if (existing) {
+      throw workflowCompletedDuplicate(workflowId, `existing (seq ${existing.seq})`);
+    }
+  }
+};
+
+function workflowCompletedDuplicate(workflowId: string, where: string): CoralSetupError {
+  return new CoralSetupError({
+    code: 'workflow_completed_duplicate',
+    userMessage: `workflow.completed is already present for workflow '${workflowId}' (${where}); a workflow has exactly one completion.`,
+    remediation: 'Use a fresh workflow id; do not re-complete an existing workflow stream.',
+    context: { workflowId, where },
+  });
+}
+
 export const workflowRegistry: DomainEventRegistry = {
   streamKind: 'workflow',
   entries: [
@@ -194,7 +240,7 @@ export const workflowRegistry: DomainEventRegistry = {
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
     }),
   ],
-  appendValidators: [validateWorkflowPlanDeclaredOnce],
+  appendValidators: [validateWorkflowPlanDeclaredOnce, validateWorkflowCompletedOnce],
 };
 
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {

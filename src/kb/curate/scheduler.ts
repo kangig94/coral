@@ -1,6 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
+import type { TimerHandle } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
 import {
   buildEntityConsolidationDelta,
@@ -90,8 +91,8 @@ export function createCurateScheduler({
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
   let activeRunController: AbortController | null = null;
-  let retryWakeTimer: NodeJS.Timeout | null = null;
-  let debounceTimer: NodeJS.Timeout | null = null;
+  let retryWakeTimer: TimerHandle | null = null;
+  let debounceTimer: TimerHandle | null = null;
   let pendingCommunitySkipTicks = 0;
 
   const gitSync = createGitSyncController({
@@ -104,7 +105,7 @@ export function createCurateScheduler({
 
   function clearRetryWake(): void {
     if (retryWakeTimer !== null) {
-      clearTimeout(retryWakeTimer);
+      kb.time.clearTimeout(retryWakeTimer);
       retryWakeTimer = null;
     }
   }
@@ -190,7 +191,7 @@ export function createCurateScheduler({
       return;
     }
 
-    retryWakeTimer = setTimeout(() => {
+    retryWakeTimer = kb.time.setTimeout(() => {
       retryWakeTimer = null;
       schedule();
     }, delayMs);
@@ -361,14 +362,14 @@ export function createCurateScheduler({
 
     clearRetryWake();
     if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
+      kb.time.clearTimeout(debounceTimer);
     }
     if (scheduleDebounceMs <= 0) {
-      setTimeout(launchQueuedRun, 0);
+      kb.time.setTimeout(launchQueuedRun, 0);
       return;
     }
 
-    debounceTimer = setTimeout(() => {
+    debounceTimer = kb.time.setTimeout(() => {
       debounceTimer = null;
       launchQueuedRun();
     }, scheduleDebounceMs);
@@ -379,7 +380,7 @@ export function createCurateScheduler({
     queuedRun = false;
     clearRetryWake();
     if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
+      kb.time.clearTimeout(debounceTimer);
       debounceTimer = null;
     }
     gitSync.cancelDeferredCommit();

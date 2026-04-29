@@ -1,6 +1,7 @@
 import { formatError } from '../../../infra/error-format.js';
 import type { JobStore } from '../../../jobs/job-store.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
+import type { ProcessPort } from '../../../runtime/ports.js';
 import type { RecoveryJobFacts, RecoveryProjectionSnapshot, RecoverySessionFacts } from '../../../jobs/reconcile/plan.js';
 
 export function buildRecoverySnapshot(
@@ -8,6 +9,7 @@ export function buildRecoverySnapshot(
   namespace: string,
   log: (message: string) => void,
   sessionLookup: SessionLookup,
+  process: Pick<ProcessPort, 'isAlive'>,
 ): RecoveryProjectionSnapshot {
   const jobIds = Object.freeze([...progressStore.listJobIds()]);
   const factsByJob = new Map<string, RecoveryJobFacts>();
@@ -56,6 +58,7 @@ export function buildRecoverySnapshot(
       },
     listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
     readSession: (sessionId: string): RecoverySessionFacts | null => sessionsById.get(sessionId) ?? null,
+    isPidAlive: (pid: number): boolean => process.isAlive(pid),
   };
 
   return Object.freeze(snapshot);

@@ -47,9 +47,19 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
   private readonly jobs = new Map<string, StoredJob>()
   private readonly sessionRefs: Array<{ sessionId: string; provider: string }> = []
   private readonly sessions = new Map<string, SessionEntry | null>()
+  private readonly deadPids = new Set<number>()
 
   constructor(currentNamespace = CURRENT_NAMESPACE) {
     this.currentNamespace = currentNamespace
+  }
+
+  markPidDead(pid: number): this {
+    this.deadPids.add(pid)
+    return this
+  }
+
+  isPidAlive(pid: number): boolean {
+    return !this.deadPids.has(pid)
   }
 
   addJob(fixture: JobFixture): this {
@@ -425,6 +435,86 @@ describe('planRecovery', () => {
         runtimeRecord,
       },
     ])
+    expect(plan.cleanup).toEqual([])
+  })
+
+  it('marks same-namespace running jobs with dead pids as wrapper_lost', () => {
+    const status = makeStatus('dead-pid-job', 'running')
+    const launchRecord = makeLaunch('dead-pid-job')
+    const runtimeRecord = makeRuntime('dead-pid-job', { pid: 9001 })
+    const snapshot = new InMemoryRecoverySnapshot()
+      .addJob({
+        jobId: 'dead-pid-job',
+        status,
+        launch: launchRecord,
+        runtime: runtimeRecord,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
+      })
+      .markPidDead(9001)
+
+    const plan = planRecovery(snapshot)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
+      {
+        type: 'markError',
+        jobId: 'dead-pid-job',
+        fault: { kind: 'wrapper_lost' },
+        status,
+      },
+    ])
+  })
+
+  it('marks same-namespace launching jobs with dead pids as wrapper_lost', () => {
+    const status = makeStatus('dead-pid-launching', 'launching')
+    const launchRecord = makeLaunch('dead-pid-launching')
+    const runtimeRecord = makeRuntime('dead-pid-launching', { pid: 9002 })
+    const snapshot = new InMemoryRecoverySnapshot()
+      .addJob({
+        jobId: 'dead-pid-launching',
+        status,
+        launch: launchRecord,
+        runtime: runtimeRecord,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
+      })
+      .markPidDead(9002)
+
+    const plan = planRecovery(snapshot)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
+      {
+        type: 'markError',
+        jobId: 'dead-pid-launching',
+        fault: { kind: 'wrapper_lost' },
+        status,
+      },
+    ])
+  })
+
+  it('still registers app-server runtimes (no pid) without probing liveness', () => {
+    const launchRecord = makeLaunch('app-server-no-pid-probe')
+    const runtimeRecord = makeAppServerRuntime()
+    const snapshot = new InMemoryRecoverySnapshot()
+      .addJob({
+        jobId: 'app-server-no-pid-probe',
+        status: makeStatus('app-server-no-pid-probe', 'running'),
+        launch: launchRecord,
+        runtime: runtimeRecord,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
+      })
+      // Mark a sentinel pid as dead — the app-server runtime carries no pid
+      // so the planner must not consult the probe at all.
+      .markPidDead(9999)
+
+    const plan = planRecovery(snapshot)
+    expect(plan.register[0]).toEqual({
+      type: 'registerRunning',
+      jobId: 'app-server-no-pid-probe',
+      launchRecord,
+      runtimeRecord,
+    })
     expect(plan.cleanup).toEqual([])
   })
 
