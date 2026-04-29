@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/pool.js';
+import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import { createExclusiveSpec, createFakeProviderServerHandle, createSharedSpec, createSpawnProviderServerMock, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 describe('provider host pool', () => {

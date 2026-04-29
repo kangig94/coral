@@ -132,11 +132,6 @@ export const workflowRegistry: DomainEventRegistry = {
       reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
     }),
     defineDomainEvent({
-      type: 'workflow.plan.revised',
-      schema: workflowPlanSchema,
-      reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
-    }),
-    defineDomainEvent({
       type: 'workflow.drain.entered',
       schema: workflowDrainEnteredBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
@@ -157,16 +152,6 @@ export const workflowRegistry: DomainEventRegistry = {
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {
   return {
     type: 'workflow.plan.declared',
-    stream: { kind: 'workflow', id: workflowId },
-    refs: { workflowId },
-    bodyVersion: 1,
-    body: plan,
-  };
-}
-
-export function workflowPlanRevisedEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {
-  return {
-    type: 'workflow.plan.revised',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
     bodyVersion: 1,

@@ -127,12 +127,6 @@ export function maxStepIndex(plan: WorkflowPlan): number {
   return max;
 }
 
-export function replacePlanSlot(plan: WorkflowPlan, slotId: string, patch: Partial<PlanSlot>): WorkflowPlan {
-  return {
-    slots: plan.slots.map((slot) => (slot.slotId === slotId ? { ...slot, ...patch } : slot)),
-  };
-}
-
 function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
   const slotsById = new Map(plan.slots.map((slot) => [slot.slotId, slot]));
   const memo = new Map<string, number>();

@@ -15,7 +15,7 @@ import {
 } from '../../discuss/shell/live-registry.js';
 
 import { LaunchCoordinator } from '../live/admission.js';
-import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
+import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';

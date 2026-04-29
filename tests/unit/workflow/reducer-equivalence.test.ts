@@ -15,10 +15,9 @@ import {
   workflowCompletedEvent,
   workflowDrainEnteredEvent,
   workflowPlanDeclaredEvent,
-  workflowPlanRevisedEvent,
   workflowRegistry,
 } from '#src/workflow/events.js';
-import { buildWorkflowPlan, compileWorkflowPlan, replacePlanSlot } from '#src/workflow/plan.js';
+import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
@@ -39,9 +38,6 @@ describe('workflow reducer equivalence', () => {
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });
-      const revisedPlan = replacePlanSlot(declaredPlan, declaredPlan.slots[1].slotId, {
-        provider: 'claude',
-      });
 
       const appended = commitInputs(
         db,
@@ -53,7 +49,6 @@ describe('workflow reducer equivalence', () => {
             firstFailureSlotId: declaredPlan.slots[1].slotId,
             drainDeadline: Date.parse('2026-04-19T00:00:15.000Z'),
           }),
-          workflowPlanRevisedEvent('workflow-1', revisedPlan),
           workflowCompletedEvent('workflow-1', {
             outcome: 'failed',
             causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
@@ -74,7 +69,7 @@ describe('workflow reducer equivalence', () => {
 
       expect(before).toEqual({
         workflow_id: 'workflow-1',
-        plan: JSON.stringify(revisedPlan),
+        plan: JSON.stringify(declaredPlan),
         last_seq: appended.at(-1)?.seq,
       });
 

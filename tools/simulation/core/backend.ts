@@ -26,7 +26,7 @@ import { SimulationRuntime } from '../runtime.js';
 import { sendJson } from '../../../src/transport/http/handler.js';
 import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
-import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/pool.js';
+import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { ProgressStore } from '../../../src/jobs/job-store.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';

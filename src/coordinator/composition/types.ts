@@ -11,7 +11,7 @@ import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { TypedEventBus } from '../event-bus.js';
 
 import type { LaunchCoordinator } from '../live/admission.js';
-import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
+import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
 import type {
   CreateKbSubsystemFn,

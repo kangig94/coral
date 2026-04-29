@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { parseAgentRef, resolveAgent } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/pool.js';
+import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';

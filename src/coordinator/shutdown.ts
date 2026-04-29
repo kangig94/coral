@@ -10,7 +10,7 @@ import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
-import type { ProviderHostManager } from './live/provider-hosts/pool.js';
+import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 

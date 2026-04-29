@@ -18,7 +18,7 @@ import { writeResultArtifact } from '../jobs/terminal/export.js';
 import { StartupInterruptedError } from './startup-error.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import type { ProviderHostManager } from './live/provider-hosts/pool.js';
+import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode } from './shutdown.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';

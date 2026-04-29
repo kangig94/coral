@@ -11,7 +11,6 @@ import {
 import { workflowPlanSchema } from './plan.js';
 
 const planDeclared = typedDescriber(workflowPlanSchema, () => 'Workflow plan declared.');
-const planRevised = typedDescriber(workflowPlanSchema, () => 'Workflow plan revised.');
 const drainEntered = typedDescriber(workflowDrainEnteredBodySchema, () => 'Workflow entered failure drain.');
 const completed = typedDescriber(workflowCompletedBodySchema, (body) => `Workflow ${body.outcome}.`);
 const lifecycleFault = typedDescriber(
@@ -21,7 +20,6 @@ const lifecycleFault = typedDescriber(
 
 export const workflowEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['workflow:workflow.plan.declared', planDeclared],
-  ['workflow:workflow.plan.revised', planRevised],
   ['workflow:workflow.drain.entered', drainEntered],
   ['workflow:workflow.completed', completed],
   ['workflow:workflow.lifecycle_fault', lifecycleFault],
