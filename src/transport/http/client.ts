@@ -27,13 +27,13 @@ import type {
   KbReadInput,
   KbReadResult,
   KbReindexInput,
+  KbReindexResponse,
   KbSearchInput,
   KbSearchResponse,
   KbSourceDeleteInput,
   KbSourceListResult,
   KbSourcePersistInput,
   KbUpdateInput,
-  ReindexResult,
 } from '../../kb/entry-types.js';
 import type { EffortLevel } from '../../providers/request-policy.js';
 import {
@@ -563,10 +563,9 @@ export class BackendClient {
     );
   }
 
-  async kbReindex(args: KbReindexInput = {}, context?: InvocationContext): Promise<ReindexResult> {
-    void args;
+  async kbReindex(args: KbReindexInput = {}, context?: InvocationContext): Promise<KbReindexResponse> {
     const ctx = this.resolveContext(context, 'kb reindex');
-    return this.postRoute('/kb/index', this.addHostedJobContext({}, ctx), ctx);
+    return this.postRoute('/kb/index', this.addHostedJobContext(args, ctx), ctx);
   }
 
   async health(): Promise<BackendHealth | null> {

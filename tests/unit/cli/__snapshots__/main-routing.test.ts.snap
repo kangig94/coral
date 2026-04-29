@@ -129,7 +129,7 @@ Commands:
   promote [options]             Promote a memo into a KB note
   update [options] <note>       Update an existing KB note
   delete <note>                 Delete a KB note
-  reindex                       Rebuild the KB index
+  reindex [options]             Rebuild the KB index
   help [command]                display help for command
 "
 `;

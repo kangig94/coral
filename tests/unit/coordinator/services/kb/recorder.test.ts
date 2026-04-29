@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { KbJobRecorder } from '#src/coordinator/services/kb-job-recorder.js';
+import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import type { StoragePort } from '#src/runtime/ports.js';

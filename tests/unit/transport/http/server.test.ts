@@ -1793,7 +1793,8 @@ describe('execution backend server', () => {
         createMemo: (args: Record<string, unknown>, ctx: unknown) => withKb(() => mockKbTools.handleKbMemo(args, ctx)),
         deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
           withKb(() => mockKbTools.handleKbMemoDeleteConsolidated(args, ctx)),
-        reindex: () => withKbAsync((kbSubsystem) => mockKbTools.handleKbReindex({}, kbSubsystem)),
+        reindex: (args: Record<string, unknown>) =>
+          withKbAsync((kbSubsystem) => mockKbTools.handleKbReindex(args, kbSubsystem)),
       };
       const started = await startHttpHandlerServer(created.deps, createHttpHandler);
       return {
@@ -2397,11 +2398,11 @@ describe('execution backend server', () => {
       {
         name: 'reindex',
         path: '/kb/index',
-        args: {},
+        args: { async: true },
         expectedStatus: 200,
         expectedBody: {
           route: 'kb:reindex',
-          args: {},
+          args: { async: true },
         },
         handlerName: 'handleKbReindex',
         callShape: 'args-kb',

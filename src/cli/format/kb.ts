@@ -14,9 +14,9 @@ import type {
   KbPrincipleVerboseRow,
   KbPrinciplesResult,
   KbReadResult,
+  KbReindexResponse,
   KbSearchResponse,
   KbSourceListResult,
-  ReindexResult,
 } from '../../kb/entry-types.js';
 import { formatTable, joinLines } from '../../infra/text.js';
 
@@ -217,7 +217,11 @@ export function formatKbSourceDelete(data: KbSourceDeleteResponse): string {
   return `Deleted: ${data.deleted}`;
 }
 
-export function formatKbReindex(data: ReindexResult, cliPrefix = 'coral-cli'): string {
+export function formatKbReindex(data: KbReindexResponse, cliPrefix = 'coral-cli'): string {
+  if ('status' in data) {
+    return `Reindex job ${data.job} ${data.status}`;
+  }
+
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([

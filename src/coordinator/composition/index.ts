@@ -67,9 +67,9 @@ import { createCoordinatorWorld } from './world.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { createExpansionRpc, createUnavailableExpansionRpc } from '../expansion/rpc.js';
-import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb-source-import-service.js';
-import { KbReindexService } from '../services/kb-reindex-service.js';
-import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb-job-recorder.js';
+import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
+import { KbReindexService } from '../services/kb/reindex.js';
+import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 
 export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
@@ -351,10 +351,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         recordHostedKbFailure('memo_delete', args, ctx, result);
         return result;
       },
-      reindex: async (ctx) => {
+      reindex: async (args, ctx) => {
         const invocationContext = ctx ?? readOnlyInvocationContext;
-        const result = await withKbAsync((kbSubsystem) => kbReindexService.run(invocationContext, kbSubsystem));
-        recordHostedKbFailure('reindex', {}, ctx, result);
+        const request = { async: args.async === true };
+        const result = await withKbAsync((kbSubsystem) =>
+          Promise.resolve(kbReindexService.run(request, invocationContext, kbSubsystem)),
+        );
+        recordHostedKbFailure('reindex', request, ctx, result);
         return result;
       },
     },

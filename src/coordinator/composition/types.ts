@@ -28,7 +28,7 @@ import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { ExecutionServiceDeps } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
-import type { KbSourceImportReadinessWaiter } from '../services/kb-source-import-service.js';
+import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';
 
 export type CoordinatorBootSnapshot = {
   version?: string;

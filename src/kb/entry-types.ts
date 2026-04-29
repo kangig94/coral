@@ -261,7 +261,16 @@ export type KbDeleteInput = {
   note: string;
 };
 
-export type KbReindexInput = Record<string, never>;
+export type KbReindexInput = {
+  async?: boolean;
+};
+
+export type KbReindexStarted = {
+  status: 'running' | 'queued';
+  job: string;
+};
+
+export type KbReindexResponse = ReindexResult | KbReindexStarted;
 
 export type KbPrinciplesInput = {
   query?: string;

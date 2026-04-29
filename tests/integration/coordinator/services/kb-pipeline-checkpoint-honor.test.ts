@@ -23,8 +23,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { KbReindexService } from '#src/coordinator/services/kb-reindex-service.js';
-import { KbSourceImportService } from '#src/coordinator/services/kb-source-import-service.js';
+import { KbReindexService } from '#src/coordinator/services/kb/reindex.js';
+import { KbSourceImportService } from '#src/coordinator/services/kb/source-import.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/job-store.js';
 import { AbortError } from '#src/runtime/abort.js';
@@ -192,7 +192,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
       waitForReadiness: async () => {},
     });
 
-    const runPromise = reindexService.run({ projectRoot: world.markdownRoot }, world.kbSubsystem);
+    const runPromise = reindexService.run({ async: false }, { projectRoot: world.markdownRoot }, world.kbSubsystem);
     const jobId = await awaitJobId(world);
     await runPromise;
 
@@ -222,7 +222,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
       },
     });
 
-    const runPromise = reindexService.run({ projectRoot: world.markdownRoot }, world.kbSubsystem);
+    const runPromise = reindexService.run({ async: false }, { projectRoot: world.markdownRoot }, world.kbSubsystem);
 
     const jobId = await awaitJobId(world);
 
@@ -233,6 +233,32 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
 
     const outcome = await awaitTerminalOutcome(world.progressStore, jobId);
     expect(outcome).toEqual({ kind: 'aborted', reason: 'user_abort' });
+  });
+
+  it('async reindex returns a waitable KB job id and records completion in the background', async () => {
+    const reindexService = new KbReindexService({
+      runtime: world.runtime,
+      progressStore: world.progressStore,
+      backendNamespace: 'test-ns',
+      bundleHash: 'bundle-a',
+      abortRegistry: world.abortRegistry as unknown as JobAbortRegistryPort,
+      waitForReadiness: async () => {},
+    });
+
+    const started = await reindexService.run({ async: true }, { projectRoot: world.markdownRoot }, world.kbSubsystem);
+
+    expect(started).toMatchObject({
+      ok: true,
+      data: {
+        status: 'running',
+        job: expect.any(String),
+      },
+    });
+    if (!started.ok) throw new Error('expected reindex launch ok');
+
+    const jobId = (started.data as { job: string }).job;
+    const outcome = await awaitTerminalOutcome(world.progressStore, jobId);
+    expect(outcome).toEqual({ kind: 'completed' });
   });
 
   it('mutation-lock deadline NEVER records aborted/user_abort — falls through to failed', async () => {
@@ -255,7 +281,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
       curateScheduler: world.kbSubsystem.curateScheduler,
     };
 
-    const result = await reindexService.run({ projectRoot: world.markdownRoot }, fakeSubsystem);
+    const result = await reindexService.run({ async: false }, { projectRoot: world.markdownRoot }, fakeSubsystem);
     expect(result.ok).toBe(false);
     if (result.ok === false) {
       expect(result.code).toBe('kb_reindex_failed');

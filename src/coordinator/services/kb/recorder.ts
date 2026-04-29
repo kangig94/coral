@@ -1,14 +1,14 @@
-import { errorMessage } from '../../infra/error-format.js';
-import { nowIsoString } from '../../infra/time.js';
-import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
-import type { KbSourceImportJobRequest, KbJobOperation } from '../../jobs/launch.js';
-import type { AbortReason, TerminalOutcome } from '../../jobs/outcome.js';
-import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { KbRef } from '../../store/envelope.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { nowIsoString } from '../../../infra/time.js';
+import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
+import type { KbSourceImportJobRequest, KbJobOperation } from '../../../jobs/launch.js';
+import type { AbortReason, TerminalOutcome } from '../../../jobs/outcome.js';
+import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../../jobs/terminal/recording.js';
+import type { Runtime } from '../../../runtime/ports.js';
+import type { KbRef } from '../../../store/envelope.js';
 
-type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, never>;
+export type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, never>;
 
 export type KbFailureDetail = { message: string; stack?: string };
 

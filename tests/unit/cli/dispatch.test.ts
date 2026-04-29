@@ -110,4 +110,21 @@ describe('command client routing', () => {
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });
+
+  it('forwards kb reindex request arguments through transport dispatch', async () => {
+    mockState.request.mockResolvedValueOnce({ status: 'running', job: 'kb-reindex-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+
+    await client.kbReindex({ async: true });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'kb.reindex',
+      expect.objectContaining({
+        async: true,
+        projectRoot: '/tmp/project',
+      }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
 });

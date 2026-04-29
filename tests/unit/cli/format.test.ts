@@ -499,6 +499,12 @@ describe('cli format', () => {
           'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
       );
     });
+
+    it('formats async kb reindex job launch results', () => {
+      expect(formatKbReindex({ status: 'running', job: 'kb-reindex-job' })).toBe(
+        'Reindex job kb-reindex-job running',
+      );
+    });
   });
 
   describe('formatError', () => {

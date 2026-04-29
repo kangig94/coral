@@ -14,6 +14,7 @@ import {
   type KbMemoWriteOptions,
   type KbPrinciplesOptions,
   type KbPromoteOptions,
+  type KbReindexOptions,
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
@@ -357,15 +358,18 @@ export function registerKbCommands(program: Command): void {
     });
 
   const kbReindexCommand = kb.command('reindex');
-  kbReindexCommand.description('Rebuild the KB index').action(async () => {
-    const outputFormat = getOutputFormat(kbReindexCommand);
+  kbReindexCommand
+    .description('Rebuild the KB index')
+    .option('--async', 'Return after launching the reindex job')
+    .action(async (opts: KbReindexOptions) => {
+      const outputFormat = getOutputFormat(kbReindexCommand);
 
-    try {
-      const client = makeClient(process.cwd(), kbReindexCommand);
-      const result = await client.kbReindex({});
-      emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
-    } catch (error) {
-      emitError(error);
-    }
-  });
+      try {
+        const client = makeClient(process.cwd(), kbReindexCommand);
+        const result = await client.kbReindex({ async: opts.async === true });
+        emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
+      } catch (error) {
+        emitError(error);
+      }
+    });
 }

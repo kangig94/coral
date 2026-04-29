@@ -539,7 +539,7 @@ describe('transport/http http-client', () => {
       .mockResolvedValueOnce(
         jsonResponse({ filename: '20260408-routing.md', path: '/tmp/project/.coral/memos/20260408-routing.md' }, 201, 'Created'),
       )
-      .mockResolvedValueOnce(jsonResponse({ notes: 1, sources: 2, communities: 3, principles: 4, duration_ms: 10, mode: 'text' }));
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', job: 'kb-reindex-job' }, 202, 'Accepted'));
 
     await expect(
       client.kbPromote({
@@ -576,13 +576,9 @@ describe('transport/http http-client', () => {
       filename: '20260408-routing.md',
       path: '/tmp/project/.coral/memos/20260408-routing.md',
     });
-    await expect(client.kbReindex({})).resolves.toEqual({
-      notes: 1,
-      sources: 2,
-      communities: 3,
-      principles: 4,
-      duration_ms: 10,
-      mode: 'text',
+    await expect(client.kbReindex({ async: true })).resolves.toEqual({
+      status: 'running',
+      job: 'kb-reindex-job',
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -670,6 +666,7 @@ describe('transport/http http-client', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
+          async: true,
           projectRoot: '/tmp/project',
           owner: 'team-a',
           effort: 'high',

@@ -1988,6 +1988,39 @@ describe('cli main routing', () => {
     expect(stdout).toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md\n');
   });
 
+  it('routes kb source import async with readiness unchanged', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbSourceImport.mockResolvedValueOnce({
+      status: 'running',
+      job: 'kb-import-job',
+      readiness: 'active-vector',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'kb',
+      'source',
+      'import',
+      '/tmp/source.pdf',
+      '--slug',
+      'bridge-removal-plan',
+      '--ready',
+      'active-vector',
+      '--async',
+    ]);
+
+    expect(mockState.kbSourceImport).toHaveBeenCalledWith({
+      filePath: '/tmp/source.pdf',
+      slug: 'bridge-removal-plan',
+      readiness: 'active-vector',
+      async: true,
+    });
+    expect(stdout).toBe('Import job kb-import-job running (ready=active-vector)\n');
+  });
+
   it('routes kb reindex and rewrites warning text using the active CLI invocation prefix', async () => {
     process.argv = ['node', '/tmp/path with spaces/coral-cli.cjs'];
     const { buildProgram } = await loadMainModule();
@@ -2006,8 +2039,23 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'reindex']);
 
-    expect(mockState.kbReindex).toHaveBeenCalledWith({});
+    expect(mockState.kbReindex).toHaveBeenCalledWith({ async: false });
     expect(stdout).toContain('Reindexed:');
     expect(stdout).toContain('node "/tmp/path with spaces/coral-cli.cjs" kb reindex');
+  });
+
+  it('routes kb reindex --async to the async job launch path', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbReindex.mockResolvedValueOnce({
+      status: 'running',
+      job: 'kb-reindex-job',
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'reindex', '--async']);
+
+    expect(mockState.kbReindex).toHaveBeenCalledWith({ async: true });
+    expect(stdout).toBe('Reindex job kb-reindex-job running\n');
   });
 });

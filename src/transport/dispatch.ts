@@ -531,7 +531,11 @@ export async function executeCatalogRequest(
 
     case 'kb.reindex': {
       const parsed = request as Record<string, unknown>;
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.reindex(maybeBuildBodyInvocationContext(parsed, rpcPorts))));
+      return unaryHttp(
+        domainResultToHttp(
+          await rpcPorts.kb.reindex({ async: parsed.async === true }, maybeBuildBodyInvocationContext(parsed, rpcPorts)),
+        ),
+      );
     }
 
     default:

@@ -180,7 +180,12 @@ export const kbMemoCreateRequestSchema = kbMemoSchema
   .omit({ owner: true })
   .extend(transportContextFieldsShape)
   .strict();
-export const kbReindexRequestSchema = z.object(transportContextFieldsShape).strict();
+export const kbReindexRequestSchema = z
+  .object({
+    async: z.boolean().default(false),
+    ...transportContextFieldsShape,
+  })
+  .strict();
 export const kbNoteUpdateRequestSchema = kbUpdateSchema
   .omit({ note: true })
   .extend({

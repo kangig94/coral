@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { KbJobRecorder } from '#src/coordinator/services/kb-job-recorder.js';
+import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
 import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
@@ -31,9 +31,10 @@ const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
 const PROJECT_ROOT = '/workspace/coral';
-const KB_RECORDER_PATH = 'src/coordinator/services/kb-job-recorder.ts';
-const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/coordinator/services/kb-source-import-service.ts';
-const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb-reindex-service.ts';
+const KB_RECORDER_PATH = 'src/coordinator/services/kb/recorder.ts';
+const KB_SHELL_PATH = 'src/coordinator/services/kb/shell.ts';
+const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/coordinator/services/kb/source-import.ts';
+const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb/reindex.ts';
 const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
 const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
 const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution-service.ts';
@@ -925,6 +926,7 @@ describe('journal commit atomicity invariant', () => {
 
   it('keeps the KB producer structurally collapsed to one commit closure with no caller-side seq handoff', () => {
     const recorderSource = readSource(KB_RECORDER_PATH);
+    const shellSource = readSource(KB_SHELL_PATH);
     const sourceImportSource = readSource(KB_SOURCE_IMPORT_SERVICE_PATH);
     const reindexSource = readSource(KB_REINDEX_SERVICE_PATH);
     const migratedCallers = `${sourceImportSource}\n${reindexSource}`;
@@ -941,7 +943,8 @@ describe('journal commit atomicity invariant', () => {
     expect(recorderSource).not.toContain('appendFailed');
     expect(recorderSource).not.toContain('append' + 'EventsWithResult');
 
-    expect(migratedCallers).toContain('appendOperationFailureWithTerminal');
+    expect(shellSource).toContain('appendOperationFailureWithTerminal');
+    expect(migratedCallers).not.toContain('appendOperationFailureWithTerminal');
     expect(migratedCallers).not.toContain('appendKbOperationFailureCause');
     expect(migratedCallers).not.toContain('appendFailed');
     expect(migratedCallers).not.toMatch(/\bcauseRef\b|\bseq\b/u);

@@ -37,13 +37,13 @@ import type {
   KbReadInput,
   KbReadResult,
   KbReindexInput,
+  KbReindexResponse,
   KbSearchInput,
   KbSearchResponse,
   KbSourceDeleteInput,
   KbSourceListResult,
   KbSourcePersistInput,
   KbUpdateInput,
-  ReindexResult,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { getSharedReadCoralStore } from './read-store.js';
@@ -135,7 +135,7 @@ export type CliCommandClient = AbortCapableClient & {
   kbMemoList(args: KbMemoListInput): Promise<KbMemoListResult>;
   kbMemoDelete(args: KbMemoDeleteInput): Promise<KbMemoDeleteResult>;
   kbMemoPurge(args: KbMemoPurgeInput): Promise<KbMemoPurgeResult>;
-  kbReindex(args?: KbReindexInput): Promise<ReindexResult>;
+  kbReindex(args?: KbReindexInput): Promise<KbReindexResponse>;
   subscribe<TResult>(
     method: string,
     params?: unknown,
@@ -236,6 +236,10 @@ export type KbUpdateOptions = {
 export type KbSourceImportOptions = {
   slug?: string;
   ready?: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+  async?: boolean;
+};
+
+export type KbReindexOptions = {
   async?: boolean;
 };
 
@@ -575,8 +579,8 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         ),
       );
     },
-    kbReindex: async (_args = {}) =>
-      await request<ReindexResult>('kb.reindex', buildKbMutationTransportContextBody({}, defaultContext)),
+    kbReindex: async (args = {}) =>
+      await request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
     subscribe,
   };
 }

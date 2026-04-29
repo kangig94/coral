@@ -96,7 +96,7 @@ export interface KbRequestPort {
   deleteSource(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
   createMemo(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
   deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
-  reindex(ctx?: InvocationContext): Promise<KbToolResult>;
+  reindex(request: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
 }
 
 export interface DiscussRequestPort {
