@@ -32,8 +32,8 @@ type ClaudeContinuityState = ClaudePersistedContinuity & {
 const claudeAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec(request) {
-    return buildClaudeProviderServerSpec(request);
+  buildServerSpec(request, _persistedContinuity, ports) {
+    return buildClaudeProviderServerSpec(request, ports.storage);
   },
   interrupt: mapClaudeInterrupt,
 } satisfies AppServerContract;
@@ -93,7 +93,7 @@ export const claude: Provider = (request, runtime) => {
   }
 
   if (persistedContinuity.bootstrapSignature) {
-    const actual = buildClaudeBootstrapSignature(request, prepared.systemPrompt);
+    const actual = buildClaudeBootstrapSignature(request, runtime.ids, prepared.systemPrompt);
     if (!sameBootstrapSignature(persistedContinuity.bootstrapSignature, actual)) {
       return streamProviderTerminal(
         buildDispatchRejectedTerminal(

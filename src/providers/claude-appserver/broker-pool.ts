@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   SingleSessionController,
   type ClaudeBrokerSession,
@@ -38,6 +36,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
+  private readonly ids: CreateBrokerSessionOptions['ids'];
   private readonly notificationHandlers = new Set<(notification: ClaudeBrokerNotification) => void>();
   private readonly controllers = new Map<string, ControllerEntry>();
 
@@ -49,6 +48,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     this.spawnChild = options.spawnChild;
     this.onTurnStarted = options.onTurnStarted;
     this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
+    this.ids = options.ids;
     this.closed = new Promise<Error | void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -62,7 +62,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   }
 
   async sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult> {
-    const brokerSessionKey = params.brokerSessionKey ?? randomUUID();
+    const brokerSessionKey = params.brokerSessionKey ?? this.ids.uuid();
     let entry = this.controllers.get(brokerSessionKey);
     const generatedBrokerSessionKey = params.brokerSessionKey === undefined;
     const createdEntry = entry === undefined;
@@ -180,6 +180,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   private createControllerEntry(brokerSessionKey: string, holdNotifications: boolean): ControllerEntry {
     const controller = new SingleSessionController({
       spawnChild: this.spawnChild,
+      ids: this.ids,
       onTurnStarted: this.onTurnStarted,
       stderrLimit: this.stderrLimit,
       onUnexpectedExit: () => {

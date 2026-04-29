@@ -71,6 +71,8 @@ function makeRuntime(
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
     },
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
+    storage: { existsSync: () => true } as ProviderRuntime['storage'],
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => lease),
     persistedContinuity,

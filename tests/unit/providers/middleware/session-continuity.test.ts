@@ -54,6 +54,7 @@ function createRuntime(
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
     },
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
     acquireServer: async () => {
       throw new Error('not used in session-continuity tests');

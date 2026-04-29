@@ -50,11 +50,16 @@ function makeTierRuntime(
   storage: {
     readFileSync: TierReadFileSync;
     statSync: TierStatSync;
+    existsSync: (path: string) => boolean;
   };
 } {
   return {
     env: { homedir: () => home },
-    storage: { readFileSync: readFileSyncImpl, statSync: statSyncImpl },
+    storage: {
+      readFileSync: readFileSyncImpl,
+      statSync: statSyncImpl,
+      existsSync: () => true,
+    },
   };
 }
 

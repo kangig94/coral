@@ -1,10 +1,9 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { isRecord } from '../../infra/json.js';
+import type { IdPort, StoragePort } from '../../runtime/ports.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
@@ -29,7 +28,6 @@ export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerTurnId?: string;
 }
 
-let cachedBrokerEntrypoint: string | null = null;
 let envHashCache: {
   controllerEnv: Record<string, string> | undefined;
   baseEnv: Readonly<Record<string, string>>;
@@ -55,20 +53,24 @@ export function readClaudePersistedContinuity(
 
 export function buildClaudeBootstrapSignature(
   request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions'>,
+  ids: Pick<IdPort, 'sha256'>,
   derivedSystemPrompt?: string,
 ): ClaudeBootstrapSignature {
   return {
     cwd: request.cwd,
-    systemPromptHash: buildSystemPromptSignature(derivedSystemPrompt),
+    systemPromptHash: buildSystemPromptSignature(ids, derivedSystemPrompt),
     permissionMode: resolveClaudePermissionMode(request.bypassPermissions),
   };
 }
 
-export function buildClaudeProviderServerSpec(request: Pick<ProviderRequest, 'cwd'>): ProviderServerSpec {
+export function buildClaudeProviderServerSpec(
+  request: Pick<ProviderRequest, 'cwd'>,
+  storage: Pick<StoragePort, 'existsSync'>,
+): ProviderServerSpec {
   return {
     provider: 'claude',
     command: process.execPath,
-    args: [resolveClaudeBrokerEntrypoint()],
+    args: [resolveClaudeBrokerEntrypoint(storage)],
     cwd: request.cwd,
     shared: true,
     shutdownCapability: {
@@ -80,11 +82,12 @@ export function buildClaudeProviderServerSpec(request: Pick<ProviderRequest, 'cw
 
 export function mapSessionEnsureParams(
   request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv'>,
+  ids: Pick<IdPort, 'sha256'>,
   derivedSystemPrompt?: string,
   persistedContinuity?: ProviderContinuityBlob,
 ): SessionEnsureParams {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
-  const bootstrapSignature = buildClaudeBootstrapSignature(request, derivedSystemPrompt);
+  const bootstrapSignature = buildClaudeBootstrapSignature(request, ids, derivedSystemPrompt);
   return {
     ...bootstrapSignature,
     brokerSessionKey: continuity.brokerSessionKey,
@@ -98,10 +101,11 @@ export function mapTurnStartParams(
   request: Pick<ProviderRequest, 'model'>,
   prompt: string,
   brokerSessionKey: string,
+  ids: Pick<IdPort, 'uuid'>,
 ): TurnStartParams {
   return {
     brokerSessionKey,
-    brokerTurnId: randomUUID(),
+    brokerTurnId: ids.uuid(),
     prompt,
     model: request.model,
   };
@@ -160,36 +164,29 @@ export function withClaudeContinuity(
   };
 }
 
-function resolveClaudeBrokerEntrypoint(): string {
-  if (cachedBrokerEntrypoint) {
-    return cachedBrokerEntrypoint;
-  }
-
+function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
   const bundledPath = join(__PLUGIN_ROOT__, 'bridge', 'coral-claude-appserver.cjs');
-  if (existsSync(bundledPath)) {
-    cachedBrokerEntrypoint = bundledPath;
+  if (storage.existsSync(bundledPath)) {
     return bundledPath;
   }
 
   const compiledPath = join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude-appserver', 'server.js');
-  if (existsSync(compiledPath)) {
-    cachedBrokerEntrypoint = compiledPath;
+  if (storage.existsSync(compiledPath)) {
     return compiledPath;
   }
 
-  cachedBrokerEntrypoint = bundledPath;
   return bundledPath;
 }
 
-function buildSystemPromptSignature(derivedSystemPrompt?: string): string {
+function buildSystemPromptSignature(ids: Pick<IdPort, 'sha256'>, derivedSystemPrompt?: string): string {
   if (typeof derivedSystemPrompt === 'string' && derivedSystemPrompt.startsWith('sha256:')) {
     return derivedSystemPrompt;
   }
-  return `sha256:${createHash('sha256').update(derivedSystemPrompt ?? '').digest('hex')}`;
+  return `sha256:${ids.sha256(derivedSystemPrompt ?? '')}`;
 }
 
 export function buildClaudeEnvHash(

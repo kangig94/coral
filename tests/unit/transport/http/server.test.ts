@@ -876,7 +876,10 @@ describe('execution backend server', () => {
     expect(serviceA).toBeInstanceOf(ExecutionService);
     expect(serviceB).toBeInstanceOf(ExecutionService);
 
-    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec({ cwd: projectRootA });
+    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec(
+      { cwd: projectRootA },
+      { existsSync: () => true },
+    );
     const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
       PROJECT_ROOT: 'a',
     });

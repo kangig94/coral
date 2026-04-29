@@ -108,7 +108,9 @@ export class RecoveryService {
       return;
     }
 
-    const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity);
+    const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity, {
+      storage: this.deps.runtime.storage,
+    });
     if (spec.shared !== true) {
       const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
         serverGeneration: runtimeRecord.providerMeta.serverGeneration,
@@ -168,7 +170,9 @@ export class RecoveryService {
             ? { type: 'set_resumable', conversationRef: preservedConversationRef }
             : { type: 'preserve' });
       } else {
-        const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity);
+        const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity, {
+          storage: this.deps.runtime.storage,
+        });
 
         try {
           const liveServer =

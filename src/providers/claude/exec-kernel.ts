@@ -78,7 +78,7 @@ export const claudeExecKernel: Provider = (request, runtime) =>
         conversationRef: result.sessionId,
         resumable: true,
         providerContinuity: buildClaudeContinuity({
-          bootstrapSignature: buildClaudeBootstrapSignature(request, prepared.systemPrompt),
+          bootstrapSignature: buildClaudeBootstrapSignature(request, runtime.ids, prepared.systemPrompt),
           conversationRef: result.sessionId,
         }),
       });

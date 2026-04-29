@@ -145,6 +145,7 @@ describe('SingleSessionController', () => {
   it('bootstraps, handles a turn, and shuts down cleanly', async () => {
     const child = new TestClaudeChild();
     const controller = new SingleSessionController({
+      ids: { uuid: () => 'test-uuid' },
       spawnChild: async () => child,
     });
     controllers.add(controller);
@@ -242,6 +243,7 @@ describe('SingleSessionController', () => {
 
   it('reports missing, available, and unavailable probe states', async () => {
     const controller = new SingleSessionController({
+      ids: { uuid: () => 'test-uuid' },
       spawnChild: async () => new TestClaudeChild(),
     });
     controllers.add(controller);

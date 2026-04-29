@@ -34,6 +34,7 @@ function makeRuntime(
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
     },
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');

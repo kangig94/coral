@@ -49,6 +49,7 @@ function makeRuntime(
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
     },
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli,
     acquireServer,
     continuityBridge: {

@@ -605,6 +605,7 @@ export class LaunchOrchestrator {
       time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
+      ids: this.deps.runtime.ids,
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,

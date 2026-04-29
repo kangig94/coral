@@ -45,7 +45,9 @@ export const codexThreadContinuity: SessionContinuityContract<CodexPersistedCont
 
 const codexAppServerContract = {
   name: 'codex',
-  buildServerSpec: buildCodexProviderServerSpec,
+  buildServerSpec(request, persistedContinuity) {
+    return buildCodexProviderServerSpec(request, persistedContinuity);
+  },
   interrupt: mapCodexInterrupt,
   subscriptionPhase: 'afterInitialize',
 } satisfies AppServerContract;

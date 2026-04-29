@@ -83,6 +83,13 @@ function makeRuntime(
   return {
     signal: controller.signal,
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
+    time: {
+      now: () => 0,
+      setTimeout: () => ({ unref: () => {} }),
+      clearTimeout: () => {},
+    } as ProviderRuntime['time'],
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
+    storage: { existsSync: () => true } as ProviderRuntime['storage'],
     acquireServer: vi.fn(async () => lease),
     persistedContinuity: undefined,
     continuityBridge: bridge as ProviderRuntime['continuityBridge'] & MockBridge,
@@ -144,7 +151,9 @@ describe('appServerSession', () => {
     expect(events).toEqual([terminal]);
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
-    expect(contract.buildServerSpec).toHaveBeenCalledWith(BASE_REQUEST, undefined);
+    expect(contract.buildServerSpec).toHaveBeenCalledWith(BASE_REQUEST, undefined, expect.objectContaining({
+      storage: expect.anything(),
+    }));
   });
 
   it('delivers notifications through the bound runtime handler with a single lease subscription', async () => {

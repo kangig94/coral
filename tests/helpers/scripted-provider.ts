@@ -137,14 +137,9 @@ type TestAppServerLifecycle = {
 };
 
 type TestArtifactRecovery = {
-  finalizeFromArtifacts(options: {
-    stdoutPath: string;
-    stderrPath: string;
-    exitCode: number | null;
-    signal: string | null;
-    providerMeta?: Record<string, unknown>;
-    fallbackConversationRef?: string;
-  }): Promise<
+  finalizeFromArtifacts(
+    options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+  ): Promise<
     | ProviderTerminalEventBody
     | {
         terminal: ProviderTerminalEventBody;

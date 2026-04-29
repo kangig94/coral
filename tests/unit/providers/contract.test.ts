@@ -42,6 +42,12 @@ const BASE_REQUEST: ProviderRequest = {
 const BASE_RUNTIME: ProviderRuntime = {
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
+  time: {
+    now: () => 0,
+    setTimeout: () => ({ unref: () => {} }),
+    clearTimeout: () => {},
+  } as ProviderRuntime['time'],
+  ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
   acquireServer: async () => {
     throw new Error('not used in contract tests');
   },

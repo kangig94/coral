@@ -27,6 +27,8 @@ const BOOTSTRAP: SessionEnsureParams = {
 };
 
 const MODEL = 'claude-sonnet-4-6';
+let testIdCounter = 0;
+const TEST_IDS = { uuid: () => `test-${++testIdCounter}` };
 
 class FakeClaudeChild implements ClaudeBrokerChild {
   readonly writes: unknown[] = [];
@@ -427,7 +429,7 @@ describe('Claude broker session', () => {
   it('bootstraps once, emits session updates, and probes continuity', async () => {
     const child = new FakeClaudeChild();
     const spawnChild = vi.fn(async () => child);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
     const notifications = collectNotifications(session);
 
     const firstEnsure = await ensureSession(session);
@@ -491,7 +493,7 @@ describe('Claude broker session', () => {
 
   it('rejects overlapping turns, routes interrupt idempotently, and completes from Claude result events', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
     const ensureResult = await ensureSession(session);
@@ -611,7 +613,7 @@ describe('Claude broker session', () => {
 
   it('auto-allows tool permission requests and emits assistant/system progress', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
     const ensureResult = await ensureSession(session);
@@ -637,7 +639,7 @@ describe('Claude broker session', () => {
 
   it('turns child exit into turn failure and resolves the closed signal with an error', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
     const ensureResult = await ensureSession(session);
@@ -694,6 +696,7 @@ describe('broker: duplicate turn/start rejection', () => {
       markFirstInFlight = resolve;
     });
     const session = createBrokerSession({
+      ids: TEST_IDS,
       spawnChild: async () => child,
       onTurnStarted: async () => {
         markFirstInFlight();
@@ -724,7 +727,7 @@ describe('broker: duplicate turn/start rejection', () => {
 
   it('accepts a new turn/start after the previous turn completes', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-seq');
@@ -768,7 +771,7 @@ describe('broker: duplicate turn/start rejection', () => {
 describe('broker: turn/interrupt timing contracts', () => {
   it('interrupt without an active turn is idempotent', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     await expect(session.turnInterrupt(interruptParams(ensureResult.brokerSessionKey))).resolves.toEqual({
@@ -785,6 +788,7 @@ describe('broker: turn/interrupt timing contracts', () => {
       markTurnStarted = resolve;
     });
     const session = createBrokerSession({
+      ids: TEST_IDS,
       spawnChild: async () => child,
       onTurnStarted: async () => {
         markTurnStarted();
@@ -820,7 +824,7 @@ describe('broker: session/ensure during active turn is a read, not a respawn', (
   it('returns current bootstrap state without restarting the child', async () => {
     const child = new FakeClaudeChild();
     const spawnChild = vi.fn(async () => child);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-concurrent');
@@ -847,7 +851,7 @@ describe('broker: session/ensure during active turn is a read, not a respawn', (
 
   it('returns a mismatch error when the bootstrap signature drifts during an active turn', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-drift');
@@ -876,7 +880,7 @@ describe('broker: initialize sent exactly once per child lifecycle', () => {
     const child2 = new FakeClaudeChild();
     let activeChild = child1;
     const spawnChild = vi.fn(async () => activeChild);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
 
     const firstEnsure = await ensureSession(session);
     child1.emitSystemInit('sess-first');
@@ -920,7 +924,7 @@ describe('broker: initialize sent exactly once per child lifecycle', () => {
 describe('broker: child crash during active turn produces terminal failure, not a hung wait', () => {
   it('keeps the broker transport open when one controller exits unexpectedly mid-turn', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-crash');
@@ -941,7 +945,7 @@ describe('broker: child crash during active turn produces terminal failure, not 
 describe('broker: child exits before first session_id emission', () => {
   it('session/ensure rejects when the child exits during bootstrap before session_id', async () => {
     const child = new FakeClaudeChild(false);
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensure = ensureSession(session);
     await vi.waitFor(() => {
@@ -954,7 +958,7 @@ describe('broker: child exits before first session_id emission', () => {
 
   it('kills the child when initialize fails before bootstrap is established', async () => {
     const child = new FakeClaudeChild(false);
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensure = ensureSession(session);
     await vi.waitFor(() => {
@@ -982,6 +986,7 @@ describe('broker: child exits before first session_id emission', () => {
     const child2 = new FakeClaudeChild();
     let activeChild = child1;
     const session = createBrokerSession({
+      ids: TEST_IDS,
       spawnChild: async () => activeChild,
     });
 
@@ -1017,7 +1022,7 @@ describe('broker: child exits before first session_id emission', () => {
 describe('broker: permission auto-allow for can_use_tool', () => {
   it('does not auto-allow an unknown control_request subtype', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-unknown-ctrl');
@@ -1037,7 +1042,7 @@ describe('broker: permission auto-allow for can_use_tool', () => {
 describe('broker: session/ensure bootstrap signature mismatch', () => {
   it('rejects session/ensure when cwd drifts against an already-live child', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-live');
@@ -1057,7 +1062,7 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
 
   it('rejects session/ensure when systemPromptHash drifts against a live child', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-hash-live');
@@ -1078,7 +1083,7 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
   it('does not respawn the child when mismatch is detected', async () => {
     const child = new FakeClaudeChild();
     const spawnChild = vi.fn(async () => child);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-no-respawn');
@@ -1098,7 +1103,7 @@ describe('broker: session/ensure bootstrap signature mismatch', () => {
 describe('broker: turn/completed notification carries cost metadata', () => {
   it('ignores malformed result events without crashing the broker', async () => {
     const child = new FakeClaudeChild();
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
     const ensureResult = await ensureSession(session);
@@ -1124,7 +1129,7 @@ describe('broker: turn/completed notification carries cost metadata', () => {
 describe('broker: transport-close signal', () => {
   it('leaves the broker transport open when a single controller crashes', async () => {
     const child = new FakeClaudeChild(false);
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     const ensure = ensureSession(session);
     await vi.waitFor(() => {
@@ -1150,7 +1155,7 @@ describe('broker: pooled controller routing', () => {
       .fn<() => Promise<FakeClaudeChild>>()
       .mockResolvedValueOnce(firstChild)
       .mockResolvedValueOnce(secondChild);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
 
     const firstEnsure = await ensureSession(session);
     const secondEnsure = await ensureSession(session);
@@ -1178,7 +1183,7 @@ describe('broker: pooled controller routing', () => {
 
   it('holds first-contact notifications until session/ensure returns the generated brokerSessionKey', async () => {
     const child = new FakeClaudeChild(false);
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
     const notifications = collectNotifications(session);
 
     const ensurePromise = ensureSession(session);
@@ -1223,7 +1228,7 @@ describe('broker: pooled controller routing', () => {
       .fn<() => Promise<FakeClaudeChild>>()
       .mockResolvedValueOnce(firstChild)
       .mockResolvedValueOnce(secondChild);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
     const notifications = collectNotifications(session);
 
     const firstEnsure = await ensureSession(session);
@@ -1313,7 +1318,7 @@ describe('broker: per-controller env', () => {
       .fn<() => Promise<FakeClaudeChild>>()
       .mockResolvedValueOnce(firstChild)
       .mockResolvedValueOnce(secondChild);
-    const session = createBrokerSession({ spawnChild });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild });
 
     const firstEnsure = await ensureSession(session, {
       controllerEnv: {
@@ -1370,7 +1375,7 @@ describe('broker: per-controller env', () => {
 
   it('waits for controller exit before resolving broker shutdown', async () => {
     const child = new FakeClaudeChild(true, false);
-    const session = createBrokerSession({ spawnChild: async () => child });
+    const session = createBrokerSession({ ids: TEST_IDS, spawnChild: async () => child });
 
     await ensureSession(session);
 

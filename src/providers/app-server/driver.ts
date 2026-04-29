@@ -4,6 +4,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../contract.js';
+import type { StoragePort } from '../../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './driver-types.js';
 
@@ -18,6 +19,7 @@ export interface AppServerContract {
   buildServerSpec(
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
+    ports: { storage: Pick<StoragePort, 'existsSync'> },
   ): ProviderServerSpec;
   interrupt(lease: ProviderServerLease): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;

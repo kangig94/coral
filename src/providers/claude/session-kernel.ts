@@ -85,7 +85,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       const ensureResult = await brokerRpc<Record<string, unknown>>(
         lease,
         'session/ensure',
-        mapSessionEnsureParams(request, state.prepared.systemPrompt, runtime.persistedContinuity),
+        mapSessionEnsureParams(request, runtime.ids, state.prepared.systemPrompt, runtime.persistedContinuity),
       );
       state.brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? state.brokerSessionKey;
       state.bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
@@ -108,6 +108,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
         },
         state.prepared.prompt,
         state.brokerSessionKey,
+        runtime.ids,
       );
       const startResult = await brokerRpc<Record<string, unknown>>(lease, 'turn/start', startParams);
       state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;

@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
-
 import { buildChildEnv } from '../../infra/env-sanitize.js';
+import type { IdPort } from '../../runtime/ports.js';
 import { raceTimeout } from '../../infra/async.js';
 import {
   claudeControlRequestSubtypes,
@@ -121,6 +120,7 @@ export interface SpawnClaudeChildOptions {
 
 export interface CreateBrokerSessionOptions {
   spawnChild: (options: SpawnClaudeChildOptions) => Promise<ClaudeBrokerChild> | ClaudeBrokerChild;
+  ids: Pick<IdPort, 'uuid'>;
   onTurnStarted?: (turn: { brokerTurnId: string }) => Promise<void> | void;
   stderrLimit?: number;
 }
@@ -143,6 +143,7 @@ export class SingleSessionController {
   private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
+  private readonly ids: Pick<IdPort, 'uuid'>;
   private readonly onUnexpectedExit: (() => void) | undefined;
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
   private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
@@ -165,6 +166,7 @@ export class SingleSessionController {
     this.spawnChild = options.spawnChild;
     this.onTurnStarted = options.onTurnStarted;
     this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
+    this.ids = options.ids;
     this.onUnexpectedExit = options.onUnexpectedExit;
   }
 
@@ -655,7 +657,7 @@ export class SingleSessionController {
       );
     }
 
-    const requestId = randomUUID();
+    const requestId = this.ids.uuid();
     const responsePromise = new Promise<unknown>((resolve, reject) => {
       this.pendingControlRequests.set(requestId, {
         subtype: request.subtype,

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { Runtime } from '../runtime/ports.js';
+import type { IdPort, Runtime, StoragePort } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -250,8 +250,9 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
-  storage?: Pick<Runtime['storage'], 'readFileSync' | 'statSync'>;
+  storage?: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync'>;
   env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
+  ids: Pick<IdPort, 'uuid' | 'sha256'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
@@ -263,7 +264,11 @@ export type ProviderMiddleware = (next: Provider) => Provider;
 export interface ProviderAppServerContract {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
-  buildServerSpec(request: ProviderRequest, persistedContinuity: ProviderContinuityBlob | undefined): ProviderServerSpec;
+  buildServerSpec(
+    request: ProviderRequest,
+    persistedContinuity: ProviderContinuityBlob | undefined,
+    ports: { storage: Pick<StoragePort, 'existsSync'> },
+  ): ProviderServerSpec;
   interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
@@ -285,6 +290,7 @@ export interface ProviderRecoveryContract {
     signal: string | null;
     providerMeta?: Record<string, unknown>;
     fallbackConversationRef?: string;
+    storage: Pick<StoragePort, 'readFileSync'>;
   }): Promise<{
     terminal: ProviderTerminalEventBody;
     continuity?: {

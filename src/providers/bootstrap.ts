@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-
+import type { StoragePort } from '../runtime/ports.js';
 import {
   type ProviderRecoveryContract,
   type ProviderSpec,
@@ -38,8 +37,8 @@ function buildProviderRecovery(
 async function finalizeClaudeFromArtifacts(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
-  const stdout = readArtifact(options.stdoutPath);
-  const stderr = readArtifact(options.stderrPath);
+  const stdout = readArtifact(options.storage, options.stdoutPath);
+  const stderr = readArtifact(options.storage, options.stderrPath);
   const parsed = parseClaudeStreamJson(stdout);
 
   if (parsed.isError && !parsed.response) {
@@ -100,8 +99,8 @@ async function finalizeClaudeFromArtifacts(
 async function finalizeCodexFromArtifacts(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
-  const stdout = readArtifact(options.stdoutPath);
-  const stderr = readArtifact(options.stderrPath);
+  const stdout = readArtifact(options.storage, options.stdoutPath);
+  const stderr = readArtifact(options.storage, options.stderrPath);
   const failureCause =
     options.signal === null && options.exitCode !== null && options.exitCode !== 0
       ? providerRequestFailed({
@@ -134,9 +133,9 @@ async function finalizeCodexFromArtifacts(
   };
 }
 
-function readArtifact(path: string): string {
+function readArtifact(storage: Pick<StoragePort, 'readFileSync'>, path: string): string {
   try {
-    return readFileSync(path, 'utf-8');
+    return storage.readFileSync(path, 'utf-8');
   } catch {
     return '';
   }

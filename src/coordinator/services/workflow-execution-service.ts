@@ -201,6 +201,7 @@ export class WorkflowExecutionService {
       workflowJobId: jobId,
       journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
+      ids: this.deps.runtime.ids,
     }).then(
       (result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);

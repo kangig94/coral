@@ -1,9 +1,7 @@
-import { randomUUID } from 'node:crypto';
-
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import { SYSTEM_TIME_PORT } from '../infra/time.js';
-import type { TimePort } from '../runtime/ports.js';
+import type { IdPort, TimePort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
   formatStepOutput,
@@ -257,13 +255,14 @@ export async function executePipeline(
     workflowJobId?: string;
     journal?: WorkflowJournal;
     time?: Pick<TimePort, 'now'>;
-  } = {},
+    ids: Pick<IdPort, 'uuid'>;
+  },
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
   const time = options.time ?? SYSTEM_TIME_PORT;
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
-  const workflowId = options.workflowJobId ?? randomUUID();
+  const workflowId = options.workflowJobId ?? options.ids.uuid();
   const plan = buildWorkflowPlan(workflowId, ast, {
     defaultProvider: defaultProviderName,
   });

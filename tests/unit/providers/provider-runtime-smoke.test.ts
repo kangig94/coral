@@ -99,6 +99,8 @@ function makeRuntime(options: {
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
     },
     runCli,
+    ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
+    storage: { existsSync: () => true } as ProviderRuntime['storage'],
     acquireServer,
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {

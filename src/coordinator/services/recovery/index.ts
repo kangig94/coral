@@ -252,6 +252,7 @@ export function createRecoveryCoordinator({
             service,
             provider: recovery,
             progressStore,
+            runtime,
             log,
           });
           retainedCleanup?.();

@@ -173,6 +173,7 @@ type FinalizeDeadAdoptedJobContext = {
   service: RecoveryCapableService;
   provider: ProviderLike;
   progressStore: ProgressStore;
+  runtime: Runtime;
   log: (message: string) => void;
 };
 
@@ -183,6 +184,7 @@ export function finalizeDeadAdoptedJob({
   service,
   provider,
   progressStore,
+  runtime,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
   const sessionId = launchRecord.sessionId;
@@ -201,6 +203,7 @@ export function finalizeDeadAdoptedJob({
           exitCode: exitRecord.exitCode,
           signal: exitRecord.signal,
           fallbackConversationRef: launchRecord.request.conversationRef,
+          storage: runtime.storage,
         })
         .then((result) => {
           const status = progressStore.readStatus(jobId);

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
@@ -45,6 +46,7 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
     options.session ??
     createBrokerSession({
       spawnChild: createNodeClaudeChildFactory(errorOutput),
+      ids: { uuid: () => randomUUID() },
     });
 
   let shutdownRequested = false;

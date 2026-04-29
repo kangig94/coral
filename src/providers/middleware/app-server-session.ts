@@ -148,7 +148,12 @@ async function teardownSession(options: {
 export function appServerSession(contract: AppServerContract): ProviderMiddleware {
   return (next) =>
     async function* appServerSessionProvider(request, runtime) {
-      const spec: ProviderServerSpec = contract.buildServerSpec(request, runtime.persistedContinuity);
+      if (!runtime.storage) {
+        throw new Error('appServerSession requires runtime.storage to build the provider server spec.');
+      }
+      const spec: ProviderServerSpec = contract.buildServerSpec(request, runtime.persistedContinuity, {
+        storage: runtime.storage,
+      });
       const lease: ProviderServerLease = await runtime.acquireServer(spec);
       const clearBoundLease = bindAppServerLease(runtime, lease);
       const removeAbortRelay = installAbortRelay(runtime, lease, contract.interrupt.bind(contract));
