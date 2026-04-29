@@ -95,7 +95,8 @@ export type ProviderTerminalOutcome =
   | { kind: 'completed' }
   | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
   | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'failed' };
+  | { kind: 'failed' }
+  | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
 
 export interface JobTerminal {
   content: string;
@@ -175,6 +176,12 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('aborted'), reason: z.enum(abortReasons) }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal('failed') }).strict(),
+  z
+    .object({
+      kind: z.literal('job_fault'),
+      fault: z.object({ kind: z.literal('wrapper_lost') }).strict(),
+    })
+    .strict(),
 ]);
 
 export const jobTerminalSchema = z
@@ -337,5 +344,52 @@ export function compose(
       ? [parts[0], parts[1]]
       : [parts.slice(0, -1) as readonly ProviderMiddleware[], parts[parts.length - 1] as Provider];
 
-  return middleware.reduceRight((next, layer) => layer(next), provider);
+  const composed = middleware.reduceRight((next, layer) => layer(next), provider);
+
+  // §8.3 #1: compose() owns the terminalOnce invariant for every provider
+  // stream. Per-middleware defensive checks are not the right home; the
+  // composition root sees the full chain end-to-end.
+  return async function* terminalOnceProvider(request, runtime) {
+    let seenTerminal = false;
+    let naturalCompletion = false;
+    const inner = composed(request, runtime);
+    const iterator = inner[Symbol.asyncIterator]();
+
+    try {
+      while (true) {
+        const result = await iterator.next();
+        if (result.done) {
+          naturalCompletion = true;
+          break;
+        }
+        const event = result.value;
+        if (seenTerminal) {
+          // Stream already terminated; drop further yields. A well-behaved
+          // kernel should not emit after terminal, but if it does, dropping
+          // here keeps downstream projections from seeing two terminals.
+          continue;
+        }
+        yield event;
+        if (event.kind === 'terminal') {
+          seenTerminal = true;
+        }
+      }
+    } finally {
+      // Synthesize wrapper_lost only when the inner iterator returned of its
+      // own accord without ever yielding a terminal. Consumer-driven .return()
+      // and propagating exceptions are intentional close signals — let them
+      // pass through unchanged. §7.2: wrapper_lost is the JobLifecycleFault
+      // for "kernel closed without reporting an outcome."
+      if (naturalCompletion && !seenTerminal) {
+        yield {
+          kind: 'terminal',
+          terminal: {
+            content: '',
+            outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
+          },
+          diagnostics: {},
+        };
+      }
+    }
+  };
 }

@@ -182,6 +182,11 @@ function planProviderOutcome(terminal: ProviderTerminalEventBody, options: Runti
         throw new Error('Provider terminal failed without a canonical failureCause.');
       }
       return planProviderFailureCause(terminal.failureCause, options);
+    case 'job_fault':
+      // compose() synthesized a wrapper_lost terminal because the provider
+      // stream closed without one (§8.3 #1). Materialize it as the same
+      // job_fault outcome on the journal terminal.
+      return planJobRecoveryFault(outcome.fault, options);
   }
 }
 
