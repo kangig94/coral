@@ -3,7 +3,8 @@ import { z } from 'zod';
 
 import type { CoralEvent, CoralEventInput, ResolvableCoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
-import { defineDomainEvent, type DomainEventRegistry } from '../store/reducers.js';
+import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
+import { CoralSetupError } from '../runtime/errors.js';
 import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
@@ -124,6 +125,51 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
   });
 }
 
+/**
+ * Spec §6.5 line 1006: a workflow stream owns exactly one declared plan. A
+ * second `workflow.plan.declared` would silently overwrite the first via
+ * `upsertProjectionWorkflow`, hiding both plans behind the surviving row.
+ * Reject duplicate declarations at append time — covers both pre-existing
+ * declarations on the stream and a second declaration in the same batch.
+ */
+export const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (db, inputs) => {
+  const declaredInBatch = new Set<string>();
+
+  for (const input of inputs) {
+    if (input.type !== 'workflow.plan.declared') continue;
+
+    const workflowId = input.stream.id;
+    if (declaredInBatch.has(workflowId)) {
+      throw workflowPlanDeclaredDuplicate(workflowId, 'batch');
+    }
+    declaredInBatch.add(workflowId);
+
+    const existing = db
+      .prepare(
+        `SELECT seq
+           FROM events
+          WHERE stream_kind = 'workflow'
+            AND stream_id = ?
+            AND type = 'workflow.plan.declared'
+          LIMIT 1`,
+      )
+      .get(workflowId) as { seq: number } | undefined;
+
+    if (existing) {
+      throw workflowPlanDeclaredDuplicate(workflowId, `existing (seq ${existing.seq})`);
+    }
+  }
+};
+
+function workflowPlanDeclaredDuplicate(workflowId: string, where: string): CoralSetupError {
+  return new CoralSetupError({
+    code: 'workflow_plan_declared_duplicate',
+    userMessage: `workflow.plan.declared is already present for workflow '${workflowId}' (${where}); a workflow stream owns exactly one declared plan.`,
+    remediation: 'Use a fresh workflow id; do not redeclare the plan on an existing workflow stream.',
+    context: { workflowId, where },
+  });
+}
+
 export const workflowRegistry: DomainEventRegistry = {
   streamKind: 'workflow',
   entries: [
@@ -148,6 +194,7 @@ export const workflowRegistry: DomainEventRegistry = {
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
     }),
   ],
+  appendValidators: [validateWorkflowPlanDeclaredOnce],
 };
 
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {

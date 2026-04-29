@@ -181,7 +181,7 @@ describe('journal commit primitive', () => {
           ctx(),
         ),
       ).toThrow(
-        /CauseRefToken is not allowed at body\.detail\.causeRef\. Tokens may appear only at: workflow\.completed:body\.causeRef, job\.terminal\.recorded:body\.terminal\.outcome\.causeRef, session\.closed:body\.reason\.causeRef\. Move the token to a pinned path or pass a resolved CauseRef instead\./,
+        /CauseRefToken is not allowed at body\.detail\.causeRef\. Tokens may appear only at: workflow\.completed:body\.causeRef, job\.terminal\.recorded:body\.terminal\.outcome\.causeRef\. Move the token to a pinned path or pass a resolved CauseRef instead\./,
       );
 
       expect(countEvents(db)).toBe(0);
@@ -338,16 +338,6 @@ describe('journal commit primitive', () => {
               message: 'transport reset',
             },
           });
-          const closed = c.append({
-            type: 'session.closed',
-            stream: { kind: 'session', id: 'session-chain' },
-            refs: { sessionId: 'session-chain' },
-            bodyVersion: 1,
-            body: {
-              entry,
-              reason: { kind: 'failed', causeRef: providerFailure },
-            },
-          });
           const workflowCompleted = c.append({
             type: 'workflow.completed',
             stream: { kind: 'workflow', id: 'workflow-chain' },
@@ -355,7 +345,7 @@ describe('journal commit primitive', () => {
             bodyVersion: 1,
             body: {
               outcome: 'failed',
-              causeRef: closed,
+              causeRef: providerFailure,
               stepDetails: [],
             },
           });
@@ -378,24 +368,18 @@ describe('journal commit primitive', () => {
         ctx(),
       );
 
-      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
 
       const bodies = bodiesBySeq(db);
       expect(bodies.get(3)).toMatchObject({
-        reason: {
-          kind: 'failed',
-          causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 2 },
-        },
-      });
-      expect(bodies.get(4)).toMatchObject({
         outcome: 'failed',
-        causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 3 },
+        causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 2 },
       });
-      expect(bodies.get(6)).toMatchObject({
+      expect(bodies.get(5)).toMatchObject({
         terminal: {
           outcome: {
             kind: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 4 },
+            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 3 },
           },
         },
       });

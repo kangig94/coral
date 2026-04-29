@@ -344,6 +344,7 @@ describe('workflow pipe executor', () => {
         {
           staleTimeoutMs: 1,
           staleCheckIntervalMs: 1,
+          drainDeadlineMs: 15_000,
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
           recoverStaleAtom,
@@ -397,6 +398,7 @@ describe('workflow pipe executor', () => {
         waitForAtoms([launchedAtom()], executionSvc, ctx, {
           staleTimeoutMs: 1,
           staleCheckIntervalMs: 1,
+          drainDeadlineMs: 15_000,
           onProgress: vi.fn(),
           recoverStaleAtom,
           time: workflowTime,
@@ -936,6 +938,7 @@ describe('waitForAtoms', () => {
     const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
       staleTimeoutMs: 0,
       staleCheckIntervalMs: 500,
+      drainDeadlineMs: 15_000,
       onProgress: progress,
       time: workflowTime,
     });
@@ -986,6 +989,7 @@ describe('waitForAtoms', () => {
         {
           staleTimeoutMs: 0,
           staleCheckIntervalMs: 500,
+          drainDeadlineMs: 15_000,
           onProgress: vi.fn(),
           time: workflowTime,
         },
@@ -1018,6 +1022,7 @@ describe('waitForAtoms', () => {
       waitForAtoms([launchedAtom()], executionSvc, ctx, {
         staleTimeoutMs: 0,
         staleCheckIntervalMs: 500,
+        drainDeadlineMs: 15_000,
         onProgress: vi.fn(),
         time: workflowTime,
       }),

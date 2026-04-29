@@ -1,11 +1,11 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { createRuntimeBinding } from '../runtime/binding.js';
-import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type {
   Backed,
   EmbeddingService,
+  EnsureCorpusFreshnessOptions,
   FtsRetrieval,
   KbInboundSyncOptions,
   KbCorpusPublishCallbacks,
@@ -19,6 +19,7 @@ import type {
 } from './contract.js';
 import {
   createKbMutationLock,
+  DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
   type KbMutationLockContext,
   type KbMutationLockOptions,
 } from './corpus/mutation-lock.js';
@@ -69,19 +70,26 @@ export interface CreateKbRuntimeOptions {
   runtimeDir: string;
   db: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
-  time?: Pick<TimePort, 'now'>;
+  /**
+   * Time port. `now()` drives the existing time fields; `setTimeout` /
+   * `clearTimeout` back the mutation-lock deadline (§16 #50: ports only, no
+   * ambient timers).
+   */
+  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   ids: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
   storage: StoragePort;
   spawnCli: SpawnCliFn;
   processPort: ProcessPort;
+  /** Defaults to {@link DEFAULT_MUTATION_LOCK_TIMEOUT_MS}; override for slow paths. */
+  mutationLockTimeoutMs?: number;
 }
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
-  readonly time: Pick<TimePort, 'now'>;
+  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly storagePort: StoragePort;
   readonly corpusStorage: CorpusStorage;
@@ -99,6 +107,12 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly publicationQueue: CorpusPublicationQueue;
   private activeMutationContext: MutationLockContext | null = null;
+  /**
+   * Single shared rebuild promise. `wait: true` callers await it; `wait: false`
+   * callers fire-and-forget. Cleared in `.finally()` so the next staleness
+   * detection can dispatch a fresh rebuild.
+   */
+  private rebuildInFlight: Promise<void> | null = null;
   private readonly mutationEffects: KbMutationEffects = {
     queueManifestAuthorityDelta: (deltas) => {
       this.queueManifestAuthorityDelta(deltas);
@@ -107,29 +121,9 @@ class KbRuntimeImpl implements KbRuntime {
       this.writeEntityGraphLocked(graph);
     },
   };
-  private readonly mutationLockController = createKbMutationLock<
-    KbIndex,
-    KbCorpusPublication,
-    KbIndexMutationLane,
-    ManifestAuthorityDelta
-  >({
-    cloneStartIndex: () => cloneKbIndex(this.readIndex()),
-    getCurrentLock: () => this.mutationLock,
-    setCurrentLock: (lock) => {
-      this.mutationLock = lock;
-    },
-    setActiveContext: (context) => {
-      this.activeMutationContext = context;
-    },
-    finalizePendingMutation: (context) => {
-      this.finalizePendingMutation(context);
-    },
-    enqueuePublication: (publication) => {
-      this.publicationQueue.enqueue(publication);
-    },
-    hasQueuedPublications: () => this.publicationQueue.hasQueuedPublications(),
-    processPublishQueue: () => this.publicationQueue.process(),
-  });
+  private readonly mutationLockController: ReturnType<
+    typeof createKbMutationLock<KbIndex, KbCorpusPublication, KbIndexMutationLane, ManifestAuthorityDelta>
+  >;
 
   constructor({
     markdownRoot,
@@ -142,11 +136,12 @@ class KbRuntimeImpl implements KbRuntime {
     storage,
     spawnCli,
     processPort,
+    mutationLockTimeoutMs,
   }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
     this.db = db;
-    this.time = time ?? SYSTEM_TIME_PORT;
+    this.time = time;
     this.ids = ids;
     this.storagePort = storage;
     this.corpusStorage = createCorpusStorage(storage);
@@ -172,6 +167,35 @@ class KbRuntimeImpl implements KbRuntime {
         this.invalidateCorpusStateSnapshot();
       },
     });
+    this.mutationLockController = createKbMutationLock<
+      KbIndex,
+      KbCorpusPublication,
+      KbIndexMutationLane,
+      ManifestAuthorityDelta
+    >(
+      {
+        cloneStartIndex: () => cloneKbIndex(this.readIndex()),
+        getCurrentLock: () => this.mutationLock,
+        setCurrentLock: (lock) => {
+          this.mutationLock = lock;
+        },
+        setActiveContext: (context) => {
+          this.activeMutationContext = context;
+        },
+        finalizePendingMutation: (context) => {
+          this.finalizePendingMutation(context);
+        },
+        enqueuePublication: (publication) => {
+          this.publicationQueue.enqueue(publication);
+        },
+        hasQueuedPublications: () => this.publicationQueue.hasQueuedPublications(),
+        processPublishQueue: () => this.publicationQueue.process(),
+      },
+      {
+        defaultTimeoutMs: mutationLockTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
+        time: this.time,
+      },
+    );
 
     storage.mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -341,19 +365,39 @@ class KbRuntimeImpl implements KbRuntime {
     this.corpusStateMirror.invalidate();
   }
 
-  async ensureCorpusFreshness(): Promise<KbIndex> {
-    if (this.textArtifactsNeedRebuild()) {
-      await this.withMutationLock(async (mutation) => {
-        const state = this.readIndexStateIfPresent();
-        if (!this.textArtifactsNeedRebuild(state)) {
-          return;
-        }
+  async ensureCorpusFreshness(options: EnsureCorpusFreshnessOptions = {}): Promise<KbIndex> {
+    const wait = options.wait ?? false;
+    const signal = options.signal;
 
-        await performRescan(this, mutation, captureIndexStateSnapshot(state));
-      });
+    if (this.textArtifactsNeedRebuild()) {
+      // Shutdown drained the runtime — do not kick a fresh background rebuild
+      // and do not block readiness callers. Boot's `wait: true` on the next
+      // coordinator picks up the staleness.
+      if (signal?.aborted !== true) {
+        this.rebuildInFlight ??= this.runRebuildOnce().finally(() => {
+          this.rebuildInFlight = null;
+        });
+
+        if (wait) {
+          await this.rebuildInFlight;
+        }
+      } else if (wait) {
+        throw new Error('ensureCorpusFreshness aborted before rebuild started.');
+      }
     }
 
     return this.readIndex() ?? emptyIndex();
+  }
+
+  private async runRebuildOnce(): Promise<void> {
+    await this.withMutationLock(async (mutation) => {
+      const state = this.readIndexStateIfPresent();
+      if (!this.textArtifactsNeedRebuild(state)) {
+        return;
+      }
+
+      await performRescan(this, mutation, captureIndexStateSnapshot(state));
+    });
   }
 
   async withMutationLock<T>(

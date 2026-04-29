@@ -20,12 +20,22 @@ export type ExpansionLifecycleView = {
   lastError?: string;
 };
 
+export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
+
 export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (id: string, scope: Disposable, tier: 'bundled' | 'installed') => ExpansionHost;
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
   readonly now?: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
+  /**
+   * Reports the coordinator's current lifecycle phase. `equip()` checks this
+   * after `await module.default(host)` returns and before the scope/row land
+   * in the bookkeeping maps. If shutdown started during the import, the bound
+   * resource is disposed and the equip throws `expansion_equip_aborted` —
+   * preventing orphan bindings that `shutdownActiveExpansions` cannot see.
+   */
+  readonly getLifecyclePhase?: () => CoordinatorLifecyclePhase;
 }
 
 function asError(error: unknown): Error {
@@ -43,6 +53,13 @@ export class ExpansionLifecycleService {
    */
   private readonly scopes = new Map<string, Disposable[]>();
   private readonly failedRecovery = new Map<string, Error>();
+  /**
+   * Per-engine async mutex. `equip(X)` and `unequip(X)` both chain on the
+   * same key so DB-row + scope bookkeeping stays serialized — preserving
+   * the post-condition `scopes.has(id) iff state.get(id)` even under
+   * overlapping callers (§16 #43 single-occupancy).
+   */
+  private readonly engineMutex = new Map<string, Promise<void>>();
 
   constructor(private readonly options: ExpansionLifecycleServiceOptions) {
     this.manifest = options.manifest ?? BUNDLED_ENGINES;
@@ -50,6 +67,14 @@ export class ExpansionLifecycleService {
   }
 
   async equip(name: string): Promise<void> {
+    return this.runSerial(name, () => this.equipLocked(name));
+  }
+
+  async unequip(name: string): Promise<void> {
+    return this.runSerial(name, () => this.unequipLocked(name));
+  }
+
+  private async equipLocked(name: string): Promise<void> {
     const entry = this.manifest.find((candidate) => candidate.id === name);
     if (!entry) {
       throw documentedCoralSetupError('unknown_expansion', { name });
@@ -65,6 +90,15 @@ export class ExpansionLifecycleService {
     try {
       const module = (await import(entry.specifier)) as ExpansionModule;
       await module.default(host);
+      // Shutdown can fire during `await module.default(host)`. The scope is
+      // not yet in `this.scopes`, so `shutdownActiveExpansions` cannot see
+      // it — dispose explicitly and surface a structured aborted error so
+      // the caller knows to retry against the next coordinator.
+      const phase = this.options.getLifecyclePhase?.();
+      if (phase === 'draining' || phase === 'stopped') {
+        await this.disposeScope(scope);
+        throw documentedCoralSetupError('expansion_equip_aborted', { name: entry.id });
+      }
       this.options.state.insert({
         id: entry.id,
         version: entry.version,
@@ -78,7 +112,7 @@ export class ExpansionLifecycleService {
     }
   }
 
-  async unequip(name: string): Promise<void> {
+  private async unequipLocked(name: string): Promise<void> {
     const entry = this.manifest.find((candidate) => candidate.id === name);
     if (entry?.tier === 'bundled') {
       throw documentedCoralSetupError('expansion_bundled_immutable', { name });
@@ -107,6 +141,30 @@ export class ExpansionLifecycleService {
 
     // Refill any now-empty bundled-tier slot the unequipped engine was filling.
     await this.applyBundledFallback();
+  }
+
+  private async runSerial(name: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.engineMutex.get(name) ?? Promise.resolve();
+    // Tail tracks "this call's completion ignoring its outcome" so the next
+    // chained caller waits for serialization regardless of whether `work`
+    // resolved or threw.
+    const tail = previous.catch(() => {}).then(work);
+    const tracked = tail.then(
+      () => {},
+      () => {},
+    );
+    this.engineMutex.set(name, tracked);
+    try {
+      await tail;
+    } finally {
+      // Drop the slot only if no later caller chained behind us; an in-flight
+      // successor will have replaced the value already.
+      void tracked.then(() => {
+        if (this.engineMutex.get(name) === tracked) {
+          this.engineMutex.delete(name);
+        }
+      });
+    }
   }
 
   async recoverOnBoot(): Promise<void> {

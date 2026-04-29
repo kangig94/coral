@@ -1,7 +1,15 @@
--- The journal: append-only event log
+-- The journal: append-only event log.
+--
+-- `seq` is coordinator-reserved by `MAX(seq)+1..N` under BEGIN IMMEDIATE
+-- (see src/store/append.ts:readCurrentMaxSeq + reservedSeqs). AUTOINCREMENT
+-- is intentionally omitted: it would maintain a parallel counter in
+-- `sqlite_sequence` that the explicit-INSERT path bypasses, creating a
+-- competing source of truth that can drift from the actual MAX(seq).
+-- Plain `INTEGER PRIMARY KEY` is enough — it provides ROWID semantics with
+-- the same uniqueness guarantee, and reservation order is the authority.
 CREATE TABLE IF NOT EXISTS events (
-  seq            INTEGER PRIMARY KEY AUTOINCREMENT,  -- global total order
-  ts             TEXT    NOT NULL,                   -- ISO 8601
+  seq            INTEGER PRIMARY KEY,                -- coordinator-reserved (see comment above)
+  ts             TEXT    NOT NULL,                   -- ISO 8601 (informational; see §4.1)
   type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
   stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (the four Journal stream kinds)
   stream_id      TEXT    NOT NULL,
@@ -115,6 +123,12 @@ CREATE TABLE IF NOT EXISTS expansion_state (
 
 -- Curate scheduler bookkeeping.
 -- Single row for scalar scheduler state; the active claim lives in kb_curate_active_claim.
+-- claim_lane_disabled_at / community_batch_lane_disabled_at: ISO-8601 stamped
+-- when the corresponding consecutive_*_failures counter first crosses
+-- MAX_CONSECUTIVE_FAILURES (see src/kb/curate/scheduler.ts). The boolean
+-- "disabled?" is derivable from the counter; the timestamp is the
+-- operator-visible diagnostic that records *when* the lane tripped.
+-- Cleared by applyClearCurateRetryState alongside the counters. Spec §3.1.
 CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through_seq      INTEGER,
@@ -129,6 +143,8 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   retry_not_before           TEXT,
   consecutive_claim_failures INTEGER NOT NULL DEFAULT 0,
   consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
+  claim_lane_disabled_at     TEXT,
+  community_batch_lane_disabled_at TEXT,
   community_topology_hash    TEXT,
   community_summary_topology_hash TEXT,
   initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
@@ -211,8 +227,10 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   retry_not_before,
   consecutive_claim_failures,
   consecutive_community_batch_failures,
+  claim_lane_disabled_at,
+  community_batch_lane_disabled_at,
   community_topology_hash,
   community_summary_topology_hash,
   initialized
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, 0);
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, 0);

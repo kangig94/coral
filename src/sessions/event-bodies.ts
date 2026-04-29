@@ -10,7 +10,6 @@ import { continuitySnapshotSchema } from './continuity.js';
 import { sessionEntrySchema } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
-  sessionCloseReasonSchema,
   sessionInterruptedFaultSchema,
   sessionProviderFailedFaultSchema,
 } from './fault.js';
@@ -44,13 +43,6 @@ export const sessionInterruptedBodySchema = z.union([
 export const sessionProviderFailedBodySchema = sessionProviderFailedFaultSchema;
 export const sessionAdapterUnparseableBodySchema = sessionAdapterUnparseableFaultSchema;
 
-export const sessionClosedBodySchema = z
-  .object({
-    entry: sessionEntrySchema.optional(),
-    reason: sessionCloseReasonSchema,
-  })
-  .strict();
-
 export const sessionClaimedBodySchema = z
   .object({
     entry: sessionEntrySchema,
@@ -68,6 +60,5 @@ export const sessionClaimReleasedBodySchema = z
 export type SessionOpenedBody = z.infer<typeof sessionOpenedBodySchema>;
 export type SessionContinuityCheckpointedBody = z.infer<typeof sessionContinuityCheckpointedBodySchema>;
 export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema>;
-export type SessionClosedBody = z.infer<typeof sessionClosedBodySchema>;
 export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
 export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;

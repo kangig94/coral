@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ZodError } from 'zod';
 import {
@@ -36,6 +37,20 @@ const INVALID_JSON_RESPONSE = {
   message: 'Invalid JSON body',
 };
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
+
+/**
+ * Constant-time token comparison. Required for the network gateway because a
+ * length-aware byte-by-byte `===` leaks token prefix information through
+ * timing. Length differences fall through to `false` immediately — leaking
+ * length is acceptable here (tokens are uniform-length identity strings).
+ * Spec §11.3.
+ */
+function tokensEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, 'utf-8');
+  const bBuf = Buffer.from(b, 'utf-8');
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
 
 export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -596,7 +611,7 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
     }
 
     const authHeader = req.headers['x-coral-backend-token'];
-    if (typeof authHeader !== 'string' || authHeader !== identity.token) {
+    if (typeof authHeader !== 'string' || !tokensEqual(authHeader, identity.token)) {
       req.resume();
       sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
       return;

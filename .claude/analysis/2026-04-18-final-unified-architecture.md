@@ -372,10 +372,14 @@ The Corpus authority (§2.2, §6.4) uses the filesystem directly and is document
 ### 3.1 Schema
 
 ```sql
--- The journal: append-only event log
+-- The journal: append-only event log.
+-- `seq` is coordinator-reserved by `MAX(seq)+1..N` under BEGIN IMMEDIATE
+-- (see §3.3); AUTOINCREMENT is intentionally omitted because it would maintain
+-- a parallel counter in `sqlite_sequence` that the explicit-INSERT path
+-- bypasses, creating a competing source of truth that can drift from MAX(seq).
 CREATE TABLE IF NOT EXISTS events (
-  seq            INTEGER PRIMARY KEY AUTOINCREMENT,  -- global total order
-  ts             TEXT    NOT NULL,                   -- ISO 8601
+  seq            INTEGER PRIMARY KEY,                -- coordinator-reserved (see §3.3)
+  ts             TEXT    NOT NULL,                   -- ISO 8601 (informational; see §4.1)
   type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
   stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (four Journal kinds only; see §5)
   stream_id      TEXT    NOT NULL,
@@ -505,7 +509,13 @@ CREATE TABLE IF NOT EXISTS expansion_state (
 -- rather than opaque JSON so SQL can compare/order them.
 -- `last_attempted_through_*` lets the scheduler back off without losing
 -- the last successfully-processed checkpoint. The two
--- consecutive_*_failures counters drive exponential backoff.
+-- consecutive_*_failures counters drive exponential backoff and are capped
+-- at MAX_CONSECUTIVE_FAILURES (10): on the cap-trip transaction the
+-- corresponding `*_lane_disabled_at` column records an ISO-8601 timestamp
+-- and the scheduler stops scheduling that lane until an operator clears
+-- the state via `clearCurateRetryState` (or a fresh-suffix claim resets
+-- the claim lane naturally). The boolean "disabled?" is derivable from
+-- the counter; the timestamp is the operator-visible diagnostic.
 -- The two community_*_topology_hash columns let curate skip community
 -- detection / summary regeneration when the underlying graph hasn't
 -- structurally changed (cheaper than always re-running).
@@ -523,6 +533,8 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   retry_not_before                     TEXT,
   consecutive_claim_failures           INTEGER NOT NULL DEFAULT 0,
   consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
+  claim_lane_disabled_at               TEXT,                                 -- ISO-8601 of cap-trip; NULL while healthy
+  community_batch_lane_disabled_at     TEXT,                                 -- ISO-8601 of cap-trip; NULL while healthy
   community_topology_hash              TEXT,
   community_summary_topology_hash      TEXT,
   initialized                          INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
@@ -596,7 +608,7 @@ No segment rotation. No standalone checkpoint files. No advisory lockfile. SQLit
 
 ### 3.3 Commit semantics
 
-`commit(cb)` is the Journal substrate primitive. The callback runs inside SQLite `BEGIN IMMEDIATE`; `c.append(input)` records a commit-local event and returns an opaque `CauseRefToken` that later events in the same closure may use at explicit `causeRef` paths. The substrate reserves contiguous `seq` values, resolves tokens to durable `CauseRef { stream, seq }` pointers, validates/upcasts, inserts events, and applies reducers before the transaction commits.
+`commit(cb)` is the Journal substrate primitive. The callback runs inside SQLite `BEGIN IMMEDIATE`; `c.append(input)` records a commit-local event and returns an opaque `CauseRefToken` that later events in the same closure may use at explicit `causeRef` paths. The substrate reserves contiguous `seq` values via `MAX(seq) + 1..N` under the same `BEGIN IMMEDIATE` (so only one writer reserves at a time and the values are contiguous within the closure), inserts the rows with explicit `seq`, resolves tokens to durable `CauseRef { stream, seq }` pointers, validates/upcasts, and applies reducers before the transaction commits. SQLite's `AUTOINCREMENT` is intentionally NOT used — see §3.1 schema comment.
 
 ```ts
 journal.commit((c) => {
@@ -683,7 +695,9 @@ const journalEventEnvelope = z.object({
 
 ### 4.1 Why this shape
 
-**`seq`**: global total order. SQLite ROWID provides this naturally. Every subscriber tracks a single `afterSeq` cursor.
+**`seq`**: global total order. The coordinator reserves contiguous `seq` values via `MAX(seq) + 1..N` under `BEGIN IMMEDIATE` (see §3.3). Every subscriber tracks a single `afterSeq` cursor and `seq` is the *only* field guaranteed to be strictly monotone.
+
+**`ts` is informational only — it MAY be non-monotone w.r.t. `seq`.** The append input accepts a `tsOverride` so producers (notably discuss restoration replaying historical bids/speeches from an external archive) can stamp an event with its original wall-clock time. That stamp is allowed to be earlier than `MAX(ts)` of the prior events. Consumers that need ordering MUST use `seq`, not `ts`. The substrate enforces strict monotonicity on `seq`; it does not enforce any property on `ts`.
 
 **Four Journal stream kinds**: `job`, `session`, `discuss`, **`workflow`**. Workflow is its own kind because a workflow owns a durable plan separate from the jobs it spawns (§6.5). KB is NOT a Journal stream — it lives in the Corpus authority (§2.2, §6.4).
 
@@ -826,8 +840,9 @@ session.claim.released           { entry, jobId }
 session.interrupted              { fault | { entry?, fault } }
 session.provider_failed          { ...provider failure fault }
 session.adapter_unparseable      { ...adapter parse fault }
-session.closed                   { entry?, reason }
 ```
+
+A session has no "closed" event. Sessions exist for as long as their stream has events; there is no user-facing close action and no expiry path, so a `session.closed` vocabulary would be wired truth without a producer (per the clean-slate rule applied to `workflow.plan.revised`). Re-add only when a real session-close concept arrives.
 
 **Why continuity is a full snapshot, not a patch**:
 Today's design would have us emit "conversationRef changed from X to Y". A future reader would need every prior patch to know the current state. Full snapshots are idempotent: the latest one is the truth. This matches Pioneer C's stream model and eliminates a replay-order-dependency bug class.
@@ -887,17 +902,19 @@ Fast coordinator KB operations follow the same pattern inside a single **Corpus 
 
 Retrieval artifacts are not built inside the authoritative critical section. A command that promises retrieval freshness captures the committed `contentSeq` / `metadataSeq` and waits for the relevant consumer cursor after the lock releases. This keeps the Corpus write small while still giving long-running commands a precise readiness contract.
 
-External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordinator entirely. They are detected by startup scans and periodic rescans; CorpusConsumers pick up the drift via manifest diff.
+**Mutation-lock deadline**: every `withMutationLock(fn)` call races `fn` against a deadline through `runtime.time.setTimeout` (§16 #50). Default deadline is **30 seconds** for fast coordinator paths (memo write, note update, source delete). Heavy paths pass an explicit longer timeout — `kb reindex` and `kb source import` use **5 minutes**, set on the call site. When the deadline fires the lock releases and the offending caller throws `kb_mutation_stuck` (carrying `timeoutMs` and the previous holder's recorded mutation reason); queued callers proceed against the next snapshot. The deadline is the only mechanism that bounds queue blocking — a wedged operation must surface, not stall every later mutation.
+
+External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordinator entirely. They are detected by startup scans and the lazy non-blocking rescan dispatched on KB read paths (§12.3); CorpusConsumers pick up the drift via manifest diff.
 
 **Source import readiness**:
 `kb source import` is the one KB mutation whose shell is process-like by default. It stages/converts the external document, commits the resulting markdown source to the Corpus, then optionally waits for retrieval consumers according to the readiness contract defined in §6.1:
 
-| Readiness | Completion condition |
-|---|---|
-| `commit` | Corpus source markdown is durable and `contentSeq` advanced. |
-| `base-search` | `commit` + `kb.fts.read().consumer` reached the committed `contentSeq`. |
-| `active-vector` | `commit` + `kb.vector.read().consumer` reached the committed `contentSeq`; if `kb.vector` is empty, readiness fails structurally with `binding_empty`. |
-| `all-equipped` | `commit` + every installed Corpus consumer reached the committed Corpus version. |
+| Readiness | Completion condition | Unbound-binding fail-mode |
+|---|---|---|
+| `commit` | Corpus source markdown is durable and `contentSeq` advanced. | n/a (no binding read). |
+| `base-search` | `commit` + `kb.fts.read().consumer` reached the committed `contentSeq`. | `kb_unavailable { binding: 'kb.fts' }` — bundled Orama is normally always bound, but if startup left `kb.fts` empty the readiness wait fails structurally instead of leaking a raw `binding_empty`. |
+| `active-vector` | `commit` + `kb.vector.read().consumer` reached the committed `contentSeq`. | `kb_unavailable { binding: 'kb.vector' }` — `kb.vector` is empty until an installed engine fills it. |
+| `all-equipped` | `commit` + every installed Corpus consumer reached the committed Corpus version. | Empty bindings are skipped (best-effort over what's currently equipped). |
 
 The command surface is identical in base and equipped tiers. Equipping needle or another vector engine changes whether `kb.vector` is bound and which consumer satisfies `active-vector`; it does not create a separate import command.
 Retrieval readiness is observed through `waitFreshUntil('corpus', version, consumerId)` after the Corpus commit. If that wait fails, the source markdown and Corpus version remain durable; the hosting job records the readiness failure instead of rolling back knowledge content.
@@ -1726,6 +1743,8 @@ Local IPC bootstrap is discover-or-launch via `coordinator.json` plus socket rea
 
 `http://127.0.0.1:<port>` is not the architectural boundary — it is a *carriage* for coordinator RPC. IPC and HTTP share identical command semantics; only wire format differs. Local security is filesystem ownership on the socket; HTTP auth applies to network gateways.
 
+**Token comparison MUST be constant-time.** `X-Coral-Backend-Token` is checked via `node:crypto.timingSafeEqual` over Buffer-encoded inputs (with a length-prefix pre-check). String `===` is forbidden because the network-exposed coordinator gateway leaks token prefix length under timing attack. Transport is allowed direct ambient `node:crypto` access per §16 #50 (transport is not a domain module).
+
 Route dispatch is table-driven (array at `src/transport/http/handler.ts`), but the route table is projected from a single catalog at `src/transport/rpc-catalog.ts`. IPC server dispatch and HTTP handler dispatch both derive from that catalog through `rpcPorts` injected by coordinator composition, so semantic parity is structural rather than aspirational. Operational `/health`, `/admin/shutdown`, and `/events/stream` remain explicit transport-local carveouts rather than catalog entries.
 
 Interactive/live subscriptions use the same transport primitive in both carriages. `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` field; HTTP projects notifications to SSE and IPC carries notifications directly. The steady state is one active subscription per connection; multiplexing is a transparent future optimization, not a second protocol.
@@ -1814,7 +1833,7 @@ The Corpus recovery model is **intrinsically idempotent**: rescanning a clean Co
 Obsidian edits, `git pull`, or direct filesystem changes are the **normal** path for knowledge editing. The coordinator does NOT own them; the filesystem + git own them. Coral observes and re-indexes:
 
 - **Startup scan**: coordinator boot compares filesystem to the current corpus snapshot and bumps `contentSeq` / `metadataSeq` for any drift; CorpusConsumers (Orama, needle) catch up via manifest diff.
-- **Periodic rescan**: ongoing scheduled task absorbs changes between boots.
+- **Lazy non-blocking rescan**: Corpus mutation absorption is lazy on read. KB read paths call `KbRuntime.ensureCorpusFreshness({ wait: false })` on every invocation; if the index is stale and no rebuild is already in flight, a background rebuild is dispatched. Concurrent reads share one in-flight `Promise<void>` (promise dedup) — the second caller is a no-op rather than a duplicate rescan. Reads return immediately with the current index; stale results may be served during the rebuild window. Readiness, boot, and curate paths use `{ wait: true }` (the blocking variant) so they never observe a stale index. The coordinator owns an `AbortController` whose signal is passed to boot's blocking call; on shutdown the signal aborts further background rebuild kicks so a draining instance does not start fresh KB work — the next coordinator's blocking boot picks up any drift. There is no periodic timer.
 - **git-sync auto-commit**: after coordinator-mediated mutations (e.g., `kb promote`), git-sync debounces and commits the markdown changes. External edits made via Obsidian remain visible in the git working tree; the user's normal git workflow (or `kb` commands that trigger auto-commit) brings them into history.
 
 External edits never synthesize backfilled Journal events. They are first-class Corpus mutations observable via version counters. Entity re-extraction (curate's community/principle/graph update) is **independent** of edit detection — curate runs on its own scheduler against the current Corpus state; external edits affect what the next curate pass sees but do not themselves trigger curate.

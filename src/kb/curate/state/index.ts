@@ -5,6 +5,7 @@ export {
   writeCurateState,
 } from './store.js';
 export {
+  MAX_CONSECUTIVE_FAILURES,
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
   applyRecordCurateFailure,

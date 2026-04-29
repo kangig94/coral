@@ -418,7 +418,7 @@ Body.
     writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
     setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
 
-    const index = await kb.ensureCorpusFreshness();
+    const index = await kb.ensureCorpusFreshness({ wait: true });
     const communities = Object.values(index.entries).filter((entry) => entry.kind === 'community');
 
     expect(index.entityMeta).toEqual(editedGraph.entityMeta);
@@ -859,7 +859,7 @@ This note is valid now.
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
-    await kb.ensureCorpusFreshness();
+    await kb.ensureCorpusFreshness({ wait: true });
 
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(kb)).toMatchObject({
@@ -934,7 +934,7 @@ Source body.
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
-    await kb.ensureCorpusFreshness();
+    await kb.ensureCorpusFreshness({ wait: true });
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateRetryQueue(kb.db)).toEqual([]);
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({

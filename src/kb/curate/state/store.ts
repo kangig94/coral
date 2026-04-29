@@ -259,6 +259,8 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(target),
     consecutiveClaimFailures: scheduler.consecutiveClaimFailures,
     consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
+    claimLaneDisabledAt: scheduler.claimLaneDisabledAt,
+    communityBatchLaneDisabledAt: scheduler.communityBatchLaneDisabledAt,
     initialized: scheduler.initialized,
   });
 }
@@ -276,6 +278,8 @@ export function writeCurateState(target: CurateStateTarget, state: CurateState):
       retryNotBefore: normalized.retryNotBefore,
       consecutiveClaimFailures: normalized.consecutiveClaimFailures,
       consecutiveCommunityBatchFailures: normalized.consecutiveCommunityBatchFailures,
+      claimLaneDisabledAt: normalized.claimLaneDisabledAt,
+      communityBatchLaneDisabledAt: normalized.communityBatchLaneDisabledAt,
       communityTopologyHash: normalized.communityTopologyHash,
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,

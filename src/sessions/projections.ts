@@ -11,7 +11,6 @@ import {
 } from './entry.js';
 import type {
   SessionClaimedBody,
-  SessionClosedBody,
   SessionContinuityCheckpointedBody,
   SessionInterruptedBody,
   SessionOpenedBody,
@@ -108,7 +107,7 @@ function prematureProjectionSessionEvent(sessionId: string): CoralSetupError {
   return new CoralSetupError({
     code: 'projection_sessions_premature_event',
     userMessage: `Session projection received a non-opened event before session.opened for ${sessionId}.`,
-    remediation: 'Append session.opened before any continuity, provider_failed, adapter_unparseable, interrupted, or closed events for a session stream.',
+    remediation: 'Append session.opened before any continuity, provider_failed, adapter_unparseable, or interrupted events for a session stream.',
     context: { sessionId },
   });
 }
@@ -231,12 +230,6 @@ export const reduceSessionProviderFailed: Reducer<SessionProviderFailedFault> = 
 export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableFault> = (db, event) => {
   upsertProjectionSession(db, event, {
     provider: event.body.provider,
-  });
-};
-
-export const reduceSessionClosed: Reducer<SessionClosedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    ...(event.body.entry !== undefined ? { entry: event.body.entry } : {}),
   });
 };
 

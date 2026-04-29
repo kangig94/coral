@@ -166,7 +166,10 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   ) {}
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    await this.runtime.ensureCorpusFreshness();
+    // Spec §12.3 lazy non-blocking rescan: kick a background rebuild on
+    // staleness but project against the current index now. A subsequent
+    // notify-cycle will pick up the rebuilt index when it lands.
+    await this.runtime.ensureCorpusFreshness({ wait: false });
     const preparedProjection = await this.prepareFullSnapshotForCurrentCorpus();
     await this.installFullSnapshot(ctx.snapshot, preparedProjection);
     this.runtime.recordIndexSyncSuccess();

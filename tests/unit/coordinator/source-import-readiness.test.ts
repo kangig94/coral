@@ -160,6 +160,46 @@ describe('waitForCorpusReadiness', () => {
     expect(calls).toEqual(['fts-consumer']);
   });
 
+  // G6: 'base-search' must surface a structured kb_unavailable error when
+  // kb.fts is unbound, instead of leaking the raw binding_empty CoralSetupError.
+  it('"base-search" surfaces kb_unavailable when kb.fts is unbound', async () => {
+    let waiterCalled = false;
+    await expect(
+      waitForCorpusReadiness({
+        kb: {
+          fts: makeUnboundBinding('kb.fts'),
+          vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+        },
+        readiness: 'base-search',
+        snapshot: SNAPSHOT,
+        timeoutMs: 1000,
+        waitFresh: async () => {
+          waiterCalled = true;
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'kb_unavailable', context: { binding: 'kb.fts', readiness: 'base-search' } });
+    expect(waiterCalled).toBe(false);
+  });
+
+  it('"active-vector" surfaces kb_unavailable when kb.vector is unbound', async () => {
+    let waiterCalled = false;
+    await expect(
+      waitForCorpusReadiness({
+        kb: {
+          fts: makeBoundBinding('kb.fts', 'fts-consumer'),
+          vector: makeUnboundBinding('kb.vector'),
+        },
+        readiness: 'active-vector',
+        snapshot: SNAPSHOT,
+        timeoutMs: 1000,
+        waitFresh: async () => {
+          waiterCalled = true;
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'kb_unavailable', context: { binding: 'kb.vector', readiness: 'active-vector' } });
+    expect(waiterCalled).toBe(false);
+  });
+
   it('"all-equipped" awaits multiple bound corpus consumers concurrently with mixed cursor speeds', async () => {
     // Brief mandates a 3-stub variant covering different cursor speeds. The
     // production binding surface only exposes fts + vector, so the third stub

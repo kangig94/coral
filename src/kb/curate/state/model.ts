@@ -13,6 +13,15 @@ const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
 const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * See `kb/curate/scheduler.ts` for the rationale narrative. Lives here
+ * because the persisted `consecutive_*_failures` columns and the
+ * `*_lane_disabled_at` stamps are part of the curate state model — the
+ * cap is the policy that links the two, and pure reducers below need
+ * the value to stamp `disabledAt` on the cap-trip.
+ */
+export const MAX_CONSECUTIVE_FAILURES = 10;
+
 export type CurateCursor = {
   entrySeq: number;
   entryId: KbEntryId;
@@ -57,6 +66,10 @@ export type CurateState = {
   communitySummaryInputFingerprints?: Record<string, string>;
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
+  /** ISO-8601 stamp when the claim lane first crossed `MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
+  claimLaneDisabledAt: string | null;
+  /** ISO-8601 stamp when the community-batch lane first crossed `MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
+  communityBatchLaneDisabledAt: string | null;
   initialized: boolean;
 };
 
@@ -96,6 +109,8 @@ export function defaultCurateState(): CurateState {
     communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
     initialized: false,
   };
 }
@@ -176,18 +191,32 @@ export function applyRecordCurateFailure(
   const sameAttempt =
     state.lastAttemptedThrough !== null && compareCursor(state.lastAttemptedThrough, attemptedThrough) === 0;
   const priorFailures = sameAttempt ? state.consecutiveClaimFailures : 0;
+  const nextFailures = priorFailures + 1;
+  // Stamp the disabled-at marker on the *transition* from healthy to disabled
+  // (`< cap` → `>= cap`); leave any prior stamp intact across the boundary so
+  // operators see the moment the lane first tripped, not the most recent retry.
+  const tripped =
+    nextFailures >= MAX_CONSECUTIVE_FAILURES && state.claimLaneDisabledAt === null;
 
   return {
     ...state,
     lastAttemptedThrough: attemptedThrough,
     retryNotBefore: nowIsoString(nowMs + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures)),
     activeClaim: null,
-    consecutiveClaimFailures: priorFailures + 1,
+    consecutiveClaimFailures: nextFailures,
+    claimLaneDisabledAt: tripped ? nowIsoString(nowMs) : state.claimLaneDisabledAt,
   };
 }
 
 export function applyClearCurateRetryState(state: CurateState): CurateState | null {
-  if (state.activeClaim === null && state.retryNotBefore === null && state.consecutiveClaimFailures === 0) {
+  if (
+    state.activeClaim === null
+    && state.retryNotBefore === null
+    && state.consecutiveClaimFailures === 0
+    && state.consecutiveCommunityBatchFailures === 0
+    && state.claimLaneDisabledAt === null
+    && state.communityBatchLaneDisabledAt === null
+  ) {
     return null;
   }
 
@@ -196,6 +225,9 @@ export function applyClearCurateRetryState(state: CurateState): CurateState | nu
     retryNotBefore: null,
     activeClaim: null,
     consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
   };
 }
 

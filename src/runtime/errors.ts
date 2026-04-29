@@ -25,6 +25,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'unknown_expansion'
   | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
+  | 'expansion_equip_aborted'
   | 'engine_env_var_missing'
   | 'expansion_embedding_provider_missing'
   | 'expansion_not_equipped'
@@ -39,6 +40,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'consumer_registration_kind_invalid'
   | 'expansion_install_path_unwritable'
   | 'binding_empty'
+  | 'kb_unavailable'
   | 'binding_occupied'
   | 'binding_required'
   | 'binding_required_by_active_engine'
@@ -87,6 +89,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Expansion runtime is not available for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: (context) =>
       `Restart Coral or run 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}' to retry.`,
+  },
+  expansion_equip_aborted: {
+    userMessage: (context) =>
+      `Equipping '${stringContextValue(context, 'name', 'this expansion')}' was aborted because the coordinator is shutting down.`,
+    remediation: (context) =>
+      `Wait for the new coordinator to finish booting, then run 'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}' again.`,
   },
   engine_env_var_missing: {
     userMessage: (context) =>
@@ -154,6 +162,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   binding_empty: {
     userMessage: (context) => `Binding '${stringContextValue(context, 'binding', 'unknown')}' is empty.`,
     remediation: 'Bind the required runtime capability before reading it.',
+  },
+  kb_unavailable: {
+    userMessage: (context) =>
+      `Knowledge base is not available for readiness '${stringContextValue(context, 'readiness', 'unknown')}'.`,
+    remediation: (context) => {
+      const binding = stringContextValue(context, 'binding', '<binding>');
+      return `No engine is currently bound to '${binding}'. Equip the bundled or installed engine that fills it, then retry.`;
+    },
   },
   binding_occupied: {
     userMessage: (context) =>

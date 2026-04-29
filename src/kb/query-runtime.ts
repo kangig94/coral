@@ -99,6 +99,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
     markdownRoot: resolveQueryMarkdownRoot(context),
     runtimeDir: kbRuntimeDir(flavor),
     db: getDefaultKbQueryDb(context),
+    time: runtime.time,
     envPort: runtime.env,
     ids: runtime.ids,
     storage: runtime.storage,

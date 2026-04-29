@@ -55,6 +55,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
     initialized: false,
     ...overrides,
   };

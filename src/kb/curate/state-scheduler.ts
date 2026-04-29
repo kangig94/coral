@@ -14,6 +14,8 @@ type CurateSchedulerState = {
   retryNotBefore: string | null;
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
+  claimLaneDisabledAt: string | null;
+  communityBatchLaneDisabledAt: string | null;
   communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   initialized: boolean;
@@ -33,6 +35,8 @@ const schedulerRowSchema = z.object({
   retry_not_before: z.string().nullable(),
   consecutive_claim_failures: z.number().int().nonnegative(),
   consecutive_community_batch_failures: z.number().int().nonnegative(),
+  claim_lane_disabled_at: z.string().nullable(),
+  community_batch_lane_disabled_at: z.string().nullable(),
   community_topology_hash: z.string().nullable(),
   community_summary_topology_hash: z.string().nullable(),
   initialized: z.union([z.literal(0), z.literal(1)]),
@@ -48,6 +52,8 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
     retryNotBefore: null,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     initialized: false,
@@ -107,6 +113,8 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
     retryNotBefore: parsed.retry_not_before,
     consecutiveClaimFailures: parsed.consecutive_claim_failures,
     consecutiveCommunityBatchFailures: parsed.consecutive_community_batch_failures,
+    claimLaneDisabledAt: parsed.claim_lane_disabled_at,
+    communityBatchLaneDisabledAt: parsed.community_batch_lane_disabled_at,
     communityTopologyHash: parsed.community_topology_hash ?? undefined,
     communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
     initialized: parsed.initialized === 1,
@@ -130,6 +138,8 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
        retry_not_before,
        consecutive_claim_failures,
        consecutive_community_batch_failures,
+       claim_lane_disabled_at,
+       community_batch_lane_disabled_at,
        community_topology_hash,
        community_summary_topology_hash,
        initialized
@@ -161,6 +171,8 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
       number,
       string | null,
       string | null,
+      string | null,
+      string | null,
       0 | 1,
     ]
   >(
@@ -178,6 +190,8 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
             retry_not_before = ?,
             consecutive_claim_failures = ?,
             consecutive_community_batch_failures = ?,
+            claim_lane_disabled_at = ?,
+            community_batch_lane_disabled_at = ?,
             community_topology_hash = ?,
             community_summary_topology_hash = ?,
             initialized = ?
@@ -195,6 +209,8 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     state.retryNotBefore,
     state.consecutiveClaimFailures,
     state.consecutiveCommunityBatchFailures,
+    state.claimLaneDisabledAt,
+    state.communityBatchLaneDisabledAt,
     state.communityTopologyHash ?? null,
     state.communitySummaryTopologyHash ?? null,
     state.initialized ? 1 : 0,

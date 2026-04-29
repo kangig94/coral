@@ -79,6 +79,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
     initialized: false,
     ...overrides,
   };
@@ -281,6 +283,8 @@ describe('curate state', () => {
       retryNotBefore: '2026-03-26T00:00:00.000Z',
       consecutiveClaimFailures: 2,
       consecutiveCommunityBatchFailures: 3,
+      claimLaneDisabledAt: null,
+      communityBatchLaneDisabledAt: null,
       communityTopologyHash: 'graph-hash',
       communitySummaryTopologyHash: 'graph-hash',
       initialized: true,
@@ -307,6 +311,8 @@ describe('curate state', () => {
       retryNotBefore: null,
       consecutiveClaimFailures: 0,
       consecutiveCommunityBatchFailures: 0,
+      claimLaneDisabledAt: null,
+      communityBatchLaneDisabledAt: null,
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       initialized: true,
@@ -346,6 +352,8 @@ describe('curate state', () => {
       retryNotBefore: null,
       consecutiveClaimFailures: 0,
       consecutiveCommunityBatchFailures: 0,
+      claimLaneDisabledAt: null,
+      communityBatchLaneDisabledAt: null,
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       initialized: true,
@@ -518,6 +526,7 @@ describe('curate state', () => {
       retryNotBefore: null,
       activeClaim: null,
       consecutiveClaimFailures: 0,
+      consecutiveCommunityBatchFailures: 0,
     });
     expect(applyRecordDiscoveryAttempt(createCurateState(), 61, 5)).toEqual(
       createCurateState({

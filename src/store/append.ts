@@ -98,6 +98,11 @@ function causeRefTokenSlot(token: CauseRefToken<unknown> & RuntimeCauseRefToken)
   return token[COMMIT_CAUSE_REF_TOKEN].slot;
 }
 
+// `seq` is coordinator-reserved here by `MAX(seq)+1..N` and inserted explicitly
+// (see commit() below). The schema deliberately omits AUTOINCREMENT — relying
+// on SQLite's `sqlite_sequence` bookkeeping would create a competing source of
+// truth that the explicit-INSERT path bypasses. BEGIN IMMEDIATE ensures only
+// one writer reserves at a time, so MAX(seq) is consistent for the closure.
 function readCurrentMaxSeq(db: Database): number {
   return (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
 }
@@ -176,37 +181,12 @@ function resolveJobTerminalCauseRef(
   };
 }
 
-function resolveSessionClosedCauseRef(
-  body: unknown,
-  ownerSlot: number,
-  reservedSeqs: readonly number[],
-  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
-): unknown {
-  if (!isRecord(body) || !isRecord(body.reason)) {
-    return body;
-  }
-
-  const reason = body.reason;
-  if (reason.kind !== 'failed' || !isCauseRefToken(reason.causeRef)) {
-    return body;
-  }
-
-  return {
-    ...body,
-    reason: {
-      ...reason,
-      causeRef: resolveToken(reason.causeRef, ownerSlot, reservedSeqs, collectedInputs),
-    },
-  };
-}
-
 function rejectResidualTokens(value: unknown, path: readonly string[] = ['body'], seen = new WeakSet<object>()): void {
   if (isCauseRefToken(value)) {
     throw new Error(
       `CauseRefToken is not allowed at ${tokenPath(path)}. Tokens may appear only at: `
         + 'workflow.completed:body.causeRef, '
-        + 'job.terminal.recorded:body.terminal.outcome.causeRef, '
-        + 'session.closed:body.reason.causeRef. '
+        + 'job.terminal.recorded:body.terminal.outcome.causeRef. '
         + 'Move the token to a pinned path or pass a resolved CauseRef instead.',
     );
   }
@@ -241,8 +221,6 @@ function resolveTokensInInput(
     body = resolveDirectCauseRef(body, ownerSlot, reservedSeqs, collectedInputs);
   } else if (input.type === 'job.terminal.recorded') {
     body = resolveJobTerminalCauseRef(body, ownerSlot, reservedSeqs, collectedInputs);
-  } else if (input.type === 'session.closed') {
-    body = resolveSessionClosedCauseRef(body, ownerSlot, reservedSeqs, collectedInputs);
   }
 
   rejectResidualTokens(body);

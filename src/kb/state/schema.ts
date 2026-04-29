@@ -22,6 +22,8 @@ export interface KbCurateSchedulerRow {
   retry_not_before: string | null;
   consecutive_claim_failures: number;
   consecutive_community_batch_failures: number;
+  claim_lane_disabled_at: string | null;
+  community_batch_lane_disabled_at: string | null;
   community_topology_hash: string | null;
   community_summary_topology_hash: string | null;
   initialized: number;

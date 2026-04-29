@@ -30,12 +30,13 @@ import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
+import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
@@ -98,9 +99,19 @@ export type CorpusSnapshotWaiter = (params: {
   timeoutMs: number;
 }) => Promise<void>;
 
+function isBindingEmpty(error: unknown): boolean {
+  return error instanceof CoralSetupError && error.code === 'binding_empty';
+}
+
 // Spec §6.4 readiness contract. Surfaced as a pure function so tests can drive
 // it without booting the coordinator. The real coordinator wires this to
 // `getConsumerDriver().waitFreshUntil('corpus', snapshot, consumerId, timeoutMs)`.
+//
+// `base-search` and `active-vector` both depend on a bound retrieval engine
+// (`kb.fts` and `kb.vector` respectively). When the binding is empty we surface
+// `kb_unavailable` so the readiness failure is consistent across both branches
+// (spec §6.4 readiness table) instead of leaking a raw `binding_empty` from the
+// runtime-binding internal helper.
 export async function waitForCorpusReadiness(params: {
   kb: Pick<KbRuntime, 'fts' | 'vector'>;
   readiness: SourceImportReadiness;
@@ -112,12 +123,32 @@ export async function waitForCorpusReadiness(params: {
   switch (readiness) {
     case 'commit':
       return;
-    case 'base-search':
-      await waitFresh({ consumerId: kb.fts.read().consumer.id, snapshot, timeoutMs });
+    case 'base-search': {
+      let consumerId: string;
+      try {
+        consumerId = kb.fts.read().consumer.id;
+      } catch (error) {
+        if (isBindingEmpty(error)) {
+          throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.fts' });
+        }
+        throw error;
+      }
+      await waitFresh({ consumerId, snapshot, timeoutMs });
       return;
-    case 'active-vector':
-      await waitFresh({ consumerId: kb.vector.read().consumer.id, snapshot, timeoutMs });
+    }
+    case 'active-vector': {
+      let consumerId: string;
+      try {
+        consumerId = kb.vector.read().consumer.id;
+      } catch (error) {
+        if (isBindingEmpty(error)) {
+          throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.vector' });
+        }
+        throw error;
+      }
+      await waitFresh({ consumerId, snapshot, timeoutMs });
       return;
+    }
     case 'all-equipped': {
       const corpusConsumerIds = readBoundCorpusConsumerIds(kb);
       await Promise.all(
@@ -188,6 +219,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return consumerDriver;
   };
   let currentKbRuntime: KbRuntime | null = null;
+  let resolveLifecyclePhase: (() => 'starting' | 'running' | 'draining' | 'stopped') | null = null;
+  // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
+  // rebuild kicks so a draining instance does not start fresh KB work. Boot's
+  // blocking `wait: true` on the next coordinator picks up the staleness.
+  const corpusRescanAbort = new AbortController();
   const expansionLifecycleService = new ExpansionLifecycleService({
     makeHost: (id, scope, tier) => {
       const kbRuntime = currentKbRuntime;
@@ -204,6 +240,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     state: new ExpansionStateStore(getStoreDb()),
     now: () => nowDate(runtime.time).toISOString(),
     resolveKbRuntime: () => currentKbRuntime,
+    getLifecyclePhase: () => resolveLifecyclePhase?.() ?? 'starting',
   });
 
   const getCurrentJournalSeq = () =>
@@ -264,7 +301,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
       await kbSubsystem.kb.retryPendingCorpusPublication();
       // Boot step 2: absorb external Corpus edits before replaying consumers.
-      await kbSubsystem.kb.ensureCorpusFreshness();
+      // Boot uses the blocking variant — downstream consumer apply must see
+      // a fresh index. Subsequent KB read paths use the non-blocking lazy
+      // variant (spec §12.3); the abort signal stops post-boot rebuilds when
+      // shutdown drains.
+      await kbSubsystem.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal });
       const driver = getConsumerDriver();
       // Boot step 3: replay installed-tier rows + apply bundled fallback to fill empty bindings.
       await expansionLifecycleService.recoverOnBoot();
@@ -379,6 +420,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           log: identity.log,
         }),
         time: runtime.time,
+        drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
       });
       assertStartupStillActive();
 
@@ -401,13 +443,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   curateSchedulerHealth.attachRuntimeState(core.runtimeState);
+  resolveLifecyclePhase = () => core.runtimeState.getLifecycle();
 
   return {
     server: core.server,
     start: () => core.lifecycleController.start(),
-    shutdown: (reason) => core.lifecycleController.shutdown(reason),
+    shutdown: (reason) => {
+      corpusRescanAbort.abort();
+      return core.lifecycleController.shutdown(reason);
+    },
     waitForShutdown: async () => {
       await core.lifecycleController.waitForShutdown();
+      corpusRescanAbort.abort();
       await consumerDriver?.shutdown();
       storeDb?.close();
       consumerDriver = null;

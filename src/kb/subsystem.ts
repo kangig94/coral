@@ -23,7 +23,7 @@ export type CreateKbSubsystemOptions = {
   storagePort: StoragePort;
   envPort: EnvPort;
   idsPort: Pick<IdPort, 'uuid'>;
-  timePort?: Pick<TimePort, 'now'>;
+  timePort: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
   notifyCorpusMutation?: KbCorpusPublishCallbacks['notifyCorpusMutation'];
   onCorpusPublishFailure?: KbCorpusPublishCallbacks['onPublishFailure'];
@@ -49,7 +49,7 @@ export async function createKbSubsystem({
     markdownRoot: kbRoot(flavor, envPort.get('CORAL_KB_PATH')),
     runtimeDir: kbRuntimeDir(flavor),
     db,
-    ...(timePort === undefined ? {} : { time: timePort }),
+    time: timePort,
     ids: idsPort,
     envPort,
     storage: storagePort,

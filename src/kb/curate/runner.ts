@@ -161,6 +161,9 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
       },
       lastAttemptedThrough: through,
       consecutiveClaimFailures: freshPendingSuffix ? 0 : state.consecutiveClaimFailures,
+      // Reset the lane-disabled stamp alongside the counter on a fresh suffix —
+      // moving past the wedge-causing cursor is what re-enables the lane.
+      claimLaneDisabledAt: freshPendingSuffix ? null : state.claimLaneDisabledAt,
       ...(firstPassClaim ? { lastRunDay: today } : {}),
     });
 

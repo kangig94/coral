@@ -87,6 +87,20 @@ export interface KbInboundSyncOptions {
   structuredDiff?: boolean;
 }
 
+/**
+ * Read paths (`wait: false`, the default) return the current index immediately
+ * — possibly stale — and dispatch a single shared rebuild in the background;
+ * concurrent callers join the same in-flight promise (spec §12.3 lazy
+ * non-blocking rescan). Readiness/boot/curate paths pass `wait: true` to
+ * block until the rebuild completes. The optional `signal` aborts a pending
+ * rebuild kick — used by coordinator shutdown so a draining instance does
+ * not start fresh background work.
+ */
+export interface EnsureCorpusFreshnessOptions {
+  wait?: boolean;
+  signal?: AbortSignal;
+}
+
 export interface KbMutationEffects {
   queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void;
   writeEntityGraph(graph: EntityGraph): void;
@@ -101,7 +115,7 @@ export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
-  readonly time: Pick<TimePort, 'now'>;
+  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly ids: Pick<IdPort, 'uuid'>;
   /**
    * general-purpose I/O surface used by gitSync; do NOT use for corpus
@@ -137,7 +151,7 @@ export interface KbRuntime {
   getCorpusStateSnapshot(): KbCorpusSnapshot;
   captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;
-  ensureCorpusFreshness(): Promise<KbIndex>;
+  ensureCorpusFreshness(options?: EnsureCorpusFreshnessOptions): Promise<KbIndex>;
   withMutationLock<T>(fn: (mutation: KbMutationEffects) => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;

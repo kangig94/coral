@@ -33,6 +33,7 @@ export type WaitForAtomsOptions = {
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
+  drainDeadlineMs: number;
   workDir?: string;
   onProgress: (message: string) => void;
   completedStepDetails?: StepDetail[];
@@ -151,12 +152,12 @@ function enterFailureDrain(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
   failure: WaitFailure,
-  options: Pick<WaitForAtomsOptions, 'onFailureDrain' | 'time'>,
+  options: Pick<WaitForAtomsOptions, 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): void {
   if (state.failureDrain !== null) return;
   state.failureDrain = {
     firstFailure: failure,
-    drainDeadline: options.time.now() + 15_000,
+    drainDeadline: options.time.now() + options.drainDeadlineMs,
   };
   options.onFailureDrain?.(snapshotWaitState(state), failure);
   executionSvc.abort([...state.pending.keys()]);
@@ -166,7 +167,7 @@ export function handleWaitEvent(
   event: WaitStreamEvent,
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time'>,
+  options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
     case 'queued': {

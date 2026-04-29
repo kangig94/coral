@@ -150,19 +150,6 @@ describe('sessions reducer equivalence', () => {
               },
             },
           },
-          {
-            type: 'session.closed',
-            stream: { kind: 'session', id: 'session-1' },
-            refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
-            body: {
-              entry: {
-                ...sealedEntry,
-                version: 4,
-              },
-              reason: 'non_resumable',
-            },
-          },
         ],
         { now: () => NOW, reducers, upcasters },
       );

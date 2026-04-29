@@ -133,6 +133,8 @@ describe('store schema idempotency', () => {
         'retry_not_before',
         'consecutive_claim_failures',
         'consecutive_community_batch_failures',
+        'claim_lane_disabled_at',
+        'community_batch_lane_disabled_at',
         'community_topology_hash',
         'community_summary_topology_hash',
         'initialized',

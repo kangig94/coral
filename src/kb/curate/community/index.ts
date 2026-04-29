@@ -293,13 +293,17 @@ export async function runCommunitySubphase(
       communitySummaryTopologyHash: prepared.topologyHash,
       communitySummaryInputFingerprints: prepared.summaryFingerprints,
       consecutiveCommunityBatchFailures: 0,
+      // A successful community batch implicitly clears the lane-disabled stamp
+      // (the lane was unblocked); see scheduler.ts MAX_CONSECUTIVE_FAILURES.
+      communityBatchLaneDisabledAt: null,
     };
     const shouldWriteState =
       prepared.capturedBaselineState.communityTopologyHash !== nextState.communityTopologyHash ||
       prepared.capturedBaselineState.communitySummaryTopologyHash !== nextState.communitySummaryTopologyHash ||
       JSON.stringify(prepared.capturedBaselineSummaryFingerprints ?? {}) !==
         JSON.stringify(nextState.communitySummaryInputFingerprints ?? {}) ||
-      prepared.capturedBaselineState.consecutiveCommunityBatchFailures !== 0;
+      prepared.capturedBaselineState.consecutiveCommunityBatchFailures !== 0 ||
+      prepared.capturedBaselineState.communityBatchLaneDisabledAt !== null;
 
     if (generateCommunityFiles(kb, mutation, prepared.generatedCommunityDocs, prepared.priorGeneratedCommunities)) {
       wroteCommunityFiles = true;

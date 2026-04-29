@@ -59,6 +59,18 @@ export const journalEventEnvelopeSchema = z
   })
   .strict();
 
+/**
+ * `tsOverride` lets a producer supply a historical timestamp for an event —
+ * used by discuss restoration, which replays bids/speeches from an external
+ * archive at their original wall-clock time.
+ *
+ * `ts` is **informational only**. It is NOT monotone w.r.t. `seq`: a producer
+ * setting `tsOverride` to a value earlier than `MAX(ts)` is permitted by
+ * design. The substrate enforces strict monotonicity on `seq` (coordinator
+ * reservation under BEGIN IMMEDIATE; see append.ts:readCurrentMaxSeq).
+ *
+ * Consumers that need ordering MUST use `seq`. Spec §4.1.
+ */
 export const journalEventInputSchema = journalEventEnvelopeSchema
   .omit({
     seq: true,

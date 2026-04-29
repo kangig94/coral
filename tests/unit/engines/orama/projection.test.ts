@@ -288,6 +288,8 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
+    claimLaneDisabledAt: null,
+    communityBatchLaneDisabledAt: null,
     initialized: true,
   });
 }

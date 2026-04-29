@@ -9,7 +9,6 @@ import {
   sessionAdapterUnparseableBodySchema,
   sessionClaimReleasedBodySchema,
   sessionClaimedBodySchema,
-  sessionClosedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
@@ -45,7 +44,6 @@ const continuityCheckpointed = typedDescriber(
   sessionContinuityCheckpointedBodySchema,
   () => 'Session continuity checkpointed.',
 );
-const closed = typedDescriber(sessionClosedBodySchema, () => 'Session closed.');
 const claimed = typedDescriber(sessionClaimedBodySchema, (body) => `Session claimed by job ${body.jobId}.`);
 const claimReleased = typedDescriber(
   sessionClaimReleasedBodySchema,
@@ -85,7 +83,6 @@ export const sessionsEventDescribers: EventDescriberMap = new Map<string, EventD
   ['session:session.continuity.checkpointed', continuityCheckpointed],
   ['session:session.claimed', claimed],
   ['session:session.claim.released', claimReleased],
-  ['session:session.closed', closed],
   ['session:session.interrupted', interrupted],
   ['session:session.provider_failed', providerFailed],
   ['session:session.adapter_unparseable', adapterUnparseable],

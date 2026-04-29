@@ -172,6 +172,7 @@ function createLifecycleHarness(
   options: {
     manifest?: readonly EngineManifest[];
     rows?: readonly ExpansionStateRow[];
+    getLifecyclePhase?: () => 'starting' | 'running' | 'draining' | 'stopped';
   } = {},
 ) {
   const { kb, makeHost } = createTestRuntime();
@@ -182,6 +183,7 @@ function createLifecycleHarness(
     manifest: options.manifest ?? [FAKE_EMBEDDER_ENTRY],
     now: () => FIXED_NOW,
     resolveKbRuntime: () => kb,
+    ...(options.getLifecyclePhase === undefined ? {} : { getLifecyclePhase: options.getLifecyclePhase }),
   });
   return { kb, state, lifecycle };
 }
@@ -459,5 +461,94 @@ describe('ExpansionLifecycleService', () => {
       status: 'installed-not-active',
       lastError: 'binding missing',
     });
+  });
+
+  // G5: shutdown during equip — phase flips to draining while
+  // `await module.default(host)` is running. The equip must dispose the bound
+  // resource and surface a structured aborted error so the partial install is
+  // not orphaned outside `shutdownActiveExpansions`'s view.
+  it('aborts equip when the coordinator transitions to draining mid-import', async () => {
+    let phase: 'starting' | 'running' | 'draining' | 'stopped' = 'running';
+    const gateKey = `__cluster_M_gate_${Math.random().toString(36).slice(2)}__`;
+    const globalState = globalThis as Record<string, unknown>;
+    let releaseImport!: () => void;
+    globalState[gateKey] = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const SLOW_SOURCE = `
+      export default async (host) => {
+        await globalThis[${JSON.stringify(gateKey)}];
+        host.bind(host.kb.embedding, {
+          read: () => ({
+            name: 'slow',
+            model: 'slow',
+            dims: 1,
+            normalization: 'l2',
+            specId: 'slow:1:l2',
+            embedDocuments: async () => [],
+            embedQuery: async () => new Float32Array([0]),
+          }),
+          consumer: { id: 'slow-embedder', authority: 'journal' },
+        });
+      };
+    `;
+    const SLOW_ENTRY = {
+      id: 'slow-embedder',
+      version: '0.0.0',
+      specifier: javascriptDataUrl(SLOW_SOURCE),
+      tier: 'installed',
+      description: 'slow equip',
+      fills: ['kb.embedding'],
+    } as const;
+
+    try {
+      const { kb, state, lifecycle } = createLifecycleHarness({
+        manifest: [SLOW_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
+        getLifecyclePhase: () => phase,
+      });
+
+      const equipPromise = lifecycle.equip('slow-embedder');
+      // Yield until the engine body is awaiting the gate. A few microtask
+      // rounds is enough for dynamic-import + the first await inside default().
+      for (let i = 0; i < 8; i += 1) {
+        await Promise.resolve();
+      }
+      phase = 'draining';
+      releaseImport();
+
+      await expect(equipPromise).rejects.toMatchObject({ code: 'expansion_equip_aborted' });
+      expect(kb.embedding.heldBy).toBeUndefined();
+      expect(state.snapshot()).toEqual([]);
+      expect(lifecycle.has('slow-embedder')).toBe(false);
+    } finally {
+      delete globalState[gateKey];
+    }
+  });
+
+  // G8: equip(X) and unequip(X) running concurrently must serialize so the
+  // post-condition (row presence iff scope alive) holds — never half-installed.
+  it('serializes overlapping equip/unequip calls for the same engine', async () => {
+    const { kb, state, lifecycle } = createLifecycleHarness();
+
+    const equipFirst = lifecycle.equip('test-embedder');
+    // Without awaiting, fire unequip — the per-engine mutex must hold it
+    // until the equip lifecycle bookkeeping completes.
+    const unequipPromise = lifecycle
+      .unequip('test-embedder')
+      .catch((error: unknown) => ({ failed: error as Error }));
+
+    await equipFirst;
+    const unequipResult = await unequipPromise;
+
+    expect(unequipResult).not.toMatchObject({ failed: expect.anything() });
+    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(state.snapshot()).toEqual([]);
+    expect(lifecycleScopes(lifecycle).get('test-embedder')).toBeUndefined();
+
+    // Run the inverse direction too: the post-condition must hold under
+    // both orderings.
+    await lifecycle.equip('test-embedder');
+    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(state.snapshot()).toHaveLength(1);
   });
 });

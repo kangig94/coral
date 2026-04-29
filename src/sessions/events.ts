@@ -3,7 +3,6 @@ import {
   sessionAdapterUnparseableBodySchema,
   sessionClaimReleasedBodySchema,
   sessionClaimedBodySchema,
-  sessionClosedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
@@ -11,7 +10,6 @@ import {
 } from './event-bodies.js';
 import {
   reduceSessionAdapterUnparseable,
-  reduceSessionClosed,
   reduceSessionContinuityCheckpointed,
   reduceSessionInterrupted,
   reduceSessionClaimReleased,
@@ -46,6 +44,5 @@ export const sessionsRegistry: DomainEventRegistry = {
       schema: sessionAdapterUnparseableBodySchema,
       reducer: reduceSessionAdapterUnparseable,
     }),
-    defineDomainEvent({ type: 'session.closed', schema: sessionClosedBodySchema, reducer: reduceSessionClosed }),
   ],
 };

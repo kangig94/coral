@@ -188,55 +188,6 @@ describe('describeCauseRef', () => {
     }
   });
 
-  it('walks through failed session.closed reason causeRef', () => {
-    const { db, store } = createStore();
-    try {
-      insertEvent(db, {
-        seq: 1,
-        type: 'workflow.lifecycle_fault',
-        stream: { kind: 'workflow', id: 'workflow-session-close' },
-        body: { kind: 'unknown', message: 'workflow close cause' },
-      });
-      insertEvent(db, {
-        seq: 2,
-        type: 'workflow.completed',
-        stream: { kind: 'workflow', id: 'workflow-session-close' },
-        body: {
-          outcome: 'failed',
-          causeRef: { stream: { kind: 'workflow', id: 'workflow-session-close' }, seq: 1 },
-          stepDetails: [],
-        },
-      });
-      insertEvent(db, {
-        seq: 3,
-        type: 'session.closed',
-        stream: { kind: 'session', id: 'session-closed' },
-        body: {
-          reason: {
-            kind: 'failed',
-            causeRef: {
-              stream: { kind: 'workflow', id: 'workflow-session-close' },
-              seq: 2,
-            },
-          },
-        },
-      });
-
-      const description = renderer.describe(
-        {
-          stream: { kind: 'session', id: 'session-closed' },
-          seq: 3,
-        },
-        store,
-      );
-
-      expect(description).toContain('Session closed.');
-      expect(description).toContain('Workflow failed.');
-    } finally {
-      db.close();
-    }
-  });
-
   it('renders the missing marker when a non-root causeRef link cannot be loaded', () => {
     const { db, store } = createStore();
     try {
