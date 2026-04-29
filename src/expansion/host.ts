@@ -134,3 +134,23 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
 
   return host;
 }
+
+/**
+ * Tear down an expansion scope in the order required by the projection
+ * boundary contract: artifact-port unregistrations run BEFORE consumer-handle
+ * stop/unregister so that stale descriptors cannot target consumers whose
+ * handles have already been disposed (§16 #19, AC2.4 lifecycle ordering).
+ *
+ * Then `scope[Symbol.dispose]()` runs the remaining decorated callbacks
+ * (LIFO via `decorateDispose`).
+ */
+export async function disposeExpansionScope(scope: Disposable): Promise<void> {
+  for (const registration of registeredArtifactPorts(scope)) {
+    registration.unregister();
+  }
+  for (const handle of registeredConsumerHandles(scope)) {
+    await handle.stop().catch(() => {});
+    await handle.unregister().catch(() => {});
+  }
+  scope[Symbol.dispose]();
+}

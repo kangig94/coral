@@ -4,10 +4,16 @@ import { join, relative } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import type { ExpansionHost } from '#src/expansion/contract.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
+
+// Type-level claims (cursor-expansion is structurally unrepresentable through
+// `ExpansionHost.registerConsumer`) live at
+// tests/types/expansion-registration-unrepresentable.test-d.ts and are
+// typechecked by `tsc -p tests/types/tsconfig.json` during `npm test`.
+// `@ts-expect-error` directives placed in this file would be dead text — vitest
+// does not typecheck and the main `tsc` invocation excludes `tests/`.
 
 const REPO_ROOT = process.cwd();
 
@@ -46,22 +52,6 @@ function grepFiles(roots: readonly string[], pattern: RegExp): string[] {
 }
 
 describe('expansion consumer registration boundary', () => {
-  it('compile-time: ExpansionHost cannot register cursor consumers or host-derived registrationKind', () => {
-    const typecheckOnly = false as boolean;
-    if (typecheckOnly) {
-      const host = null as unknown as ExpansionHost;
-      const scope = host.scope;
-
-      // @ts-expect-error cursor consumers are coordinator-startup-owned, not expansion-owned
-      host.registerConsumer({ id: 'cursor-expansion', authority: 'journal', kind: 'cursor' }, scope);
-
-      // @ts-expect-error registrationKind is derived by the host, not accepted at the public boundary
-      host.registerConsumer({ id: 'stateless', kind: 'stateless', registrationKind: 'stateless' }, scope);
-    }
-
-    expect(true).toBe(true);
-  });
-
   it('runtime: ConsumerDriver.register still accepts cursor + expansion directly', () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });

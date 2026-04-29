@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
-import { registeredArtifactPorts, registeredConsumerHandles } from '../../expansion/host.js';
+import { disposeExpansionScope } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -105,7 +105,7 @@ export class ExpansionLifecycleService {
       this.appendScope(entry.id, scope);
       this.failedRecovery.delete(entry.id);
     } catch (error) {
-      await this.disposeScope(scope);
+      await disposeExpansionScope(scope);
       throw error;
     }
   }
@@ -137,7 +137,7 @@ export class ExpansionLifecycleService {
     if (scopes && scopes.length > 0) {
       // LIFO disposal of chained scopes for this engine.
       for (const scope of [...scopes].reverse()) {
-        await this.disposeScope(scope);
+        await disposeExpansionScope(scope);
       }
       this.scopes.delete(name);
     }
@@ -249,10 +249,10 @@ export class ExpansionLifecycleService {
             this.failedRecovery.delete(entry.id);
             equipped.push(entry.id);
           } else {
-            await this.disposeScope(scope);
+            await disposeExpansionScope(scope);
           }
         } catch (error) {
-          await this.disposeScope(scope);
+          await disposeExpansionScope(scope);
           const recordedError = asError(error);
           failed.set(entry.id, recordedError);
           this.failedRecovery.set(entry.id, recordedError);
@@ -364,7 +364,7 @@ export class ExpansionLifecycleService {
         this.scopes.delete(id);
         // LIFO disposal of chained scopes for this engine.
         for (const scope of [...scopes].reverse()) {
-          await this.disposeScope(scope);
+          await disposeExpansionScope(scope);
         }
       });
     }
@@ -457,14 +457,4 @@ export class ExpansionLifecycleService {
     }
   }
 
-  private async disposeScope(scope: Disposable): Promise<void> {
-    for (const registration of registeredArtifactPorts(scope)) {
-      registration.unregister();
-    }
-    for (const handle of registeredConsumerHandles(scope)) {
-      await handle.stop().catch(() => {});
-      await handle.unregister().catch(() => {});
-    }
-    scope[Symbol.dispose]();
-  }
 }

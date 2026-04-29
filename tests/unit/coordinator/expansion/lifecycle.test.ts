@@ -4,9 +4,11 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/coordinator/expansion/rpc.js';
-import { decorateDispose } from '#src/expansion/scope.js';
+import { createScope, decorateDispose } from '#src/expansion/scope.js';
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import type { EngineManifest } from '#src/expansion/contract.js';
+import { disposeExpansionScope } from '#src/expansion/host.js';
+import type { EngineArtifactRegistration } from '#src/kb/corpus/artifact-registry.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
@@ -200,6 +202,99 @@ function lifecycleScopes(lifecycle: ExpansionLifecycleService): Map<string, Disp
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('disposeExpansionScope ordering', () => {
+  it('runs artifact-port unregister BEFORE consumer-handle stop/unregister', async () => {
+    const trace: string[] = [];
+
+    const { kb, makeHost } = createTestRuntime({
+      registerConsumer: (reg) => ({
+        id: reg.id,
+        registrationKind: 'expansion',
+        lastApplyError: null,
+        stop: async () => {
+          trace.push(`consumer-stop:${reg.id}`);
+        },
+        unregister: async () => {
+          trace.push(`consumer-unregister:${reg.id}`);
+        },
+        status: () => ({
+          authority: 'corpus',
+          corpusInterest: 'content',
+          snapshotId: null,
+          contentSeq: 0,
+          metadataSeq: 0,
+          contentManifestHash: null,
+          metadataManifestHash: null,
+          pending: false,
+          lastApplyError: null,
+        }),
+      }),
+    });
+
+    const trackedRegistration: EngineArtifactRegistration = {
+      unregister: () => {
+        trace.push('artifact-unregister');
+      },
+    };
+    vi.spyOn(kb.engineArtifactRegistry, 'register').mockImplementation(() => trackedRegistration);
+
+    const scope = createScope();
+    decorateDispose(scope, () => {
+      trace.push('scope-decorated-dispose');
+    });
+
+    const host = makeHost('order-test-engine', scope, 'installed');
+    const consumerHandle = host.registerConsumer(
+      {
+        id: 'order-test-consumer',
+        authority: 'corpus',
+        kind: 'apply',
+        corpusInterest: 'content',
+        apply: async () => {},
+      },
+      scope,
+    );
+    host.registerArtifactPort(
+      { describeArtifacts: async () => [] },
+      { targetConsumerHandles: [consumerHandle] },
+      scope,
+    );
+
+    await disposeExpansionScope(scope);
+
+    // Ordering claim (AC2.4 lifecycle): artifact-port unregister runs BEFORE
+    // any consumer-handle stop/unregister. The trace may contain repeated
+    // entries because `scope[Symbol.dispose]()` re-runs decorated callbacks
+    // (LIFO via `decorateDispose`) — that is implementation detail of the
+    // host's registration helpers, not of `disposeExpansionScope` itself.
+    // The boundary contract is the FIRST occurrence of each marker.
+    const firstArtifact = trace.indexOf('artifact-unregister');
+    const firstConsumerStop = trace.indexOf('consumer-stop:order-test-consumer');
+    const firstConsumerUnregister = trace.indexOf('consumer-unregister:order-test-consumer');
+    const firstScopeDecorated = trace.indexOf('scope-decorated-dispose');
+
+    expect(firstArtifact).toBeGreaterThanOrEqual(0);
+    expect(firstConsumerStop).toBeGreaterThanOrEqual(0);
+    expect(firstConsumerUnregister).toBeGreaterThanOrEqual(0);
+    expect(firstScopeDecorated).toBeGreaterThanOrEqual(0);
+
+    expect(firstArtifact).toBeLessThan(firstConsumerStop);
+    expect(firstConsumerStop).toBeLessThan(firstConsumerUnregister);
+    expect(firstConsumerUnregister).toBeLessThan(firstScopeDecorated);
+  });
+
+  it('handles a scope with no artifact ports and no consumer handles', async () => {
+    const scope = createScope();
+    const trace: string[] = [];
+    decorateDispose(scope, () => {
+      trace.push('decorated');
+    });
+
+    await disposeExpansionScope(scope);
+    expect(trace).toEqual(['decorated']);
+  });
 });
 
 describe('ExpansionLifecycleService', () => {

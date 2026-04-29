@@ -134,7 +134,7 @@ describe('typed corpus apply boundary', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps the engine-facing KB runtime port free of authority readers and writers', () => {
+  it('keeps the engine-facing KB runtime port free of authority readers and writers (full inheritance chain)', () => {
     const path = join(SRC_ROOT, 'kb/contract.ts');
     const source = sourceFile(path);
     const forbidden = new Set([
@@ -154,26 +154,48 @@ describe('typed corpus apply boundary', () => {
       'sourcePath',
       'communityPath',
     ]);
-    const violations: string[] = [];
 
-    const visit = (node: ts.Node): void => {
-      if (ts.isInterfaceDeclaration(node) && node.name.text === 'KbEngineRuntime') {
-        for (const member of node.members) {
-          if (
-            (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
-            member.name !== undefined
-          ) {
-            const name = propertyNameText(member.name);
-            if (name !== null && forbidden.has(name)) {
-              violations.push(name);
-            }
+    const interfaceDecls = new Map<string, ts.InterfaceDeclaration>();
+    const collect = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node)) {
+        interfaceDecls.set(node.name.text, node);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(source);
+
+    const seen = new Set<string>();
+    const violations: { interfaceName: string; member: string }[] = [];
+
+    function walk(name: string): void {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const decl = interfaceDecls.get(name);
+      if (decl === undefined) return;
+
+      for (const member of decl.members) {
+        if (
+          (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
+          member.name !== undefined
+        ) {
+          const memberName = propertyNameText(member.name);
+          if (memberName !== null && forbidden.has(memberName)) {
+            violations.push({ interfaceName: name, member: memberName });
           }
         }
       }
-      ts.forEachChild(node, visit);
-    };
 
-    visit(source);
+      for (const heritage of decl.heritageClauses ?? []) {
+        if (heritage.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+        for (const clause of heritage.types) {
+          if (ts.isIdentifier(clause.expression)) {
+            walk(clause.expression.text);
+          }
+        }
+      }
+    }
+
+    walk('KbEngineRuntime');
     expect(violations).toEqual([]);
   });
 });

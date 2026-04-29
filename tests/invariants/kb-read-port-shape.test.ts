@@ -1,14 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
 import type * as NodeOs from 'node:os';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import type { KbQueryContext } from '#src/kb/query-runtime.js';
-import type { KbReadPort } from '#src/kb/read-port.js';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -51,14 +49,11 @@ const FORBIDDEN_READONLY_DB_MEMBERS = new Set([
 
 const tempRoots: string[] = [];
 
-function assertKbReadPortTypeSurface(readPort: KbReadPort): void {
-  // @ts-expect-error KbReadPort exposes a constrained ReadonlyDatabase, not a writable better-sqlite3 Database.
-  const writableDb: BetterSqlite3.Database = readPort.db;
-  // @ts-expect-error KbReadPort must not expose arbitrary SQL execution.
-  readPort.db.exec('CREATE TABLE forbidden_write(id TEXT)');
-  void writableDb;
-}
-void assertKbReadPortTypeSurface;
+// Type-level claims (KbReadPort.db is a constrained ReadonlyDatabase, not a
+// writable Database; `exec`/`pragma`/`transaction`/etc. are unreachable) live
+// at tests/types/kb-read-port-shape.test-d.ts and are typechecked by
+// `tsc -p tests/types/tsconfig.json` during `npm test`. `@ts-expect-error`
+// directives placed here would be dead text — vitest does not typecheck.
 
 function sourceFile(path: string, text: string): ts.SourceFile {
   return ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);

@@ -143,24 +143,46 @@ describe('writable DB opens stay coordinator-owned', () => {
     ]);
   });
 
-  it('does not expose a raw db member on the engine-facing KbRuntime contract', () => {
+  it('does not expose a raw db member on the KbRuntime contract or its inheritance chain', () => {
     const contractSource = readFileSync(join(REPO_ROOT, 'src/kb/contract.ts'), 'utf8');
     const source = ts.createSourceFile('contract.ts', contractSource, ts.ScriptTarget.Latest, true);
-    const runtimeDbMembers: string[] = [];
 
-    const visit = (node: ts.Node): void => {
-      if (ts.isInterfaceDeclaration(node) && node.name.text === 'KbRuntime') {
-        for (const member of node.members) {
-          if (ts.isPropertySignature(member) && member.name && propertyNameText(member.name) === 'db') {
-            runtimeDbMembers.push('KbRuntime.db');
+    const interfaceDecls = new Map<string, ts.InterfaceDeclaration>();
+    const collect = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node)) {
+        interfaceDecls.set(node.name.text, node);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(source);
+
+    const seen = new Set<string>();
+    const violations: string[] = [];
+
+    function walk(name: string): void {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const decl = interfaceDecls.get(name);
+      if (decl === undefined) return;
+
+      for (const member of decl.members) {
+        if (ts.isPropertySignature(member) && member.name && propertyNameText(member.name) === 'db') {
+          violations.push(`${name}.db`);
+        }
+      }
+
+      for (const heritage of decl.heritageClauses ?? []) {
+        if (heritage.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+        for (const clause of heritage.types) {
+          if (ts.isIdentifier(clause.expression)) {
+            walk(clause.expression.text);
           }
         }
       }
-      ts.forEachChild(node, visit);
-    };
+    }
 
-    visit(source);
-    expect(runtimeDbMembers).toEqual([]);
+    walk('KbRuntime');
+    expect(violations).toEqual([]);
     expect(contractSource).not.toMatch(/KbRuntime\s*\[\s*['"]db['"]\s*\]/);
   });
 });
