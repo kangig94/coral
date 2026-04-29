@@ -29,11 +29,12 @@ export interface ExpansionLifecycleServiceOptions {
   readonly now?: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
   /**
-   * Reports the coordinator's current lifecycle phase. `equip()` checks this
-   * after `await module.default(host)` returns and before the scope/row land
-   * in the bookkeeping maps. If shutdown started during the import, the bound
-   * resource is disposed and the equip throws `expansion_equip_aborted` —
-   * preventing orphan bindings that `shutdownActiveExpansions` cannot see.
+   * Reports the coordinator's current lifecycle phase. `equip()` consults this
+   * BEFORE any async work so a draining coordinator refuses new equips
+   * immediately, before `await import` could resolve into a soon-to-be-disposed
+   * binding. Past the fence, `shutdownActiveExpansions` cooperates via
+   * `engineMutex` and waits for the in-flight equip to publish its scope before
+   * disposing it.
    */
   readonly getLifecyclePhase?: () => CoordinatorLifecyclePhase;
 }
@@ -84,21 +85,18 @@ export class ExpansionLifecycleService {
       throw documentedCoralSetupError('expansion_bundled_immutable', { name });
     }
 
+    // Phase fence BEFORE any async work — refuse new equips while the
+    // coordinator is draining or stopped. Past the fence, the equip runs to
+    // completion under its `engineMutex` slot; `shutdownActiveExpansions`
+    // queues behind that slot and observes the published scope.
+    this.assertNotDraining(entry.id);
+
     const scope = createScope();
     const host = this.options.makeHost(entry.id, scope, entry.tier);
 
     try {
       const module = (await import(entry.specifier)) as ExpansionModule;
       await module.default(host);
-      // Shutdown can fire during `await module.default(host)`. The scope is
-      // not yet in `this.scopes`, so `shutdownActiveExpansions` cannot see
-      // it — dispose explicitly and surface a structured aborted error so
-      // the caller knows to retry against the next coordinator.
-      const phase = this.options.getLifecyclePhase?.();
-      if (phase === 'draining' || phase === 'stopped') {
-        await this.disposeScope(scope);
-        throw documentedCoralSetupError('expansion_equip_aborted', { name: entry.id });
-      }
       this.options.state.insert({
         id: entry.id,
         version: entry.version,
@@ -109,6 +107,13 @@ export class ExpansionLifecycleService {
     } catch (error) {
       await this.disposeScope(scope);
       throw error;
+    }
+  }
+
+  private assertNotDraining(name: string): void {
+    const phase = this.options.getLifecyclePhase?.();
+    if (phase === 'draining' || phase === 'stopped') {
+      throw documentedCoralSetupError('expansion_equip_aborted', { name });
     }
   }
 
@@ -222,30 +227,37 @@ export class ExpansionLifecycleService {
         continue;
       }
 
-      const before = this.captureFallbackBindingHolders(entry, kb);
-      if (this.hasAllDeclaredFillsHeld(entry, before)) {
-        continue;
-      }
-
-      const scope = createScope();
-      const host = this.options.makeHost(entry.id, scope, entry.tier);
-
-      try {
-        const module = (await import(entry.specifier)) as ExpansionModule;
-        await module.default(host);
-        if (this.didFillFallbackBinding(entry, before, kb)) {
-          this.appendScope(entry.id, scope);
-          this.failedRecovery.delete(entry.id);
-          equipped.push(entry.id);
-        } else {
-          await this.disposeScope(scope);
+      // Acquire the per-engine mutex so user equip(X) and bundled fallback
+      // for the same engine — both of which mutate `this.scopes` and bindings
+      // — are serialized at the lifecycle layer. The `before`/`after` binding
+      // holder snapshot is captured INSIDE the slot so it reflects the state
+      // the bundled body actually saw.
+      await this.runSerial(entry.id, async () => {
+        const before = this.captureFallbackBindingHolders(entry, kb);
+        if (this.hasAllDeclaredFillsHeld(entry, before)) {
+          return;
         }
-      } catch (error) {
-        await this.disposeScope(scope);
-        const recordedError = asError(error);
-        failed.set(entry.id, recordedError);
-        this.failedRecovery.set(entry.id, recordedError);
-      }
+
+        const scope = createScope();
+        const host = this.options.makeHost(entry.id, scope, entry.tier);
+
+        try {
+          const module = (await import(entry.specifier)) as ExpansionModule;
+          await module.default(host);
+          if (this.didFillFallbackBinding(entry, before, kb)) {
+            this.appendScope(entry.id, scope);
+            this.failedRecovery.delete(entry.id);
+            equipped.push(entry.id);
+          } else {
+            await this.disposeScope(scope);
+          }
+        } catch (error) {
+          await this.disposeScope(scope);
+          const recordedError = asError(error);
+          failed.set(entry.id, recordedError);
+          this.failedRecovery.set(entry.id, recordedError);
+        }
+      });
     }
 
     return { equipped, failed };
@@ -331,13 +343,30 @@ export class ExpansionLifecycleService {
   }
 
   async shutdownActiveExpansions(): Promise<void> {
-    const allScopes: Disposable[] = [];
-    for (const scopes of this.scopes.values()) {
-      allScopes.push(...scopes);
-    }
-    this.scopes.clear();
-    for (const scope of [...allScopes].reverse()) {
-      await this.disposeScope(scope);
+    // Snapshot every engine id we know about — including any with an
+    // in-flight `engineMutex` slot. An equip mid-import has not yet
+    // published its scope, so `this.scopes` alone would miss it; routing
+    // through `runSerial` ensures the publish step completes BEFORE we
+    // dispose. The phase fence in `equipLocked` keeps NEW equips out for
+    // the duration of shutdown — past engines either aborted at the fence
+    // (nothing to clean up) or completed registration (visible below).
+    const engineIds = new Set<string>([
+      ...this.scopes.keys(),
+      ...this.failedRecovery.keys(),
+      ...this.engineMutex.keys(),
+    ]);
+    for (const id of engineIds) {
+      await this.runSerial(id, async () => {
+        const scopes = this.scopes.get(id);
+        if (scopes === undefined || scopes.length === 0) {
+          return;
+        }
+        this.scopes.delete(id);
+        // LIFO disposal of chained scopes for this engine.
+        for (const scope of [...scopes].reverse()) {
+          await this.disposeScope(scope);
+        }
+      });
     }
   }
 

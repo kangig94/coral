@@ -463,13 +463,66 @@ describe('ExpansionLifecycleService', () => {
     });
   });
 
-  // G5: shutdown during equip — phase flips to draining while
-  // `await module.default(host)` is running. The equip must dispose the bound
-  // resource and surface a structured aborted error so the partial install is
-  // not orphaned outside `shutdownActiveExpansions`'s view.
-  it('aborts equip when the coordinator transitions to draining mid-import', async () => {
+  // #18: equip(X) called once the coordinator is already draining must be
+  // rejected at the synchronous phase fence, BEFORE any dynamic import — so
+  // there is no observation window where the binding is mutated but the scope
+  // has not yet been registered.
+  it('rejects equip immediately when the coordinator is already draining', async () => {
+    const phase: 'starting' | 'running' | 'draining' | 'stopped' = 'draining';
+    const TRACED_SOURCE = `
+      globalThis.__cluster_T_import_attempted__ = true;
+      export default (host) => {
+        host.bind(host.kb.embedding, {
+          read: () => ({
+            name: 'traced',
+            model: 'traced',
+            dims: 1,
+            normalization: 'l2',
+            specId: 'traced:1:l2',
+            embedDocuments: async () => [],
+            embedQuery: async () => new Float32Array([0]),
+          }),
+          consumer: { id: 'traced-embedder', authority: 'journal' },
+        });
+      };
+    `;
+    const TRACED_ENTRY = {
+      id: 'traced-embedder',
+      version: '0.0.0',
+      specifier: javascriptDataUrl(TRACED_SOURCE),
+      tier: 'installed',
+      description: 'traced equip',
+      fills: ['kb.embedding'],
+    } as const;
+    const globalState = globalThis as Record<string, unknown>;
+
+    try {
+      delete globalState.__cluster_T_import_attempted__;
+      const { kb, state, lifecycle } = createLifecycleHarness({
+        manifest: [TRACED_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
+        getLifecyclePhase: () => phase,
+      });
+
+      await expect(lifecycle.equip('traced-embedder')).rejects.toMatchObject({
+        code: 'expansion_equip_aborted',
+      });
+
+      expect(globalState.__cluster_T_import_attempted__).toBeUndefined();
+      expect(kb.embedding.heldBy).toBeUndefined();
+      expect(state.snapshot()).toEqual([]);
+      expect(lifecycle.has('traced-embedder')).toBe(false);
+    } finally {
+      delete globalState.__cluster_T_import_attempted__;
+    }
+  });
+
+  // #18 + #13a: shutdown that fires WHILE an equip is mid-import must wait for
+  // the in-flight equip to publish its scope (via engineMutex), then dispose
+  // it cooperatively. The post-condition is `scopes.has(id) iff state.get(id)`
+  // — both empty after shutdown, no orphan binding left behind.
+  it('disposes a mid-import equip cooperatively when shutdown overlaps', async () => {
     let phase: 'starting' | 'running' | 'draining' | 'stopped' = 'running';
-    const gateKey = `__cluster_M_gate_${Math.random().toString(36).slice(2)}__`;
+    const gateKey = `__cluster_T_shutdown_gate_${Math.random().toString(36).slice(2)}__`;
     const globalState = globalThis as Record<string, unknown>;
     let releaseImport!: () => void;
     globalState[gateKey] = new Promise<void>((resolve) => {
@@ -508,20 +561,99 @@ describe('ExpansionLifecycleService', () => {
       });
 
       const equipPromise = lifecycle.equip('slow-embedder');
-      // Yield until the engine body is awaiting the gate. A few microtask
-      // rounds is enough for dynamic-import + the first await inside default().
+      // Yield until the engine body is awaiting the gate.
       for (let i = 0; i < 8; i += 1) {
         await Promise.resolve();
       }
       phase = 'draining';
+      const shutdownPromise = lifecycle.shutdownActiveExpansions();
+      // Shutdown must not race ahead of the in-flight equip's publish step.
       releaseImport();
 
-      await expect(equipPromise).rejects.toMatchObject({ code: 'expansion_equip_aborted' });
+      await equipPromise;
+      await shutdownPromise;
+
       expect(kb.embedding.heldBy).toBeUndefined();
-      expect(state.snapshot()).toEqual([]);
-      expect(lifecycle.has('slow-embedder')).toBe(false);
+      // Equip past the fence completed normally (state row written), shutdown
+      // then disposed the scope cooperatively.
+      expect(state.snapshot()).toEqual([
+        { id: 'slow-embedder', version: '0.0.0', installed_at: FIXED_NOW },
+      ]);
+      expect(lifecycleScopes(lifecycle).get('slow-embedder')).toBeUndefined();
+      expect(lifecycle.isActive('slow-embedder')).toBe(false);
     } finally {
       delete globalState[gateKey];
+    }
+  });
+
+  // #13b: a user equip(X) racing with applyBundledFallback that targets the
+  // same binding must serialize through the per-engine mutex. Exactly one
+  // body publishes a scope, the loser cleans up, and the post-condition
+  // `scopes.has(id) iff state.get(id)` is preserved on both engines.
+  it('serializes user equip and bundled fallback that target the same binding', async () => {
+    const USER_VECTOR_ENTRY = {
+      id: 'needle',
+      version: '0.0.0',
+      specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
+      tier: 'installed',
+      description: 'user vector engine',
+      onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
+      fills: ['kb.vector'],
+    } as const;
+
+    const { kb, state, lifecycle } = createLifecycleHarness({
+      manifest: [
+        GEMINI_SYNTHETIC_ENTRY,
+        USER_VECTOR_ENTRY,
+        BUNDLED_VECTOR_SYNTHETIC_ENTRY,
+      ],
+    });
+
+    // `needle` requires `kb.embedding` to be filled before binding `kb.vector`,
+    // so equip a synthetic embedder first. The race we exercise is on
+    // `kb.vector` — both `needle` (user) and `bundled-vector` (fallback)
+    // declare `fills: ['kb.vector']`.
+    await lifecycle.equip('gemini');
+
+    // Fire user equip and bundled fallback concurrently. The two run on
+    // different engineMutex keys (`needle` vs `bundled-vector`), but they
+    // both bind `kb.vector` — so the binding's structural single-occupancy
+    // determines the winner. Whichever resolves first publishes the scope;
+    // the other's body throws `binding_occupied` and the lifecycle disposes
+    // the loser's scope without leaking state.
+    const userEquipPromise = lifecycle
+      .equip('needle')
+      .then(() => ({ kind: 'ok' as const }))
+      .catch((error: unknown) => ({ kind: 'err' as const, error: error as Error }));
+    const fallbackPromise = lifecycle.applyBundledFallback();
+
+    const [userResult, fallbackResult] = await Promise.all([userEquipPromise, fallbackPromise]);
+
+    // Exactly one party fills `kb.vector`; the other's body throws and is
+    // recorded (user → rejected promise; fallback → entry in `failed` map).
+    const userWon = userResult.kind === 'ok';
+    const fallbackWon = fallbackResult.equipped.includes('bundled-vector');
+    expect(userWon !== fallbackWon).toBe(true);
+
+    if (userWon) {
+      expect(kb.vector.heldBy).toBe('needle');
+      expect(lifecycleScopes(lifecycle).get('needle')).toHaveLength(1);
+      expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
+      expect(state.snapshot().some((row) => row.id === 'needle')).toBe(true);
+    } else {
+      expect(kb.vector.heldBy).toBe('bundled-vector');
+      expect(lifecycleScopes(lifecycle).get('bundled-vector')).toHaveLength(1);
+      expect(lifecycleScopes(lifecycle).get('needle')).toBeUndefined();
+      expect(state.snapshot().some((row) => row.id === 'needle')).toBe(false);
+      expect(userResult.kind === 'err' && userResult.error.message).toBeTruthy();
+    }
+
+    // Post-condition: `scopes.has(id) iff state.get(id)` on every installed
+    // engine the test touched.
+    for (const id of ['gemini', 'needle']) {
+      const hasScope = (lifecycleScopes(lifecycle).get(id) ?? []).length > 0;
+      const hasRow = state.snapshot().some((row) => row.id === id);
+      expect(hasScope).toBe(hasRow);
     }
   });
 
