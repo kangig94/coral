@@ -21,6 +21,7 @@ import {
 } from './projections.js';
 
 export const sessionsRegistry: DomainEventRegistry = {
+  streamKind: 'session',
   entries: [
     defineDomainEvent({ type: 'session.opened', schema: sessionOpenedBodySchema, reducer: reduceSessionOpened }),
     defineDomainEvent({

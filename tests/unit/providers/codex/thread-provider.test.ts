@@ -233,18 +233,15 @@ describe('codexThreadProvider', () => {
     expect(events[2]).toMatchObject({
       kind: 'terminal',
       terminal: {
-        outcome: { kind: 'failed' },
-      },
-      diagnostics: {},
-      failureCause: {
-        type: 'session.provider_failed',
-        body: {
-          provider: 'codex',
-          reason: 'request_failed',
-          message: 'transport down',
+        outcome: {
+          kind: 'provider_exit',
+          code: 1,
+          note: expect.stringContaining('transport down'),
         },
       },
+      diagnostics: {},
     });
+    expect(events[2]).not.toHaveProperty('failureCause');
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 });

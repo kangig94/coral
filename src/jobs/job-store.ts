@@ -417,10 +417,20 @@ export class JobStore implements JobProgressStore {
 
   appendLaunchRequested(jobId: string, launch: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
+    // Spec §6.1 line 813 + §13.1 worked example: every job whose lifetime
+    // belongs to a workflow carries `refs.workflowId` (the workflow stream
+    // that owns the plan). Convention: `workflowJobId === workflowId` — the
+    // workflow's own job IS its workflow stream, so its launch carries
+    // `refs.workflowId = jobId`. Workflow children carry
+    // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
+    // `refs.workflowSlotId`. Non-workflow jobs omit the field.
+    const workflowId =
+      launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId ?? null;
     const refs = {
       jobId,
       ...(launch.sessionId !== null && launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
       ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+      ...(workflowId !== null ? { workflowId } : {}),
       ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
     };
     const body =

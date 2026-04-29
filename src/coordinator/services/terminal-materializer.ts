@@ -29,6 +29,7 @@ export interface RuntimeIngestOptions {
   readonly project?: string;
   readonly correlationId?: string;
   readonly parentJobId?: string;
+  readonly workflowId?: string;
   readonly workflowSlotId?: string;
 }
 
@@ -69,6 +70,7 @@ export function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventI
     jobId: options.jobId,
     ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
     ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+    ...(options.workflowId ? { workflowId: options.workflowId } : {}),
     ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
   };
 }
@@ -167,6 +169,14 @@ function planProviderOutcome(terminal: ProviderTerminalEventBody, options: Runti
         domainEvents: [],
         immediateOutcome: { kind: 'aborted', reason: outcome.reason },
       };
+    case 'provider_exit':
+      return {
+        kind: 'immediate',
+        domainEvents: [],
+        immediateOutcome: outcome.note === undefined
+          ? { kind: 'provider_exit', code: outcome.code }
+          : { kind: 'provider_exit', code: outcome.code, note: outcome.note },
+      };
     case 'failed':
       if (terminal.failureCause === undefined) {
         throw new Error('Provider terminal failed without a canonical failureCause.');
@@ -258,6 +268,7 @@ function terminalRecordOptions<Scope>(
     project: options.project,
     correlationId: options.correlationId,
     parentJobId: options.parentJobId,
+    workflowId: options.workflowId,
     workflowSlotId: options.workflowSlotId,
     terminal,
     diagnostics: record.diagnostics,

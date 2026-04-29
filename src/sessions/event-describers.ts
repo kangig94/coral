@@ -7,6 +7,8 @@ import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
 import {
   sessionAdapterUnparseableBodySchema,
+  sessionClaimReleasedBodySchema,
+  sessionClaimedBodySchema,
   sessionClosedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
@@ -44,6 +46,11 @@ const continuityCheckpointed = typedDescriber(
   () => 'Session continuity checkpointed.',
 );
 const closed = typedDescriber(sessionClosedBodySchema, () => 'Session closed.');
+const claimed = typedDescriber(sessionClaimedBodySchema, (body) => `Session claimed by job ${body.jobId}.`);
+const claimReleased = typedDescriber(
+  sessionClaimReleasedBodySchema,
+  (body) => `Session claim released by job ${body.jobId}.`,
+);
 
 const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
   // sessionInterruptedBodySchema is a union of two shapes; both expose a
@@ -76,6 +83,8 @@ const adapterUnparseable = typedDescriber(
 export const sessionsEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['session:session.opened', opened],
   ['session:session.continuity.checkpointed', continuityCheckpointed],
+  ['session:session.claimed', claimed],
+  ['session:session.claim.released', claimReleased],
   ['session:session.closed', closed],
   ['session:session.interrupted', interrupted],
   ['session:session.provider_failed', providerFailed],

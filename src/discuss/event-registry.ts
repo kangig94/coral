@@ -40,6 +40,7 @@ export function toJournalInput(
 }
 
 export const discussRegistry: DomainEventRegistry = {
+  streamKind: 'discuss',
   entries: discussEventKinds.map((kind) =>
     defineDomainEvent({
       type: discussEventType(kind),

@@ -33,12 +33,14 @@ import { workflowRecover } from '../workflow/recover.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import type { KbRuntime } from '../kb/contract.js';
+import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { SourceImportReadiness } from '../jobs/launch.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
+import { assertDescriberCoverage } from '../read-model/event-describers.js';
 
 export type CoordinatorServerOptions = Omit<CoordinatorCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
@@ -74,6 +76,58 @@ function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : CONTENDER_BUDGET;
 }
 
+// Bundled Orama always binds kb.fts; engines like needle bind kb.vector when
+// equipped. Unbound bindings throw 'binding_empty' from `read()` — catch and
+// skip so 'all-equipped' is best-effort over what's currently equipped.
+export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'fts' | 'vector'>): string[] {
+  const corpusBindings = [kb.fts, kb.vector] as const;
+  const ids: string[] = [];
+  for (const binding of corpusBindings) {
+    try {
+      ids.push(binding.read().consumer.id);
+    } catch {
+      // binding_empty — corpus consumer not currently equipped; skip.
+    }
+  }
+  return ids;
+}
+
+export type CorpusSnapshotWaiter = (params: {
+  consumerId: string;
+  snapshot: KbCorpusSnapshot;
+  timeoutMs: number;
+}) => Promise<void>;
+
+// Spec §6.4 readiness contract. Surfaced as a pure function so tests can drive
+// it without booting the coordinator. The real coordinator wires this to
+// `getConsumerDriver().waitFreshUntil('corpus', snapshot, consumerId, timeoutMs)`.
+export async function waitForCorpusReadiness(params: {
+  kb: Pick<KbRuntime, 'fts' | 'vector'>;
+  readiness: SourceImportReadiness;
+  snapshot: KbCorpusSnapshot;
+  timeoutMs: number;
+  waitFresh: CorpusSnapshotWaiter;
+}): Promise<void> {
+  const { kb, readiness, snapshot, timeoutMs, waitFresh } = params;
+  switch (readiness) {
+    case 'commit':
+      return;
+    case 'base-search':
+      await waitFresh({ consumerId: kb.fts.read().consumer.id, snapshot, timeoutMs });
+      return;
+    case 'active-vector':
+      await waitFresh({ consumerId: kb.vector.read().consumer.id, snapshot, timeoutMs });
+      return;
+    case 'all-equipped': {
+      const corpusConsumerIds = readBoundCorpusConsumerIds(kb);
+      await Promise.all(
+        corpusConsumerIds.map((consumerId) => waitFresh({ consumerId, snapshot, timeoutMs })),
+      );
+      return;
+    }
+  }
+}
+
 export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
   const {
     runtime: providedRuntime,
@@ -96,6 +150,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   }
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  // Spec §7.1: every Journal event type can be a causeRef target. Verify
+  // describer coverage at boot so missing describers fail loudly instead of
+  // rendering causeRef chains as bare type names.
+  assertDescriberCoverage(reducers.describerKeys);
   const upcasters = createDefaultUpcasterRegistry();
   const readCtx = { schemas: reducers.schemas, upcasters };
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
@@ -239,25 +297,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ? providedCreateExecutionService(ctx, wiredDeps)
         : new ExecutionService(ctx, wiredDeps);
     },
-    waitForKbSourceImportReadiness: async ({ kb, readiness, snapshot }) => {
-      if (readiness === 'commit') {
-        return;
-      }
-
+    waitForKbSourceImportReadiness: ({ kb, readiness, snapshot }) => {
       const driver = getConsumerDriver();
-      if (readiness === 'base-search') {
-        await driver.waitFreshUntil('corpus', snapshot, kb.fts.read().consumer.id, bootFreshnessTimeoutMs);
-        return;
-      }
-
-      if (readiness === 'active-vector') {
-        const vectorBacked = kb.vector.read();
-        await driver.waitFreshUntil('corpus', snapshot, vectorBacked.consumer.id, bootFreshnessTimeoutMs);
-        return;
-      }
-
-      const vectorBacked = kb.vector.read();
-      await driver.waitFreshUntil('corpus', snapshot, vectorBacked.consumer.id, bootFreshnessTimeoutMs);
+      return waitForCorpusReadiness({
+        kb,
+        readiness,
+        snapshot,
+        timeoutMs: bootFreshnessTimeoutMs,
+        waitFresh: ({ consumerId, snapshot: target, timeoutMs }) =>
+          driver.waitFreshUntil('corpus', target, consumerId, timeoutMs),
+      });
     },
     runStartupRecoveryFn: async ({
       identity,

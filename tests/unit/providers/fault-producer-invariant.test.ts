@@ -21,11 +21,8 @@ const RULES: FaultAuthorityRule[] = [
   {
     builder: 'providerRequestFailed',
     allowed: new Set([
-      'src/providers/bootstrap.ts',
       'src/providers/claude/exec-provider.ts',
-      'src/providers/claude/exec-kernel.ts',
       'src/providers/claude/session-kernel.ts',
-      'src/providers/codex/thread-kernel.ts',
     ]),
   },
 ];

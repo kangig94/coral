@@ -94,6 +94,7 @@ export interface ProviderServerLease {
 export type ProviderTerminalOutcome =
   | { kind: 'completed' }
   | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
+  | { kind: 'provider_exit'; code: number; note?: string }
   | { kind: 'failed' };
 
 export interface JobTerminal {
@@ -172,6 +173,7 @@ export const providerFailureCauseSchema = z.discriminatedUnion('type', [
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: z.enum(abortReasons) }).strict(),
+  z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal('failed') }).strict(),
 ]);
 

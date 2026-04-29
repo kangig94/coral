@@ -2,7 +2,6 @@ import type { EffortLevel } from '../request-policy.js';
 import type { Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../cli-runner.js';
 import type { TimePort } from '../../runtime/ports.js';
-import { providerRequestFailed } from '../fault.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -34,13 +33,6 @@ class ClaudeExecParseError extends Error {
     this.name = 'ClaudeExecParseError';
     this.failure = failure;
   }
-}
-
-function buildClaudeExecRequestFailureCause(message: string) {
-  return providerRequestFailed({
-    provider: 'claude',
-    message,
-  });
 }
 
 export function isClaudeExecParseError(error: unknown): ParseErrorDetail | null {
@@ -91,8 +83,13 @@ export const claudeExecKernel: Provider = (request, runtime) =>
             content: result.response,
             model: result.model,
             durationMs: result.durationMs,
+            ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
             usage: result.costUsd === null ? undefined : { costUsd: result.costUsd },
-            outcome: { kind: 'failed' },
+            outcome: {
+              kind: 'provider_exit',
+              code: result.exitCode ?? 1,
+              ...(result.response ? { note: result.response } : {}),
+            },
           })
         : buildJobTerminal({
             response: result.response,
@@ -102,9 +99,6 @@ export const claudeExecKernel: Provider = (request, runtime) =>
             usage: result.costUsd === null ? undefined : { costUsd: result.costUsd },
           }),
       diagnostics: buildJobDiagnostics({}),
-      ...(result.isError
-        ? { failureCause: buildClaudeExecRequestFailureCause(result.response || 'Claude request failed.') }
-        : {}),
     });
   });
 
@@ -175,6 +169,7 @@ async function executeClaude(args: string[], prompt: string, options: ClaudeFork
     costUsd: parsed.costUsd,
     aborted,
     isError: parsed.isError,
+    exitCode: code,
   };
 }
 

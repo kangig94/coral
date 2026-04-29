@@ -21,6 +21,7 @@ export interface JobTerminalRecordedOptions<Scope = never> {
   readonly project?: string;
   readonly correlationId?: string;
   readonly parentJobId?: string;
+  readonly workflowId?: string;
   readonly workflowSlotId?: string;
   readonly terminal: JobTerminalInput<Scope> | JobTerminalInput;
   readonly diagnostics?: JobTerminalDiagnostics;
@@ -46,6 +47,7 @@ export function jobTerminalRecordedEvent<Scope = never>(
       jobId: options.jobId,
       ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
       ...(options.parentJobId === undefined ? {} : { parentJobId: options.parentJobId }),
+      ...(options.workflowId === undefined ? {} : { workflowId: options.workflowId }),
       ...(options.workflowSlotId === undefined ? {} : { workflowSlotId: options.workflowSlotId }),
     },
   };

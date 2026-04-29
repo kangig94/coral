@@ -5,7 +5,7 @@ import {
   type ProviderTerminalOutcome,
 } from './contract.js';
 import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
-import { adapterOutputUnparseable, providerRequestFailed } from './fault.js';
+import { adapterOutputUnparseable } from './fault.js';
 import { parseClaudeStreamJson } from './claude/output-parser.js';
 import { claudeProvider } from './claude/exec-provider.js';
 import {
@@ -45,27 +45,30 @@ async function finalizeClaudeFromArtifacts(
     throw new Error('Claude recovery could not parse stream-json output.');
   }
 
-  const failureCause =
-    options.signal !== null || (!parsed.isError && (options.exitCode === null || options.exitCode === 0))
-      ? undefined
-      : parsed.isError
-        ? providerRequestFailed({
-            provider: 'claude',
-            message: parsed.response || 'Claude request failed.',
-          })
-        : adapterOutputUnparseable({
-            provider: 'claude',
-            exitCode: options.exitCode,
-            stdout,
-            stderr,
-            parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
-          });
+  const exitedNonZero = options.exitCode !== null && options.exitCode !== 0;
+  const adapterUnparseable =
+    options.signal === null && exitedNonZero && !parsed.isError
+      ? adapterOutputUnparseable({
+          provider: 'claude',
+          exitCode: options.exitCode,
+          stdout,
+          stderr,
+          parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
+        })
+      : undefined;
+
   const outcome: ProviderTerminalOutcome =
     options.signal !== null
       ? { kind: 'aborted', reason: 'signal_abort' as const }
-      : parsed.isError || (options.exitCode !== null && options.exitCode !== 0)
+      : adapterUnparseable !== undefined
         ? { kind: 'failed' as const }
-        : { kind: 'completed' as const };
+        : parsed.isError
+          ? {
+              kind: 'provider_exit' as const,
+              code: options.exitCode ?? 1,
+              ...(parsed.response ? { note: parsed.response } : { note: 'Claude request failed.' }),
+            }
+          : { kind: 'completed' as const };
 
   return {
     terminal: {
@@ -79,7 +82,7 @@ async function finalizeClaudeFromArtifacts(
         outcome,
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
-      ...(failureCause === undefined ? {} : { failureCause }),
+      ...(adapterUnparseable === undefined ? {} : { failureCause: adapterUnparseable }),
     },
     continuity:
       parsed.sessionId !== null
@@ -101,28 +104,25 @@ async function finalizeCodexFromArtifacts(
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
-  const failureCause =
-    options.signal === null && options.exitCode !== null && options.exitCode !== 0
-      ? providerRequestFailed({
-          provider: 'codex',
-          message: `Codex exited with code ${options.exitCode} before recovery completed.`,
-        })
-      : undefined;
+  const outcome: ProviderTerminalOutcome =
+    options.signal !== null
+      ? { kind: 'aborted', reason: 'signal_abort' as const }
+      : options.exitCode === null || options.exitCode === 0
+        ? { kind: 'completed' as const }
+        : {
+            kind: 'provider_exit' as const,
+            code: options.exitCode,
+            note: `Codex exited with code ${options.exitCode} before recovery completed.`,
+          };
   return {
     terminal: {
       kind: 'terminal',
       terminal: buildJobTerminal({
         content: '',
         ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
-        outcome:
-          options.signal !== null
-            ? { kind: 'aborted', reason: 'signal_abort' as const }
-            : options.exitCode === null || options.exitCode === 0
-              ? { kind: 'completed' as const }
-              : { kind: 'failed' as const },
+        outcome,
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
-      ...(failureCause === undefined ? {} : { failureCause }),
     },
     continuity: options.fallbackConversationRef
       ? undefined

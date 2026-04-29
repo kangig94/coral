@@ -125,6 +125,7 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
 }
 
 export const workflowRegistry: DomainEventRegistry = {
+  streamKind: 'workflow',
   entries: [
     defineDomainEvent({
       type: 'workflow.plan.declared',

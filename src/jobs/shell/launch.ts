@@ -164,6 +164,9 @@ export class LaunchOrchestrator {
     } = {},
   ): void {
     const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
+    // Spec §6.1 line 813: workflow children carry `refs.workflowId` pointing at
+    // the workflow stream. Convention: parentJobId === workflowId for children.
+    const workflowId = options.parentJobId;
     try {
       this.deps.progressStore.commit((c) => {
         const cause = c.append({
@@ -176,6 +179,7 @@ export class LaunchOrchestrator {
             jobId,
             sessionId,
             ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+            ...(workflowId ? { workflowId } : {}),
             ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
           },
           bodyVersion: 1,
@@ -188,6 +192,7 @@ export class LaunchOrchestrator {
           project: metadata.project,
           correlationId: metadata.correlationId,
           parentJobId: options.parentJobId,
+          workflowId,
           workflowSlotId: options.workflowSlotId,
           terminal: {
             content: '',

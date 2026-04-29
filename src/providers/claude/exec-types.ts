@@ -6,6 +6,7 @@ export type ClaudeExecResult = {
   costUsd: number | null;
   aborted: boolean;
   isError?: boolean;
+  exitCode: number | null;
 };
 
 export type ClaudeJsonOutput = {

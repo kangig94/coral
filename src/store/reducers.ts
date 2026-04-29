@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { type z } from 'zod';
 
-import type { CoralEvent, CoralEventInput } from './envelope.js';
+import type { CoralEvent, CoralEventInput, StreamKind } from './envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
 
 type Database = BetterSqlite3.Database;
@@ -22,6 +22,7 @@ export interface DomainEventEntry {
 }
 
 export interface DomainEventRegistry {
+  readonly streamKind: StreamKind;
   readonly entries: readonly DomainEventEntry[];
   readonly appendValidators?: readonly DomainAppendValidator[];
 }
@@ -45,12 +46,18 @@ export interface ComposedReducers {
   readonly reducers: Map<string, Reducer<unknown>>;
   readonly schemas: Map<string, z.ZodType>;
   readonly appendValidators: readonly DomainAppendValidator[];
+  /**
+   * Describer-key form (`${streamKind}:${type}`) for every registered event
+   * type. Used to assert describer parity at startup and in invariants.
+   */
+  readonly describerKeys: readonly string[];
 }
 
 export function composeReducers(...registries: DomainEventRegistry[]): ComposedReducers {
   const reducers = new Map<string, Reducer<unknown>>();
   const schemas = new Map<string, z.ZodType>();
   const types: string[] = [];
+  const describerKeys: string[] = [];
   const appendValidators: DomainAppendValidator[] = [];
 
   for (const registry of registries) {
@@ -71,10 +78,11 @@ export function composeReducers(...registries: DomainEventRegistry[]): ComposedR
       }
       schemas.set(entry.type, entry.schema);
       types.push(entry.type);
+      describerKeys.push(`${registry.streamKind}:${entry.type}`);
     }
   }
 
-  return { types, reducers, schemas, appendValidators };
+  return { types, reducers, schemas, appendValidators, describerKeys };
 }
 
 /**

@@ -2,7 +2,6 @@ import { errorMessage } from '../../infra/error-format.js';
 import type { TimePort } from '../../runtime/ports.js';
 import { resolveModelTier } from '../request-policy.js';
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../contract.js';
-import { providerRequestFailed } from '../fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server/driver.js';
 import type { AppServerNotificationMessage } from '../app-server/driver.js';
 import { streamProviderEvents } from '../stream.js';
@@ -27,12 +26,11 @@ import type {
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
 
-function buildCodexThreadFailureCause(message: string) {
-  return providerRequestFailed({
-    provider: 'codex',
-    message,
-  });
-}
+// Sentinel exit code surfaced when the Codex app-server reports a turn failure
+// over RPC instead of the wrapper observing a process exit. Codex thread-kernel
+// drives a long-running app-server lease, so no real OS exit code is available;
+// the diagnostic message goes into `note`. See spec §7.1 `provider_exit`.
+const CODEX_RPC_FAILURE_EXIT_CODE = 1;
 
 export type PreTurnMailboxStatus = {
   pending: number;
@@ -690,10 +688,13 @@ function buildFailedTerminal(
       content: '',
       model: state.model,
       durationMs: state.time.now() - state.startedAt,
-      outcome: { kind: 'failed' },
+      outcome: {
+        kind: 'provider_exit',
+        code: CODEX_RPC_FAILURE_EXIT_CODE,
+        note: buildProviderFailureMessage('Codex', message),
+      },
     }),
     diagnostics: buildJobDiagnostics({}),
-    failureCause: buildCodexThreadFailureCause(buildProviderFailureMessage('Codex', message)),
   };
 }
 
@@ -704,8 +705,9 @@ function buildCompletedTerminal(
   const turnStatus = turn?.status;
   const turnFailed = !isSuccessfulTurn(turnStatus);
   const turnAborted = isAbortedTurn(turnStatus);
-  const failureMessage = turnFailed
-    ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus)
+  const failureNote = turnFailed
+    ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus) ??
+      'Codex session driver reported a failed turn.'
     : undefined;
 
   return {
@@ -717,17 +719,10 @@ function buildCompletedTerminal(
       outcome: turnAborted
         ? { kind: 'aborted', reason: 'signal_abort' }
         : turnFailed
-          ? { kind: 'failed' }
+          ? { kind: 'provider_exit', code: CODEX_RPC_FAILURE_EXIT_CODE, note: failureNote ?? '' }
           : { kind: 'completed' },
     }),
     diagnostics: buildJobDiagnostics({}),
-    ...(turnFailed && !turnAborted
-      ? {
-          failureCause: buildCodexThreadFailureCause(
-            failureMessage ?? 'Codex session driver reported a failed turn.',
-          ),
-        }
-      : {}),
   };
 }
 

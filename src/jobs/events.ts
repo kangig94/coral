@@ -21,6 +21,7 @@ import {
 } from './projections.js';
 
 export const jobsRegistry: DomainEventRegistry = {
+  streamKind: 'job',
   entries: [
     defineDomainEvent({ type: 'job.launch.requested', schema: jobLaunchRequestBodySchema, reducer: reduceJobLaunchRequested }),
     defineDomainEvent({ type: 'job.launch.rejected', schema: jobLaunchRejectedSchema, reducer: reduceJobLaunchRejected }),
