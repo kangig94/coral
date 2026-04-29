@@ -149,7 +149,7 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
     const archivePath = path.join(testHome, 'coral-needle-prebuild.tar.gz');
     const curlReleasePath = path.join(testHome, 'fake-curl.release');
     const curlMarkDir = path.join(testHome, 'fake-curl-markers');
-    const needleDir = path.join(testHome, '.coral', 'data-dev', 'equipment', 'needle');
+    const needleDir = path.join(testHome, '.coral', 'data-dev', 'engines', 'needle');
     const lockPath = path.join(needleDir, 'install.lock');
     const addonPath = path.join(needleDir, 'coral-needle.node');
     const addonBytes = Buffer.from('race-test-addon');

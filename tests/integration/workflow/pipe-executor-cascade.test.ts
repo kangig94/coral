@@ -40,6 +40,16 @@ describe('pipe executor coral cascade invariant', () => {
 
     const projectRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-'));
     const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-coral-'));
+    // Isolate from the user's real ~/.coral state so stale-schema DBs created
+    // before unrelated rename commits (e.g. shard_dir → scope_key) don't poison
+    // this integration test. createRealRuntime() resolves coralRoot via
+    // homedir(); pointing HOME at a fresh tmp dir gives the runtime a clean
+    // store path that the schema loader will populate from current SQL.
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'pipe-cascade-home-'));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = isolatedHome;
+    process.env.USERPROFILE = isolatedHome;
 
     try {
       const projectArchitectPath = join(projectRoot, '.claude', 'agents', 'architect.md');
@@ -145,6 +155,11 @@ describe('pipe executor coral cascade invariant', () => {
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
       rmSync(coralPluginRoot, { recursive: true, force: true });
+      rmSync(isolatedHome, { recursive: true, force: true });
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
     }
   });
 });
