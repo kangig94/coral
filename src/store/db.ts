@@ -23,6 +23,41 @@ type WritableStoreOptions = {
 
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
 
+/**
+ * Journal pragma configuration mode.
+ *
+ * - `writable`: WAL + `synchronous=FULL` (power-loss durable per spec §3).
+ * - `readonly`: only `foreign_keys` + `busy_timeout` (readonly handles cannot
+ *   issue WAL/synchronous pragmas).
+ * - `rebuild`: WAL + `synchronous=NORMAL` for test/regression bulk-replay
+ *   utilities that rebuild from a survived source. Production never uses this
+ *   mode — the durability contract is FULL.
+ */
+export type JournalPragmaMode =
+  | { kind: 'writable'; busyTimeoutMs?: number }
+  | { kind: 'readonly'; busyTimeoutMs?: number }
+  | { kind: 'rebuild'; busyTimeoutMs?: number };
+
+/**
+ * Apply the canonical journal pragma surface to a SQLite handle.
+ *
+ * This is the single configuration site for `journal_mode`, `synchronous`,
+ * `foreign_keys`, and `busy_timeout`. `openStoreDatabase` calls this helper;
+ * no other site in `src/store/db.ts` issues these pragmas.
+ */
+export function applyJournalPragmas(db: BetterSqlite3.Database, mode: JournalPragmaMode): void {
+  const busyTimeoutMs = mode.busyTimeoutMs ?? 5000;
+  db.pragma('foreign_keys = ON');
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+  if (mode.kind === 'writable') {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+  } else if (mode.kind === 'rebuild') {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+  }
+}
+
 export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Database {
   const readonly = options.readonly ?? false;
 
@@ -32,12 +67,10 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
 
   const db = new BetterSqlite3(options.path, { readonly });
 
-  if (!readonly) {
-    db.pragma('journal_mode = WAL');
-  }
-
-  db.pragma('foreign_keys = ON');
-  db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
+  applyJournalPragmas(db, {
+    kind: readonly ? 'readonly' : 'writable',
+    busyTimeoutMs: options.busyTimeoutMs,
+  });
 
   if (options.readonly !== true) {
     applyStoreSchemas({
