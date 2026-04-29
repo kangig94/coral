@@ -32,7 +32,7 @@ import {
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
 import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
-import { recoverStaleAtom } from './stale-recovery.js';
+import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 export { recoverStaleAtom } from './stale-recovery.js';
@@ -59,6 +59,7 @@ type ResumeWorkflowDeps = {
   onProgress: (workflowId: string, message: string) => void;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
+  staleAbortTimeoutMs: number;
   drainDeadlineMs: number;
 };
 
@@ -361,6 +362,7 @@ async function executeRemainingSteps(
     onProgress: (message) => deps.onProgress(deps.workflowId, message),
     staleTimeoutMs: deps.staleTimeoutMs,
     staleCheckIntervalMs: deps.staleCheckIntervalMs,
+    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
     drainDeadlineMs: deps.drainDeadlineMs,
     workflowJobId: deps.workflowId,
     time: deps.time,
@@ -472,6 +474,7 @@ async function waitAndFinalize(
   const stepResults = await waitForAtoms(plan.activeAtoms, deps.executionSvc, deps.ctx, {
     staleTimeoutMs: deps.staleTimeoutMs,
     staleCheckIntervalMs: deps.staleCheckIntervalMs,
+    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
     drainDeadlineMs: deps.drainDeadlineMs,
     initialState: plan.initialState,
     completedStepDetails: snapshot.summary.stepDetails,
@@ -509,12 +512,14 @@ export async function resumeAll(options: {
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
+  staleAbortTimeoutMs?: number;
   drainDeadlineMs?: number;
   time?: Pick<TimePort, 'now'>;
 }): Promise<string[]> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
+  const staleAbortTimeoutMs = options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS;
   const drainDeadlineMs = options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS;
   const time = options.time ?? SYSTEM_TIME_PORT;
   const resumedWorkflowIds: string[] = [];
@@ -552,6 +557,7 @@ export async function resumeAll(options: {
         onProgress,
         staleTimeoutMs,
         staleCheckIntervalMs,
+        staleAbortTimeoutMs,
         drainDeadlineMs,
         time,
       });

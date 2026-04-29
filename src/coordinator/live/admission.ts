@@ -13,7 +13,7 @@ import {
   spawnProviderServerTransport,
 } from './durable-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
-import { getActiveLimit } from './worker-limits.js';
+import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type {
   AdmissionResult,
   AdmittedHandle,
@@ -23,7 +23,16 @@ import type {
 } from '../../jobs/contracts/admission.js';
 
 export type { LaunchPool } from '../../jobs/contracts/admission.js';
-const MAX_QUEUE_SIZE = 20;
+
+/**
+ * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
+ * default 20 is reasonable for all environments tested; large deployments may
+ * raise it via `CORAL_MAX_QUEUE_SIZE`. Clamped to [1, 1000] to keep memory
+ * pressure bounded.
+ */
+export function getMaxQueueSize(env: Pick<Runtime['env'], 'get'>): number {
+  return Math.min(Math.max(parsePositiveInt(env.get('CORAL_MAX_QUEUE_SIZE'), 20), 1), 1000);
+}
 
 type QueuedLaunchEntry = {
   jobId: string;
@@ -75,7 +84,7 @@ export class LaunchCoordinator {
       return IMMEDIATE_ADMISSION;
     }
 
-    if (queuedLaunches.length >= MAX_QUEUE_SIZE) return 'queue_full';
+    if (queuedLaunches.length >= getMaxQueueSize(this.runtime.env)) return 'queue_full';
 
     let resolve!: () => void;
     let reject!: (error: Error) => void;

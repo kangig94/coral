@@ -3,6 +3,7 @@ import { normalizeCurateStateRepairFrontier, readCurateState, writeCurateState }
 import {
   applyClearCurateRetryState,
   applyRecordCurateFailure,
+  resolveCurateTimings,
   type CurateCursor,
   type CurateState,
 } from './state/index.js';
@@ -33,7 +34,11 @@ export function recordCurateFailureLocked(
   through: CurateCursor | null,
   error: unknown,
 ): CurateState {
-  return persistCurateState(kb, state, applyRecordCurateFailure(state, through, error, kb.time.now()));
+  return persistCurateState(
+    kb,
+    state,
+    applyRecordCurateFailure(state, through, error, kb.time.now(), resolveCurateTimings(kb.envPort)),
+  );
 }
 
 export async function recordCurateFailure(

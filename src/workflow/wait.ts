@@ -43,6 +43,12 @@ export type WaitForAtomsOptions = {
   onStaleSwap?: (state: WaitInternalState) => void;
   onFailureDrain?: (state: WaitInternalState, failure: WaitFailure) => void;
   recoverStaleAtom?: WaitStaleRecoveryHandler;
+  /**
+   * Timeout (ms) for the abort-and-wait phase of stale recovery. Resolved at
+   * the executor entry-point via `resolveStaleAbortTimeoutMs(env)`; required
+   * by callers that opt into stale recovery via `recoverStaleAtom`.
+   */
+  staleAbortTimeoutMs: number;
 };
 
 export type WaitStaleRecoveryHandler = (
@@ -53,6 +59,7 @@ export type WaitStaleRecoveryHandler = (
     time: Pick<TimePort, 'now'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
+    staleAbortTimeoutMs: number;
     workDir?: string;
     workflowJobId?: string;
     onProgress: (message: string) => void;
@@ -252,6 +259,7 @@ export async function awaitWaitCycle(
     const recovered = await options.recoverStaleAtom(state, executionSvc, ctx, {
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
+      staleAbortTimeoutMs: options.staleAbortTimeoutMs,
       workDir: options.workDir,
       workflowJobId: options.workflowJobId,
       onProgress: options.onProgress,

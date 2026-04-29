@@ -367,6 +367,8 @@ This is the general flavor layout rule for device-local rebuildable data: `data/
 
 SQLite in WAL mode is the reference implementation: it provides append-only write semantics, ACID transactions across multiple events, concurrent readers, and a single-writer discipline via `BEGIN IMMEDIATE` — all properties the Journal requires, without reinventing them.
 
+Journal authority is power-loss durable. The store opens with `synchronous = FULL`; commits return only after fsync. Process crash and OS crash both preserve every committed event. Bulk-rebuild paths (regression-test replay) may opt into `synchronous = NORMAL` since they rebuild from a source of truth that survives.
+
 The Corpus authority (§2.2, §6.4) uses the filesystem directly and is documented separately. This section covers only the Journal substrate.
 
 ### 3.1 Schema
@@ -1382,7 +1384,7 @@ Providers emit **bodies only**. The coordinator wraps each body in an envelope (
 
 ### 8.3 Invariants
 
-1. Every provider stream emits exactly one `terminal`, and it is last.
+1. Every provider stream emits exactly one `terminal`, and it is last. **`compose()` (`src/providers/contract.ts`) is the home of the enforcement** — it owns the chain end-to-end and synthesizes `JobLifecycleFault('wrapper_lost')` when the kernel closes without `terminal`. Per-middleware defensive checks are not the right home.
 2. `continuity` bodies are full snapshots. If `resumable: true`, `conversationRef` must be non-null.
 3. Generic middleware never rewrites a downstream terminal outcome.
 4. Abort enters once through `runtime.signal`; no extra public interrupt surface.
@@ -2237,6 +2239,10 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 48. `coordinator/services/**` consumes domain ports/contracts, not domain shell implementation classes. Shell implementations are wired at composition roots.
 49. Launch/admission vocabulary is jobs-owned. `LaunchPool`, admission handles, queue read ports, and recovery launch ports are defined under `src/jobs/*`; coordinator contracts may compose those ports but must not redefine `ExecutionLaunch*` mirrors.
 50. Domain/provider modules do not read host time, environment, or randomness directly. Current time, env, and ids enter through runtime/domain ports; direct ambient access is restricted to infra/runtime/CLI/bootstrap adapters and explicit parsers.
+51. KB availability is encoded in `runtimeState.kbStatus: { kind: 'ok' } | { kind: 'unavailable'; reason }` set exactly once at boot by the KB-init aggregator. Curate publish-health is a separate concept (`runtimeState.curateHealth`); curate degradation does NOT block KB IPC ops. `withKb` reads `kbStatus`; `/health` exposes both `subsystems.kb` (from `kbStatus`) and `subsystems.kbCurate` (from `curateHealth`).
+52. Concurrent `RuntimeBinding<T>.bind()` calls to the same binding are linearized inside the binding primitive (`src/runtime/binding.ts`) — exactly one wins, all others receive `binding_occupied`. Tier (bundled vs installed) does not affect race ordering; installed-tier engines are recovered first by lifecycle ordering (§2.8a), not by binding-level priority. Engine-level mutex (`coordinator/expansion/lifecycle.ts:engineMutex`) is reserved for state-row pairing only — it does not police binding occupancy.
+53. Long-running operations carry an `AbortSignal` in their context (`apply(ctx)` for journal/corpus consumers, `withMutationLock(fn, { signal })` for KB mutations, `KbJobRecorder.startInternalJob` for KB internal jobs). `coral-cli abort <jobId>` is a best-effort fence: recipients are obligated to honor the signal at the next checkpoint; recipients that do not honor it surface as wrapper-class faults via reconciliation, not as silent ignores. Authority writes (Journal commits, Corpus mutations) complete or rollback as a unit — cancellation cuts at boundaries, not mid-mutation.
+54. Numeric constants split into two bins: **design invariants** (numbers that, if changed, would invalidate spec reasoning) live as `INVARIANT.<name>` constants in the layer that owns them and are documented in §16; **operator knobs** (numbers reasonable users may want to tune for their environment) live in `runtime/config.ts` (or follow the `worker-limits.ts` pattern with `CORAL_<NAME>` env override). Triage rule: 'If a user changed this number to 5, would the system still match spec? Yes → operator knob; No → design invariant.' Existing invariants under this rule: `MAX_CONSECUTIVE_FAILURES = 10` (curate), `MAX_STALE_RECOVERY_RETRIES = 2` (workflow recovery).
 
 ---
 

@@ -2,16 +2,69 @@ import { z } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
 import { SYSTEM_TIME_PORT, nowIsoString } from '../../../infra/time.js';
+import type { EnvPort } from '../../../runtime/ports.js';
 import {
   noteEntryId,
   parseKbEntryId,
   type KbEntryId,
 } from '../../entry-types.js';
 
-const CLAIM_STALE_MS = 15 * 60 * 1000;
-const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
-const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
-const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
+/**
+ * Curate timing operator knobs (see §16(d) triage rule). Defaults match the
+ * historical hardcoded values; operators tune via the matching `CORAL_CURATE_*`
+ * env vars. Reducers below stay pure — they receive the resolved timings as
+ * parameters; the env read happens at the scheduler/operations boundary.
+ */
+export const DEFAULT_CLAIM_STALE_MS = 15 * 60 * 1000;
+export const DEFAULT_CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
+export const DEFAULT_CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
+export const DEFAULT_CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
+
+export const CORAL_CURATE_CLAIM_STALE_MS_ENV = 'CORAL_CURATE_CLAIM_STALE_MS';
+export const CORAL_CURATE_TRANSIENT_RETRY_MS_ENV = 'CORAL_CURATE_TRANSIENT_RETRY_MS';
+export const CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV = 'CORAL_CURATE_MISSING_CLI_RETRY_MS';
+export const CORAL_CURATE_MAX_RETRY_MS_ENV = 'CORAL_CURATE_MAX_RETRY_MS';
+
+export type CurateTimings = {
+  claimStaleMs: number;
+  transientRetryMs: number;
+  missingCliRetryMs: number;
+  maxRetryMs: number;
+};
+
+const DEFAULT_CURATE_TIMINGS: CurateTimings = {
+  claimStaleMs: DEFAULT_CLAIM_STALE_MS,
+  transientRetryMs: DEFAULT_CURATE_TRANSIENT_RETRY_MS,
+  missingCliRetryMs: DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
+  maxRetryMs: DEFAULT_CURATE_MAX_RETRY_MS,
+};
+
+function parsePositiveIntMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+/**
+ * Resolve curate timings from env. Each key independently honours its env
+ * override when set to a positive integer; falls back to the default for
+ * unset, blank, or malformed values.
+ */
+export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
+  return {
+    claimStaleMs: parsePositiveIntMs(env.get(CORAL_CURATE_CLAIM_STALE_MS_ENV), DEFAULT_CLAIM_STALE_MS),
+    transientRetryMs: parsePositiveIntMs(
+      env.get(CORAL_CURATE_TRANSIENT_RETRY_MS_ENV),
+      DEFAULT_CURATE_TRANSIENT_RETRY_MS,
+    ),
+    missingCliRetryMs: parsePositiveIntMs(
+      env.get(CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV),
+      DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
+    ),
+    maxRetryMs: parsePositiveIntMs(env.get(CORAL_CURATE_MAX_RETRY_MS_ENV), DEFAULT_CURATE_MAX_RETRY_MS),
+  };
+}
 
 /**
  * See `kb/curate/scheduler.ts` for the rationale narrative. Lives here
@@ -19,6 +72,10 @@ const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
  * `*_lane_disabled_at` stamps are part of the curate state model — the
  * cap is the policy that links the two, and pure reducers below need
  * the value to stamp `disabledAt` on the cap-trip.
+ *
+ * Design invariant — see §16(d) and spec §3.1: this is part of the lane-disable
+ * policy contract, NOT an operator knob. Changing it changes user-visible
+ * behavior and invalidates the spec's reasoning about lane recovery.
  */
 export const MAX_CONSECUTIVE_FAILURES = 10;
 
@@ -157,17 +214,21 @@ export function sameStringList(left: readonly string[], right: readonly string[]
   return left.every((value, index) => value === right[index]);
 }
 
-function retryBaseCooldownMs(error: unknown): number {
+function retryBaseCooldownMs(error: unknown, timings: CurateTimings): number {
   const message = errorMessage(error);
   if (message.includes('Failed to spawn claude:') && (message.includes('ENOENT') || message.includes('not found'))) {
-    return CURATE_MISSING_CLI_RETRY_MS;
+    return timings.missingCliRetryMs;
   }
 
-  return CURATE_TRANSIENT_RETRY_MS;
+  return timings.transientRetryMs;
 }
 
-function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveClaimFailures: number): number {
-  return Math.min(baseCooldownMs * 2 ** consecutiveClaimFailures, CURATE_MAX_RETRY_MS);
+function calculateRetryCooldownMs(
+  baseCooldownMs: number,
+  consecutiveClaimFailures: number,
+  maxRetryMs: number,
+): number {
+  return Math.min(baseCooldownMs * 2 ** consecutiveClaimFailures, maxRetryMs);
 }
 
 export function applyRecordCurateFailure(
@@ -175,6 +236,7 @@ export function applyRecordCurateFailure(
   through: CurateCursor | null,
   error: unknown,
   nowMs: number = SYSTEM_TIME_PORT.now(),
+  timings: CurateTimings = DEFAULT_CURATE_TIMINGS,
 ): CurateState | null {
   const attemptedThrough = through ?? state.lastAttemptedThrough;
   if (attemptedThrough === null) {
@@ -201,7 +263,9 @@ export function applyRecordCurateFailure(
   return {
     ...state,
     lastAttemptedThrough: attemptedThrough,
-    retryNotBefore: nowIsoString(nowMs + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures)),
+    retryNotBefore: nowIsoString(
+      nowMs + calculateRetryCooldownMs(retryBaseCooldownMs(error, timings), priorFailures, timings.maxRetryMs),
+    ),
     activeClaim: null,
     consecutiveClaimFailures: nextFailures,
     claimLaneDisabledAt: tripped ? nowIsoString(nowMs) : state.claimLaneDisabledAt,
@@ -266,7 +330,11 @@ export function applyRemovePendingDiscovery(state: CurateState, entry: PendingDi
   };
 }
 
-export function isClaimStale(state: CurateState, now: string): boolean {
+export function isClaimStale(
+  state: CurateState,
+  now: string,
+  claimStaleMs: number = DEFAULT_CLAIM_STALE_MS,
+): boolean {
   if (state.activeClaim === null) {
     return false;
   }
@@ -281,6 +349,6 @@ export function isClaimStale(state: CurateState, now: string): boolean {
     return false;
   }
 
-  return nowMs - startedAt >= CLAIM_STALE_MS;
+  return nowMs - startedAt >= claimStaleMs;
 }
 

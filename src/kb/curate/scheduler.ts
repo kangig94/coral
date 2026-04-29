@@ -25,6 +25,7 @@ import {
   MAX_CONSECUTIVE_FAILURES,
   isClaimStale,
   readCurateState,
+  resolveCurateTimings,
   writeCurateState,
   type CurateCursor,
   type CurateState,
@@ -225,7 +226,10 @@ export function createCurateScheduler({
     if (lastCompletedThrough === null) {
       await kb.withMutationLock(() => {
         const state = readCurateState(kb);
-        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString(kb.time))) {
+        if (
+          state.activeClaim !== null &&
+          !isClaimStale(state, nowIsoString(kb.time), resolveCurateTimings(kb.envPort).claimStaleMs)
+        ) {
           return;
         }
         clearCurateRetryStateLocked(kb, state);

@@ -22,7 +22,7 @@ import {
 } from './execution-constants.js';
 import { buildWorkflowPlan, maxStepIndex, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
-import { recoverStaleAtom } from './stale-recovery.js';
+import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 
 type ExecutePlannedStepsOptions = {
@@ -33,6 +33,7 @@ type ExecutePlannedStepsOptions = {
   onProgress: (message: string) => void;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
+  staleAbortTimeoutMs: number;
   drainDeadlineMs: number;
   workflowJobId?: string;
   journal?: WorkflowJournal;
@@ -60,6 +61,7 @@ async function drainLaunchedAtoms(
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
+    staleAbortTimeoutMs: number;
     drainDeadlineMs: number;
     workDir?: string;
     workflowJobId?: string;
@@ -75,6 +77,7 @@ async function drainLaunchedAtoms(
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
       staleCheckIntervalMs: options.staleCheckIntervalMs,
+      staleAbortTimeoutMs: options.staleAbortTimeoutMs,
       drainDeadlineMs: options.drainDeadlineMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
@@ -102,6 +105,7 @@ async function awaitLaunchedStepResults(
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
+    staleAbortTimeoutMs: number;
     drainDeadlineMs: number;
     workDir?: string;
     onProgress: (message: string) => void;
@@ -115,6 +119,7 @@ async function awaitLaunchedStepResults(
       signal: options.signal,
       staleTimeoutMs: options.staleTimeoutMs,
       staleCheckIntervalMs: options.staleCheckIntervalMs,
+      staleAbortTimeoutMs: options.staleAbortTimeoutMs,
       drainDeadlineMs: options.drainDeadlineMs,
       workDir: options.workDir,
       onProgress: options.onProgress,
@@ -206,6 +211,7 @@ export async function executePlannedSteps(
               signal: options.signal,
               staleTimeoutMs: options.staleTimeoutMs,
               staleCheckIntervalMs: options.staleCheckIntervalMs,
+              staleAbortTimeoutMs: options.staleAbortTimeoutMs,
               drainDeadlineMs: options.drainDeadlineMs,
               workDir: options.workDir,
               workflowJobId: options.workflowJobId,
@@ -219,6 +225,7 @@ export async function executePlannedSteps(
         signal: options.signal,
         staleTimeoutMs: options.staleTimeoutMs,
         staleCheckIntervalMs: options.staleCheckIntervalMs,
+        staleAbortTimeoutMs: options.staleAbortTimeoutMs,
         drainDeadlineMs: options.drainDeadlineMs,
         workDir: options.workDir,
         onProgress: options.onProgress,
@@ -263,6 +270,7 @@ export async function executePipeline(
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;
     staleCheckIntervalMs?: number;
+    staleAbortTimeoutMs?: number;
     drainDeadlineMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
@@ -274,6 +282,7 @@ export async function executePipeline(
   const time = options.time ?? SYSTEM_TIME_PORT;
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
+  const staleAbortTimeoutMs = options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS;
   const drainDeadlineMs = options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS;
   const workflowId = options.workflowJobId ?? options.ids.uuid();
   const plan = buildWorkflowPlan(workflowId, ast, {
@@ -296,6 +305,7 @@ export async function executePipeline(
     time,
     staleTimeoutMs,
     staleCheckIntervalMs,
+    staleAbortTimeoutMs,
     drainDeadlineMs,
     workflowJobId: options.workflowJobId,
     journal: options.journal,

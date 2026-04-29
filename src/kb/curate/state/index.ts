@@ -5,6 +5,14 @@ export {
   writeCurateState,
 } from './store.js';
 export {
+  CORAL_CURATE_CLAIM_STALE_MS_ENV,
+  CORAL_CURATE_MAX_RETRY_MS_ENV,
+  CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV,
+  CORAL_CURATE_TRANSIENT_RETRY_MS_ENV,
+  DEFAULT_CLAIM_STALE_MS,
+  DEFAULT_CURATE_MAX_RETRY_MS,
+  DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
+  DEFAULT_CURATE_TRANSIENT_RETRY_MS,
   MAX_CONSECUTIVE_FAILURES,
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -16,10 +24,12 @@ export {
   defaultCurateState,
   isClaimStale,
   noteCursor,
+  resolveCurateTimings,
   sameStringList,
   type CurateCursor,
   type CurateRepairFrontier,
   type CurateState,
+  type CurateTimings,
   type PendingDiscovery,
   type PendingRepair,
 } from './model.js';

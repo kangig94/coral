@@ -25,6 +25,7 @@ import {
   isClaimStale,
   noteCursor,
   readCurateState,
+  resolveCurateTimings,
   writeCurateState,
   type CurateCursor,
 } from './state/index.js';
@@ -113,7 +114,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     const state = readCurateState(kb);
     const now = nowIsoString(kb.time);
 
-    if (state.activeClaim !== null && !isClaimStale(state, now)) {
+    if (state.activeClaim !== null && !isClaimStale(state, now, resolveCurateTimings(kb.envPort).claimStaleMs)) {
       return null;
     }
 

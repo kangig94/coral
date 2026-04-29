@@ -31,6 +31,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
+import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
@@ -421,6 +422,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         }),
         time: runtime.time,
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
+        staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),
       });
       assertStartupStillActive();
 

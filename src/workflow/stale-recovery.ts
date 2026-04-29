@@ -1,3 +1,4 @@
+import type { EnvPort } from '../runtime/ports.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import {
@@ -9,8 +10,32 @@ import {
 import { BOOTSTRAP_TIMEOUT_MS, readLaunchFailureMessage } from './launch.js';
 import { formatAtomProgress, type AwaitStepState, type WaitStaleRecoveryHandler } from './wait.js';
 
+/**
+ * Workflow-recovery contract: a stale atom is retried at most twice before the
+ * workflow fails. Design invariant — see §16(d) and §16 cross-reference: changing
+ * this value redefines user-visible recovery semantics, so it stays a constant
+ * (NOT an operator knob).
+ */
 const MAX_STALE_RECOVERY_RETRIES = 2;
-const STALE_ABORT_TIMEOUT_MS = 30_000;
+
+export const DEFAULT_STALE_ABORT_TIMEOUT_MS = 30_000;
+export const CORAL_STALE_ABORT_TIMEOUT_MS_ENV = 'CORAL_STALE_ABORT_TIMEOUT_MS';
+
+/**
+ * Resolve how long workflow stale-recovery waits for an aborted atom to surface
+ * its terminal before declaring recovery failed. Operator knob — see §16(d):
+ * default 30s covers typical provider abort latency; long-running providers
+ * may need more via {@link CORAL_STALE_ABORT_TIMEOUT_MS_ENV}. Clamped to a
+ * minimum of 1s to keep a meaningful wait.
+ */
+export function resolveStaleAbortTimeoutMs(env: Pick<EnvPort, 'get'>): number {
+  const raw = env.get(CORAL_STALE_ABORT_TIMEOUT_MS_ENV);
+  if (raw === undefined || raw.trim() === '') return DEFAULT_STALE_ABORT_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_STALE_ABORT_TIMEOUT_MS;
+  return Math.max(parsed, 1_000);
+}
+
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type RecoverStaleOptions = Parameters<WaitStaleRecoveryHandler>[3];
@@ -55,7 +80,7 @@ export async function recoverStaleAtom(
     executionSvc.abort([atom.jobId]);
 
     try {
-      await executionSvc.waitForJobTerminal(atom.jobId, STALE_ABORT_TIMEOUT_MS);
+      await executionSvc.waitForJobTerminal(atom.jobId, options.staleAbortTimeoutMs);
     } catch (error: unknown) {
       staleFailureMetadata(
         atom,

@@ -11,6 +11,7 @@ import { type WorkflowCommand } from '../../workflow/input.js';
 import type { PipelineAST } from '../../workflow/ast.js';
 import { executePipeline } from '../../workflow/executor.js';
 import { resolveDrainDeadlineMs } from '../../workflow/execution-constants.js';
+import { resolveStaleAbortTimeoutMs } from '../../workflow/stale-recovery.js';
 import {
   WorkflowExecutionError,
   type PipelineResult,
@@ -204,6 +205,7 @@ export class WorkflowExecutionService {
       time: this.deps.runtime.time,
       ids: this.deps.runtime.ids,
       drainDeadlineMs: resolveDrainDeadlineMs(this.deps.runtime.env),
+      staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(this.deps.runtime.env),
     }).then(
       (result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);

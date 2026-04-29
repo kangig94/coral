@@ -344,6 +344,7 @@ describe('workflow pipe executor', () => {
         {
           staleTimeoutMs: 1,
           staleCheckIntervalMs: 1,
+          staleAbortTimeoutMs: 30_000,
           drainDeadlineMs: 15_000,
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
@@ -398,6 +399,7 @@ describe('workflow pipe executor', () => {
         waitForAtoms([launchedAtom()], executionSvc, ctx, {
           staleTimeoutMs: 1,
           staleCheckIntervalMs: 1,
+          staleAbortTimeoutMs: 30_000,
           drainDeadlineMs: 15_000,
           onProgress: vi.fn(),
           recoverStaleAtom,
