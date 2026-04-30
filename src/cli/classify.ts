@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-export type CommandClass = 'read' | 'mutate' | 'subscribe' | 'remote';
+export type CommandClass = 'read' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
   | 'jobs'

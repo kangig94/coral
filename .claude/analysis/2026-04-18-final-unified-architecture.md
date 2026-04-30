@@ -1860,7 +1860,8 @@ Not topology-based (no `--local` flag); **command-class-based**:
 |---|---|---|
 | Read-only, fresh-enough | Library-direct (in-proc `CoralStore`) | `jobs list`, `jobs detail`, `kb search`, `kb read`, historical `discuss read` |
 | Mutating or live-stream | IPC (Unix socket → coordinator RPC) | `codex`, `claude`, `resume`, `fork`, `workflow`, `abort`, `wait`, live `discuss` |
-| Networked / browser | HTTP or WebSocket gateway → same coordinator RPC | `coral-reef`, remote coral, explicit server exposure |
+
+**The CLI has exactly these two command classes.** There is no third "remote" class. The HTTP gateway (§11.3) exposes the same coordinator RPC to **non-CLI consumers** — `coral-reef` and any future browser/external client. The `coral-cli` CLI itself never dispatches over HTTP. Remote-CLI — `coral-cli` on machine A talking to a coordinator on machine B — is **not a supported scenario by principle**, not represented in `CommandClass`, and not planned. Cross-host invocation uses SSH (`ssh user@host coral-cli ...`), the standard Unix answer; Coral declines to introduce a parallel network-routing path inside its own CLI to duplicate what SSH already provides. The architectural seam between local user (CLI) and networked consumer (gateway) lives at the *server* — IPC and HTTP both serve coordinator RPC — not at the client.
 
 ### 11.1 Why command-class routing
 
@@ -1911,6 +1912,8 @@ Time budgets are the current exported constants: `STARTUP_POLL_MS = 200`, `START
 Verified today: `tests/unit/transport/ipc/ensure.test.ts` covers launch-on-absent and poll cadence ([`tests/unit/transport/ipc/ensure.test.ts:170`](../../tests/unit/transport/ipc/ensure.test.ts#L170)), compatible reuse ([`tests/unit/transport/ipc/ensure.test.ts:223`](../../tests/unit/transport/ipc/ensure.test.ts#L223)), incompatible replacement ([`tests/unit/transport/ipc/ensure.test.ts:249`](../../tests/unit/transport/ipc/ensure.test.ts#L249)), stale lock clearing ([`tests/unit/transport/ipc/ensure.test.ts:298`](../../tests/unit/transport/ipc/ensure.test.ts#L298)), socket-race waiting ([`tests/unit/transport/ipc/ensure.test.ts:328`](../../tests/unit/transport/ipc/ensure.test.ts#L328)), verified sick force-replacement ([`tests/unit/transport/ipc/ensure.test.ts:409`](../../tests/unit/transport/ipc/ensure.test.ts#L409)), unsafe unverified sick refusal ([`tests/unit/transport/ipc/ensure.test.ts:566`](../../tests/unit/transport/ipc/ensure.test.ts#L566)), and corrupt lock quarantine ([`tests/unit/transport/ipc/ensure.test.ts:595`](../../tests/unit/transport/ipc/ensure.test.ts#L595)). Future PID-reuse edge-case tests for missing `processStartedAt`, live-probe-null, and mismatch land in `tests/unit/transport/ipc/ensure-pid-fencing.test.ts`.
 
 ### 11.3 HTTP is a gateway
+
+**The HTTP gateway exposes coordinator RPC to non-CLI consumers only.** `coral-reef` and any future browser/external client speak this gateway; `coral-cli` does not. The CLI dispatches solely through library-direct reads (read class) or local IPC (mutate / subscribe classes) per §11. There is no `remote` CommandClass, no `--backend <url>` flag, and no plan to add one — remote CLI dispatch is, by principle, **not implemented and not a goal**. The server-side IPC/HTTP symmetry exists because the coordinator may legitimately serve non-CLI consumers; mirroring that symmetry into the CLI client would re-introduce the transport-topology routing that §11.1 explicitly rejects.
 
 `http://127.0.0.1:<port>` is not the architectural boundary — it is a *carriage* for coordinator RPC. IPC and HTTP share identical command semantics; only wire format differs. Local security is filesystem ownership on the socket; HTTP auth applies to network gateways.
 
@@ -2373,7 +2376,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 
 **Coordinator & transport**:
 23. Local read-only CLI commands do not require a coordinator (SQLite readers use separate DB handles; Corpus reads are direct filesystem), but their roots are explicit adapter inputs, not implicit cwd/home fallbacks inside domain/read-model code.
-24. Local mutating or live CLI commands always go through the coordinator (IPC or HTTP gateway).
+24. Local mutating or live CLI commands always go through the coordinator over **IPC**. The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) and is **not** a CLI dispatch path; remote CLI dispatch is not supported (§11, §11.3). `CommandClass` enumerates exactly three values: `read | mutate | subscribe`.
 25. IPC and HTTP share identical coordinator RPC semantics; only wire format differs.
 26. Operational facts (index rebuilds, WAL checkpoints, snapshot rotations) are NOT domain events or Corpus mutations; they are logs.
 

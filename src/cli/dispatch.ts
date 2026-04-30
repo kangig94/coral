@@ -50,7 +50,6 @@ import { getSharedReadCoralStore } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
-import { UsageError } from './errors.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { classifyCommand, commandPath } from './classify.js';
@@ -350,10 +349,6 @@ function resolveMemoOwner(owner: string | undefined, context: InvocationContext)
   return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
 }
 
-function remoteDispatchUnavailable(commandName: string): never {
-  throw new UsageError(`Command "${commandName}" is not yet supported in this phase.`);
-}
-
 export function makeClient(projectRoot: string, command: Command): CliCommandClient {
   const path = commandPath(command);
   const resolution = classifyCommand(command);
@@ -374,10 +369,6 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const defaultContext = createDefaultInvocationContext(projectRoot);
 
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
-    if (commandClass === 'remote') {
-      remoteDispatchUnavailable(path);
-    }
-
     const client = await ensure(resolvePluginRoot());
     return client.request<TResult>(method, params, { timeoutMs: TOOL_TIMEOUT_MS });
   };
@@ -387,9 +378,6 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     params?: unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>> => {
-    if (commandClass === 'remote') {
-      remoteDispatchUnavailable(path);
-    }
     if (commandClass !== 'subscribe') {
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
     }
