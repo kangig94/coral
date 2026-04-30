@@ -38,7 +38,6 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **Providers** emit canonical event bodies; the coordinator wraps them in envelopes and appends to the Journal in transactions.
 - **Workflow** = durable plan declared once on `workflow/<id>` stream; child jobs reference slots by `slotId`.
 - **Failures (Journal)** = domain events on their originating stream; job terminals carry `causeRef: {stream, seq}` pointers. No wrapped fault union. The only fault ADT is `JobLifecycleFault` (3 variants).
-- **Cross-authority references** = `KbRef = { entryId, contentHash? }`. `contentHash` optional for point-in-time semantics.
 - **Schema evolution** = per-`type` `bodyVersion` + upcaster chain for Journal events; ordered SQL schema scripts for projection schema; markdown format evolution via frontmatter parser flexibility.
 - **Engine layer + Expansion (Zelda UX metaphor)** = engines live under `src/engines/<id>/` with rebuildable data under `~/.coral/data/engines/<id>/`; each engine ships one Expansion lifecycle body. Bundled engines auto-equip as a fallback pass at coordinator boot, while installed engines are user-equipped through `/equip <name>` / `coral-cli expansion equip <name>`.
 - Everything else (`status.json`, `result.md` as authority, `WorkflowCheckpoint`, `LaunchState` files, segment rotation, checkpoint files, advisory `writer.lock`, multi-variant `CoralFault` union, unified "everything is an event" thesis) either becomes a projection/export or disappears outright.
@@ -114,25 +113,9 @@ Single-writer discipline eliminates distributed-consensus machinery. The coordin
 
 The daemon's existence is justified by **live-state ownership**, not by gatekeeping — writes happen to follow. Library-direct readers access either authority without involving the coordinator for read-only operations.
 
-### 2.4 Cross-authority references
+### 2.4 Cross-authority references — none
 
-Journal events referencing KB entries use `KbRef = { entryId, contentHash? }`:
-- `entryId` alone → **late-bound** (resolves to current Corpus content).
-- `entryId + contentHash` → **point-in-time** (preserves historical meaning even if the Corpus entry is later edited).
-
-Current `contentHash` policy:
-- The enforced surface is the shape itself: `refs.kbRefs[]` accepts `KbRef = { entryId, contentHash? }` ([`src/store/envelope.ts:20`](../../src/store/envelope.ts#L20)). Producers that intentionally emit late-bound references type their surface as `Pick<KbRef, 'entryId'>` so the choice is visible in code ([`src/store/envelope.ts:17`](../../src/store/envelope.ts#L17)-[`src/store/envelope.ts:18`](../../src/store/envelope.ts#L18), [`src/coordinator/services/kb/recorder.ts:188`](../../src/coordinator/services/kb/recorder.ts#L188)).
-- Current hosted-KB failure refs are late-bound metadata. They record the Corpus entry identity involved in the operation and do not claim point-in-time evidence semantics ([`src/coordinator/composition/index.ts:169`](../../src/coordinator/composition/index.ts#L169)-[`src/coordinator/composition/index.ts:183`](../../src/coordinator/composition/index.ts#L183)).
-- Transient query results and list views do not use `KbRef`; they are current read-model materializations. Search/list responses carry rendered result rows rather than durable point-in-time references.
-
-Target `contentHash` policy (not yet enforced):
-- `contentHash` is REQUIRED when a future Journal fact captures point-in-time semantic context: cause-ref payloads whose describer renders KB evidence through the causal chain, terminal records or terminal-causing domain progress that preserve why a job ended, and cited evidence stored as KB entry references rather than ephemeral search output.
-- Missing-entry rendering surfaces structured `kb_ref_missing { entryId, capturedAt? }` and never renders a silent empty.
-- Hash-drift rendering surfaces `kb_ref_drifted { entryId, capturedHash, currentHash }` and falls back to current content with the diagnostic attached.
-- Future enforcement: `tests/invariants/kb-ref-policy.test.ts` enumerates `KbRef` constructors and asserts capture-time vs. read-time policy alignment; Phase 2 read-port describer tests pin missing/drift diagnostics.
-- Hash format: `contentHash` is the SHA-256 hex digest of the canonical content surface bytes, matching `computeContentSurfaceHash(buildRetrievalAuthorityText(title, body))` ([`src/kb/corpus/snapshot.ts:77`](../../src/kb/corpus/snapshot.ts#L77), [`src/kb/corpus/snapshot.ts:83`](../../src/kb/corpus/snapshot.ts#L83)); Orama document construction already uses that function when materializing retrieval documents ([`src/engines/orama/document-builder.ts:81`](../../src/engines/orama/document-builder.ts#L81), [`src/engines/orama/backend.ts:389`](../../src/engines/orama/backend.ts#L389)).
-
-This is the sole asymmetry the two-authority model admits, and it is honest: Journal events are immutable, Corpus entries are mutable. The reference shape acknowledges the gap rather than pretending it does not exist.
+Journal events do not reference KB entries through a typed cross-authority pointer. The two authorities are independent: process-like state (Journal) does not embed knowledge-like state (Corpus), and the recovery paths of each authority do not consume the other's events as input. KB has its own retry/rebuild surface (`kb_curate_retry_queue`, Corpus rescan, authority baseline rebuild — §6.4, §12.2); job lifecycle records the *fact* of a hosted KB attempt and its failure on the hosting `job/<id>` stream, but the slug/identity of the targeted KB entry is the caller's input and is not durably re-persisted into the Journal envelope. If a future surface (e.g., a "cited evidence" UI, a forensic listener) needs cross-authority references, that surface introduces the shape together with its consumer; this document does not pre-declare a placeholder.
 
 ### 2.5 Invariants
 
@@ -713,10 +696,6 @@ const journalEventEnvelope = z.object({
     workflowId: z.string().optional(),
     workflowSlotId: z.string().optional(),
     discussSessionId: z.string().optional(),
-    kbRefs: z.array(z.object({              // cross-authority references to Corpus entries
-      entryId: z.string(),
-      contentHash: z.string().optional(),   // optional: point-in-time capture
-    })).optional(),
   }).strict().optional(),
   bodyVersion: z.number().int().positive(),  // per-type schema version (starts at 1)
   body: z.unknown(),                         // domain payload
@@ -733,7 +712,7 @@ const journalEventEnvelope = z.object({
 
 **`stream.kind` vs `namespace`**: two different concepts. `stream.kind` is *what this event mutates*; `namespace` is *who emitted it*. Conflating them would break sessions that cross namespaces and force per-namespace logs that fragment natural cross-domain references (a discuss event referring to a job across namespaces becomes a distributed join).
 
-**`refs`**: typed dereferences. `refs.workflowSlotId` on a child job launch points into the parent workflow's plan (§6.5); `refs.parentJobId` points to the workflow job. `refs.kbRefs[]` is the cross-authority reference shape (§2.4) — each `KbRef = { entryId, contentHash? }` points at a Corpus entry with optional point-in-time hash. Typed shape avoids string-id-in-body anti-patterns.
+**`refs`**: typed dereferences. `refs.workflowSlotId` on a child job launch points into the parent workflow's plan (§6.5); `refs.parentJobId` points to the workflow job. All `refs.*` fields point at *Journal* streams; cross-authority references to Corpus entries are deliberately absent (§2.4). Typed shape avoids string-id-in-body anti-patterns.
 
 **`correlationId` + `causationSeq`**: the causality graph. `correlationId` groups related events (same user command); `causationSeq` is a **general-purpose backward pointer** — for fault propagation it points to the originating event (§7); for request/response flows it points to the request event; etc. `causeRef` in terminal outcomes is a typed alias of `causationSeq` + stream context.
 
@@ -814,7 +793,7 @@ Every Journal event must tell projections which dispatch table applies. Collapsi
 
 KB entries are **knowledge artifacts**, not process events. They accumulate, get edited (often externally via Obsidian), and reference each other through entity graphs. The filesystem is the natural substrate: atomic rename, git-backed sync, direct human editability. Forcing a `kb/<id>` Journal stream would require bi-directional sync between filesystem and events, with race resolution for Obsidian edits — complexity with no compensating elegance.
 
-KB's authority is the Corpus (§6.4). Journal events referencing KB entries use `KbRef` (§2.4).
+KB's authority is the Corpus (§6.4). Journal events do not carry typed references to Corpus entries (§2.4).
 
 ---
 
@@ -2217,7 +2196,7 @@ This section documents the **design delta** between today's codebase and the end
 | `WorkflowCheckpoint` file | `workflow.plan.declared` event on `workflow/<id>` stream |
 | `--local` flag | Semantic command-class routing |
 | `WorkflowRef { stepIndex, atomIndex, label }` on launches | `refs.workflowSlotId` → plan lookup for slot; labels/step/atom derived from `slotId` + `slot.agent` at render time |
-| Hosted KB operation metadata | `refs.kbRefs[] = { entryId, contentHash? }` — current hosted-KB failure refs use late-bound `{ entryId }`; future point-in-time evidence refs add `contentHash` under the policy in §2.4. |
+| Hosted KB operation metadata | Recorded on `job/<id>` as `job.progress.emitted` with `body.detail.operation`; the targeted KB slug is the caller's input and is not durably re-persisted into the Journal envelope (§2.4). |
 
 ### 14.2 Bugs eliminated as a side effect
 
@@ -2371,7 +2350,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 19a. KB direct read/query paths cannot persist derived artifacts. The read-side DB surface is `KbReadPort` / `ReadonlyDatabase`, opened with `readonly: true`, and the `src/kb/read-port.ts` import graph must not reach `ensureCorpusFreshness`, Orama `persist`, `removeSnapshot`, or the auto-rebuild `loadIfPresent` path ([`src/kb/read-port.ts:22`](../../src/kb/read-port.ts#L22)-[`src/kb/read-port.ts:40`](../../src/kb/read-port.ts#L40), [`src/kb/read-port.ts:51`](../../src/kb/read-port.ts#L51)-[`src/kb/read-port.ts:65`](../../src/kb/read-port.ts#L65), [`src/kb/query-runtime.ts:107`](../../src/kb/query-runtime.ts#L107)-[`src/kb/query-runtime.ts:130`](../../src/kb/query-runtime.ts#L130)). The invariant test is `tests/invariants/kb-read-port-shape.test.ts`.
 20. External Corpus edits (Obsidian, git pull, direct filesystem) are first-class; scans/rebuilds absorb them without backfilling synthetic events.
 21. Corpus recovery = rescan + index rebuild (no history to replay).
-22. Cross-authority references use `KbRef = { entryId, contentHash? }` ([`src/store/envelope.ts:20`](../../src/store/envelope.ts#L20)). Current producers either emit late-bound `Pick<KbRef, 'entryId'>` references for hosted-KB operation metadata or avoid `KbRef` entirely for transient query/list responses. Future point-in-time evidence refs must include `contentHash`; `tests/invariants/kb-ref-policy.test.ts` will enumerate constructors and assert capture-time vs. read-time policy alignment. Missing/drift render diagnostics (`kb_ref_missing`, `kb_ref_drifted`) are Phase 2 read-port describer behavior, not current renderer behavior. Hash format is SHA-256 of canonical content surface bytes, matching `computeContentSurfaceHash` ([`src/kb/corpus/snapshot.ts:83`](../../src/kb/corpus/snapshot.ts#L83)).
+22. Cross-authority references are deliberately absent. `journalEventRefsSchema` carries Journal-stream pointers only (`jobId`, `sessionId`, `parentJobId`, `workflowId`, `workflowSlotId`, `discussSessionId`); there is no typed pointer from a Journal event to a Corpus entry (§2.4). If a future surface needs cross-authority references, that surface introduces the shape together with its consumer.
 22a. `kb source import` is a job-owned ingest attempt. Its job terminal records execution/readiness success or failure; the imported source is authoritative only when the Corpus markdown file exists.
 
 **Coordinator & transport**:
@@ -2468,7 +2447,6 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **`consumer_cursors`**: SQLite table that persists each consumer's cursor (per authority). Source of truth for "where is each projection consumer caught up to".
 - **JournalConsumer**: projection consumer subscribing to Journal authority. Two shapes: `JournalCursorConsumer` (cursor-only, used by all four base journal projections — production runs no `apply()` because the commit-time reducer already wrote the projection rows in the same `BEGIN IMMEDIATE`; `ConsumerDriver` advances the cursor directly on notify) and `JournalApplyConsumer` (range-based — `apply({ upToSeq, signal })` reads events from `seq > cursor AND seq <= upToSeq` and applies them in order; used by expansion-tier consumers that derive their own state from journal events).
 - **CorpusConsumer**: projection consumer subscribing to Corpus authority. Snapshot-based: `apply({ contentSeq, metadataSeq, signal })` captures a corpus snapshot, diffs content hashes against its last manifest, applies only changes. **Reuses the manifest-diff + atomic-snapshot-swap logic from today's `ensureVectorIndex`, but inverts the invocation model** — today pull-driven (called lazily before search), tomorrow push-driven (driven by ConsumerDriver after Corpus writes). The diff half is a port; the trigger half is a rewrite.
-- **KbRef**: `{ entryId, contentHash? }`. Cross-authority reference shape for Journal events pointing at Corpus entries. `entryId` alone = late-bound (resolves to current content); with `contentHash` = point-in-time (preserves historical meaning across subsequent Corpus edits).
 - **Corpus mutation lock**: single-writer lock around the Corpus authority. Coordinator-mediated CLI writes acquire it for markdown atomic writes, Corpus version bumps, and lightweight Corpus metadata/index state. Retrieval projections such as Orama and needle run as CorpusConsumers after the lock releases.
 - **contentSeq / metadataSeq**: monotonic version counters for the Corpus authority. Two lanes because content and metadata changes have different freshness semantics. Analogous to `events.seq` on the Journal side, but versioning the whole corpus rather than counting discrete events.
 
@@ -2481,7 +2459,7 @@ Six pioneers + All-6 unifier + B-v2 reëxamination + Pioneer-final + KB-pioneer 
 - **Journal authority** (SQLite `events` table) is truth for process-like domains: `job`, `session`, `discuss`, `workflow`. ACID transactions + range replay.
 - **Corpus authority** (markdown filesystem at `~/.coral/kb/`, git-tracked) is truth for knowledge content: `kb`. Atomic rename + content-hash diff.
 - **CoralCoordinator** is the single writer across both authorities — not for gatekeeping but because live-state ownership (admission, host pool, subscriptions) naturally pools there.
-- **Cross-authority references** use `KbRef = { entryId, contentHash? }` — the only admitted asymmetry, honest about Corpus mutability.
+- **Two independent authorities, no cross-pointers** — Journal events do not embed typed references to Corpus entries (§2.4). KB recovery (rescan, retry queue, baseline rebuild) consumes its own substrate; job lifecycle records hosted-KB attempts on the hosting `job/<id>` stream without re-persisting the targeted slug into the envelope.
 - **Canonical event bodies** are the provider contract for Journal writes.
 - **WorkflowPlan on `workflow/<id>`** is the durable composition aggregate. Child launches reference slots by `slotId`; labels and step/atom indices are derived from the slot for launch/render identity. Completion `stepDetails` stores execution summaries for completed atoms.
 - **Causal graph** (CauseRef pointers) is the fault model within Journal. Failures live once on the originating stream; terminals dereference, never wrap.

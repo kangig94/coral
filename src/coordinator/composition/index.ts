@@ -50,8 +50,6 @@ import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
-import { noteEntryId, sourceEntryId } from '../../kb/entry-types.js';
-import type { KbRef } from '../../store/envelope.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
@@ -166,25 +164,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     }
     return run(status.subsystem);
   };
-  const kbRefsForOperation = (
-    operation: string,
-    args: Record<string, unknown>,
-  ): Array<Pick<KbRef, 'entryId'>> | undefined => {
-    const slug = typeof args.note === 'string' ? args.note : typeof args.slug === 'string' ? args.slug : undefined;
-    if (slug !== undefined && (operation === 'update' || operation === 'delete')) {
-      return [{ entryId: noteEntryId(slug) }];
-    }
-    if (slug !== undefined && (operation === 'source_import' || operation === 'source_delete')) {
-      return [{ entryId: sourceEntryId(slug) }];
-    }
-    if (operation === 'promote' && typeof args.domain === 'string' && typeof args.topic === 'string') {
-      return [{ entryId: noteEntryId(`${args.domain}-${args.topic}`) }];
-    }
-    return undefined;
-  };
   const recordHostedKbFailure = (
     operation: string,
-    args: Record<string, unknown>,
     ctx: InvocationContext | undefined,
     result: KbToolResult,
   ): void => {
@@ -208,7 +189,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       return;
     }
 
-    const kbRefs = kbRefsForOperation(operation, args);
     const detail = normalizeHostedKbFailureDetail(result.detail);
     kbJobRecorder.appendHostedKbOperationFailure({
       jobId,
@@ -219,7 +199,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       code: result.code,
       message: result.message,
       detail,
-      ...(kbRefs === undefined ? {} : { kbRefs }),
     });
   };
 
@@ -306,18 +285,18 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
       createNote: async (args, ctx) => {
         const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx));
-        recordHostedKbFailure('promote', args, ctx, result);
+        recordHostedKbFailure('promote', ctx, result);
         return result;
       },
       updateNote: async (args, ctx) => {
         const result = await withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem));
-        recordHostedKbFailure('update', args, ctx, result);
+        recordHostedKbFailure('update', ctx, result);
         return result;
       },
       deleteNote: async (slug, ctx) => {
         const args = { note: slug };
         const result = await withKbAsync((kbSubsystem) => handleKbDelete(args, kbSubsystem));
-        recordHostedKbFailure('delete', args, ctx, result);
+        recordHostedKbFailure('delete', ctx, result);
         return result;
       },
       createSource: async (args, ctx) => {
@@ -332,23 +311,23 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const result = await withKbAsync((kbSubsystem) =>
           Promise.resolve(kbSourceImportService.start(parsed.data, ctx, kbSubsystem)),
         );
-        recordHostedKbFailure('source_import', args, ctx, result);
+        recordHostedKbFailure('source_import', ctx, result);
         return result;
       },
       deleteSource: async (slug, ctx) => {
         const args = { slug };
         const result = await withKbAsync((kbSubsystem) => handleKbSourceDelete(args, kbSubsystem));
-        recordHostedKbFailure('source_delete', args, ctx, result);
+        recordHostedKbFailure('source_delete', ctx, result);
         return result;
       },
       createMemo: (args, ctx) => {
         const result = withKb(() => handleKbMemo(args, ctx, runtime));
-        recordHostedKbFailure('memo_create', args, ctx, result);
+        recordHostedKbFailure('memo_create', ctx, result);
         return result;
       },
       deleteMemos: (args, ctx) => {
         const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx, runtime));
-        recordHostedKbFailure('memo_delete', args, ctx, result);
+        recordHostedKbFailure('memo_delete', ctx, result);
         return result;
       },
       reindex: async (args, ctx) => {
@@ -357,7 +336,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const result = await withKbAsync((kbSubsystem) =>
           Promise.resolve(kbReindexService.run(request, invocationContext, kbSubsystem)),
         );
-        recordHostedKbFailure('reindex', request, ctx, result);
+        recordHostedKbFailure('reindex', ctx, result);
         return result;
       },
     },

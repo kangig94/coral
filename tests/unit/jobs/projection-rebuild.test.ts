@@ -90,7 +90,7 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
           {
             type: 'job.progress.emitted',
             stream: { kind: 'job', id: 'job-1' },
-            refs: { sessionId: 'session-1', kbRefs: [{ entryId: 'note:eng-routing' }] },
+            refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: {
               kind: 'domain',

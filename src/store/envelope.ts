@@ -8,24 +8,6 @@ export { UpcasterRegistry, createDefaultUpcasterRegistry } from './upcaster-regi
 
 declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 
-/**
- * Cross-authority reference shape.
- * - `entryId` alone: late-bound — resolves to current Corpus content.
- * - `entryId + contentHash`: point-in-time — preserves historical meaning
- *   even if the Corpus entry is later edited.
- *
- * Producers that intentionally only emit late-bound refs should type their
- * surface as `Pick<KbRef, 'entryId'>` so the choice is visible in the code.
- */
-export const kbRefSchema = z
-  .object({
-    entryId: z.string(),
-    contentHash: z.string().optional(),
-  })
-  .strict();
-
-export type KbRef = z.infer<typeof kbRefSchema>;
-
 const journalEventRefsSchema = z
   .object({
     jobId: z.string().optional(),
@@ -34,7 +16,6 @@ const journalEventRefsSchema = z
     workflowId: z.string().optional(),
     workflowSlotId: z.string().optional(),
     discussSessionId: z.string().optional(),
-    kbRefs: z.array(kbRefSchema).optional(),
   })
   .strict();
 

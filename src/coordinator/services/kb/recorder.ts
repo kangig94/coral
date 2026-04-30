@@ -6,7 +6,6 @@ import type { AbortReason, TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../../jobs/terminal/recording.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { KbRef } from '../../../store/envelope.js';
 
 export type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, never>;
 
@@ -185,7 +184,6 @@ export class KbJobRecorder {
     code: string;
     message: string;
     detail: unknown;
-    kbRefs?: Array<Pick<KbRef, 'entryId'>>;
   }): void {
     this.deps.progressStore.commit((c) => {
       c.append({
@@ -196,7 +194,6 @@ export class KbJobRecorder {
         refs: {
           jobId: params.jobId,
           sessionId: params.sessionId,
-          ...(params.kbRefs === undefined ? {} : { kbRefs: params.kbRefs }),
         },
         bodyVersion: 1,
         body: {

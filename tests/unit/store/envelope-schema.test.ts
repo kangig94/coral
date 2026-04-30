@@ -23,12 +23,6 @@ describe('journalEventEnvelopeSchema', () => {
         workflowId: 'wf-123',
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
-        kbRefs: [
-          {
-            entryId: 'kb-1',
-            contentHash: 'abc123',
-          },
-        ],
       },
       bodyVersion: 2,
       body: {
@@ -55,12 +49,6 @@ describe('journalEventEnvelopeSchema', () => {
         workflowId: 'wf-123',
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
-        kbRefs: [
-          {
-            entryId: 'kb-1',
-            contentHash: 'abc123',
-          },
-        ],
       },
       bodyVersion: 2,
       body: {
