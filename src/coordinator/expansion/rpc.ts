@@ -1,294 +1,69 @@
-import { z } from 'zod';
-
+/**
+ * Coordinator-side wiring for the expansion RPC port.
+ *
+ * Schemas, types, and the `ExpansionRequestPort` interface live in the
+ * domain contract at `src/expansion/rpc-contract.ts` so transport and CLI
+ * can import them without crossing into `coordinator/`. This file holds
+ * only the bindings that wrap `ExpansionLifecycleService`.
+ */
 import { documentedCoralSetupError } from '../../runtime/errors.js';
+import {
+  type EquipExpansionRequest,
+  type EquipExpansionResult,
+  type ExpansionRequestPort,
+  type ExpansionView,
+  type ListExpansionRequest,
+  type ListExpansionResult,
+  type ReadBindingRequest,
+  type ReadBindingResult,
+  type UnequipExpansionRequest,
+  type UnequipExpansionResult,
+} from '../../expansion/rpc-contract.js';
 import type { ExpansionLifecycleService } from './lifecycle.js';
 
-const expansionCatalogStatusLiterals = [
-  'inactive',
-  'installed-not-active',
-  'unavailable',
-  'disabled_pending_reinstall',
-  'installing',
-  'equipped',
-  'catching_up',
-  'not_equipped',
-] as const;
-
-const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
-const postInstallActionLiterals = ['register_expansion'] as const;
-
-const catalogEntryCommonShape = {
-  id: z.string(),
-  name: z.string().min(1),
-  description: z.string().min(1),
-  statusDescription: z.string().min(1).optional(),
-  version: z.string().min(1).optional(),
-  method: z.string().min(1).optional(),
-} as const;
-
-const requiredEnvRuleSchema = z
-  .object({
-    provider: z.string().min(1),
-    env: z.array(z.string().min(1)).min(1),
-  })
-  .strict();
-
-const localRuntimeSchema = z
-  .object({
-    targetDir: z.string().min(1),
-    bootstrapPackageJson: z.boolean(),
-    packageManager: z.string().min(1),
-    packageName: z.string().min(1),
-  })
-  .strict();
-
-const onboardingChoiceSchema = z
-  .object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    provider: z.string().min(1).nullable(),
-    model: z.string().min(1).nullable(),
-    dims: z.number().int().positive().nullable(),
-  })
-  .strict();
-export type OnboardingChoice = z.infer<typeof onboardingChoiceSchema>;
-
-const postInstallSchema = z.array(z.enum(postInstallActionLiterals)).min(1);
-
-export const onboardingSchema = z
-  .object({
-    envPath: z.string().min(1),
-    requiredEnv: z.array(requiredEnvRuleSchema).min(1),
-    providerEnvKey: z.string().min(1),
-    modelEnvKey: z.string().min(1),
-    apiKeyEnvKey: z.string().min(1),
-    securityNotice: z.string().min(1),
-    localRuntime: localRuntimeSchema,
-    choices: z.array(onboardingChoiceSchema).min(1),
-  })
-  .strict();
-export type Onboarding = z.infer<typeof onboardingSchema>;
-
-const expansionEntrySchema = z
-  .object({
-    ...catalogEntryCommonShape,
-    tier: z.enum(['bundled', 'installed']),
-    activation: z.literal('equip'),
-    status: z.enum(expansionCatalogStatusLiterals),
-    addonPath: z.string().min(1).optional(),
-    lastError: z.string().min(1).optional(),
-    onboarding: onboardingSchema.optional(),
-  })
-  .strict();
-
-const installOnlyEntrySchema = z
-  .object({
-    ...catalogEntryCommonShape,
-    activation: z.literal('none'),
-    status: z.enum(installOnlyCatalogStatusLiterals),
-  })
-  .strict();
-
-export const catalogEntryStatusSchema = z.union([
-  z.literal('inactive'),
-  z.literal('installed-not-active'),
-  z.literal('unavailable'),
-  z.literal('disabled_pending_reinstall'),
-  z.literal('installing'),
-  z.literal('equipped'),
-  z.literal('catching_up'),
-  z.literal('not_equipped'),
-  z.literal('not_installed'),
-  z.literal('installed'),
-]);
-export type CatalogEntryStatus = z.infer<typeof catalogEntryStatusSchema>;
-
-export const catalogEntrySchema = z.discriminatedUnion('activation', [expansionEntrySchema, installOnlyEntrySchema]);
-export type CatalogEntry = z.infer<typeof catalogEntrySchema>;
-
-export const catalogResultSchema = z
-  .object({
-    status: z.literal('catalog'),
-    packages: z.array(catalogEntrySchema),
-  })
-  .strict();
-
-export const infoResultSchema = z
-  .object({
-    status: z.literal('info'),
-    package: catalogEntrySchema,
-  })
-  .strict();
-
-export const expansionStatusSchema = z.enum([
-  'equipped',
-  'catching_up',
-  'inactive',
-  'installed-not-active',
-  'unavailable',
-  'disabled_pending_reinstall',
-  'installing',
-  'not_equipped',
-]);
-
-export const expansionViewSchema = z
-  .object({
-    name: z.string().min(1),
-    tier: z.enum(['bundled', 'installed']),
-    status: expansionStatusSchema,
-    lastError: z.string().min(1).optional(),
-  })
-  .strict();
-export type ExpansionView = z.infer<typeof expansionViewSchema>;
-
-const installExpansionViewSchema = z
-  .object({
-    slot: z.string().min(1).optional(),
-    name: z.string().min(1),
-    tier: z.enum(['bundled', 'installed']),
-    status: expansionStatusSchema,
-  })
-  .strict();
-
-export const equipExpansionRequestSchema = z
-  .object({
-    name: z.string().min(1),
-  })
-  .strict();
-export type EquipExpansionRequest = z.infer<typeof equipExpansionRequestSchema>;
-
-const equipExpansionStatusSchema = z.enum(['equipped', 'catching_up', 'already_equipped']);
-
-export const equipExpansionResultSchema = z
-  .object({
-    status: equipExpansionStatusSchema,
-    expansion: expansionViewSchema,
-  })
-  .strict();
-export type EquipExpansionResult = z.infer<typeof equipExpansionResultSchema>;
-
-export const unequipExpansionRequestSchema = z
-  .object({
-    name: z.string().min(1),
-  })
-  .strict();
-export type UnequipExpansionRequest = z.infer<typeof unequipExpansionRequestSchema>;
-
-export const unequipExpansionResultSchema = z.union([
-  z.object({ status: z.literal('uninstalled') }).strict(),
-  z.object({ status: z.literal('not_equipped') }).strict(),
-]);
-export type UnequipExpansionResult = z.infer<typeof unequipExpansionResultSchema>;
-
-export const listExpansionRequestSchema = z.object({}).strict();
-export type ListExpansionRequest = z.infer<typeof listExpansionRequestSchema>;
-
-export const listExpansionResultSchema = z
-  .object({
-    expansions: z.array(expansionViewSchema),
-  })
-  .strict();
-export type ListExpansionResult = z.infer<typeof listExpansionResultSchema>;
-
-export const readBindingRequestSchema = z
-  .object({
-    binding: z.string().min(1),
-  })
-  .strict();
-export type ReadBindingRequest = z.infer<typeof readBindingRequestSchema>;
-
-export const readBindingResultSchema = z
-  .object({
-    bound: z.boolean(),
-    heldBy: z.string().min(1).optional(),
-  })
-  .strict();
-export type ReadBindingResult = z.infer<typeof readBindingResultSchema>;
-
-export interface ExpansionRequestPort {
-  equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
-  unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
-  listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
-  readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
-}
-
-const installedResultSchema = z
-  .object({
-    status: z.literal('installed'),
-    method: z.string().min(1),
-    version: z.string().min(1).optional(),
-    targetDir: z.string().min(1).optional(),
-    postInstall: postInstallSchema.optional(),
-    onboarding: onboardingSchema.optional(),
-  })
-  .strict();
-
-const updatedResultSchema = z
-  .object({
-    status: z.literal('updated'),
-    method: z.string().min(1),
-    version: z.string().min(1).optional(),
-    targetDir: z.string().min(1).optional(),
-    postInstall: postInstallSchema.optional(),
-    onboarding: onboardingSchema.optional(),
-  })
-  .strict();
-
-const alreadyInstalledResultSchema = z
-  .object({
-    status: z.literal('already_installed'),
-    method: z.string().min(1),
-    version: z.string().min(1).optional(),
-    targetDir: z.string().min(1).optional(),
-    postInstall: postInstallSchema.optional(),
-    onboarding: onboardingSchema.optional(),
-  })
-  .strict();
-
-const alreadyUpToDateResultSchema = z
-  .object({
-    status: z.literal('already_up_to_date'),
-    method: z.string().min(1),
-    version: z.string().min(1).optional(),
-    targetDir: z.string().min(1).optional(),
-    postInstall: postInstallSchema.optional(),
-    onboarding: onboardingSchema.optional(),
-  })
-  .strict();
-
-const mutationResultSchema = z.discriminatedUnion('status', [
-  installedResultSchema,
-  updatedResultSchema,
-  alreadyInstalledResultSchema,
-  alreadyUpToDateResultSchema,
-  z.object({ status: z.literal('uninstalled') }).strict(),
-  z.object({ status: z.literal('not_equipped') }).strict(),
-]);
-
-export const installResultSchema = z.discriminatedUnion('status', [
+// Re-export the public contract surface so existing callers that imported
+// from `coordinator/expansion/rpc.js` keep working without churn — new
+// callers (transport, CLI) should depend on `expansion/rpc-contract.js`
+// directly to avoid the coordinator → transport SCC.
+export {
+  catalogEntrySchema,
+  catalogEntryStatusSchema,
   catalogResultSchema,
+  equipExpansionRequestSchema,
+  equipExpansionResultSchema,
+  expansionStatusSchema,
+  expansionViewSchema,
   infoResultSchema,
-  ...mutationResultSchema.options,
-  z.object({ status: z.literal('equipped'), expansion: installExpansionViewSchema }).strict(),
-  z.object({ status: z.literal('catching_up'), expansion: installExpansionViewSchema }).strict(),
-  z.object({ status: z.literal('already_equipped'), expansion: installExpansionViewSchema }).strict(),
-]);
-export type InstallResult = z.infer<typeof installResultSchema>;
-
-export const installErrorSchema = z
-  .object({
-    status: z.literal('error'),
-    code: z.string().min(1),
-    userMessage: z.string().min(1),
-    remediation: z.string().min(1),
-    context: z.record(z.string(), z.unknown()).optional(),
-    suggestions: z.array(z.string().min(1)).optional(),
-  })
-  .strict();
-export type InstallError = z.infer<typeof installErrorSchema>;
-
-export const installResponseSchema = z.union([installResultSchema, installErrorSchema]);
-export type InstallResponse = z.infer<typeof installResponseSchema>;
+  installErrorSchema,
+  installResponseSchema,
+  installResultSchema,
+  listExpansionRequestSchema,
+  listExpansionResultSchema,
+  onboardingSchema,
+  readBindingRequestSchema,
+  readBindingResultSchema,
+  unequipExpansionRequestSchema,
+  unequipExpansionResultSchema,
+} from '../../expansion/rpc-contract.js';
+export type {
+  CatalogEntry,
+  CatalogEntryStatus,
+  EquipExpansionRequest,
+  EquipExpansionResult,
+  ExpansionRequestPort,
+  ExpansionView,
+  InstallError,
+  InstallResponse,
+  InstallResult,
+  ListExpansionRequest,
+  ListExpansionResult,
+  Onboarding,
+  OnboardingChoice,
+  ReadBindingRequest,
+  ReadBindingResult,
+  UnequipExpansionRequest,
+  UnequipExpansionResult,
+} from '../../expansion/rpc-contract.js';
 
 function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): ExpansionView {
   return {
@@ -301,7 +76,7 @@ function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): E
 
 export function createExpansionRpc(lifecycleService: ExpansionLifecycleService): ExpansionRequestPort {
   return {
-    equipExpansion: async (request) => {
+    equipExpansion: async (request: EquipExpansionRequest): Promise<EquipExpansionResult> => {
       if (lifecycleService.isActive(request.name)) {
         return {
           status: 'already_equipped',
@@ -315,7 +90,7 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
         expansion: toExpansionView(lifecycleService.info(request.name)),
       };
     },
-    unequipExpansion: async (request) => {
+    unequipExpansion: async (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => {
       if (!lifecycleService.has(request.name)) {
         return { status: 'not_equipped' };
       }
@@ -323,20 +98,23 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
       await lifecycleService.unequip(request.name);
       return { status: 'uninstalled' };
     },
-    listExpansion: async (_request) => ({
+    listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({
       expansions: lifecycleService.list().map(toExpansionView),
     }),
-    readBinding: async (request) => lifecycleService.readBinding(request.binding),
+    readBinding: async (request: ReadBindingRequest): Promise<ReadBindingResult> =>
+      lifecycleService.readBinding(request.binding),
   };
 }
 
 export function createUnavailableExpansionRpc(): ExpansionRequestPort {
   return {
-    equipExpansion: async (request) => {
+    equipExpansion: async (request: EquipExpansionRequest): Promise<EquipExpansionResult> => {
       throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
     },
-    unequipExpansion: async (_request) => ({ status: 'not_equipped' }),
-    listExpansion: async (_request) => ({ expansions: [] }),
-    readBinding: async (_request) => ({ bound: false }),
+    unequipExpansion: async (_request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => ({
+      status: 'not_equipped',
+    }),
+    listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({ expansions: [] }),
+    readBinding: async (_request: ReadBindingRequest): Promise<ReadBindingResult> => ({ bound: false }),
   };
 }

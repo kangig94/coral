@@ -1,5 +1,5 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
-import type { ExpansionRequestPort } from '../../coordinator/expansion/rpc.js';
+import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';

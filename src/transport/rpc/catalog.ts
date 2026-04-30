@@ -4,7 +4,7 @@ import {
   listExpansionRequestSchema,
   readBindingRequestSchema,
   unequipExpansionRequestSchema,
-} from '../../coordinator/expansion/rpc.js';
+} from '../../expansion/rpc-contract.js';
 import {
   discussSeedSchema,
   discussSessionBidRequestSchema,

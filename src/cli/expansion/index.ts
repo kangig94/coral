@@ -23,7 +23,7 @@ import {
   type InstallResponse,
   type InstallResult,
   type ReadBindingResult,
-} from '../../coordinator/expansion/rpc.js';
+} from '../../expansion/rpc-contract.js';
 import { encodeInstallError } from './contract.js';
 import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './install.js';
 import { runExpansionOnboarding, type OnboardingContext } from './onboarding.js';

@@ -17,7 +17,7 @@ import {
   type InstallResult,
   type Onboarding,
   type OnboardingChoice,
-} from '../../coordinator/expansion/rpc.js';
+} from '../../expansion/rpc-contract.js';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';

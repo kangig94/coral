@@ -26,7 +26,7 @@ const DOMAIN_ROOTS = [
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
-  'src/coordinator/expansion/rpc.ts',
+  'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/launch.ts',
   'src/jobs/phase.ts',
