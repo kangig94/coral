@@ -4,7 +4,7 @@ import { makeEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js
 import { continueLoop } from '#src/discuss/shell/loop.js';
 import { getWatchState } from '#src/discuss/shell/operations.js';
 import { getSession } from '#src/discuss/shell/registry.js';
-import { handleEpochTransition } from '#src/discuss/shell/followup-flow.js';
+import { handleEpochTransition } from '#src/discuss/shell/flow/followup.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,

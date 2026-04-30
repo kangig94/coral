@@ -29,6 +29,7 @@ vi.mock('node:os', async () => {
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const READ_PORT_ENTRY = 'src/kb/read-port.ts';
+const STORE_READ_PORT_ENTRY = 'src/store/read-port.ts';
 const FORBIDDEN_READ_PORT_IMPORT_GRAPH_SYMBOLS = new Set([
   'ensureCorpusFreshness',
   'persist',
@@ -256,27 +257,30 @@ describe('KB read port shape', () => {
   });
 
   it('exposes KbReadPort as a read-only DB shape, not writable better-sqlite3 Database', () => {
-    const readPortText = sourceText(READ_PORT_ENTRY);
-    const readPortSource = sourceFile(READ_PORT_ENTRY, readPortText);
+    const kbReadPortText = sourceText(READ_PORT_ENTRY);
+    const kbReadPortSource = sourceFile(READ_PORT_ENTRY, kbReadPortText);
+    const storeReadPortText = sourceText(STORE_READ_PORT_ENTRY);
+    const storeReadPortSource = sourceFile(STORE_READ_PORT_ENTRY, storeReadPortText);
+
     const kbReadPortMembers = interfaceMemberNames(READ_PORT_ENTRY, 'KbReadPort');
-    const readonlyDbMembers = interfaceMemberNames(READ_PORT_ENTRY, 'ReadonlyDatabase');
+    const readonlyDbMembers = interfaceMemberNames(STORE_READ_PORT_ENTRY, 'ReadonlyDatabase');
     const forbiddenMembers = readonlyDbMembers.filter((member) => FORBIDDEN_READONLY_DB_MEMBERS.has(member));
     const writableDatabaseLeaks: string[] = [];
 
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isInterfaceDeclaration(node) &&
-        (node.name.text === 'KbReadPort' || node.name.text === 'ReadonlyDatabase')
-      ) {
-        const rendered = node.getText(readPortSource);
-        if (/\bBetterSqlite3\s*\.\s*Database\b/.test(rendered)) {
-          writableDatabaseLeaks.push(node.name.text);
+    const checkInterface = (source: ts.SourceFile, name: string): void => {
+      const visit = (node: ts.Node): void => {
+        if (ts.isInterfaceDeclaration(node) && node.name.text === name) {
+          const rendered = node.getText(source);
+          if (/\bBetterSqlite3\s*\.\s*Database\b/.test(rendered)) {
+            writableDatabaseLeaks.push(name);
+          }
         }
-      }
-      ts.forEachChild(node, visit);
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
     };
-
-    visit(readPortSource);
+    checkInterface(kbReadPortSource, 'KbReadPort');
+    checkInterface(storeReadPortSource, 'ReadonlyDatabase');
 
     expect(kbReadPortMembers).toEqual(['db']);
     expect(readonlyDbMembers).toContain('prepare');

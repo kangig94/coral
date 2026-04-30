@@ -26,7 +26,7 @@ export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (id: string, scope: Disposable, tier: 'bundled' | 'installed') => ExpansionHost;
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
-  readonly now?: () => string;
+  readonly now: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
   /**
    * Reports the coordinator's current lifecycle phase. `equip()` consults this
@@ -64,7 +64,7 @@ export class ExpansionLifecycleService {
 
   constructor(private readonly options: ExpansionLifecycleServiceOptions) {
     this.manifest = options.manifest ?? BUNDLED_ENGINES;
-    this.now = options.now ?? (() => new Date().toISOString());
+    this.now = options.now;
   }
 
   async equip(name: string): Promise<void> {

@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import type { KbRuntime } from '../contract.js';
-import type { ReadonlyDatabase } from '../read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-port.js';
 
 export type SqliteTarget =
   | BetterSqlite3.Database

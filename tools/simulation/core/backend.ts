@@ -37,7 +37,7 @@ import { openBackendStoreDb } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
-import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/kb/read-port.js';
+import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/store/read-port.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';

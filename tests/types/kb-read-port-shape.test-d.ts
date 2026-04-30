@@ -13,7 +13,8 @@
 
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { KbReadPort, ReadonlyDatabase } from '#src/kb/read-port.js';
+import type { KbReadPort } from '#src/kb/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-port.js';
 
 declare const _readPort: KbReadPort;
 

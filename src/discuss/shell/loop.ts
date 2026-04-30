@@ -7,11 +7,11 @@ import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './
 import { type DiscussContext } from './types.js';
 import { DiscussManagerError } from './errors.js';
 import { commitDecision } from './persistence.js';
-import { collectBids } from './bid-flow.js';
-import { collectSpeech } from './speech-flow.js';
-import { handleEpochTransition, runFollowUpTurns } from './followup-flow.js';
-import { makeDecisionContext } from './flow-primitives.js';
-import { handleSynthesis } from './synthesis-flow.js';
+import { collectBids } from './flow/bid.js';
+import { collectSpeech } from './flow/speech.js';
+import { handleEpochTransition, runFollowUpTurns } from './flow/followup.js';
+import { makeDecisionContext } from './flow/primitives.js';
+import { handleSynthesis } from './flow/synthesis.js';
 import { getSession } from './registry.js';
 
 async function waitForObserverBidWindow(

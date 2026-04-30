@@ -24,7 +24,7 @@ import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { createSessionLookup } from '#src/sessions/lookup.js';
+import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -66,7 +66,7 @@ describe('sessions shell resolve', () => {
   it('projection lookup lists and reads allocated sessions', () => {
     const { mgr, workDir } = setup('open-shard');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const lookup = createSessionLookup({ db });
+    const lookup = createProjectionSessionLookup(db);
 
     expect(lookup.listSessionRefs()).toContainEqual(
       expect.objectContaining({
@@ -84,7 +84,7 @@ describe('sessions shell resolve', () => {
   it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
-    const sessionLookup = createSessionLookup({ db });
+    const sessionLookup = createProjectionSessionLookup(db);
     const sessionA = alpha.mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -155,7 +155,7 @@ describe('sessions shell resolve', () => {
   it('resolveSession supports provider filtering', () => {
     const alpha = setup('resolve-shard-a');
     const beta = setup('resolve-shard-b');
-    const sessionLookup = createSessionLookup({ db });
+    const sessionLookup = createProjectionSessionLookup(db);
     const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
     const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
 

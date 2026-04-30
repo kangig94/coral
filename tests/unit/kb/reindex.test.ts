@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { ReadonlyDatabase } from '#src/kb/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-port.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';

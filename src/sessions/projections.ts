@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import type { ReadonlyDatabase } from '../kb/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';

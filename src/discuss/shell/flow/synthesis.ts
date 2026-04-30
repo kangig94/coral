@@ -1,17 +1,17 @@
-import { decideSynthesis } from '../state-machine.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from './runtime-build.js';
-import { type DiscussContext } from './types.js';
-import { DiscussManagerError } from './errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import { detachSession } from './registry.js';
+import { decideSynthesis } from '../../state-machine.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from '../runtime-build.js';
+import { type DiscussContext } from '../types.js';
+import { DiscussManagerError } from '../errors.js';
+import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
+import { detachSession } from '../registry.js';
 import {
   type SubflowResult,
   SPEECH_TIMEOUT_MS,
   ctxTs,
   makeDecisionContext,
   renderTranscriptText,
-} from './flow-primitives.js';
+} from './primitives.js';
 
 export async function handleSynthesis(
   ctx: DiscussContext,

@@ -1,6 +1,6 @@
-import { makeEvent, type FollowUpQueueItem } from '../events.js';
-import { decideEnd, decideEpochSummary } from '../state-machine.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { makeEvent, type FollowUpQueueItem } from '../../events.js';
+import { decideEnd, decideEpochSummary } from '../../state-machine.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import {
   FOLLOW_UP_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -12,10 +12,10 @@ import {
   normalizeModel,
   recordJobFinished,
   runFacilitatorTurn,
-} from './runtime-build.js';
-import { type DiscussContext } from './types.js';
-import { DiscussManagerError, unwrapResult } from './errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
+} from '../runtime-build.js';
+import { type DiscussContext } from '../types.js';
+import { DiscussManagerError, unwrapResult } from '../errors.js';
+import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
 import {
   type EpochEvaluation,
   type SubflowResult,
@@ -32,7 +32,7 @@ import {
   makeDecisionContext,
   parseEpochEvaluation,
   renderTranscriptText,
-} from './flow-primitives.js';
+} from './primitives.js';
 
 async function collectFollowUpAnswer(
   ctx: DiscussContext,

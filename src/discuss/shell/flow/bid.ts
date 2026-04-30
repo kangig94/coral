@@ -1,7 +1,7 @@
-import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
-import { decideBid, decideEnd, decideExpel } from '../state-machine.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { buildBidPrompt, buildFirstTurnInstruction } from './prompts.js';
+import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
+import { decideBid, decideEnd, decideExpel } from '../../state-machine.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import { buildBidPrompt, buildFirstTurnInstruction } from '../prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -12,10 +12,10 @@ import {
   isManualParticipant,
   normalizeModel,
   recordJobFinished,
-} from './runtime-build.js';
-import { type DiscussContext } from './types.js';
-import { DiscussManagerError, unwrapResult } from './errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
+} from '../runtime-build.js';
+import { type DiscussContext } from '../types.js';
+import { DiscussManagerError, unwrapResult } from '../errors.js';
+import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
 import {
   type BidOutcome,
   type SubflowResult,
@@ -31,7 +31,7 @@ import {
   mustAnswerText,
   parseBidResponse,
   parseMustAnswerItem,
-} from './flow-primitives.js';
+} from './primitives.js';
 
 function buildBidBatch(
   ctx: DiscussContext,

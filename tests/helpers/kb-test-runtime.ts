@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
-import { asReadonlyDatabase, type ReadonlyDatabase } from '#src/kb/read-port.js';
+import { asReadonlyDatabase, type ReadonlyDatabase } from '#src/store/read-port.js';
 import { normalizeCorpusCursor, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { createTestKbRuntime, type CreateTestKbRuntimeOptions } from '#tests/fixtures/test-runtime.js';
 

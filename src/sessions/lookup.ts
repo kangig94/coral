@@ -1,4 +1,4 @@
-import type { KbReadPort, ReadonlyDatabase } from '../kb/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-port.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntry } from './projections.js';
 
@@ -37,6 +37,3 @@ export function createProjectionSessionLookup(db: ReadonlyDatabase): SessionLook
   };
 }
 
-export function createSessionLookup(readPort: KbReadPort): SessionLookup {
-  return createProjectionSessionLookup(readPort.db);
-}

@@ -1,6 +1,6 @@
-import { decideSpeech, decideSpeechTimeout } from '../state-machine.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { buildSpeechPrompt } from './prompts.js';
+import { decideSpeech, decideSpeechTimeout } from '../../state-machine.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import { buildSpeechPrompt } from '../prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -10,11 +10,11 @@ import {
   isAttemptSuccess,
   normalizeModel,
   recordJobFinished,
-} from './runtime-build.js';
-import { type DiscussContext } from './types.js';
-import { DiscussManagerError } from './errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './flow-primitives.js';
+} from '../runtime-build.js';
+import { type DiscussContext } from '../types.js';
+import { DiscussManagerError } from '../errors.js';
+import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
+import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './primitives.js';
 
 export async function collectSpeech(
   ctx: DiscussContext,

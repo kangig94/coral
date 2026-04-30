@@ -4,7 +4,7 @@ import { makeEvent } from '#src/discuss/events.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { getSession } from '#src/discuss/shell/registry.js';
-import { handleSynthesis } from '#src/discuss/shell/synthesis-flow.js';
+import { handleSynthesis } from '#src/discuss/shell/flow/synthesis.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,

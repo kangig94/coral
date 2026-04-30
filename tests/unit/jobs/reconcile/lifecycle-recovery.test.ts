@@ -1046,11 +1046,8 @@ describe('lifecycle recovery', () => {
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
     });
-    const sessionLookupSpy = vi.spyOn(modules.sessionLookupModule, 'createSessionLookup');
-
     try {
       await controller.start();
-      expect(sessionLookupSpy).not.toHaveBeenCalled();
       expect(
         new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db).get(
           'fakeprovider',

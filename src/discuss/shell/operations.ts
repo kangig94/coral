@@ -15,8 +15,8 @@ import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { collectBids } from './bid-flow.js';
-import { makeDecisionContext } from './flow-primitives.js';
+import { collectBids } from './flow/bid.js';
+import { makeDecisionContext } from './flow/primitives.js';
 import { persistAbortEndForShutdown } from './recovery.js';
 
 function readDiscussMaxEpochs(ctx: DiscussContext): number {

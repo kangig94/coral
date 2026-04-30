@@ -20,7 +20,7 @@ import type { ExpansionHost } from '../expansion/contract.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from './curate/pipeline-types.js';
 import type { KbReadPathResolver } from './read.js';
-import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from './read-port.js';
+import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 

@@ -93,7 +93,7 @@ export interface ProviderServerLease {
 
 export type ProviderTerminalOutcome =
   | { kind: 'completed' }
-  | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
+  | { kind: 'aborted'; reason: AbortReason }
   | { kind: 'provider_exit'; code: number; note?: string }
   | { kind: 'failed' }
   | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
