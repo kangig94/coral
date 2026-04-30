@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type {
   Provider,
-  ProviderContinuityBlob,
   ProviderContinuityEventBody,
   ProviderContinuityUpdate,
   ProviderMiddleware,
@@ -10,6 +9,7 @@ import type {
   ProviderRuntime,
   ProviderTransportClose,
 } from '../contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 

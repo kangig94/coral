@@ -18,7 +18,7 @@ import { createExpansionHost } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
-import type { SpawnCliFn } from './curate/pipeline-types.js';
+import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type { KbReadPathResolver } from './read.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 

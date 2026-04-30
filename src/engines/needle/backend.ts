@@ -12,9 +12,9 @@ import type {
   EmbeddingService,
   KbEngineRuntime,
   KbProjectionArtifactFilePort,
-  KbProjectionInput,
   VectorRetrieval as BoundVectorRetrieval,
 } from '../../kb/contract.js';
+import type { KbProjectionInput } from '../../kb/projection-input-contract.js';
 import {
   getEntry,
   isNoteEntry,

@@ -6,13 +6,6 @@ import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-supervision.js';
 
-export { spawnProviderServerTransport } from './provider-server-transport.js';
-export type {
-  ProviderServerHandle,
-  SpawnProviderServerFn,
-  SpawnProviderServerOptions,
-} from './provider-server-transport.js';
-
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;

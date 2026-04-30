@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildEntityRelationshipGraph,
-  detectCommunities,
-  renderCommunityDocument,
-} from '#src/kb/curate/community/detection.js';
+import { detectCommunities } from '#src/kb/curate/community/detection.js';
+import { buildEntityRelationshipGraph } from '#src/kb/curate/community/graph.js';
+import { renderCommunityDocument } from '#src/kb/curate/community/documents.js';
 import {
   extractBody,
   parseCommunityFrontmatter,

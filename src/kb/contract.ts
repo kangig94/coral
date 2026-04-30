@@ -21,6 +21,12 @@ export type {
   CorpusStateReadPort,
   JournalConsumerReadPort,
 } from '../store/consumer-contract.js';
+
+// Projection types live in `projection-input-contract.ts` (split for cycle
+// avoidance), but the KB contract re-exports them so coordinator and engine
+// consumers can stay on the contract seam — see
+// `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS which
+// allows `src/kb/contract.ts` only.
 export type { KbCorpusProjectionReader, KbProjectionInput, KbProjectionRecord } from './projection-input-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';

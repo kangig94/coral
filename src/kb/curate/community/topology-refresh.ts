@@ -1,11 +1,6 @@
-import {
-  buildCommunityDocuments,
-  buildEntityRelationshipGraph,
-  computeCommunityTopologyFingerprint,
-  detectCommunities,
-  generateCommunityFiles,
-  loadExistingCommunityState,
-} from './detection.js';
+import { computeCommunityTopologyFingerprint, detectCommunities } from './detection.js';
+import { buildCommunityDocuments, generateCommunityFiles, loadExistingCommunityState } from './documents.js';
+import { buildEntityRelationshipGraph } from './graph.js';
 import { readCurateState } from '../state/index.js';
 import type { KbMutationEffects, KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';

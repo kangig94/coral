@@ -2,9 +2,9 @@ import {
   type DiscussContext,
   type LiveDiscussSession,
   type WatchBuffer,
-  type WatchState,
   type WatchSubscriber,
 } from './types.js';
+import type { WatchState } from '../watch.js';
 import { DiscussManagerError } from './errors.js';
 import { createWatchBuffer, watchBufferCursor } from './live-registry.js';
 import { buildPersistedWatchState } from './persistence.js';

@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 import type { IdPort, Runtime, StoragePort } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+
+// `ProviderContinuityBlob` lives in `sessions/continuity.js` (sessions own
+// continuity persistence), but the providers contract re-exports it so
+// coordinator-side consumers can stay on the contract seam — see
+// `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS.
+export type { ProviderContinuityBlob };
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
   SESSION_PROVIDER_FAILED_EVENT,
@@ -16,7 +22,6 @@ import type {
   ProviderTransportClose,
 } from './protocol.js';
 
-export type { ProviderContinuityBlob } from '../sessions/continuity.js';
 export type {
   AbortReason,
   AppServerNotificationMessage,

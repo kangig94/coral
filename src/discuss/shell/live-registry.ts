@@ -7,9 +7,9 @@ import type {
   DiscussService,
   LiveDiscussSession,
   WatchBuffer,
-  WatchEvent,
   WatchSubscriber,
 } from './types.js';
+import type { WatchEvent } from '../watch.js';
 import { isWithinLiveSessionBoundary } from '../events.js';
 
 const WATCH_BUFFER_CAP = 500;

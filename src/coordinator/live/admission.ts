@@ -1,22 +1,15 @@
 import type { Runtime } from '../../runtime/ports.js';
 import {
   type CliExecResult,
-  type ProviderServerHandle,
-  type SpawnCliFn,
   type SpawnCliOptions,
-  type SpawnDurableJobFn,
   type SpawnDurableJobOptions,
-  type SpawnProviderServerFn,
-  type SpawnProviderServerOptions,
   spawnCliTransport,
   spawnDurableJobTransport,
-  spawnProviderServerTransport,
 } from './durable-transport.js';
+import { type SpawnProviderServerOptions, spawnProviderServerTransport } from './provider-server-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type { AdmissionResult, AdmittedHandle, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
-
-export type { LaunchPool } from '../../jobs/contracts/admission.js';
 
 /**
  * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
@@ -290,5 +283,3 @@ export class LaunchCoordinator {
   }
 }
 
-export { getDiscussMaxWorkers, getMaxWorkers, parsePositiveInt } from './worker-limits.js';
-export type { CliExecResult, ProviderServerHandle, SpawnCliFn, SpawnDurableJobFn, SpawnProviderServerFn };

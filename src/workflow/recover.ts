@@ -32,9 +32,9 @@ import {
 } from './execution-constants.js';
 import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
+
 import { waitForAtoms } from './wait.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
-export { recoverStaleAtom } from './stale-recovery.js';
 
 type WorkflowSlotJobRow = {
   job_id: string;

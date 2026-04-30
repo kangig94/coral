@@ -12,7 +12,6 @@ const DEFAULT_HOST = '127.0.0.1';
 
 export const STARTUP_DEADLINE = 30_000;
 export const CONTENDER_BUDGET = 90_000;
-export type { LockRecord } from '../infra/lock-record.js';
 export type BackendOwnershipState = 'healthy' | 'contended' | 'stale';
 export type VerifyBackendOwnershipFn = (options: {
   pluginRoot: string;

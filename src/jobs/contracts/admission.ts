@@ -1,6 +1,9 @@
 import type { LaunchPool } from '../launch.js';
 
-export type { LaunchPool } from '../launch.js';
+// LaunchPool's canonical home is `jobs/launch.ts`, but the admission contract
+// re-exports it so coordinator-side consumers can stay on the contract seam
+// (see `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS).
+export type { LaunchPool };
 
 export type QueuedHandle = {
   type: 'queued';

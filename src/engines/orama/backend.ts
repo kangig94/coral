@@ -7,9 +7,8 @@ import type {
   FtsRetrieval,
   KbEngineRuntimeBase,
   KbCorpusSnapshot,
-  KbProjectionInput,
-  KbProjectionRecord,
 } from '../../kb/contract.js';
+import type { KbProjectionInput, KbProjectionRecord } from '../../kb/projection-input-contract.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../../kb/corpus/snapshot.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
 import {
@@ -23,15 +22,6 @@ import {
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { OramaSnapshotStore } from './snapshot.js';
 import type { FtsHit, FtsSearchResult, RetrievedDocument, RetrievalScope } from '../../kb/search/contract.js';
-
-export {
-  createOramaDb,
-  normalizeOramaTerm,
-  tokenizeQuery,
-  toOramaDocument,
-  type KbOramaDocument,
-} from './document-builder.js';
-export { type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
   'slug',

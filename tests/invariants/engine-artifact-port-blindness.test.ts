@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createOramaDb } from '#src/engines/orama/backend.js';
+import { createOramaDb } from '#src/engines/orama/document-builder.js';
 import { createOramaArtifactPort } from '#src/engines/orama/artifact-port.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';

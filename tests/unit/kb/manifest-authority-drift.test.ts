@@ -15,7 +15,7 @@ import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
 import { runPrincipleDiscovery } from '#src/kb/curate/principles.js';
 import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
-import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/community/detection.js';
+import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/community/documents.js';
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { recordMetadataMutation } from '#src/kb/corpus/index-mutations.js';
 import { computeFullCollectorManifestHash } from '#src/kb/corpus/manifest-authority.js';

@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
-import type { SpawnCliFn } from './curate/pipeline-types.js';
+import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type {
   Backed,
   EmbeddingService,

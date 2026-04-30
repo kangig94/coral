@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import type { ProviderRequest, ProviderRuntime, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../request-policy.js';
+import { resolveModelTier, resolveProviderEffort} from '../request-policy.js';
+import type { EffortLevel } from '../contract.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderContinuityUpdate, ProviderTransportClose } from '../contract.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';

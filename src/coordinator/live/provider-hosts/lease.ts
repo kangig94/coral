@@ -1,5 +1,5 @@
 import type { ProviderServerLease } from '../../../providers/contract.js';
-import type { ProviderServerHandle } from '../durable-transport.js';
+import type { ProviderServerHandle } from '../provider-server-transport.js';
 import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
 import { AbortError } from '../../../runtime/abort.js';
 

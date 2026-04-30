@@ -6,11 +6,11 @@ import type { AppServerContract } from '../app-server/driver.js';
 import {
   compose,
   type Provider,
-  type ProviderContinuityBlob,
   type ProviderContinuityUpdate,
   type ProviderRuntime,
   type ProviderTerminalEventBody,
 } from '../contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerRequestFailed } from '../fault.js';
 import { streamProviderTerminal } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

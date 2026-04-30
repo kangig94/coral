@@ -9,8 +9,8 @@ import {
   type DiscussConfig,
   type DiscussContext,
   type LiveDiscussSession,
-  type WatchState,
 } from './types.js';
+import type { WatchState } from '../watch.js';
 import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';

@@ -1,6 +1,7 @@
 import type { KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
-import { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint } from './detection.js';
+import { computeCommunityTopologyFingerprint } from './detection.js';
+import { computeCommunitySummaryInputFingerprints } from './summary.js';
 import { readCurateState, type CurateState, type CurateStateTarget } from '../state/index.js';
 
 type CommunityFreshnessRuntime = CurateStateTarget & Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;

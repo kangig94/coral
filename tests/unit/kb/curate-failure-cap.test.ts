@@ -5,8 +5,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import { applyClearCurateRetryState, readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
-import { INVARIANT, createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
+import {
+  applyClearCurateRetryState,
+  INVARIANT,
+  readCurateState,
+  writeCurateState,
+} from '#src/kb/curate/state/index.js';
+import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';

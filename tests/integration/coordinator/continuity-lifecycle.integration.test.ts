@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { LaunchCoordinator, type SpawnProviderServerFn } from '#src/coordinator/live/admission.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { SpawnProviderServerFn } from '#src/coordinator/live/durable-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';

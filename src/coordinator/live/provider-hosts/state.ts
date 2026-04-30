@@ -1,6 +1,6 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../runtime/ports.js';
-import type { ProviderServerHandle } from '../durable-transport.js';
+import type { ProviderServerHandle } from '../provider-server-transport.js';
 
 export type ProviderServerAttachment = {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;

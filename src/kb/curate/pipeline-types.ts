@@ -2,8 +2,6 @@ import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../../
 import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
 import type { CurateCursor } from './state/index.js';
 
-export type { SpawnCliFn } from './spawn-cli.js';
-
 export type GitSyncRuntimePicks = {
   processPort: Pick<ProcessPort, 'exec' | 'execSync'>;
   storagePort: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'writeAtomicSync'>;

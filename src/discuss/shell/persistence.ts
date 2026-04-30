@@ -1,11 +1,9 @@
-import { buildWatchEvents } from '../watch.js';
-import { DiscussWatchReadError } from '../watch.js';
-import { buildDiscussWatchState } from '../watch.js';
+import { buildDiscussWatchState, buildWatchEvents, DiscussWatchReadError, type WatchState } from '../watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { Result } from '../session-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
-import { type DiscussContext, type WatchState } from './types.js';
+import { type DiscussContext} from './types.js';
 import { ABORT_REASON, DiscussManagerError } from './errors.js';
 import { compactLiveWatchBuffer, getSubscriberCursorMap, watchBufferCursor } from './live-registry.js';
 

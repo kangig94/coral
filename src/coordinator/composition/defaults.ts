@@ -5,13 +5,8 @@ import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import {
-  acquireLock,
-  releaseLock,
-  type BackendOwnershipState,
-  type LockRecord,
-  type VerifyBackendOwnershipFn,
-} from '../lock.js';
+import { acquireLock, releaseLock, type BackendOwnershipState, type VerifyBackendOwnershipFn } from '../lock.js';
+import type { LockRecord } from '../../infra/lock-record.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
 import { createKbSubsystem as defaultCreateKbSubsystem } from '../../kb/subsystem.js';

@@ -1,5 +1,5 @@
 import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '../durable-transport.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '../provider-server-transport.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import {
   acquireSharedProviderServerLease,

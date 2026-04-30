@@ -241,9 +241,14 @@ async function ensureFreshCommunityIndex(
 
 async function markCommunityStateFresh(kb: { readIndex: () => any }) {
   const [
-    { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint },
+    { computeCommunityTopologyFingerprint },
+    { computeCommunitySummaryInputFingerprints },
     { readCurateState, writeCurateState },
-  ] = await Promise.all([import('#src/kb/curate/community/detection.js'), import('#src/kb/curate/state/index.js')]);
+  ] = await Promise.all([
+    import('#src/kb/curate/community/detection.js'),
+    import('#src/kb/curate/community/summary.js'),
+    import('#src/kb/curate/state/index.js'),
+  ]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
 

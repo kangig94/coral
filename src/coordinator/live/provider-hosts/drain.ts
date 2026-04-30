@@ -1,5 +1,5 @@
 import { raceTimeout } from '../../../infra/async.js';
-import type { ProviderServerHandle } from '../durable-transport.js';
+import type { ProviderServerHandle } from '../provider-server-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { Runtime, TimePort } from '../../../runtime/ports.js';
 import { clearIdleTimer } from './idle.js';

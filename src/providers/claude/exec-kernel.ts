@@ -1,5 +1,4 @@
-import type { EffortLevel } from '../request-policy.js';
-import type { Provider } from '../contract.js';
+import type { EffortLevel, Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../protocol.js';
 import type { TimePort } from '../../runtime/ports.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';

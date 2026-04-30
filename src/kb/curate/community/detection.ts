@@ -6,25 +6,6 @@ import { communityEntryId, type KbIndex } from '../../entry-types.js';
 import { communitySlugFromReference, uniqueSorted } from './identity.js';
 import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './graph.js';
 import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './contracts.js';
-export {
-  buildCommunityDocuments,
-  generateCommunityFiles,
-  loadExistingCommunityState,
-  renderCommunityDocument,
-} from './documents.js';
-export { buildEntityRelationshipGraph, computeGraphFingerprint } from './graph.js';
-export {
-  computeCommunitySummaryInputFingerprintForCommunity,
-  computeCommunitySummaryInputFingerprints,
-  generateCommunitySummary,
-} from './summary.js';
-export type {
-  CommunityDocument,
-  DetectedCommunity,
-  ExistingGeneratedCommunity,
-  TagGraph,
-  TagGraphEdge,
-} from './contracts.js';
 
 type Louvain = {
   detailed(graph: TagGraph['graph'], options?: Record<string, unknown>): DetailedLouvainOutput;

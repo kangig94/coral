@@ -20,27 +20,15 @@ import {
   type CurateState,
 } from './state/index.js';
 import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
-import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './pipeline-types.js';
+import type { CurateHandle, GitSyncRuntimePicks} from './pipeline-types.js';
+import type { SpawnCliFn } from './spawn-cli.js';
 
-export type {
-  ClassificationAssignment,
-  CurateClaimedEntry,
-  CurateHandle,
-  DiscoveryProposal,
-  SpawnCliFn,
-} from './pipeline-types.js';
-export { buildClassificationPrompt, chunkEntriesByPromptBudget } from './classification/prompt.js';
-export { buildMetadataTargets, validateAssignments } from './classification/assignments.js';
-export { parseClassificationResponse } from './classification/parse.js';
-export { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from './discovery.js';
+export type { CurateHandle } from './pipeline-types.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
-
-/** Re-exported for callers that import from the scheduler facade; see {@link import('./state/model.js').INVARIANT}. */
-export { INVARIANT };
 
 class CurateRunError extends Error {
   readonly through: CurateCursor | null;
