@@ -11,6 +11,7 @@ import type { CoralEventInput } from '#src/store/envelope.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -31,6 +32,7 @@ function appendJobEvents(db: Database.Database, inputs: readonly CoralEventInput
     now: () => NOW,
     reducers: composeReducers(jobsRegistry),
     upcasters: createDefaultUpcasterRegistry(),
+    providers: permissiveProviderLookupPort,
   });
 }
 

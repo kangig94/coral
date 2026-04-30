@@ -11,6 +11,7 @@ import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/f
 import type { StoragePort } from '#src/runtime/ports.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -88,6 +89,7 @@ describe('events queries', () => {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
       reducers: composeReducers(testCounterRegistry),
       upcasters: createDefaultUpcasterRegistry(),
+      providers: permissiveProviderLookupPort,
     });
     readCtx = {
       schemas: composeReducers(testCounterRegistry).schemas,

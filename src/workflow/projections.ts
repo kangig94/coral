@@ -7,6 +7,7 @@ import {
   type CommitEventsFn,
 } from '../store/append.js';
 import { nowDate } from '../infra/time.js';
+import type { ProviderLookupPort } from '../providers/catalog.js';
 import type { TimePort } from '../runtime/ports.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { composeReducers } from '../store/reducers.js';
@@ -23,11 +24,13 @@ export function commitWorkflowEvents(
   db: BetterSqlite3.Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   time: Pick<TimePort, 'now'>,
+  providers: ProviderLookupPort,
 ): void {
   commitEvents(db, cb, {
     now: () => nowDate(time),
     reducers: workflowReducers,
     upcasters,
+    providers,
   });
 }
 

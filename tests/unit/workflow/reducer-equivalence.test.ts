@@ -19,6 +19,7 @@ import {
 } from '#src/workflow/events.js';
 import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -55,7 +56,7 @@ describe('workflow reducer equivalence', () => {
             stepDetails: [],
           }),
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -167,7 +168,7 @@ describe('workflow reducer equivalence', () => {
           },
           workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, upcasters })).toMatchObject({

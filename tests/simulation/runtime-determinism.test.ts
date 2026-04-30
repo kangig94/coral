@@ -16,6 +16,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCHEMAS_DIR = join(MODULE_DIR, '../../src/store/schemas');
@@ -167,6 +168,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
         now: () => new Date(runtime.time.now()),
         reducers,
         upcasters,
+        providers: permissiveProviderLookupPort,
       });
 
       expect(appended).toHaveLength(1);
@@ -223,6 +225,7 @@ async function runPlannedSequence(runtime: { storage: SchemaStorage }, plan: Seq
         now: () => new Date(0),
         reducers,
         upcasters,
+        providers: permissiveProviderLookupPort,
       });
 
       lastSeq = appended[0]?.seq ?? lastSeq;

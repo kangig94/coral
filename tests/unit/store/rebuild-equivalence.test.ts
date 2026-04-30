@@ -12,6 +12,7 @@ import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -36,7 +37,12 @@ describe('rebuildProjections replay identity', () => {
         body: { id: ids[i % ids.length], delta: (i % 7) + 1 },
       }));
 
-      commitInputs(db, inputs, { now: () => new Date(0), reducers, upcasters });
+      commitInputs(db, inputs, {
+        now: () => new Date(0),
+        reducers,
+        upcasters,
+        providers: permissiveProviderLookupPort,
+      });
 
       const beforeRebuild = db.prepare('SELECT * FROM projection_test_counter ORDER BY id').all();
       expect(beforeRebuild.length).toBe(ids.length);

@@ -49,6 +49,7 @@ import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/hel
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -101,6 +102,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
   return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
     db: openTestStoreDb(runtime),
     eventBus,
+    providers: permissiveProviderLookupPort,
   });
 }
 

@@ -11,6 +11,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -56,6 +57,7 @@ describe('append/rebuild upcaster round-trip', () => {
         now: () => new Date(0),
         reducers,
         upcasters,
+        providers: permissiveProviderLookupPort,
       });
 
       const row = db.prepare('SELECT body_version, body FROM events WHERE seq = 1').get() as {

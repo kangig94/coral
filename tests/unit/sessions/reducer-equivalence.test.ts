@@ -12,6 +12,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -150,7 +151,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const v1OpenEvent = db
@@ -257,7 +258,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const openedEvent = db

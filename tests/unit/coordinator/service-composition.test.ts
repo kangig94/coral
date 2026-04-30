@@ -50,6 +50,7 @@ import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/hel
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -103,6 +104,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
     db: openTestStoreDb(runtime),
     eventBus,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    providers: permissiveProviderLookupPort,
   });
 }
 

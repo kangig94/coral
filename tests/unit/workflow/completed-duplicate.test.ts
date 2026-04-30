@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 // Spec §6.5: workflow stream identity is the truth — a workflow has exactly
 // one completion. The append validator rejects a second `workflow.completed`
@@ -35,6 +36,7 @@ function ctx(): AppendContext {
     now: () => NOW,
     reducers: composeReducers(workflowRegistry),
     upcasters: createDefaultUpcasterRegistry(),
+    providers: permissiveProviderLookupPort,
   };
 }
 

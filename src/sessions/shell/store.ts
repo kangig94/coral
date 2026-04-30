@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { commit as commitJournalEvents, type CommitEventsFn } from '../../store/append.js';
+import { noProviderLookupPort } from '../../providers/catalog.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../../infra/time.js';
@@ -142,6 +143,11 @@ function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn 
       now: () => nowDate(time),
       reducers,
       upcasters,
+      // Sessions domain has no append-time provider validators today
+      // (validateWorkflowPlanValidity is workflow-only). Fail-closed baseline:
+      // any future session validator that consults providers will reject
+      // unless a real port is wired through composition.
+      providers: noProviderLookupPort,
     });
 }
 

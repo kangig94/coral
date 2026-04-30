@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 // M3: a workflow stream owns exactly one declared plan (spec §6.5 line 1006).
 // The append validator rejects a second `workflow.plan.declared` so the second
@@ -34,6 +35,7 @@ function ctx(): AppendContext {
     now: () => NOW,
     reducers: composeReducers(workflowRegistry),
     upcasters: createDefaultUpcasterRegistry(),
+    providers: permissiveProviderLookupPort,
   };
 }
 

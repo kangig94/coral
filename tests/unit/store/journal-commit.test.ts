@@ -15,6 +15,7 @@ import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -36,6 +37,7 @@ function ctx(): AppendContext {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
     upcasters: createDefaultUpcasterRegistry(),
+    providers: permissiveProviderLookupPort,
   };
 }
 

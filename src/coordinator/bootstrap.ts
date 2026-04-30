@@ -8,6 +8,7 @@ import { StartupInterruptedError } from './startup-error.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
+import { noProviderLookupPort } from '../providers/catalog.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../runtime/ports.js';
@@ -70,7 +71,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
           });
           return undefined;
         },
-        { now: () => nowDate(), reducers, upcasters },
+        { now: () => nowDate(), reducers, upcasters, providers: noProviderLookupPort },
       );
 
       if (!event) {

@@ -26,6 +26,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 const openDbs: Array<ReturnType<typeof openStoreDatabase>> = [];
@@ -84,6 +85,7 @@ describe('sessions shell store', () => {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
         upcasters,
+        providers: permissiveProviderLookupPort,
       });
     };
 

@@ -31,6 +31,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 let db: ReturnType<typeof openStoreDatabase>;
@@ -231,6 +232,7 @@ describe('sessions shell resolve', () => {
           now: () => new Date('2026-04-20T00:00:00.000Z'),
           reducers,
           upcasters: createDefaultUpcasterRegistry(),
+          providers: permissiveProviderLookupPort,
         },
       );
 

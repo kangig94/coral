@@ -57,6 +57,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -109,6 +110,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
   return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
     db: openTestStoreDb(runtime),
     eventBus,
+    providers: permissiveProviderLookupPort,
   });
 }
 

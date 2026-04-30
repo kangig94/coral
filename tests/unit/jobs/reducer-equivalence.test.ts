@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -107,7 +108,7 @@ describe('jobs reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -215,7 +216,7 @@ describe('jobs reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -322,7 +323,7 @@ describe('jobs reducer equivalence', () => {
             body: { reason: 'user_abort' },
           },
         ],
-        { now: () => NOW, reducers, upcasters },
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
       );
 
       const before = db

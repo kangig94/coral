@@ -26,6 +26,7 @@ import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workfl
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/command.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
@@ -317,6 +318,7 @@ function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobSto
   return new JobStore(TEST_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
     db,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
+    providers: permissiveProviderLookupPort,
   });
 }
 
@@ -567,7 +569,10 @@ describe('journal commit atomicity invariant', () => {
     const db = createDb();
     try {
       const runtime = new SimulationRuntime();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { db });
+      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+        db,
+        providers: permissiveProviderLookupPort,
+      });
       const recorder = new KbJobRecorder({
         runtime,
         progressStore,

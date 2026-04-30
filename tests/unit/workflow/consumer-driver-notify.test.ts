@@ -15,6 +15,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -47,6 +48,7 @@ describe('workflow consumer-driver notify', () => {
           now: () => new Date('2026-04-19T00:00:00.000Z'),
           reducers,
           upcasters,
+          providers: permissiveProviderLookupPort,
         });
         if (appended.length > 0) {
           driver.notify('journal', appended[appended.length - 1].seq);

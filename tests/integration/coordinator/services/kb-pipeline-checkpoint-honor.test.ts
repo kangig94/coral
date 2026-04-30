@@ -40,6 +40,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const tempRoots: string[] = [];
 const openDbs: Array<{ close(): void }> = [];
@@ -96,7 +97,10 @@ function makeWorld(): ServiceWorld {
   };
   applyStoreSchemas({ db: jobsDb, storage: nodeStorage });
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { db: jobsDb });
+  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    db: jobsDb,
+    providers: permissiveProviderLookupPort,
+  });
   const abortRegistry = new AbortRegistry(runtime.ids);
 
   // Capture launched job ids by spying on the public append method — keeps

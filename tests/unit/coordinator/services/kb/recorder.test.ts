@@ -10,6 +10,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: readFileSync as StoragePort['readFileSync'],
@@ -23,7 +24,10 @@ function createRecorder(): {
   const db = new Database(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { db });
+  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    db,
+    providers: permissiveProviderLookupPort,
+  });
   const abortRegistry = new AbortRegistry(runtime.ids);
   const recorder = new KbJobRecorder({
     runtime,

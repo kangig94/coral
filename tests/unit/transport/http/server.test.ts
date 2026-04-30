@@ -86,6 +86,7 @@ import {
   handleDiscussWatch,
 } from '#src/discuss/shell/tools.js';
 import { ZodError, ZodIssueCode } from 'zod';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -110,6 +111,7 @@ function createProgressStore(
   return new JobStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
     db: openTestStoreDb(runtimeArg),
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    providers: permissiveProviderLookupPort,
   });
 }
 
@@ -456,6 +458,7 @@ function stubSessionProjection(
       now: () => new Date(runtime.time.now()),
       reducers: composeReducers(sessionsRegistry),
       upcasters: createDefaultUpcasterRegistry(),
+      providers: permissiveProviderLookupPort,
     },
   );
 }

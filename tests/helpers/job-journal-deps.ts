@@ -8,6 +8,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<Runtime, 'time'>) {
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
@@ -18,6 +19,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
       now: () => new Date(runtime.time.now()),
       reducers,
       upcasters: progressStore.upcasters,
+      providers: permissiveProviderLookupPort,
     });
     if (appended.length > 0) {
       publishJobEvents(appended);

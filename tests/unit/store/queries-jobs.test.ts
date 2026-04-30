@@ -12,6 +12,7 @@ import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#sr
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -185,6 +186,7 @@ describe('jobs queries', () => {
       now: () => new Date('2026-04-20T00:03:00.000Z'),
       reducers,
       upcasters,
+      providers: permissiveProviderLookupPort,
     });
   });
 

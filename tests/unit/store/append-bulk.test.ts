@@ -14,6 +14,7 @@ import {
   TEST_COUNTER_SCHEMA,
   testCounterRegistry,
 } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 
@@ -46,6 +47,7 @@ describe('commitInputs bulk', () => {
           now: () => new Date(0),
           reducers: composeReducers(testCounterRegistry),
           upcasters: createDefaultUpcasterRegistry(),
+          providers: permissiveProviderLookupPort,
         },
       );
 
@@ -103,6 +105,7 @@ describe('commitInputs bulk', () => {
             now: () => new Date(0),
             reducers: composeReducers(throwingRegistry),
             upcasters: createDefaultUpcasterRegistry(),
+            providers: permissiveProviderLookupPort,
           },
         ),
       ).toThrow(/induced failure/);

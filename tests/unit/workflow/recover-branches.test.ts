@@ -17,6 +17,7 @@ import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/command.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -71,7 +72,10 @@ function createHarness(options: {
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
+  const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+    db,
+    providers: permissiveProviderLookupPort,
+  });
   const plan = createWorkflowPlan();
   const atomJobId = plan.slots[0].slotId;
   commitWorkflowEvents(
@@ -81,6 +85,7 @@ function createHarness(options: {
       return undefined;
     },
     runtime.time,
+    permissiveProviderLookupPort,
   );
 
   progressStore.initJob({

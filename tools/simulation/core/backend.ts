@@ -20,6 +20,7 @@ import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '../../../src/jobs/store.js';
+import { noProviderLookupPort } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
@@ -405,6 +406,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     eventBus,
     db: storeDb,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    providers: noProviderLookupPort,
   });
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();

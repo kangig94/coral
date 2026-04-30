@@ -11,6 +11,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -257,6 +258,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
     db: openTestStoreDb(runtime),
     eventBus,
+    providers: permissiveProviderLookupPort,
   });
   const { runtimeState, setLifecycle } = createRuntimeStateMock();
   const idleTimer = createFakeIdleTimer();

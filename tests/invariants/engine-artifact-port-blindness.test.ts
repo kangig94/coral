@@ -133,6 +133,42 @@ describe('engine artifact port blindness', () => {
     expect(await registry.describeArtifacts()).toEqual([]);
   });
 
+  it('isolates per-port faults — a throwing port does not abort the rest of the registry', async () => {
+    const registry = new EngineArtifactRegistry();
+    const scope = { [Symbol.dispose]() {} };
+    const throwingPort: EngineArtifactPort = {
+      async describeArtifacts() {
+        throw new Error('synthetic engine failure');
+      },
+    };
+    const healthyPort: EngineArtifactPort = {
+      async describeArtifacts() {
+        return [
+          {
+            artifactId: 'engine:healthy',
+            kind: 'projection-cache',
+            targetConsumerIds: [],
+            corpusInterest: 'content',
+            artifactPaths: ['/tmp/healthy-artifact'],
+            expectedProjectionIdentityHash: 'expected',
+            freshness: { status: 'missing' },
+          },
+        ];
+      },
+    };
+
+    registry.register(throwingPort, { targetConsumerHandles: [consumerHandle('throwing-consumer')] }, scope);
+    registry.register(healthyPort, { targetConsumerHandles: [consumerHandle('healthy-consumer')] }, scope);
+
+    const descriptors = await registry.describeArtifacts();
+    expect(descriptors).toMatchObject([
+      {
+        artifactId: 'engine:healthy',
+        targetConsumerIds: ['healthy-consumer'],
+      },
+    ]);
+  });
+
   it('Orama persists full projected identity in a sidecar and reports legacy sidecars as corrupt', async () => {
     const root = tempRoot();
     const portFiles = filesPort();

@@ -10,6 +10,7 @@ import type { JobStatus } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-28T00:00:00.000Z');
@@ -32,7 +33,7 @@ function createProgressStore(db: Database.Database): JobStore {
       time: { now: () => NOW.getTime() },
     } as never,
     createDefaultUpcasterRegistry(),
-    { db },
+    { db, providers: permissiveProviderLookupPort },
   );
 }
 

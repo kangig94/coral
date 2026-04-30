@@ -14,6 +14,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -85,7 +86,10 @@ describe('refs.workflowId producer invariant', () => {
   it('emits refs.workflowId on every launch.requested event whose lifetime belongs to a workflow', () => {
     const db = createDb();
     const runtime = new SimulationRuntime();
-    const store = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { db });
+    const store = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
 
     // The workflow's own job: workflowId === jobId.
     store.appendLaunchRequested(

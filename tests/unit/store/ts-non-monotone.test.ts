@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 // S5: `ts` is informational only; producers (notably discuss restoration) may
 // emit `tsOverride` values earlier than MAX(ts). `seq` remains strictly
@@ -34,6 +35,7 @@ function ctx(): AppendContext {
     now: () => NOW,
     reducers: composeReducers(sessionsRegistry),
     upcasters: createDefaultUpcasterRegistry(),
+    providers: permissiveProviderLookupPort,
   };
 }
 

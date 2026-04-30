@@ -15,6 +15,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -42,6 +43,7 @@ function createJournalAppender(db: InstanceType<typeof Database>) {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers,
       upcasters,
+      providers: permissiveProviderLookupPort,
     });
     publishJobEvents(appended);
   };
@@ -54,7 +56,11 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { db, eventBus });
+    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-sse-job';
@@ -232,7 +238,11 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { db, eventBus });
+    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-race-job';

@@ -18,6 +18,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { SessionManager } from '#src/sessions/shell/store.js';
 import { workflowRegistry } from '#src/workflow/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -69,6 +70,7 @@ describe('sessions consumer-driver notify', () => {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
         upcasters,
+        providers: permissiveProviderLookupPort,
       });
       if (appended.length > 0) {
         driver.notify('journal', appended[appended.length - 1].seq);

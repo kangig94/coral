@@ -30,7 +30,14 @@ export type JobStoreOptions = {
   eventBus?: JobEventBus;
   db?: Database;
   reducers?: ComposedReducers;
-  providers?: ProviderLookupPort;
+  /**
+   * Required. JobStore composes `AppendContext.providers` from this port,
+   * which is now mandatory at the append boundary (see `store/append.ts`).
+   * Production composition supplies `providerLookupPortFromCatalog(...)`;
+   * tests that don't exercise provider validation may use
+   * `permissiveProviderLookupPort` from `tests/helpers/append-context.ts`.
+   */
+  providers: ProviderLookupPort;
 };
 
 function formatElapsed(ms: number): string {
@@ -81,7 +88,7 @@ export class JobStore implements JobProgressStore {
     private readonly namespace: string,
     private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
     upcasters: UpcasterRegistry,
-    options: JobStoreOptions = {},
+    options: JobStoreOptions,
   ) {
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 

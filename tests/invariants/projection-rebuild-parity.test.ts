@@ -33,6 +33,7 @@ import {
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -248,7 +249,12 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
         ...discussInputs,
       ];
 
-      const appended = commitInputs(db, inputs, { now: () => NOW, reducers, upcasters });
+      const appended = commitInputs(db, inputs, {
+        now: () => NOW,
+        reducers,
+        upcasters,
+        providers: permissiveProviderLookupPort,
+      });
       expect(appended.length).toBe(inputs.length);
 
       const before = snapshotProjections(db);

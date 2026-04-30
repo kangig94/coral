@@ -15,9 +15,6 @@ import { applyReducer } from './reducers.js';
 
 type Database = BetterSqlite3.Database;
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
-const permissiveProviderLookupPort: ProviderLookupPort = {
-  hasProvider: () => true,
-};
 
 type RuntimeCauseRefToken = {
   readonly [COMMIT_CAUSE_REF_TOKEN]: {
@@ -29,7 +26,15 @@ export interface AppendContext {
   now(): Date;
   reducers: ComposedReducers;
   upcasters: UpcasterRegistry;
-  providers?: ProviderLookupPort;
+  /**
+   * Required. Production composes the port from `providers/catalog.ts`
+   * (`providerLookupPortFromCatalog`). Tests that don't exercise provider
+   * validation may supply `permissiveProviderLookupPort` from
+   * `tests/helpers/append-context.ts` — explicit opt-in, never an
+   * implicit default. See AC1.2 / Phase 2 step 0 in the architecture-gap
+   * follow-up plan.
+   */
+  providers: ProviderLookupPort;
 }
 
 export interface AppendedEvent extends CoralEvent {
@@ -290,7 +295,7 @@ export function commit(
     }));
     const validationCtx: DomainAppendValidationContext = {
       db,
-      providers: ctx.providers ?? permissiveProviderLookupPort,
+      providers: ctx.providers,
     };
 
     for (const validateAppend of ctx.reducers.appendValidators) {

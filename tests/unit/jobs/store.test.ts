@@ -13,6 +13,7 @@ import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -64,7 +65,11 @@ function createStore(db: InstanceType<typeof Database> = createDb()): {
   const runtime = new SimulationRuntime();
   return {
     runtime,
-    store: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus: new TypedEventBus(), db }),
+    store: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      eventBus: new TypedEventBus(),
+      db,
+      providers: permissiveProviderLookupPort,
+    }),
   };
 }
 

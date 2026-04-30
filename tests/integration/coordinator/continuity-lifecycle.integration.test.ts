@@ -38,6 +38,7 @@ import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { AgentConfig } from '#src/discuss/shell/types.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -144,6 +145,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
       db: openTestStoreDb(runtime),
       eventBus,
+      providers: permissiveProviderLookupPort,
     });
     const service = new ExecutionService(ctx, {
       runtime,

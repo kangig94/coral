@@ -27,6 +27,7 @@ import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 const renderer = createCauseRefRenderer(defaultEventDescribers);
 import type { StoragePort } from '#src/runtime/ports.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -160,6 +161,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
       now: () => NOW,
       reducers: composeReducers(jobsRegistry, workflowRegistry),
       upcasters: createDefaultUpcasterRegistry(),
+      providers: permissiveProviderLookupPort,
     });
     return result.at(-1)?.seq ?? 0;
   };
@@ -263,6 +265,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
         upcasters: createDefaultUpcasterRegistry(),
+        providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
   const workflowCompletedSeq =
@@ -285,6 +288,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
         upcasters: createDefaultUpcasterRegistry(),
+        providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
   const workflowJobTerminalSeq =
@@ -312,6 +316,7 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
         upcasters: createDefaultUpcasterRegistry(),
+        providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
 

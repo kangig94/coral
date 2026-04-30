@@ -31,6 +31,7 @@ import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
@@ -127,7 +128,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime) },
+    { db: openTestStoreDb(runtime), providers: permissiveProviderLookupPort },
   );
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),

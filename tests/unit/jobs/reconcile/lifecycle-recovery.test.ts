@@ -13,6 +13,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -319,6 +320,7 @@ function appendSessionOpenedEvent(
       now: () => new Date(runtime.time.now()),
       reducers: composeReducers(sessionsRegistry),
       upcasters: createDefaultUpcasterRegistry(),
+      providers: permissiveProviderLookupPort,
     },
   );
 }
@@ -544,7 +546,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
@@ -623,7 +629,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
@@ -696,7 +706,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -746,7 +760,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
     const jobId = `foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`;
@@ -804,7 +822,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
     const foreignNamespace = 'foreign-workflow-namespace';
@@ -855,7 +877,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -903,7 +929,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -962,7 +992,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db, eventBus },
+      {
+        db,
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(
       projectRoot,
@@ -1039,7 +1073,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db, eventBus },
+      {
+        db,
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(
       projectRoot,
@@ -1091,7 +1129,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1161,7 +1203,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
@@ -1221,7 +1267,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1278,7 +1328,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1323,7 +1377,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1376,7 +1434,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1423,7 +1485,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1468,7 +1534,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1521,7 +1591,11 @@ describe('lifecycle recovery', () => {
       currentNamespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
@@ -1570,7 +1644,11 @@ describe('lifecycle recovery', () => {
       namespace,
       runtime,
       createDefaultUpcasterRegistry(),
-      { db: openTestStoreDb(runtime), eventBus },
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 

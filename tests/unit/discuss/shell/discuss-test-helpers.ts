@@ -34,6 +34,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
@@ -207,6 +208,7 @@ export function createDiscussHarness(
     {
       db: openTestStoreDb(runtime),
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+      providers: permissiveProviderLookupPort,
     },
   );
   const source = resolvedOptions.source ?? runtime.paths.projectSource(projectRoot);

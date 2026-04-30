@@ -10,6 +10,7 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -124,6 +125,7 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
           now: () => NOW,
           reducers: composeReducers(jobsRegistry),
           upcasters: createDefaultUpcasterRegistry(),
+          providers: permissiveProviderLookupPort,
         },
       );
 
