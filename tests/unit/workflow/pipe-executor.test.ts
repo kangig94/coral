@@ -168,6 +168,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
       ids: workflowIds,
+      time: workflowTime,
     });
 
     expect(result.finalOutput).toBe('FINAL');
@@ -217,7 +218,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { context: 'SHARED', ids: workflowIds },
+      { context: 'SHARED', ids: workflowIds, time: workflowTime },
     );
 
     expect(dispatched).toEqual([
@@ -260,7 +261,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { ids: workflowIds },
+      { ids: workflowIds, time: workflowTime },
     );
 
     expect(prompts).toEqual(['Use A', 'Use B']);
@@ -427,6 +428,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx, {
       ids: workflowIds,
+      time: workflowTime,
     });
 
     expect(result.finalOutput).toBe('<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>');
@@ -470,6 +472,8 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
         ids: workflowIds,
+
+        time: workflowTime,
       }),
     ).rejects.toMatchObject({
       message: 'Pipeline aborted (launched atoms may continue)',
@@ -507,7 +511,7 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { ids: workflowIds }),
+      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'architect' failed: Failed: session/session-1#1",
       aborted: false,
@@ -528,6 +532,8 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
         ids: workflowIds,
+
+        time: workflowTime,
       }),
     ).rejects.toMatchObject({ aborted: true });
 
@@ -548,6 +554,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
       ids: workflowIds,
+      time: workflowTime,
     });
 
     expect(result.finalOutput).toBe('DONE');
@@ -582,6 +589,8 @@ describe('workflow pipe executor', () => {
         staleCheckIntervalMs: 1,
         workflowJobId: 'workflow-1',
         ids: workflowIds,
+
+        time: workflowTime,
       });
 
       expect(result.finalOutput).toBe('DONE');
@@ -625,7 +634,7 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds }),
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' launch failed: launch blocked",
       aborted: false,
@@ -669,7 +678,7 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds }),
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' failed: Failed: session/session-b#1",
       aborted: false,
@@ -711,6 +720,8 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
         signal: controller.signal,
         ids: workflowIds,
+
+        time: workflowTime,
       }),
     ).rejects.toMatchObject({
       message: 'Pipeline aborted (launched atoms may continue)',
@@ -747,6 +758,7 @@ describe('workflow pipe executor', () => {
 
     await executePipeline(parseExpression('architect -> "Apply this fixup"'), 'seed', 'codex', executionSvc, ctx, {
       ids: workflowIds,
+      time: workflowTime,
     });
 
     const step2 = capturedPrompts[1];

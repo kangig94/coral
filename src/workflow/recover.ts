@@ -3,7 +3,6 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { errorMessage } from '../infra/error-format.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../runtime/ports.js';
-import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
@@ -527,14 +526,14 @@ export async function resumeAll(options: {
   staleCheckIntervalMs?: number;
   staleAbortTimeoutMs?: number;
   drainDeadlineMs?: number;
-  time?: Pick<TimePort, 'now'>;
+  time: Pick<TimePort, 'now'>;
 }): Promise<string[]> {
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const staleAbortTimeoutMs = options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS;
   const drainDeadlineMs = options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS;
-  const time = options.time ?? SYSTEM_TIME_PORT;
+  const time = options.time;
   const resumedWorkflowIds: string[] = [];
 
   for (const jobId of options.progressStore.listJobIds()) {

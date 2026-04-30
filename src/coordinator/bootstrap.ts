@@ -71,7 +71,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
           });
           return undefined;
         },
-        { now: () => nowDate(), reducers, upcasters, providers: noProviderLookupPort },
+        { now: () => nowDate(runtime.time), reducers, upcasters, providers: noProviderLookupPort },
       );
 
       if (!event) {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
-import { SYSTEM_TIME_PORT, nowIsoString } from '../../../infra/time.js';
+import { nowIsoString } from '../../../infra/time.js';
 import type { EnvPort } from '../../../runtime/ports.js';
 import { noteEntryId, parseKbEntryId, type KbEntryId } from '../../entry-types.js';
 
@@ -237,7 +237,7 @@ export function applyRecordCurateFailure(
   state: CurateState,
   through: CurateCursor | null,
   error: unknown,
-  nowMs: number = SYSTEM_TIME_PORT.now(),
+  nowMs: number,
   timings: CurateTimings = DEFAULT_CURATE_TIMINGS,
 ): CurateState | null {
   const attemptedThrough = through ?? state.lastAttemptedThrough;

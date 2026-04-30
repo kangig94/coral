@@ -20,7 +20,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
-import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
+import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';

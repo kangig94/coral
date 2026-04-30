@@ -582,6 +582,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
           coordinatorCommit: (cb) => progressStore.commit(cb),
           log: identity.log,
         }),
+        time: runtime.time,
       });
       assertStartupStillActive();
 

@@ -183,6 +183,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
+        time: { now: () => Date.now() },
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -208,6 +209,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
+        time: { now: () => Date.now() },
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -233,6 +235,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
+        time: { now: () => Date.now() },
       });
 
       expect(resumed).toEqual(['workflow-1']);

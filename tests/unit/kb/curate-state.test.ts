@@ -507,7 +507,7 @@ describe('curate state', () => {
       consecutiveCommunityBatchFailures: 5,
     });
 
-    expect(applyRecordCurateFailure(state, null, new Error('transient failure'))).toEqual({
+    expect(applyRecordCurateFailure(state, null, new Error('transient failure'), Date.now())).toEqual({
       ...state,
       lastAttemptedThrough: cursor('coral-failed', 4),
       retryNotBefore: '2026-03-25T14:00:00.000Z',

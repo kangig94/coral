@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
-import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
+import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';

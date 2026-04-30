@@ -1,6 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
-import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { IdPort, TimePort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
@@ -274,12 +273,12 @@ export async function executePipeline(
     drainDeadlineMs?: number;
     workflowJobId?: string;
     journal?: WorkflowJournal;
-    time?: Pick<TimePort, 'now'>;
+    time: Pick<TimePort, 'now'>;
     ids: Pick<IdPort, 'uuid'>;
   },
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
-  const time = options.time ?? SYSTEM_TIME_PORT;
+  const time = options.time;
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const staleAbortTimeoutMs = options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS;

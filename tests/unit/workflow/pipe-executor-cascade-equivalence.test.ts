@@ -93,7 +93,7 @@ describe('workflow cascade equivalence golden master', () => {
       'codex',
       executionSvc,
       ctx,
-      { context: 'SHARED', ids: { uuid: () => 'workflow-test-uuid' } },
+      { context: 'SHARED', ids: { uuid: () => 'workflow-test-uuid' }, time: { now: () => Date.now() } },
     );
 
     expect({ prompts, result }).toEqual(JSON.parse(readFileSync(GOLDEN_PATH, 'utf-8')) as unknown);
