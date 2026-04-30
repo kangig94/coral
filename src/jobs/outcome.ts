@@ -128,10 +128,21 @@ export function describeJobProgressFault(fault: JobProgressFault): string {
     case 'missing_launch_record':
       return 'Job status record is missing its launch record; dropping.';
     case 'recovery_parse_failed':
-      return `Provider recovery could not parse resumed state: ${fault.cause.message}.`;
+      return appendCauseStack(
+        `Provider recovery could not parse resumed state: ${fault.cause.message}.`,
+        fault.cause.stack,
+      );
     default:
       return assertNever(fault);
   }
+}
+
+/** Append a stack trace to a one-line fault description when present.
+ * Causal-chain output stays single-line for the common case; fault paths
+ * deliberately surface multi-line stack so production debugging has the
+ * trace without needing a separate raw-event query. */
+function appendCauseStack(base: string, stack: string | undefined): string {
+  return stack ? `${base}\n${stack}` : base;
 }
 
 export function describeJobDomainProgress(progress: JobDomainProgress): string {
@@ -162,7 +173,10 @@ export function describeTerminalOutcome(
         case 'wrapper_lost':
           return 'Provider wrapper exited without reporting an outcome.';
         case 'wrapper_crashed':
-          return `Provider wrapper crashed: ${outcome.fault.cause.message}.`;
+          return appendCauseStack(
+            `Provider wrapper crashed: ${outcome.fault.cause.message}.`,
+            outcome.fault.cause.stack,
+          );
         default:
           return assertNever(outcome.fault);
       }

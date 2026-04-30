@@ -61,11 +61,13 @@ function mergeDiagnostics(
   patch: JobTerminalDiagnostics,
 ): JobDiagnostics {
   const processExit = patch.processExit ?? current?.processExit;
+  const byteCounts = patch.byteCounts ?? current?.byteCounts;
   return {
     progressFaults: [...(current?.progressFaults ?? [])],
     ...(patch.warnings === undefined ? {} : { warnings: [...patch.warnings] }),
     ...(patch.usage === undefined ? {} : { usage: { ...patch.usage } }),
     ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
+    ...(byteCounts === undefined ? {} : { byteCounts: { ...byteCounts } }),
   };
 }
 
@@ -315,6 +317,9 @@ export const reduceJobProgress: Reducer<JobProgressBody> = (db, event) => {
     ...(previous?.diagnostics.processExit === undefined
       ? {}
       : { processExit: { ...previous.diagnostics.processExit } }),
+    ...(previous?.diagnostics.byteCounts === undefined
+      ? {}
+      : { byteCounts: { ...previous.diagnostics.byteCounts } }),
   };
 
   upsertProjectionJob(db, event, { diagnostics });

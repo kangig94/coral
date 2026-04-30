@@ -1,15 +1,15 @@
 import { Buffer } from 'node:buffer';
 
-import type { JobDiagnostics, JobTerminal } from './contract.js';
+import type { ProviderJobDiagnostics, ProviderTerminal } from './contract.js';
 
 type DirectJobTerminalInput = {
   content: string;
-  outcome: JobTerminal['outcome'];
-  model?: JobTerminal['model'];
-  usage?: JobTerminal['usage'];
-  durationMs?: JobTerminal['durationMs'];
-  exitCode?: JobTerminal['exitCode'];
-  warnings?: JobTerminal['warnings'];
+  outcome: ProviderTerminal['outcome'];
+  model?: ProviderTerminal['model'];
+  usage?: ProviderTerminal['usage'];
+  durationMs?: ProviderTerminal['durationMs'];
+  exitCode?: ProviderTerminal['exitCode'];
+  warnings?: ProviderTerminal['warnings'];
 };
 
 type ExecResultTerminalInput = {
@@ -17,34 +17,34 @@ type ExecResultTerminalInput = {
   model: string;
   durationMs: number;
   aborted?: boolean;
-  usage?: JobTerminal['usage'];
-  exitCode?: JobTerminal['exitCode'];
-  warnings?: JobTerminal['warnings'];
+  usage?: ProviderTerminal['usage'];
+  exitCode?: ProviderTerminal['exitCode'];
+  warnings?: ProviderTerminal['warnings'];
 };
 
 type BuildJobTerminalInput = DirectJobTerminalInput | ExecResultTerminalInput;
 
 type DirectJobDiagnosticsInput = {
-  byteCounts?: JobDiagnostics['byteCounts'];
-  warnings?: JobDiagnostics['warnings'];
+  byteCounts?: ProviderJobDiagnostics['byteCounts'];
+  warnings?: ProviderJobDiagnostics['warnings'];
 };
 
 type StreamDiagnosticsInput = {
   stdout?: string | Uint8Array;
   stderr?: string | Uint8Array;
-  warnings?: JobDiagnostics['warnings'];
+  warnings?: ProviderJobDiagnostics['warnings'];
 };
 
 type BuildJobDiagnosticsInput = {
-  byteCounts?: JobDiagnostics['byteCounts'];
+  byteCounts?: ProviderJobDiagnostics['byteCounts'];
   stdout?: string | Uint8Array;
   stderr?: string | Uint8Array;
-  warnings?: JobDiagnostics['warnings'];
+  warnings?: ProviderJobDiagnostics['warnings'];
 };
 
-export function buildJobTerminal(input: DirectJobTerminalInput): JobTerminal;
-export function buildJobTerminal(input: ExecResultTerminalInput): JobTerminal;
-export function buildJobTerminal(input: BuildJobTerminalInput): JobTerminal {
+export function buildJobTerminal(input: DirectJobTerminalInput): ProviderTerminal;
+export function buildJobTerminal(input: ExecResultTerminalInput): ProviderTerminal;
+export function buildJobTerminal(input: BuildJobTerminalInput): ProviderTerminal {
   if ('content' in input) {
     return {
       content: input.content,
@@ -68,9 +68,9 @@ export function buildJobTerminal(input: BuildJobTerminalInput): JobTerminal {
   };
 }
 
-export function buildJobDiagnostics(input: DirectJobDiagnosticsInput): JobDiagnostics;
-export function buildJobDiagnostics(input: StreamDiagnosticsInput): JobDiagnostics;
-export function buildJobDiagnostics(input: BuildJobDiagnosticsInput): JobDiagnostics {
+export function buildJobDiagnostics(input: DirectJobDiagnosticsInput): ProviderJobDiagnostics;
+export function buildJobDiagnostics(input: StreamDiagnosticsInput): ProviderJobDiagnostics;
+export function buildJobDiagnostics(input: BuildJobDiagnosticsInput): ProviderJobDiagnostics {
   const byteCounts = resolveByteCounts(input);
 
   return {
@@ -89,7 +89,7 @@ function countBytes(value: string | Uint8Array | undefined): number {
   return value.byteLength;
 }
 
-function resolveByteCounts(input: BuildJobDiagnosticsInput): JobDiagnostics['byteCounts'] {
+function resolveByteCounts(input: BuildJobDiagnosticsInput): ProviderJobDiagnostics['byteCounts'] {
   if (input.stdout === undefined && input.stderr === undefined) {
     return input.byteCounts;
   }

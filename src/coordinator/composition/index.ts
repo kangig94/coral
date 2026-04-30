@@ -246,7 +246,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           return null;
         }
         const events = world.progressStore.readJobProgress(jobId);
-        return { status, events, readiness: deriveLaunchReadiness(detail) };
+        return {
+          status,
+          events,
+          readiness: deriveLaunchReadiness(detail),
+          exit: detail.exit,
+        };
       },
     },
     workflows: {

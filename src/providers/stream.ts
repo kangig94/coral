@@ -1,7 +1,7 @@
 import type {
-  JobDiagnostics,
+  ProviderJobDiagnostics,
   ProviderContinuityEventBody,
-  JobTerminal,
+  ProviderTerminal,
   ProviderEventBody,
   ProviderProgressEventBody,
   ProviderTerminalEventBody,
@@ -105,13 +105,13 @@ export function streamProviderEvents<TEvent>(
 
 export type ProviderTerminalInput = {
   content: string;
-  outcome: JobTerminal['outcome'];
-  model?: JobTerminal['model'];
-  durationMs?: JobTerminal['durationMs'];
-  exitCode?: JobTerminal['exitCode'];
-  warnings?: JobTerminal['warnings'];
-  usage?: JobTerminal['usage'];
-  diagnostics?: JobDiagnostics;
+  outcome: ProviderTerminal['outcome'];
+  model?: ProviderTerminal['model'];
+  durationMs?: ProviderTerminal['durationMs'];
+  exitCode?: ProviderTerminal['exitCode'];
+  warnings?: ProviderTerminal['warnings'];
+  usage?: ProviderTerminal['usage'];
+  diagnostics?: ProviderJobDiagnostics;
   failureCause?: ProviderTerminalEventBody['failureCause'];
 };
 

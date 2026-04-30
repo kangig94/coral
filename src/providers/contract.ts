@@ -98,7 +98,11 @@ export type ProviderTerminalOutcome =
   | { kind: 'failed' }
   | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
 
-export interface JobTerminal {
+/** Provider's raw terminal output shape — what an exec/app-server kernel returns
+ * before the coordinator materializer translates it into a journal-recorded
+ * `ProviderTerminal` (in `jobs/terminal/result.ts`). Distinct types, distinct names
+ * per §10.3. */
+export interface ProviderTerminal {
   content: string;
   model?: string;
   outcome: ProviderTerminalOutcome;
@@ -108,7 +112,11 @@ export interface JobTerminal {
   warnings?: string[];
 }
 
-export interface JobDiagnostics {
+/** Provider-side diagnostics captured at exec time (output byte counts,
+ * warnings). Translated into `JobTerminalDiagnostics` (jobs/terminal/result.ts)
+ * by the coordinator materializer; `byteCounts` flows through to the journal
+ * so wait/detail surfaces can show output size. */
+export interface ProviderJobDiagnostics {
   byteCounts?: {
     stdout: number;
     stderr: number;
@@ -130,8 +138,8 @@ export type ProviderContinuityEventBody = {
 
 export type ProviderTerminalEventBody = {
   kind: 'terminal';
-  terminal: JobTerminal;
-  diagnostics: JobDiagnostics;
+  terminal: ProviderTerminal;
+  diagnostics: ProviderJobDiagnostics;
   failureCause?: ProviderFailureCause;
 };
 

@@ -239,6 +239,9 @@ export function materializeProviderTerminal(
       ...(terminal.terminal.exitCode === undefined
         ? {}
         : { processExit: { exitCode: terminal.terminal.exitCode, signal: null } }),
+      ...(terminal.diagnostics.byteCounts === undefined
+        ? {}
+        : { byteCounts: { ...terminal.diagnostics.byteCounts } }),
     },
   };
 }

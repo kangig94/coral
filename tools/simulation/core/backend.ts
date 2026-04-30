@@ -8,7 +8,7 @@ import {
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import type {
-  JobTerminal,
+  ProviderTerminal,
   PreflightRuntime,
   ProviderSpec,
 } from '../../../src/providers/contract.js';
@@ -80,7 +80,7 @@ export { SimulationRuntime } from '../runtime.js';
 export type { SimulationRuntimeOptions } from '../runtime.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
-type SimulationTerminalOutcome = JobTerminal['outcome'];
+type SimulationTerminalOutcome = ProviderTerminal['outcome'];
 
 export type FakeProviderScenario = {
   name?: string;
@@ -99,7 +99,7 @@ export type FakeProviderScenario = {
     resumable?: boolean;
     exitCode?: number | null;
     warnings?: string[];
-    usage?: JobTerminal['usage'];
+    usage?: ProviderTerminal['usage'];
     outcome: SimulationTerminalOutcome;
   };
   preflightError?: Error | string;

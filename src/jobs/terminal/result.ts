@@ -29,6 +29,13 @@ export interface JobTerminalDiagnostics {
     exitCode: number | null;
     signal: string | null;
   };
+  /** Output byte counts captured by the provider, propagated by the
+   * coordinator's terminal materializer. Surfaces in `coral-cli wait` /
+   * `jobs detail` so operators can see job output size. */
+  byteCounts?: {
+    stdout: number;
+    stderr: number;
+  };
 }
 
 export interface JobDiagnostics extends JobTerminalDiagnostics {
@@ -51,6 +58,13 @@ export const jobTerminalDiagnosticsSchema = z
       .object({
         exitCode: z.number().nullable(),
         signal: z.string().nullable(),
+      })
+      .strict()
+      .optional(),
+    byteCounts: z
+      .object({
+        stdout: z.number(),
+        stderr: z.number(),
       })
       .strict()
       .optional(),

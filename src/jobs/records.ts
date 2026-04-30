@@ -118,14 +118,23 @@ export type JobsListResponse = {
   jobs: Array<{ jobId: string; status: JobStatus }>;
 };
 
-/** Response shape for jobs.detail. Includes the derived launch-readiness view
- * (`'pending' | 'queued' | 'ready' | 'error'`) so callers — debug surfaces,
- * coral-reef, the CLI — can see whether a job has settled past its launch
- * boundary without having to re-derive the mapping from `phase` + `runtime`. */
+/** Response shape for jobs.detail. Includes:
+ *
+ * - `status`: stable launch identity + lifecycle summary (phase, lastSeq,
+ *   continuity, etc.)
+ * - `events`: progress + terminal events for chain-walk rendering
+ * - `readiness`: derived 4-way launch-readiness view (`'pending' | 'queued'
+ *   | 'ready' | 'error'`) so callers can see whether a job has settled past
+ *   its launch boundary without re-deriving from `phase` + `runtime`
+ * - `exit`: the terminal record + per-job diagnostics (byteCounts, warnings,
+ *   usage, processExit, progressFaults) and continuity snapshot when the
+ *   job has terminated. `null` while the job is still live.
+ */
 export type JobDetailResponse = {
   status: JobStatus;
   events: JobProgress[];
   readiness: LaunchReadiness;
+  exit: JobExit | null;
 };
 
 export type {
