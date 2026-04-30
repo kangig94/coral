@@ -94,13 +94,11 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
     jobId: 'job-1',
     sessionId: 'session-1',
     providerName: 'codex',
-    coralOp: 'coral:architect',
     agent: 'architect',
     tagName: 'architect',
     stepIndex: 0,
     atomIndex: 0,
     atomKey: '0:0',
-    kind: 'agent',
     ...overrides,
   };
 }
@@ -177,19 +175,13 @@ describe('workflow pipe executor', () => {
       {
         stepIndex: 0,
         atomIndex: 0,
-        kind: 'agent',
         label: 'architect',
-        provider: 'codex',
-        tagName: 'architect',
         output: 'ARCH',
       },
       {
         stepIndex: 1,
         atomIndex: 0,
-        kind: 'agent',
         label: 'resolver',
-        provider: 'codex',
-        tagName: 'resolver',
         output: 'FINAL',
       },
     ]);
@@ -277,19 +269,13 @@ describe('workflow pipe executor', () => {
       {
         stepIndex: 0,
         atomIndex: 0,
-        kind: 'prompt',
         label: 'prompt#0(Use A)',
-        provider: 'codex',
-        tagName: 'step-result',
         output: 'OUT A',
       },
       {
         stepIndex: 0,
         atomIndex: 1,
-        kind: 'prompt',
         label: 'prompt#1(Use B)',
-        provider: 'codex',
-        tagName: 'step-result',
         output: 'OUT B',
       },
     ]);
@@ -647,10 +633,7 @@ describe('workflow pipe executor', () => {
         {
           stepIndex: 0,
           atomIndex: 0,
-          kind: 'agent',
           label: 'architect',
-          provider: 'codex',
-          tagName: 'architect',
           output: 'ARCH',
         },
       ],
@@ -694,10 +677,7 @@ describe('workflow pipe executor', () => {
         {
           stepIndex: 0,
           atomIndex: 0,
-          kind: 'agent',
           label: 'architect',
-          provider: 'codex',
-          tagName: 'architect',
           output: 'ARCH',
         },
       ],
@@ -739,10 +719,7 @@ describe('workflow pipe executor', () => {
         {
           stepIndex: 0,
           atomIndex: 0,
-          kind: 'agent',
           label: 'architect',
-          provider: 'codex',
-          tagName: 'architect',
           output: 'ARCH',
         },
       ],
@@ -825,13 +802,11 @@ describe('launchAtomWithRetry', () => {
       jobId: 'job-queued',
       sessionId: 'session-queued',
       providerName: 'codex',
-      coralOp: 'coral:architect',
       agent: 'architect',
       tagName: 'architect',
       stepIndex: 0,
       atomIndex: 0,
       atomKey: '0:0',
-      kind: 'agent',
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
     expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -1003,10 +978,7 @@ describe('waitForAtoms', () => {
         {
           stepIndex: 0,
           atomIndex: 0,
-          kind: 'agent',
           label: 'architect',
-          provider: 'codex',
-          tagName: 'architect',
           output: 'ARCH',
         },
       ],

@@ -13,10 +13,7 @@ export const workflowStepDetailSchema = z
   .object({
     stepIndex: z.number().int().nonnegative(),
     atomIndex: z.number().int().nonnegative(),
-    kind: z.enum(['agent', 'prompt']),
     label: z.string(),
-    provider: z.string(),
-    tagName: z.string(),
     output: z.string(),
   })
   .strict();
@@ -24,6 +21,22 @@ export const workflowStepDetailSchema = z
 const workflowStepDetailsField = {
   stepDetails: z.array(workflowStepDetailSchema),
 } as const;
+
+/**
+ * Failure location captured at the wait/launch site that detected the
+ * terminal failure. Optional because launch-rejection paths may set only a
+ * subset (e.g. no `jobId` if rejected before job creation). Surfaced in
+ * `workflow.completed` body for failed outcomes so coral-reef and operators
+ * can identify the failing slot/step/atom without re-walking the journal.
+ */
+export const workflowFailureLocationSchema = z
+  .object({
+    slotId: z.string().optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
+    atomLabel: z.string().optional(),
+    jobId: z.string().optional(),
+  })
+  .strict();
 
 export const workflowCompletedBodySchema = z.discriminatedUnion('outcome', [
   z
@@ -42,6 +55,7 @@ export const workflowCompletedBodySchema = z.discriminatedUnion('outcome', [
     .object({
       outcome: z.literal('failed'),
       causeRef: causeRefSchema,
+      failureLocation: workflowFailureLocationSchema.optional(),
       ...workflowStepDetailsField,
     })
     .strict(),
@@ -85,11 +99,17 @@ export const workflowDrainEnteredBodySchema = z
 
 export type WorkflowCompletedBody = z.infer<typeof workflowCompletedBodySchema>;
 export type WorkflowStepDetail = z.infer<typeof workflowStepDetailSchema>;
+export type WorkflowFailureLocation = z.infer<typeof workflowFailureLocationSchema>;
 export type WorkflowLifecycleFaultBody = z.infer<typeof workflowLifecycleFaultBodySchema>;
 export type WorkflowCompletedInputBody<Scope = never> =
   | { outcome: 'completed'; stepDetails: WorkflowStepDetail[] }
   | { outcome: 'aborted'; stepDetails: WorkflowStepDetail[] }
-  | { outcome: 'failed'; causeRef: CauseRef | CauseRefToken<Scope>; stepDetails: WorkflowStepDetail[] };
+  | {
+      outcome: 'failed';
+      causeRef: CauseRef | CauseRefToken<Scope>;
+      stepDetails: WorkflowStepDetail[];
+      failureLocation?: WorkflowFailureLocation;
+    };
 export type WorkflowDrainEnteredBody = z.infer<typeof workflowDrainEnteredBodySchema>;
 
 function readProjectionWorkflow(db: Database, workflowId: string): { plan: WorkflowPlan; lastSeq: number } | null {

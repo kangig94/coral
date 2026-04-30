@@ -692,10 +692,7 @@ describe('journal commit atomicity invariant', () => {
             {
               stepIndex: 0,
               atomIndex: 0,
-              kind: 'agent',
               label: 'architect',
-              provider: 'codex',
-              tagName: 'architect',
               output: 'ARCH_DONE',
             },
           ],
@@ -739,10 +736,7 @@ describe('journal commit atomicity invariant', () => {
             {
               stepIndex: 0,
               atomIndex: 0,
-              kind: 'agent',
               label: 'architect',
-              provider: 'codex',
-              tagName: 'architect',
               output: 'ARCH_RELAUNCHED',
             },
           ],
@@ -780,10 +774,7 @@ describe('journal commit atomicity invariant', () => {
             {
               stepIndex: 0,
               atomIndex: 0,
-              kind: 'agent',
               label: 'architect',
-              provider: 'codex',
-              tagName: 'architect',
               output: 'ARCH_FROM_WAIT',
             },
           ],
@@ -827,6 +818,12 @@ describe('journal commit atomicity invariant', () => {
             message,
           },
           stepDetails: [],
+          failureLocation: {
+            slotId: failedSlot.slotId,
+            stepIndex: 0,
+            atomLabel: 'architect',
+            jobId: failedSlot.slotId,
+          },
         },
       ]);
       expect(scanFailedWorkflowCompletionsWithoutCauseRef(db)).toEqual([]);
@@ -877,6 +874,12 @@ describe('journal commit atomicity invariant', () => {
         outcome: 'failed',
         causeRef: { stream: { kind: 'workflow', id: harness.workflowId }, seq: lifecycleFault.seq },
         stepDetails: [],
+        failureLocation: {
+          slotId: failedSlot.slotId,
+          stepIndex: 0,
+          atomLabel: 'architect',
+          jobId: failedSlot.slotId,
+        },
       });
       expect(decodeEventBody(terminal.body)).toMatchObject({
         terminal: {

@@ -235,6 +235,18 @@ export class WorkflowExecutionService {
     const message = errorMessage(err);
     const workflowError = err instanceof WorkflowExecutionError ? err : null;
     const stepDetails: StepDetail[] = err instanceof WorkflowExecutionError ? err.stepDetails : [];
+    const failureLocation =
+      workflowError === null
+        ? undefined
+        : (() => {
+            const location = {
+              ...(workflowError.failedSlotId === undefined ? {} : { slotId: workflowError.failedSlotId }),
+              ...(workflowError.failedStep === undefined ? {} : { stepIndex: workflowError.failedStep }),
+              ...(workflowError.failedAtom === undefined ? {} : { atomLabel: workflowError.failedAtom }),
+              ...(workflowError.failedJobId === undefined ? {} : { jobId: workflowError.failedJobId }),
+            };
+            return Object.keys(location).length === 0 ? undefined : location;
+          })();
     const intent: WorkflowFinalizationIntent =
       workflowError?.aborted === true || workflowError?.terminalOutcome?.kind === 'aborted'
         ? {
@@ -253,6 +265,7 @@ export class WorkflowExecutionService {
               ...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
             },
             stepDetails,
+            ...(failureLocation === undefined ? {} : { failureLocation }),
           };
 
     const serialized = serializeWorkflowResult(stepDetails);

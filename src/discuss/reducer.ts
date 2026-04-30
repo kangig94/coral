@@ -39,7 +39,6 @@ function makeEmptyState(sessionId: string): DiscussState {
     created_at: '',
     last_activity_at: '',
     last_speech_step: 0,
-    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -131,7 +130,6 @@ function buildSessionState(event: SessionCreatedEvent): DiscussState {
     created_at: event.ts,
     last_activity_at: event.ts,
     last_speech_step: 0,
-    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -447,7 +445,6 @@ export function reduceDiscussEvent(
       let nextState: DiscussState = {
         ...snapshot.state,
         last_activity_at: event.ts,
-        pending_since_ts: null,
       };
       const removedPendingBidders = new Set<string>();
 

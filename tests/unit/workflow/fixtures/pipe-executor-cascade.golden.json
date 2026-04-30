@@ -11,37 +11,25 @@
       {
         "stepIndex": 0,
         "atomIndex": 0,
-        "kind": "agent",
         "label": "architect",
-        "provider": "codex",
-        "tagName": "architect",
         "output": "ARCH"
       },
       {
         "stepIndex": 0,
         "atomIndex": 1,
-        "kind": "prompt",
         "label": "prompt#1(Use A)",
-        "provider": "codex",
-        "tagName": "step-result",
         "output": "LIT A"
       },
       {
         "stepIndex": 1,
         "atomIndex": 0,
-        "kind": "agent",
         "label": "resolver",
-        "provider": "codex",
-        "tagName": "resolver",
         "output": "FINAL"
       },
       {
         "stepIndex": 1,
         "atomIndex": 1,
-        "kind": "prompt",
         "label": "prompt#1(Use B)",
-        "provider": "codex",
-        "tagName": "step-result",
         "output": "LIT B"
       }
     ]

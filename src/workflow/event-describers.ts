@@ -12,7 +12,17 @@ import { workflowPlanSchema } from './plan.js';
 
 const planDeclared = typedDescriber(workflowPlanSchema, () => 'Workflow plan declared.');
 const drainEntered = typedDescriber(workflowDrainEnteredBodySchema, () => 'Workflow entered failure drain.');
-const completed = typedDescriber(workflowCompletedBodySchema, (body) => `Workflow ${body.outcome}.`);
+const completed = typedDescriber(workflowCompletedBodySchema, (body) => {
+  const base = `Workflow ${body.outcome}.`;
+  if (body.outcome !== 'failed' || body.failureLocation === undefined) return base;
+  const { stepIndex, atomLabel, slotId, jobId } = body.failureLocation;
+  const parts: string[] = [];
+  if (stepIndex !== undefined) parts.push(`step ${stepIndex}`);
+  if (atomLabel !== undefined) parts.push(`atom '${atomLabel}'`);
+  if (slotId !== undefined) parts.push(`slot ${slotId}`);
+  if (jobId !== undefined) parts.push(`job ${jobId}`);
+  return parts.length === 0 ? base : `${base} Failure at ${parts.join(', ')}.`;
+});
 const lifecycleFault = typedDescriber(workflowLifecycleFaultBodySchema, (body) => {
   const base = `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
   // wrapper_crashed and recovery_failed carry a stack trace; surface it on

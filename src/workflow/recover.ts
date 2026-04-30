@@ -152,13 +152,11 @@ function buildLaunchedAtomsForStep(
       jobId: slot.jobId,
       sessionId: detail.launch?.sessionId ?? `unknown-session:${slot.slotId}`,
       providerName: slot.provider,
-      coralOp: slot.kind === 'prompt' ? 'workflow-literal' : `coral:${slot.instruction}`,
       agent: slot.label,
       tagName: slot.tagName,
       stepIndex: slot.stepIndex,
       atomIndex,
       atomKey: slot.atomKey,
-      kind: slot.kind,
     };
   });
 }
@@ -271,6 +269,10 @@ function recoveryIntentFromFailure(
     message: string;
     causeRef?: CauseRef;
     terminalOutcome?: TerminalOutcome;
+    failedSlotId?: string;
+    failedStep?: number;
+    failedAtom?: string;
+    failedJobId?: string;
   },
   stepDetails: StepDetail[],
 ): WorkflowFinalizationIntent {
@@ -283,6 +285,16 @@ function recoveryIntentFromFailure(
     };
   }
 
+  const failureLocation = (() => {
+    const location = {
+      ...(failure.failedSlotId === undefined ? {} : { slotId: failure.failedSlotId }),
+      ...(failure.failedStep === undefined ? {} : { stepIndex: failure.failedStep }),
+      ...(failure.failedAtom === undefined ? {} : { atomLabel: failure.failedAtom }),
+      ...(failure.failedJobId === undefined ? {} : { jobId: failure.failedJobId }),
+    };
+    return Object.keys(location).length === 0 ? undefined : location;
+  })();
+
   return {
     outcome: 'failed',
     workflowJobId: workflowId,
@@ -292,6 +304,7 @@ function recoveryIntentFromFailure(
       message: failure.message,
     },
     stepDetails,
+    ...(failureLocation === undefined ? {} : { failureLocation }),
   };
 }
 

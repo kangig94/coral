@@ -78,7 +78,6 @@ export type DiscussState = {
   created_at: string;
   last_activity_at: string;
   last_speech_step: number;
-  pending_since_ts: number | null;
   bid_release_step: number;
   end_reason_content: string | null;
   transcript: TranscriptEntry[];

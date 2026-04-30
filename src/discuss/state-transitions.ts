@@ -25,6 +25,5 @@ export function resetBids(state: DiscussState): DiscussState {
     current_bids: currentBids,
     current_thoughts: {},
     pending_bidders: pendingBidders,
-    pending_since_ts: null,
   };
 }

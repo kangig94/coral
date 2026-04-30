@@ -141,13 +141,11 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     jobId: decision.job,
     sessionId: decision.session,
     providerName: slot.provider,
-    coralOp: promptSlot ? 'workflow-literal' : `coral:${slot.instruction}`,
     agent: slot.label,
     tagName: slot.tagName,
     stepIndex: slot.stepIndex,
     atomIndex,
     atomKey: slot.atomKey,
-    kind: promptSlot ? 'prompt' : 'agent',
   };
 }
 

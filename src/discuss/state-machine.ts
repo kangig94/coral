@@ -420,9 +420,6 @@ export function decideExpel(
     return { ok: false, error: 'session_ended', detail: { hint: 'Cannot expel agents from an ended session.' } };
   }
   const isRespawn = state.epoch === 1 && state.step === 1;
-  const hint = isRespawn
-    ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`
-    : `Banned: ${pendingAgents.join(', ')}. Shutdown and do not respawn.`;
 
   return {
     ok: true,
@@ -430,7 +427,6 @@ export function decideExpel(
       makeEvent(sessionId, projectRoot, topic, seq, 'participants.expelled', ts, {
         agents: [...pendingAgents],
         isRespawn,
-        hint,
       }),
     ],
   };

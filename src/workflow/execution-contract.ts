@@ -13,10 +13,7 @@ import type { TerminalOutcome } from '../jobs/outcome.js';
 export type StepDetail = {
   stepIndex: number;
   atomIndex: number;
-  kind: 'agent' | 'prompt';
   label: string;
-  provider: string;
-  tagName: string;
   output: string;
 };
 
@@ -90,13 +87,11 @@ export type LaunchedAtom = {
   jobId: string;
   sessionId: string;
   providerName: string;
-  coralOp: string;
   agent: string;
   tagName: string;
   stepIndex: number;
   atomIndex: number;
   atomKey: string;
-  kind: 'agent' | 'prompt';
 };
 
 export type WaitFailure = {
@@ -169,10 +164,7 @@ export function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<str
     stepDetails.push({
       stepIndex: atom.stepIndex,
       atomIndex: atom.atomIndex,
-      kind: atom.kind,
       label: atom.agent,
-      provider: atom.providerName,
-      tagName: atom.tagName,
       output,
     });
   }

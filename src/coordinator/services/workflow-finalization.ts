@@ -72,6 +72,7 @@ export function composeWorkflowFinalization<Scope>(
       outcome: 'failed',
       causeRef,
       stepDetails: intent.stepDetails,
+      ...(intent.failureLocation === undefined ? {} : { failureLocation: intent.failureLocation }),
     }),
   );
   appendJobTerminalRecorded(c, {

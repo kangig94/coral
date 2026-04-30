@@ -108,7 +108,6 @@ export const participantsExpelledPayloadSchema = z
   .object({
     agents: z.array(z.string()),
     isRespawn: z.boolean(),
-    hint: z.string(),
   })
   .strict();
 
