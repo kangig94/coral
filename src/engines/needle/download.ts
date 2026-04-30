@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Runtime } from '../runtime/ports.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { ensureExecSucceeded, findCommand } from './exec-checks.js';
 
 const COMMAND_TIMEOUT_MS = 120_000;

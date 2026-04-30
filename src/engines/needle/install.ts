@@ -10,8 +10,8 @@ import type {
   LocalExpansionInstallState,
 } from '#src/expansion/contract.js';
 import { errorMessage } from '#src/infra/error-format.js';
-import { downloadBuffer } from '#src/infra/download.js';
-import { ensureExecSucceeded, findCommand } from '#src/infra/exec-checks.js';
+import { downloadBuffer } from './download.js';
+import { ensureExecSucceeded, findCommand } from './exec-checks.js';
 import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '#src/infra/fs-lock.js';
 import { readInstallMeta, writeInstallMeta } from './install-meta.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
