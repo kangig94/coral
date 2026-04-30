@@ -294,7 +294,7 @@ export async function runCommunitySubphase(
       communitySummaryInputFingerprints: prepared.summaryFingerprints,
       consecutiveCommunityBatchFailures: 0,
       // A successful community batch implicitly clears the lane-disabled stamp
-      // (the lane was unblocked); see scheduler.ts MAX_CONSECUTIVE_FAILURES.
+      // (the lane was unblocked); see scheduler.ts INVARIANT.MAX_CONSECUTIVE_FAILURES.
       communityBatchLaneDisabledAt: null,
     };
     const shouldWriteState =

@@ -73,11 +73,17 @@ export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
  * cap is the policy that links the two, and pure reducers below need
  * the value to stamp `disabledAt` on the cap-trip.
  *
- * Design invariant — see §16(d) and spec §3.1: this is part of the lane-disable
+ * Design invariant — see spec §16 #54 and §3.1: this is part of the lane-disable
  * policy contract, NOT an operator knob. Changing it changes user-visible
  * behavior and invalidates the spec's reasoning about lane recovery.
+ *
+ * Exposed under the `INVARIANT.<name>` namespace per §16 #54 to mark it visually
+ * distinct from operator knobs (which live alongside in the same file with
+ * `CORAL_*` env override).
  */
-export const MAX_CONSECUTIVE_FAILURES = 10;
+export const INVARIANT = {
+  MAX_CONSECUTIVE_FAILURES: 10,
+} as const;
 
 export type CurateCursor = {
   entrySeq: number;
@@ -123,9 +129,9 @@ export type CurateState = {
   communitySummaryInputFingerprints?: Record<string, string>;
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
-  /** ISO-8601 stamp when the claim lane first crossed `MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
+  /** ISO-8601 stamp when the claim lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
   claimLaneDisabledAt: string | null;
-  /** ISO-8601 stamp when the community-batch lane first crossed `MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
+  /** ISO-8601 stamp when the community-batch lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
   communityBatchLaneDisabledAt: string | null;
   initialized: boolean;
 };
@@ -258,7 +264,7 @@ export function applyRecordCurateFailure(
   // (`< cap` → `>= cap`); leave any prior stamp intact across the boundary so
   // operators see the moment the lane first tripped, not the most recent retry.
   const tripped =
-    nextFailures >= MAX_CONSECUTIVE_FAILURES && state.claimLaneDisabledAt === null;
+    nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.claimLaneDisabledAt === null;
 
   return {
     ...state,

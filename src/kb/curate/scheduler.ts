@@ -22,7 +22,7 @@ import {
   runClassificationBatches,
 } from './runner.js';
 import {
-  MAX_CONSECUTIVE_FAILURES,
+  INVARIANT,
   isClaimStale,
   readCurateState,
   resolveCurateTimings,
@@ -57,8 +57,8 @@ import { isUsageBudgetExhausted } from './usage-budget.js';
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
 
-/** Re-exported for callers that import from the scheduler facade; see {@link import('./state/model.js').MAX_CONSECUTIVE_FAILURES}. */
-export { MAX_CONSECUTIVE_FAILURES };
+/** Re-exported for callers that import from the scheduler facade; see {@link import('./state/model.js').INVARIANT}. */
+export { INVARIANT };
 
 class CurateRunError extends Error {
   readonly through: CurateCursor | null;
@@ -120,7 +120,7 @@ export function createCurateScheduler({
       // Stamp on the healthy → disabled transition; preserve any earlier stamp
       // so operators see the original trip time across subsequent retries.
       const tripped =
-        nextFailures >= MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
+        nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
       writeCurateState(kb, {
         ...state,
         consecutiveCommunityBatchFailures: nextFailures,
@@ -138,9 +138,9 @@ export function createCurateScheduler({
       return false;
     }
 
-    if (readCurateState(kb).consecutiveCommunityBatchFailures >= MAX_CONSECUTIVE_FAILURES) {
+    if (readCurateState(kb).consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES) {
       backendLog.warn(
-        `kb_curate: community batch lane permanently disabled after ${MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
+        `kb_curate: community batch lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
       );
       return false;
     }
@@ -273,10 +273,10 @@ export function createCurateScheduler({
       return;
     }
     const claimLanePermanentlyDisabled =
-      readCurateState(kb).consecutiveClaimFailures >= MAX_CONSECUTIVE_FAILURES;
+      readCurateState(kb).consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES;
     if (claimLanePermanentlyDisabled) {
       backendLog.warn(
-        `kb_curate: claim lane permanently disabled after ${MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
+        `kb_curate: claim lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
       );
     }
     const runController = new AbortController();

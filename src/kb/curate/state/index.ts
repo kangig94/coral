@@ -14,7 +14,7 @@ export {
   DEFAULT_CURATE_MAX_RETRY_MS,
   DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
   DEFAULT_CURATE_TRANSIENT_RETRY_MS,
-  MAX_CONSECUTIVE_FAILURES,
+  INVARIANT,
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
   applyRecordCurateFailure,

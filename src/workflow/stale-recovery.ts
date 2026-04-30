@@ -12,11 +12,13 @@ import { formatAtomProgress, type AwaitStepState, type WaitStaleRecoveryHandler 
 
 /**
  * Workflow-recovery contract: a stale atom is retried at most twice before the
- * workflow fails. Design invariant — see §16(d) and §16 cross-reference: changing
- * this value redefines user-visible recovery semantics, so it stays a constant
- * (NOT an operator knob).
+ * workflow fails. Design invariant — see spec §16 #54: changing this value
+ * redefines user-visible recovery semantics, so it stays a constant (NOT an
+ * operator knob). Exposed under the `INVARIANT.<name>` namespace per §16 #54.
  */
-const MAX_STALE_RECOVERY_RETRIES = 2;
+const INVARIANT = {
+  MAX_STALE_RECOVERY_RETRIES: 2,
+} as const;
 
 export const DEFAULT_STALE_ABORT_TIMEOUT_MS = 30_000;
 export const CORAL_STALE_ABORT_TIMEOUT_MS_ENV = 'CORAL_STALE_ABORT_TIMEOUT_MS';
@@ -67,7 +69,7 @@ export async function recoverStaleAtom(
     if (now - lastActive < options.staleTimeoutMs) continue;
 
     const retries = state.staleRetries.get(atom.atomKey) ?? 0;
-    if (retries >= MAX_STALE_RECOVERY_RETRIES) {
+    if (retries >= INVARIANT.MAX_STALE_RECOVERY_RETRIES) {
       staleFailureMetadata(
         atom,
         options.buildPartialStepDetails(),

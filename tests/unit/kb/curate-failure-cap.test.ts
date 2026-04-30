@@ -11,7 +11,7 @@ import {
   writeCurateState,
 } from '#src/kb/curate/state/index.js';
 import {
-  MAX_CONSECUTIVE_FAILURES,
+  INVARIANT,
   createCurateScheduler,
   type CurateHandle,
 } from '#src/kb/curate/scheduler.js';
@@ -20,7 +20,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
-// S2: per-lane consecutive failure counters cap at MAX_CONSECUTIVE_FAILURES.
+// S2: per-lane consecutive failure counters cap at INVARIANT.MAX_CONSECUTIVE_FAILURES.
 // Once a lane crosses the cap the scheduler stops scheduling it and surfaces
 // an operator-visible warning. Reset path: applyClearCurateRetryState resets
 // both lanes so an explicit reset can re-enable scheduling.
@@ -66,7 +66,7 @@ describe('curate scheduler failure cap (S2)', () => {
   });
 
   it('exposes the documented cap value', () => {
-    expect(MAX_CONSECUTIVE_FAILURES).toBe(10);
+    expect(INVARIANT.MAX_CONSECUTIVE_FAILURES).toBe(10);
     void scheduler; // ensure setup ran without throwing
   });
 
@@ -76,8 +76,8 @@ describe('curate scheduler failure cap (S2)', () => {
     await runtime.withMutationLock(() => {
       writeCurateState(runtime, {
         ...readCurateState(runtime),
-        consecutiveClaimFailures: MAX_CONSECUTIVE_FAILURES,
-        consecutiveCommunityBatchFailures: MAX_CONSECUTIVE_FAILURES,
+        consecutiveClaimFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
+        consecutiveCommunityBatchFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
         claimLaneDisabledAt: trippedAt,
         communityBatchLaneDisabledAt: trippedAt,
         initialized: true,
@@ -95,8 +95,8 @@ describe('curate scheduler failure cap (S2)', () => {
       // Counters stayed at the cap — scheduler did not increment further or
       // mutate the lane. The warning surfaces the disabled state and the
       // disabledAt timestamps survive across the skip.
-      expect(state.consecutiveClaimFailures).toBe(MAX_CONSECUTIVE_FAILURES);
-      expect(state.consecutiveCommunityBatchFailures).toBe(MAX_CONSECUTIVE_FAILURES);
+      expect(state.consecutiveClaimFailures).toBe(INVARIANT.MAX_CONSECUTIVE_FAILURES);
+      expect(state.consecutiveCommunityBatchFailures).toBe(INVARIANT.MAX_CONSECUTIVE_FAILURES);
       expect(state.claimLaneDisabledAt).toBe(trippedAt);
       expect(state.communityBatchLaneDisabledAt).toBe(trippedAt);
       expect(warnSpy).toHaveBeenCalledWith(
@@ -111,8 +111,8 @@ describe('curate scheduler failure cap (S2)', () => {
   it('applyClearCurateRetryState resets BOTH lane counters and the disabled-at stamps so an operator can re-enable scheduling', () => {
     const seeded = {
       ...readCurateState(runtime),
-      consecutiveClaimFailures: MAX_CONSECUTIVE_FAILURES,
-      consecutiveCommunityBatchFailures: MAX_CONSECUTIVE_FAILURES,
+      consecutiveClaimFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
+      consecutiveCommunityBatchFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
       claimLaneDisabledAt: '2026-04-25T00:00:00.000Z',
       communityBatchLaneDisabledAt: '2026-04-25T00:00:00.000Z',
       retryNotBefore: '2026-04-25T00:00:00.000Z',

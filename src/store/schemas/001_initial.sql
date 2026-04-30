@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS expansion_state (
 -- Single row for scalar scheduler state; the active claim lives in kb_curate_active_claim.
 -- claim_lane_disabled_at / community_batch_lane_disabled_at: ISO-8601 stamped
 -- when the corresponding consecutive_*_failures counter first crosses
--- MAX_CONSECUTIVE_FAILURES (see src/kb/curate/scheduler.ts). The boolean
+-- INVARIANT.MAX_CONSECUTIVE_FAILURES (see src/kb/curate/state/model.ts). The boolean
 -- "disabled?" is derivable from the counter; the timestamp is the
 -- operator-visible diagnostic that records *when* the lane tripped.
 -- Cleared by applyClearCurateRetryState alongside the counters. Spec §3.1.
