@@ -1065,7 +1065,7 @@ type WorkflowStepDetail = {
 - Plan is a durable aggregate with semantics (dependencies, slot IDs) independent of any single job execution.
 - Child jobs reference `refs.workflowSlotId` and `refs.workflowId`; the plan lives ONCE on the workflow stream, not duplicated on every child launch.
 - Launch-time syntax-shaped metadata (`stepIndex`, `atomIndex`, label) is encoded in `slotId` and `agent`, not duplicated on child launches. Completion `stepDetails` separately records execution summaries for completed atoms, including step/atom indices and label alongside output.
-- Workflow completion is a stream-level fact. The `causeRef` on `workflow.completed` points to the failing child's terminal event when relevant — no wrapped fault variant needed.
+- Workflow completion is a stream-level fact. The `causeRef` on `workflow.completed` points to the failing child's terminal event when relevant — no wrapped fault variant needed. The optional `failureLocation` (`{ slotId, stepIndex, atomLabel, jobId }`, all individually optional) on the `failed` variant records *where* the workflow failed in plan coordinates so coral-reef and operator surfaces can identify the failing slot without re-walking the journal. `causeRef` remains the typed channel for *what* the originating fault was; `failureLocation` is the navigational summary alongside it.
 
 **Why a workflow job still exists as a `job/<id>` stream**:
 The workflow is also a job (from the user's perspective, they `wait` on a workflow id). The `job/<id>` stream carries the user-facing job lifecycle. The `workflow/<id>` stream carries the plan and slot outcomes. They are linked by convention (`workflowJobId === workflowId`, or explicit `refs.workflowId` on the job's launch event).
@@ -1087,10 +1087,20 @@ type JobTerminal = {
   durationMs: number;
 };
 
-type JobDiagnostics = {
-  warnings: string[];
+// Two-layer split: `JobTerminalDiagnostics` is what the provider emits and
+// the coordinator's terminal materializer propagates onto the job-level
+// record. `JobDiagnostics` (used in `JobDetailResponse.exit`) extends it
+// with `progressFaults` — wrapper-local faults observed during the job's
+// progress stream that have no originating domain event.
+type JobTerminalDiagnostics = {
+  warnings?: string[];
   usage?: UsageSummary;
-  model?: string;
+  processExit?: { exitCode: number | null; signal: string | null };
+  byteCounts?: { stdout: number; stderr: number };
+};
+
+type JobDiagnostics = JobTerminalDiagnostics & {
+  progressFaults: JobProgressFault[];
 };
 
 type TerminalOutcome =
@@ -1115,6 +1125,21 @@ type CauseRef = {
 - `provider_exit` — provider process exited non-zero. `code` is the exit status. No `cause` field — the provider's process exit IS the full fact.
 - `failed` — a domain event on another stream caused this job to terminate. `causeRef` points to it. **No fault payload is duplicated here.** To render, dereference the referenced event.
 - `job_fault` — a truly job-local lifecycle failure (wrapper crashed, ghost launch, reconciliation mismatch) that has no originating domain stream. This is the ONLY surviving "fault union" variant, and its vocabulary is small and bounded.
+
+**`JobDetailResponse` — the read-side composite for `jobs.detail`**:
+
+```ts
+type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
+
+type JobDetailResponse = {
+  status: JobStatus;                   // stable launch identity + lifecycle summary
+  events: JobProgress[];               // progress + terminal events
+  readiness: LaunchReadiness;          // 4-way coarsening of phase + runtime
+  exit: JobExit | null;                // terminal record + JobDiagnostics + continuity (null while live)
+};
+```
+
+`readiness` is a pure derivation of `phase` + `runtime` (see `src/jobs/launch-readiness.ts`) so the workflow executor can decide "has launch settled, and how?" without re-deriving on every read. `exit` is the after-the-fact rollup (`JobTerminal` + `JobDiagnostics` + `JobContinuitySnapshot?`) for terminated jobs; `null` while live. `JobDetailResponse` is the canonical shape both the dispatch handler and external consumers (CLI, coral-reef) bind against — defined once at `src/jobs/records.ts` and bound at the dispatch site via `satisfies`.
 
 ### 7.2 `JobLifecycleFault` — the only remaining ADT
 
@@ -1158,7 +1183,7 @@ session/<id>              session.provider_failed          { provider, reason, m
 session/<id>              session.adapter_unparseable      { provider, stdout, stderr, parseError }
 discuss/<id>              discuss.agent.job.finished       { agent, jobId, outcome, attempt }
 workflow/<id>             workflow.completed               { outcome: 'completed' | 'aborted', stepDetails }
-workflow/<id>             workflow.completed               { outcome: 'failed', causeRef, stepDetails }
+workflow/<id>             workflow.completed               { outcome: 'failed', causeRef, stepDetails, failureLocation? }
 ```
 
 KB failures have no dedicated Journal stream. Slow process-like KB attempts (source import, explicit reindex/curation jobs) record terminal-causing failures on the internal KB job's own stream as rich progress events (`kind: 'domain'`, `stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event.
@@ -1223,7 +1248,7 @@ workflow.lifecycle_fault {
 }
 ```
 
-KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `kb_curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, retrieval artifacts reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — auto-fix where safe, queue manual cases, log unrecoverable.
+KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `kb_curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, retrieval artifacts reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — incidents classify as `'auto-fixable'` (apply the fix in-place) or `'needs-manual'` (queue in `kb_curate_retry_queue` for the operator). There is no third "unrecoverable" bucket: an incident either has an automatic remedy or it waits for a human.
 
 No layer rewrites another layer's event.
 
