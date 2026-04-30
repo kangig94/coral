@@ -1902,7 +1902,7 @@ Route dispatch is table-driven (array at `src/transport/http/handler.ts`), but t
 
 **Coral does not ship an HTTP client class.** The catalog is the source of truth for routes and request schemas; non-CLI consumers (`coral-reef`, future browser/external clients) build their own thin client against `rpcCatalog` rather than importing a hand-coded helper class from coral. A "convenience" HTTP client class would maintain a parallel route table that drifts from the catalog — the same asymmetry that motivated the catalog in the first place. Response shape types are exported from coral for consumer reuse, but no wire-encoding class is.
 
-Interactive/live subscriptions use the same transport primitive in both carriages. `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` field; HTTP projects notifications to SSE and IPC carries notifications directly. The steady state is one active subscription per connection; multiplexing is a transparent future optimization, not a second protocol.
+Interactive/live subscriptions use the same transport primitive in both carriages. `src/transport/json-rpc.ts` defines unary + notification envelopes; HTTP projects notifications to SSE and IPC carries notifications directly. The steady state is one active subscription per connection. If multiplexing ever becomes a real requirement, the multiplexing tag is added to the envelope shape together with the consumer that needs it — the rewrite branch does not pre-declare a reserved slot.
 
 ---
 

@@ -95,9 +95,8 @@ export type CoordinatorCoreOptions = {
   getConsumerStuck: () => Array<{ id: string; elapsedSinceStopMs: number }>;
   /**
    * Reports the mutation lock state when a deadline has aborted a
-   * mutation but `fn` has not yet settled. Phase 3 wires this with a stub
-   * (always `{ blocked: false }`); Phase 4 supplies the real KbRuntime
-   * mutation-lock diagnostics.
+   * mutation but `fn` has not yet settled. Wired against
+   * `kbRuntime.mutationLockDiagnostics()`.
    */
   getMutationBlocked: () =>
     | { blocked: false }

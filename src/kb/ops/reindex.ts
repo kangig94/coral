@@ -7,8 +7,8 @@ import type { ReindexResult } from '../entry-types.js';
 export const KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** `signal` is the caller's AbortSignal — threaded from the KB job's
- * coordinator-owned AbortRegistry (Phase 5 / AC8) into `withMutationLock`
- * and into `performRescan` so `'scan'` / `'repair'` checkpoints honor it. */
+ * coordinator-owned AbortRegistry into `withMutationLock` and into
+ * `performRescan` so `'scan'` / `'repair'` checkpoints honor it. */
 export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal }): Promise<ReindexResult> {
   const startedAt = kb.time.now();
   const signal = options?.signal;

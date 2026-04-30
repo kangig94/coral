@@ -38,9 +38,9 @@ export function throwIfAborted(signal: AbortSignal, stage: string): void {
 
 /**
  * Narrow predicate for the `aborted/user_abort` terminal-outcome mapping
- * (spec §6.4 / AC9). Only `AbortError` whose `reason === 'user_abort'`
- * routes to the user-abort terminal; mutation-lock deadline aborts surface
- * as `AbortError` with `reason = { kind: 'mutation_deadline', timeoutMs }`
+ * (spec §6.4). Only `AbortError` whose `reason === 'user_abort'` routes to
+ * the user-abort terminal; mutation-lock deadline aborts surface as
+ * `AbortError` with `reason = { kind: 'mutation_deadline', timeoutMs }`
  * and intentionally fall through to failed-terminal recording.
  */
 export function isUserAbort(err: unknown): err is AbortError & { reason: 'user_abort' } {

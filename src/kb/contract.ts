@@ -74,7 +74,7 @@ export interface Backed<T> {
 }
 
 /**
- * Pinned engine-blind FTS capability surface (commit 4 — AC4.7).
+ * Pinned engine-blind FTS capability surface.
  * The widening loop lives in KB-tier; the engine signals `exhausted` in the result
  * so the loop can stop without re-querying for shape information.
  */

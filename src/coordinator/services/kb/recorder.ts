@@ -100,7 +100,7 @@ export class KbJobRecorder {
     // The callback owns the `'user_abort'` reason because
     // `AbortRegistry.abort()` calls `controller.abort()` without a reason —
     // setting it here is what lets downstream `AbortError.reason` map to
-    // `terminal { outcome: aborted, reason: 'user_abort' }` (Phase 6 / AC9).
+    // `terminal { outcome: aborted, reason: 'user_abort' }`.
     const controller = new AbortController();
     this.deps.abortRegistry.register(jobId, () => controller.abort('user_abort'));
 
