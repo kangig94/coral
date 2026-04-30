@@ -2,11 +2,7 @@ import type { LaunchPool } from '../launch.js';
 
 export type { LaunchPool } from '../launch.js';
 
-export type LaunchPermit = { type: 'immediate' };
-
 export type QueuedHandle = {
-  outcome: 'queued';
-  position: number;
   type: 'queued';
   queuePosition: number;
   waitForPermit: () => Promise<void>;
@@ -14,8 +10,6 @@ export type QueuedHandle = {
 };
 
 export type AdmittedHandle = {
-  outcome: 'admitted';
-  permit: LaunchPermit;
   type: 'immediate';
 };
 

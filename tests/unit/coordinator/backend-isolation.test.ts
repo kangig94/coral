@@ -23,8 +23,8 @@ describe('backend isolation', () => {
 
     const admitA = coordA.requestLaunch('job-a1', 'codex');
     const admitB = coordB.requestLaunch('job-b1', 'codex');
-    expect(admitA).toMatchObject({ outcome: 'admitted', type: 'immediate' });
-    expect(admitB).toMatchObject({ outcome: 'admitted', type: 'immediate' });
+    expect(admitA).toMatchObject({ type: 'immediate' });
+    expect(admitB).toMatchObject({ type: 'immediate' });
 
     // Coordinator A sees only its own active job
     expect(coordA.getActiveJobIds()).toEqual(['job-a1']);

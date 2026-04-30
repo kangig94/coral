@@ -4298,13 +4298,11 @@ describe('execution backend server', () => {
 
     expect(createSessionManager(projectA).get('codex', sessionA.sessionId)).toMatchObject({
       sessionId: sessionA.sessionId,
-      lastJobId: 'missing-job-a',
     });
     expect(createSessionManager(projectA).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
 
     expect(createSessionManager(projectB).get('codex', sessionB.sessionId)).toMatchObject({
       sessionId: sessionB.sessionId,
-      lastJobId: 'missing-job-b',
     });
     expect(createSessionManager(projectB).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
   });
@@ -4350,7 +4348,6 @@ describe('execution backend server', () => {
     // Terminal jobs should have their session claims released during startup recovery
     const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
     expect(recoveredSession?.activeJobId).toBeUndefined();
-    expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
   it('recovers orphaned workflow jobs with an empty artifact, workflow diagnostics, and released session claim', async () => {
@@ -4413,7 +4410,6 @@ describe('execution backend server', () => {
       },
     });
     expect(recoveredSession?.activeJobId).toBeUndefined();
-    expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {

@@ -33,7 +33,6 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
     lastUsedAt: overrides.lastUsedAt ?? NOW.toISOString(),
     version: overrides.version ?? 1,
     ...(overrides.activeJobId === undefined ? {} : { activeJobId: overrides.activeJobId }),
-    ...(overrides.lastJobId === undefined ? {} : { lastJobId: overrides.lastJobId }),
     ...(overrides.conversationRef === undefined ? {} : { conversationRef: overrides.conversationRef }),
     ...(overrides.providerContinuity === undefined ? {} : { providerContinuity: overrides.providerContinuity }),
     ...(overrides.model === undefined ? {} : { model: overrides.model }),

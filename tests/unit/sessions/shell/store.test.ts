@@ -277,7 +277,7 @@ describe('sessions shell store', () => {
     });
   });
 
-  it('releaseJob clears activeJobId and sets lastJobId', () => {
+  it('releaseJob clears activeJobId', () => {
     const { mgr, workDir } = setup('release-job');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
@@ -286,7 +286,6 @@ describe('sessions shell store', () => {
 
     const stored = mgr.get('codex', entry.sessionId);
     expect(stored?.activeJobId).toBeUndefined();
-    expect(stored?.lastJobId).toBe('job-1');
   });
 
   it('get returns null for provider mismatch', () => {
@@ -372,7 +371,6 @@ describe('sessions shell store', () => {
 
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       activeJobId: undefined,
-      lastJobId: 'job-1',
       state: 'ready',
       conversationRef: 'thread-1',
     });
@@ -395,7 +393,6 @@ describe('sessions shell store', () => {
 
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       activeJobId: undefined,
-      lastJobId: 'job-1',
       state: 'non_resumable',
     });
     expect(mgr.get('codex', entry.sessionId)?.conversationRef).toBeUndefined();
@@ -423,7 +420,6 @@ describe('sessions shell store', () => {
     ).resolves.toBe(false);
 
     expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
-    expect(mgr.get('codex', entry.sessionId)?.lastJobId).toBeUndefined();
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('pending');
   });
 
@@ -542,7 +538,6 @@ describe('sessions shell store', () => {
 
       expect(mgr.get('codex', entry.sessionId)).toMatchObject({
         activeJobId: undefined,
-        lastJobId: 'job-1',
       });
 
       const rows = db
@@ -616,7 +611,6 @@ describe('sessions shell store adversarial', () => {
 
     const stored = mgr.get('codex', entry.sessionId);
     expect(stored?.activeJobId).toBe('job-correct');
-    expect(stored?.lastJobId).toBeUndefined();
   });
 
   it('list returns only sessions for the requested provider (no cross-provider leakage)', () => {

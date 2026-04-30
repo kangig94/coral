@@ -31,8 +31,6 @@ describe('launch admission', () => {
 
   it('returns an admitted outcome when capacity is available', () => {
     expect(coordinator.requestLaunch('job-1', 'codex')).toEqual({
-      outcome: 'admitted',
-      permit: { type: 'immediate' },
       type: 'immediate',
     });
     expect(coordinator.queueDepth()).toBe(0);
@@ -40,14 +38,12 @@ describe('launch admission', () => {
   });
 
   it('returns a queued outcome with the current position when capacity is full', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ outcome: 'admitted' });
+    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
 
     const queued = coordinator.requestLaunch('job-2', 'codex');
 
     expect(queued).not.toBe('queue_full');
     expect(queued).toMatchObject({
-      outcome: 'queued',
-      position: 1,
       type: 'queued',
       queuePosition: 1,
     });
@@ -56,17 +52,17 @@ describe('launch admission', () => {
   });
 
   it('tracks default and discuss pools independently', async () => {
-    expect(coordinator.requestLaunch('default-1', 'codex')).toMatchObject({ outcome: 'admitted' });
-    expect(coordinator.requestLaunch('discuss-1', 'codex', 'discuss')).toMatchObject({ outcome: 'admitted' });
+    expect(coordinator.requestLaunch('default-1', 'codex')).toMatchObject({ type: 'immediate' });
+    expect(coordinator.requestLaunch('discuss-1', 'codex', 'discuss')).toMatchObject({ type: 'immediate' });
 
     const queuedDefault = coordinator.requestLaunch('default-2', 'codex');
     const queuedDiscuss = coordinator.requestLaunch('discuss-2', 'codex', 'discuss');
 
-    expect(queuedDefault).toMatchObject({ outcome: 'queued', position: 1 });
-    expect(queuedDiscuss).toMatchObject({ outcome: 'queued', position: 1 });
+    expect(queuedDefault).toMatchObject({ type: 'queued', queuePosition: 1 });
+    expect(queuedDiscuss).toMatchObject({ type: 'queued', queuePosition: 1 });
 
-    if (queuedDefault === 'queue_full' || queuedDefault.outcome !== 'queued') throw new Error('expected queued default');
-    if (queuedDiscuss === 'queue_full' || queuedDiscuss.outcome !== 'queued') throw new Error('expected queued discuss');
+    if (queuedDefault === 'queue_full' || queuedDefault.type !== 'queued') throw new Error('expected queued default');
+    if (queuedDiscuss === 'queue_full' || queuedDiscuss.type !== 'queued') throw new Error('expected queued discuss');
 
     const defaultPermit = queuedDefault.waitForPermit();
     const discussPermit = queuedDiscuss.waitForPermit();
@@ -84,12 +80,12 @@ describe('launch admission', () => {
   });
 
   it('returns queue_full when the internal queue limit is reached', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ outcome: 'admitted' });
+    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
 
     for (let i = 2; i <= 21; i += 1) {
       const result = coordinator.requestLaunch(`job-${i}`, 'codex');
       expect(result).not.toBe('queue_full');
-      if (result !== 'queue_full' && result.outcome === 'queued') {
+      if (result !== 'queue_full' && result.type === 'queued') {
         void result.waitForPermit().catch(() => null);
       }
     }
@@ -100,12 +96,12 @@ describe('launch admission', () => {
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ outcome: 'admitted' });
+    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
     const queuedSecond = coordinator.requestLaunch('job-2', 'codex');
     const queuedThird = coordinator.requestLaunch('job-3', 'codex');
 
-    if (queuedSecond === 'queue_full' || queuedSecond.outcome !== 'queued') throw new Error('expected queued job-2');
-    if (queuedThird === 'queue_full' || queuedThird.outcome !== 'queued') throw new Error('expected queued job-3');
+    if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
+    if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
 
     let thirdGranted = false;
     const secondPermit = queuedSecond.waitForPermit();
@@ -127,12 +123,12 @@ describe('launch admission', () => {
   });
 
   it('cancelQueued rejects the queued permit and advances the queue head', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ outcome: 'admitted' });
+    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
     const queuedSecond = coordinator.requestLaunch('job-2', 'codex');
     const queuedThird = coordinator.requestLaunch('job-3', 'codex');
 
-    if (queuedSecond === 'queue_full' || queuedSecond.outcome !== 'queued') throw new Error('expected queued job-2');
-    if (queuedThird === 'queue_full' || queuedThird.outcome !== 'queued') throw new Error('expected queued job-3');
+    if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
+    if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
 
     const rejected = queuedSecond.waitForPermit().then(
       () => null,
@@ -154,7 +150,7 @@ describe('launch admission', () => {
     expect(coordinator.active).toBe(2);
 
     const restored = coordinator.restoreQueuedLaunch('queued-1', 'codex', 'default');
-    expect(restored).toMatchObject({ outcome: 'queued', position: 1 });
+    expect(restored).toMatchObject({ type: 'queued', queuePosition: 1 });
     expect(coordinator.queueDepth()).toBe(1);
 
     const permit = restored.waitForPermit();

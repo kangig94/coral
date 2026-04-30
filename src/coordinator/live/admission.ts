@@ -17,7 +17,6 @@ import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type {
   AdmissionResult,
   AdmittedHandle,
-  LaunchPermit,
   LaunchPool,
   QueuedHandle,
 } from '../../jobs/contracts/admission.js';
@@ -44,8 +43,7 @@ type QueuedLaunchEntry = {
 
 type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
 
-const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
-const IMMEDIATE_ADMISSION: AdmittedHandle = { outcome: 'admitted', permit: IMMEDIATE_PERMIT, type: 'immediate' };
+const IMMEDIATE_ADMISSION: AdmittedHandle = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 
@@ -253,8 +251,6 @@ export class LaunchCoordinator {
   private queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
     const queuePosition = this.queuePosition(entry.jobId, pool) ?? this.getQueue(pool).length;
     return {
-      outcome: 'queued',
-      position: queuePosition,
       type: 'queued',
       queuePosition,
       waitForPermit: () => entry.promise,

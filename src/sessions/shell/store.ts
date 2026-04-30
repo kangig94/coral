@@ -382,7 +382,6 @@ export class SessionManager {
     const baseNextEntry: SessionEntry = {
       ...currentEntry,
       activeJobId: undefined,
-      lastJobId: expectedActiveJobId,
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
       ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
@@ -454,7 +453,6 @@ export class SessionManager {
     const nextEntry: SessionEntry = {
       ...entry,
       activeJobId: undefined,
-      lastJobId: expectedActiveJobId,
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(entry),
     };
@@ -492,14 +490,13 @@ export class SessionManager {
     return true;
   }
 
-  /** Release job claim: clear activeJobId, set lastJobId to completed job. */
+  /** Release job claim: clear activeJobId. */
   releaseJob(sessionId: string, jobId: string): void {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId !== jobId) return;
     const nextEntry: SessionEntry = {
       ...entry,
       activeJobId: undefined,
-      lastJobId: jobId,
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(entry),
     };

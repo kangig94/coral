@@ -921,7 +921,6 @@ describe('ExecutionService', () => {
       });
       expect(terminal.continuity).toEqual({ conversationRef: null, resumable: false });
       expect(updatedSession?.activeJobId).toBeUndefined();
-      expect(updatedSession?.lastJobId).toBe(decision.job);
       expect(updatedSession?.state).toBe('non_resumable');
       expect(updatedSession?.conversationRef).toBeUndefined();
     });
@@ -2214,7 +2213,6 @@ describe('ExecutionService', () => {
 
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession?.activeJobId).toBeUndefined();
-        expect(updatedSession?.lastJobId).toBe(jobId);
       });
     });
 
@@ -2293,7 +2291,6 @@ describe('ExecutionService', () => {
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
-          lastJobId: jobId,
           state: 'ready',
           conversationRef: 'thread-existing',
         });
@@ -2373,7 +2370,6 @@ describe('ExecutionService', () => {
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
-          lastJobId: jobId,
           state: 'ready',
           conversationRef: 'thread-recovered',
         });
@@ -2465,7 +2461,6 @@ describe('ExecutionService', () => {
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
-          lastJobId: jobId,
           state: 'non_resumable',
         });
         expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
@@ -2558,7 +2553,6 @@ describe('ExecutionService', () => {
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
           activeJobId: undefined,
-          lastJobId: jobId,
           state: 'non_resumable',
         });
         expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
