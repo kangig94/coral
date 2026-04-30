@@ -38,7 +38,7 @@ const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb/reindex.ts';
 const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
 const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
 const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution-service.ts';
-const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization-helper.ts';
+const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization.ts';
 const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-recovery-finalizer.ts';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {

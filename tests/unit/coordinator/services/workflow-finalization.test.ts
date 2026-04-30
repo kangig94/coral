@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRef, CauseRefToken } from '#src/causality/cause-ref.js';
 import type { CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
-import { selectFinalCauseRef } from '#src/coordinator/services/workflow-finalization-helper.js';
+import { selectFinalCauseRef } from '#src/coordinator/services/workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 
 type RecordedInput = {

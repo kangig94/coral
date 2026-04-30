@@ -1,4 +1,4 @@
-import { normalizeWhitespace } from '../text-utils.js';
+import { normalizeWhitespace } from '../text-normalization.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult } from './contract.js';
 import {

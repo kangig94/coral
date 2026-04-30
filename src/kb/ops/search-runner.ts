@@ -1,6 +1,6 @@
 import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
-import { normalizeWhitespace } from '../text-utils.js';
+import { normalizeWhitespace } from '../text-normalization.js';
 import type { FtsRetrieval, KbRuntime } from '../contract.js';
 import type { EntityGraph, KbIndex, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
 import {

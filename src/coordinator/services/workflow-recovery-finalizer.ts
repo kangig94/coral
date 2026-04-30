@@ -7,7 +7,7 @@ import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 import { releaseSessionJobClaim } from '../../sessions/job-release.js';
 import { serializeWorkflowResult } from './execution-policies.js';
-import { composeWorkflowFinalization } from './workflow-finalization-helper.js';
+import { composeWorkflowFinalization } from './workflow-finalization.js';
 
 export type WorkflowRecoveryFinalizer = (intent: WorkflowFinalizationIntent) => void;
 

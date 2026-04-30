@@ -1,4 +1,4 @@
-import { denormalizeSlug } from '../text-utils.js';
+import { denormalizeSlug } from '../text-normalization.js';
 import type {
   FtsHit,
   FusedRetrievalHit,

@@ -31,7 +31,7 @@ import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
-import { composeWorkflowFinalization } from './workflow-finalization-helper.js';
+import { composeWorkflowFinalization } from './workflow-finalization.js';
 import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 

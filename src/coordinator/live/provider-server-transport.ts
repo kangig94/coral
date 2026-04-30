@@ -2,7 +2,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../../infra/backend-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
 import type { ChildProcessLike, Runtime } from '../../runtime/ports.js';
-import { appendBuffer, gracefulKill, requirePipedHandles } from './process-helpers.js';
+import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
 
 export type ProviderServerNotification = {
   method: string;

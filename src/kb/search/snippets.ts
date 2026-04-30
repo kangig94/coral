@@ -1,5 +1,5 @@
 import type { FtsRetrieval } from '../contract.js';
-import { normalizeWhitespace, denormalizeSlug } from '../text-utils.js';
+import { normalizeWhitespace, denormalizeSlug } from '../text-normalization.js';
 
 type SnippetAnchor = {
   index: number;

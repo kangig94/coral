@@ -3,7 +3,6 @@ import { rmSync } from 'node:fs';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import type { EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { resolveBuildFlavor } from '../../infra/build-flavor.js';
-import { describeError } from '../../infra/install-helpers.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -24,7 +23,7 @@ function resolveRuntime(runtime?: Runtime): Runtime {
 }
 
 function toInstallError(code: Parameters<typeof documentedCoralSetupError>[0], name: string): InstallError {
-  const error = documentedCoralSetupError(code, { name: describeError(name) });
+  const error = documentedCoralSetupError(code, { name });
   return installErrorSchema.parse({
     status: 'error',
     code: error.code,

@@ -1058,21 +1058,17 @@ describe('architecture boundary guard', () => {
   it('production keeps helper-style filenames out of src/', () => {
     // Generic filenames become magnets when they describe NOTHING about content
     // — `helpers.ts`, `utils.ts`, `shared.ts` invite "anything that fits" and
-    // accumulate unrelated logic. Forbid these outright.
+    // accumulate unrelated logic. Forbid these outright, including the
+    // hyphenated variants (`install-helpers.ts`, `state-shared.ts`, ...) that
+    // slip the bare-suffix check by carrying a token before "helpers".
     //
     // `index.ts` and `types.ts` are intentionally NOT forbidden: both are valid
     // conventional names with clear semantics (entry point, type vocabulary).
     // Discipline is on *content*, not *name*: if either file grows large or
     // loses cohesion, it MUST be split. Add a per-file size invariant when a
     // specific file is at risk (see `providers/contract.ts` cap below).
-    const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter(
-      (filePath) =>
-        filePath.endsWith('/helper.ts') ||
-        filePath.endsWith('/helpers.ts') ||
-        filePath.endsWith('/shared.ts') ||
-        filePath.endsWith('/shared-utils.ts') ||
-        filePath.endsWith('/utils.ts'),
-    );
+    const FORBIDDEN_NAME_PATTERN = /\/(?:[\w-]*-)?(?:helper|helpers|shared|shared-utils|utils)\.ts$/u;
+    const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => FORBIDDEN_NAME_PATTERN.test(filePath));
     expect(helperLikeFiles).toEqual([]);
   });
   it('abort vocabulary lives only at src/runtime/abort.ts', () => {

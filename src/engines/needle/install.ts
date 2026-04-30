@@ -9,16 +9,11 @@ import type {
   EngineInstallerOptions,
   LocalExpansionInstallState,
 } from '#src/expansion/contract.js';
-import {
-  acquireDirectoryLock,
-  describeError,
-  downloadBuffer,
-  ensureExecSucceeded,
-  findCommand,
-  isDirectoryLockTimeoutError,
-  readInstallMeta,
-  writeInstallMeta,
-} from '#src/infra/install-helpers.js';
+import { errorMessage } from '#src/infra/error-format.js';
+import { downloadBuffer } from '#src/infra/download.js';
+import { ensureExecSucceeded, findCommand } from '#src/infra/exec-checks.js';
+import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '#src/infra/fs-lock.js';
+import { readInstallMeta, writeInstallMeta } from './install-meta.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { NEEDLE_ADDON_FILENAME, needleAddonPath } from './paths.js';
@@ -295,7 +290,7 @@ export const needleInstaller: EngineInstaller = {
             return buildInstalledResult(ctx, hadExistingInstall || ctx.update ? 'updated' : 'installed', method);
           } catch (error) {
             if (isInstallPathUnwritableError(error)) throw error;
-            failures.push(`${method}: ${describeError(error)}`);
+            failures.push(`${method}: ${errorMessage(error)}`);
             if (method === 'prebuild')
               logInstallEvent(ctx, 'expansion.install.prebuild_failed', failures[0] ?? 'prebuild failed');
           }
