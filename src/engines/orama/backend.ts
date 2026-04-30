@@ -34,16 +34,12 @@ import type {
 
 export {
   createOramaDb,
-  normalizeHyphens,
   normalizeOramaTerm,
-  normalizeWhitespace,
-  tokenizeField,
   tokenizeQuery,
   toOramaDocument,
   type KbOramaDocument,
 } from './document-builder.js';
-export { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
-export { OramaSnapshotStore } from './snapshot.js';
+export { type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
   'slug',

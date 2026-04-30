@@ -7,7 +7,7 @@ import type {
   LaunchDecision,
 } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
-import type { JobProgress, JobStatus } from '../../jobs/records.js';
+import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
@@ -55,11 +55,6 @@ export type JobListFilters = {
   provider?: string;
 };
 
-export type JobDetail = {
-  status: JobStatus;
-  events: JobProgress[];
-};
-
 export interface SessionRequestPort {
   start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
   resumeBySessionId(input: SessionResumeInput, ctx: InvocationContext): Promise<LaunchDecision>;
@@ -71,7 +66,7 @@ export interface JobsRequestPort {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   list(filters: JobListFilters): Array<{ jobId: string; status: JobStatus }>;
-  detail(jobId: string): JobDetail | null;
+  detail(jobId: string): JobDetailResponse | null;
 }
 
 export interface WorkflowRequestPort {

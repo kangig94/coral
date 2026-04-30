@@ -184,19 +184,9 @@ export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   parseAuthOutput: parseClaudeAuthStatus,
 });
 
-/**
- * Module-level cached Claude detector. The factory is invoked once with the
- * caller's process port so subsequent `detectClaudeCli()` calls reuse the
- * same detector (and its in-flight cache). Tests can `resetClaudeCliDetector`
- * to swap port implementations.
- */
 let claudeDetector: ReturnType<typeof createCliDetector> | null = null;
 
 export function detectClaudeCli(processPort: CliDetectorProcessPort): Promise<CliInfo> {
   claudeDetector ??= createCliDetector(processPort, CLAUDE_DETECTOR_CONFIG);
   return claudeDetector.detect();
-}
-
-export function resetClaudeCliDetector(): void {
-  claudeDetector = null;
 }

@@ -8,11 +8,6 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { installErrorSchema, installResponseSchema, type InstallError, type InstallResponse } from './contract.js';
 
-export type {
-  EngineInstallLoggerEvent as ExpansionInstallLoggerEvent,
-  LocalExpansionInstallState,
-} from '../../expansion/contract.js';
-
 export type InstallExpansionOptions = Partial<
   Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs' | 'update'>
 >;

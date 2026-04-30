@@ -25,6 +25,3 @@ export function createOramaFtsBacked(
     consumer: projection,
   };
 }
-
-export { ORAMA_BASE_CONSUMER_ID, OramaBaseProjection, OramaSearchPort, createOramaBaseProjection } from './backend.js';
-export { OramaSnapshotStore } from './snapshot.js';

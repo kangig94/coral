@@ -39,12 +39,6 @@ export function parseSseBlock(block: string): SseEventBlock | null {
   return { event, data: data.join('\n'), id };
 }
 
-export function describeHttpError(status: number, statusText: string): string {
-  if (status === 503) return 'Coordinator shutting down, retry';
-  if (status === 401) return 'Coordinator auth failure - stale token';
-  return `Coordinator request failed: ${status} ${statusText}`;
-}
-
 export async function parseJsonResponse(response: Response): Promise<unknown> {
   try {
     return await response.json();

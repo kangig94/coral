@@ -50,34 +50,16 @@ import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
 
+export { InMemoryStorage } from './memory-storage.js';
 export {
-  InMemoryStorage,
-  normalizePathForStorage,
-  type InMemoryStorageSnapshot,
-  type InMemoryRoots,
-} from './memory-storage.js';
-export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app.js';
-export {
-  MockChildProcess,
-  MockDurableTransport,
-  type MockExecSyncScript,
-  MockProcessSpawner,
-  MockStdin,
   type ChildOutputChunk,
   type MockDurableScript,
   type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
-export {
-  InMemoryObserver,
-  InMemoryPaths,
-  SealedEnv,
-  SequentialIds,
-  type InMemoryPathsSnapshot,
-} from './runtime-doubles.js';
-export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } from './virtual-time.js';
+export { InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
+export { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
 export { SimulationRuntime } from '../runtime.js';
-export type { SimulationRuntimeOptions } from '../runtime.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];

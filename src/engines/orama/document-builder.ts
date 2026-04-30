@@ -54,10 +54,6 @@ export function tokenizeQuery(oramaTerm: string, tokenizer: KbOramaTokenizer): s
   return uniqueTokens(tokenizer.tokenize(oramaTerm, ORAMA_LANGUAGE));
 }
 
-export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): string[] {
-  return tokenizeQuery(normalizeOramaTerm(value), tokenizer);
-}
-
 export function toOramaDocument(
   record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord,
   options: {

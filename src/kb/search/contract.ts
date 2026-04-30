@@ -84,10 +84,6 @@ export interface FtsSearchResult {
   readonly exhausted: boolean;
 }
 
-export interface TextRetrieval {
-  search(query: string, topK: number, scope?: RetrievalScope): Promise<TextRetrievalResult>;
-}
-
 export interface VectorRetrieval {
   search(embedding: number[], topK: number, scope?: RetrievalScope): Promise<VectorRetrievalResult>;
 }

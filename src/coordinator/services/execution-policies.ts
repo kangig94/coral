@@ -24,7 +24,6 @@ import {
   describeSessionInterrupted,
   type SessionInterruptedFault,
 } from '../../sessions/fault.js';
-import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { rejectLaunch } from '../../jobs/launch.js';

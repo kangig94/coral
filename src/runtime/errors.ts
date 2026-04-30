@@ -5,13 +5,8 @@
 // anti-pattern only applies to files that absorb unrelated *logic*
 // (helpers.ts, utils.ts); a registry growing as new codes land is the
 // expected shape of a canonical home, not drift.
-//
-// Abort vocabulary lives at `src/runtime/abort.ts`; re-exported here so
-// runtime-error callers see one location.
 
 import { isRecord } from '../infra/json.js';
-
-export { AbortError, isAbortError, isUserAbort, throwIfAborted } from './abort.js';
 
 export interface CoralSetupErrorInit {
   code: string;

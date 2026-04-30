@@ -35,8 +35,6 @@ export type {
   MockSpawnScript,
 } from './mock-script-types.js';
 
-export type { MockSpawnContext } from './mock-script-types.js';
-
 type ProcessExitOutcome = {
   delayMs?: number;
   exitCode?: number | null;

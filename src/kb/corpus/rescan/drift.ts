@@ -8,7 +8,7 @@ import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
-import type { CorpusInterest, KbCorpusSnapshot, KbIndexMutationLane, KbIndexState, KbRuntime } from '../../contract.js';
+import type { CorpusInterest, KbCorpusSnapshot, KbIndexMutationLane, KbRuntime } from '../../contract.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -493,17 +493,3 @@ function canonicalRelationships(relationships: readonly EntityRelationship[]): s
   );
 }
 
-export function applyLaneMutation(
-  state: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
-  lane: KbIndexMutationLane | null,
-): Pick<KbIndexState, 'contentSeq' | 'metadataSeq'> {
-  if (lane === null) {
-    return state;
-  }
-
-  const nextSeq = Math.max(state.contentSeq, state.metadataSeq) + 1;
-  return {
-    contentSeq: lane === 'content' || lane === 'both' ? nextSeq : state.contentSeq,
-    metadataSeq: lane === 'metadata' || lane === 'both' ? nextSeq : state.metadataSeq,
-  };
-}

@@ -47,33 +47,6 @@ export interface StopHookOutput {
   systemMessage: string;
 }
 
-export interface JobStatus {
-  jobId: string;
-  phase: string;
-  projectRoot: string;
-  provider: string;
-  sessionId: string;
-  jobKind?: string;
-  result?: {
-    workflow?: unknown;
-  };
-}
-
-export interface SnapshotJob {
-  jobId: string;
-  phase: string;
-  provider: string;
-  sessionId: string;
-  jobKind?: string;
-}
-
-export interface SnapshotRecord {
-  capturedAtMs: number;
-  projectRoot: string;
-  sourceSessionId: string | null;
-  jobs: SnapshotJob[];
-}
-
 export interface HookFixture {
   root: string;
   tmpRoot: string;

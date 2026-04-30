@@ -2,6 +2,13 @@ import { z } from 'zod';
 
 import { parseBooleanQuery } from '../infra/json.js';
 
+// Local schema duplicate of `src/jobs/launch.ts` sourceImportReadinessSchema —
+// kept inline to avoid a `kb -> jobs` runtime edge that would form a
+// `jobs <-> kb <-> providers` cycle (jobs -> providers, providers -> kb both
+// already exist). Two ~30-byte enum schemas are cheaper than restructuring
+// the cross-domain dependency graph.
+const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vector', 'all-equipped']);
+
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const slugSchema = z.string().min(1);
 const transportContextFieldsShape = {
@@ -68,9 +75,6 @@ export const kbDeleteSchema = z
     note: z.string().min(1),
   })
   .strict();
-
-export const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vector', 'all-equipped']);
-export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 
 export const kbSourceImportSchema = z
   .object({

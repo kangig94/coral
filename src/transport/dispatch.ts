@@ -1,3 +1,5 @@
+import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
+import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ToolDomainResult } from './tool-result.js';
@@ -248,7 +250,7 @@ export async function executeCatalogRequest(
         all: parsed.all === true,
       });
       jobs.sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
-      return unary({ jobs });
+      return unary({ jobs } satisfies JobsListResponse);
     }
 
     case 'jobs.detail': {
@@ -304,7 +306,7 @@ export async function executeCatalogRequest(
     }
 
     case 'discuss.session.list':
-      return unary({ sessions: rpcPorts.discuss.listSessions() });
+      return unary({ sessions: rpcPorts.discuss.listSessions() } satisfies DiscussSessionsListResponse);
 
     case 'discuss.session.detail': {
       const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };

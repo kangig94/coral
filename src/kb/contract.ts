@@ -13,7 +13,6 @@ import type { FtsSearchResult, VectorRetrievalResult } from './search/contract.j
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 export type {
   ConsumerApplyError,
-  ConsumerRegistrationKind,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
   CorpusInterest,
@@ -23,9 +22,7 @@ export type {
 } from '../store/consumer-contract.js';
 export type {
   KbCorpusProjectionReader,
-  KbGeneratedCommunityDocument,
   KbProjectionInput,
-  KbProjectionInputOptions,
   KbProjectionRecord,
 } from './projection-input-contract.js';
 

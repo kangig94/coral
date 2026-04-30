@@ -1,1 +1,1 @@
-export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app-server.js';
+export { createMockAppServerSpawnScript } from './mock-app-server.js';

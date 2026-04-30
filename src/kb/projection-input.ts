@@ -16,14 +16,6 @@ import type {
   KbProjectionRecord,
 } from './projection-input-contract.js';
 
-export type {
-  KbCorpusProjectionReader,
-  KbGeneratedCommunityDocument,
-  KbProjectionInput,
-  KbProjectionInputOptions,
-  KbProjectionRecord,
-} from './projection-input-contract.js';
-
 type ProjectionInputRuntime = Pick<
   KbRuntime,
   'readIndexOrEmpty' | 'storagePort' | 'notePath' | 'sourcePath' | 'communityPath'
