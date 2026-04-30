@@ -1260,6 +1260,35 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(450);
   });
 
+  it('coordinator/consumer-driver.ts stays under the orchestration-nucleus cap', () => {
+    // ConsumerDriver is the projection-consumer orchestration nucleus —
+    // registration, cursor advancement, apply scheduling, forced apply, and
+    // waiter linkage all live here because they share invariants (single-
+    // writer freshness, in-flight serialization, cursor ownership) that
+    // cannot be split without bridging them through a parallel coordinator.
+    // The cap is a review gate: if you need to bump it, first ask whether the
+    // new content is a genuinely new orchestration responsibility or whether
+    // it belongs in a sibling file under `coordinator/` (e.g., a separate
+    // forced-apply scheduler) that the driver consumes through a contract.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/coordinator/consumer-driver.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(1300);
+  });
+
+  it('transport/ipc/ensure.ts stays under the singleton-replacement cap', () => {
+    // IPC ensure is the coordinator-singleton replacement nucleus —
+    // observation classification, lock acquisition, spawn/handoff, sick
+    // verification, and reconciler dispatch all live here because they share
+    // the §11.2 / §16 #1 single-writer invariant. Splitting them risks
+    // races between observation and action. The cap is a review gate: if you
+    // need to bump it, first ask whether new content is a sibling concern
+    // (e.g., a new transport layer or a separate health-probe primitive)
+    // that consumes ensure through a contract instead of growing inside it.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/transport/ipc/ensure.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(900);
+  });
+
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 
