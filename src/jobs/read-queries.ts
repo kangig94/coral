@@ -7,14 +7,13 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
 import type { JobProjectionDetail } from './read-contract.js';
 import {
-  jobDiagnosticsSchema,
-  normalizeJobTerminal,
   type JobDiagnostics,
   type JobProgress,
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
+import { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { belongsToNamespace } from './records.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';

@@ -201,7 +201,11 @@ export const jobTerminalSchema = z
   })
   .strict();
 
-export const jobDiagnosticsSchema = z
+// Provider-side terminal diagnostics: byteCounts + warnings only. The
+// post-projection shape lives in `jobs/terminal/result.ts` (progress faults
+// get attached during projection); naming the two schemas distinctly avoids
+// the magnet hazard of two schemas sharing one identifier.
+export const providerTerminalDiagnosticsSchema = z
   .object({
     byteCounts: z
       .object({
@@ -227,7 +231,7 @@ export const providerTerminalEventBodySchema = z
   .object({
     kind: z.literal('terminal'),
     terminal: jobTerminalSchema,
-    diagnostics: jobDiagnosticsSchema,
+    diagnostics: providerTerminalDiagnosticsSchema,
     failureCause: providerFailureCauseSchema.optional(),
   })
   .strict()

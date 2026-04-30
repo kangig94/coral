@@ -1359,6 +1359,27 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(770);
   });
 
+  it('coordinator/lifecycle.ts stays under the lifecycle cap', () => {
+    // The coordinator lifecycle file owns startup ordering, recovery
+    // dispatch, freshness coordination, and shutdown. New lifecycle
+    // phases should compose existing primitives rather than inflate this
+    // file; the cap is a review gate.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/coordinator/lifecycle.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(670);
+  });
+
+  it('coordinator/index.ts stays under the composition-root cap', () => {
+    // The coordinator composition root wires runtime ports, domain owners,
+    // boot-readiness, and the IPC/HTTP server fabric. Boot-readiness and
+    // artifact-lag repair are reachable from here but should compose
+    // sibling helpers rather than expand this file. The cap is a review
+    // gate; growth signals an unwanted dependency.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/coordinator/index.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(560);
+  });
+
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 

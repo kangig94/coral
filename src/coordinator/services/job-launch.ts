@@ -251,7 +251,7 @@ export class JobLaunchService {
     if (!this.deps.sessionLookup) {
       throw new Error('ExecutionService requires sessionLookup for session-id continuation.');
     }
-    const session = getSessionById(sessionId, this.deps.runtime, this.deps.sessionLookup);
+    const session = getSessionById(sessionId, this.deps.sessionLookup);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
     }

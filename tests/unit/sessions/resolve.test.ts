@@ -102,12 +102,12 @@ describe('sessions shell resolve', () => {
       backendNamespace: 'ns-b',
     });
 
-    expect(getSessionById(sessionA.sessionId, runtime, sessionLookup)).toMatchObject({
+    expect(getSessionById(sessionA.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
       backendNamespace: 'ns-a',
     });
-    expect(getSessionById(sessionB.sessionId, runtime, sessionLookup)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',
       backendNamespace: 'ns-b',
@@ -115,12 +115,12 @@ describe('sessions shell resolve', () => {
 
     beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
 
-    expect(getSessionById(sessionB.sessionId, runtime, sessionLookup)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
       state: 'ready',
       conversationRef: 'thread-2',
     });
-    expect(getSessionById('missing-session-id', runtime, sessionLookup)).toBeNull();
+    expect(getSessionById('missing-session-id', sessionLookup)).toBeNull();
   });
 
   it('getSessionById reads projection entries directly when the lookup owns them', () => {
@@ -143,7 +143,7 @@ describe('sessions shell resolve', () => {
         : null,
     );
 
-    expect(getSessionById(entry.sessionId, runtime, { readSessionEntry })).toMatchObject({
+    expect(getSessionById(entry.sessionId, { readSessionEntry })).toMatchObject({
       sessionId: entry.sessionId,
       provider: 'codex',
       state: 'ready',
@@ -160,37 +160,25 @@ describe('sessions shell resolve', () => {
     const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
 
     expect(
-      resolveSession(
-        {
+      resolveSession({
           sessionId: sessionA.sessionId,
           provider: 'codex',
-        },
-        runtime,
-        sessionLookup,
-      ),
+        }, sessionLookup),
     ).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
     });
     expect(
-      resolveSession(
-        {
+      resolveSession({
           sessionId: sessionA.sessionId,
           provider: 'claude',
-        },
-        runtime,
-        sessionLookup,
-      ),
+        }, sessionLookup),
     ).toBeNull();
     expect(
-      resolveSession(
-        {
+      resolveSession({
           sessionId: sessionB.sessionId,
           provider: 'claude',
-        },
-        runtime,
-        sessionLookup,
-      ),
+        }, sessionLookup),
     ).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',
