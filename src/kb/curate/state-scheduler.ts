@@ -5,7 +5,7 @@ import type { CurateCursor } from './state/model.js';
 import { cursorEntryKind, kbEntryIdSchema } from './state/model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
-type CurateSchedulerState = {
+export type CurateSchedulerState = {
   processedThrough: CurateCursor | null;
   discoveryHighSeq: number;
   discoveryOffset: number;
@@ -216,5 +216,3 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     state.initialized ? 1 : 0,
   );
 }
-
-export type { CurateSchedulerState };

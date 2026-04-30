@@ -14,16 +14,21 @@ import {
   type ProviderFailureCause,
 } from './fault.js';
 import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
+import type { AbortReason } from '../jobs/outcome.js';
 import type {
-  AbortReason,
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
   ProviderCliRunner,
   ProviderTransportClose,
 } from './protocol.js';
 
+// Re-export the protocol/outcome types coordinator-side consumers reach
+// through this contract seam. `AbortReason` lives in `jobs/outcome.js`;
+// the appserver/protocol notification types live in `./protocol.js`. The
+// providers contract aggregates them so coordinator imports stay on a
+// single canonical seam (see `coordinator-topology.test.ts`).
+export type { AbortReason };
 export type {
-  AbortReason,
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
   ProviderCliRunner,

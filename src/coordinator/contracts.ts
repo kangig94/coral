@@ -1,12 +1,12 @@
 import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
-import type { LaunchCoordinatorPort, LaunchPool } from '../jobs/contracts/admission.js';
+import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import type { JobProgress } from '../jobs/records.js';
 import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type { EffortLevel, ProviderServerLease, ProviderServerSpec, ProviderSpec } from '../providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -87,7 +87,3 @@ export type ExecutionServiceDeps = {
   getCurrentJournalSeq: () => number;
   sessionLookup?: SessionLookup;
 };
-
-export type { EffortLevel };
-export type { LaunchPool };
-export type { ProviderSpec };

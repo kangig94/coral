@@ -1,7 +1,3 @@
-import type { AbortReason } from '../jobs/outcome.js';
-
-export type { AbortReason };
-
 export type ProviderCliRequest = {
   command: string;
   args: string[];

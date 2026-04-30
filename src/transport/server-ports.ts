@@ -1,10 +1,6 @@
 import type { ServerResponse } from 'node:http';
-import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/read-contract.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type { LaunchDecision } from '../jobs/launch.js';
-import type { JobProgress, JobStatus, JobTerminal } from '../jobs/records.js';
-import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
 
 export interface AdminControlPort {
@@ -105,18 +101,3 @@ export interface HttpHandlerPorts extends RpcPorts {
   readonly health: HealthSnapshotPort;
   readonly events: EventStreamPort;
 }
-
-export type {
-  InvocationContext,
-  DiscussDetailResponse,
-  DiscussSummaryDto,
-  DiscussView,
-  JobPhase,
-  JobProgress,
-  JobStatus,
-  JobTerminal,
-  LaunchDecision,
-  WaitCursor,
-  WaitStreamEvent,
-  WaitStreamRequest,
-};

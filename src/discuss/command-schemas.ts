@@ -2,8 +2,6 @@ import { z } from 'zod';
 
 import type { ControversyAxis } from './session-types.js';
 
-export type { ControversyAxis };
-
 export const ControversyAxisSchema = z.object({
   axis: z.string(),
   positions: z.array(z.string()),

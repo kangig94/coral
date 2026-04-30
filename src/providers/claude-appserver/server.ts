@@ -12,12 +12,12 @@ import {
   buildJsonRpcSuccess,
   isAutoAllowPermissionMode,
   parseJsonRpcInboundLine,
-  type JsonRpcRequest,
   requireSessionEnsureParams,
   requireSessionProbeParams,
   requireTurnInterruptParams,
   requireTurnStartParams,
 } from './protocol.js';
+import type { JsonRpcRequest } from '../../infra/json-rpc.js';
 import { buildClaudeChildEnv, type ClaudeBrokerChild, type SpawnClaudeChildOptions } from './controller.js';
 import { createBrokerSession, type ClaudeBrokerSession } from './broker-pool.js';
 

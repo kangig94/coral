@@ -1,7 +1,6 @@
 import { truncate } from '../../infra/text.js';
 import {
   buildJsonRpcError,
-  type JsonRpcErrorObject,
   type JsonRpcFailure,
   type JsonRpcId,
   type JsonRpcNotification,
@@ -10,8 +9,6 @@ import {
 } from '../../infra/json-rpc.js';
 import { isRecord } from '../../infra/json.js';
 import type { PermissionMode, SDKSystemMessage } from '../claude/control-protocol.js';
-
-export type { JsonRpcErrorObject, JsonRpcFailure, JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcSuccess };
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
