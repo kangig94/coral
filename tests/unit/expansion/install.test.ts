@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
-import type * as InstallHelpersModule from '#src/infra/install-helpers.js';
+import type * as DownloadModule from '#src/infra/download.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/cli/expansion/contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -17,8 +17,8 @@ const mockState = vi.hoisted(() => ({
   downloadBuffer: vi.fn(),
 }));
 
-vi.mock('#src/infra/install-helpers.js', async () => {
-  const actual = await vi.importActual<typeof InstallHelpersModule>('#src/infra/install-helpers.js');
+vi.mock('#src/infra/download.js', async () => {
+  const actual = await vi.importActual<typeof DownloadModule>('#src/infra/download.js');
   return {
     ...actual,
     downloadBuffer: mockState.downloadBuffer,
