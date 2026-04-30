@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { errorMessage } from '../../infra/error-format.js';
@@ -8,10 +7,12 @@ import type {
   EngineArtifactPort,
   EngineArtifactProjectedSnapshot,
 } from '../../kb/corpus/artifact-port.js';
-import type { KbEngineRuntime } from '../../kb/contract.js';
+import type { KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import { NEEDLE_CONSUMER_ID, type NeedleBackendOptions } from './contract.js';
 import { needleIndexDir } from './paths.js';
 import { createNeedleStore, isNeedleAddonCompatible, type NeedleStore } from './store.js';
+
+type NeedleArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';
@@ -70,6 +71,7 @@ function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManife
 export class NeedleArtifactPort implements EngineArtifactPort {
   constructor(
     private readonly runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
+    private readonly files: NeedleArtifactFiles,
     private readonly options: NeedleArtifactPortOptions,
   ) {}
 
@@ -94,13 +96,13 @@ export class NeedleArtifactPort implements EngineArtifactPort {
     readonly artifactPaths: readonly string[];
     readonly freshness: EngineArtifactDescriptor['freshness'];
   }> {
-    if (!existsSync(activePointerPath)) {
+    if (!this.files.existsSync(activePointerPath)) {
       return { artifactPaths: [activePointerPath], freshness: { status: 'missing' } };
     }
 
     let snapshotId: string;
     try {
-      snapshotId = readFileSync(activePointerPath, 'utf8').trim();
+      snapshotId = this.files.readFileSync(activePointerPath, 'utf-8').trim();
     } catch (error: unknown) {
       return {
         artifactPaths: [activePointerPath],
@@ -119,7 +121,11 @@ export class NeedleArtifactPort implements EngineArtifactPort {
     const manifestPath = needleSnapshotManifestPath(this.runtime.runtimeDir, snapshotId);
     const storePath = needleSnapshotDbPath(this.runtime.runtimeDir, snapshotId);
     const artifactPaths = [activePointerPath, manifestPath, storePath];
-    if (!existsSync(snapshotDir) || !existsSync(manifestPath) || !existsSync(storePath)) {
+    if (
+      !this.files.existsSync(snapshotDir) ||
+      !this.files.existsSync(manifestPath) ||
+      !this.files.existsSync(storePath)
+    ) {
       return {
         artifactPaths,
         freshness: { status: 'corrupt', diagnostic: 'active projection snapshot is incomplete' },
@@ -128,7 +134,7 @@ export class NeedleArtifactPort implements EngineArtifactPort {
 
     let manifest: NeedleSnapshotManifest;
     try {
-      const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
+      const parsed = JSON.parse(this.files.readFileSync(manifestPath, 'utf-8')) as unknown;
       if (!isNeedleSnapshotManifest(parsed)) {
         return {
           artifactPaths,
@@ -200,7 +206,8 @@ export class NeedleArtifactPort implements EngineArtifactPort {
 
 export function createNeedleArtifactPort(
   runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
+  files: NeedleArtifactFiles,
   options: NeedleArtifactPortOptions,
 ): NeedleArtifactPort {
-  return new NeedleArtifactPort(runtime, options);
+  return new NeedleArtifactPort(runtime, files, options);
 }

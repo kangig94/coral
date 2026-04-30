@@ -25,7 +25,7 @@ const needle: Expansion = async (host) => {
     host.scope,
   );
   host.registerArtifactPort(
-    createNeedleArtifactPort(host.kb, {
+    createNeedleArtifactPort(host.kb, host.kb.projectionArtifacts.files, {
       addonPath: needleAddonPath(host.runtime),
       expectedProjectionIdentityHash: resolvedEmbedder.projectionIdentityHash,
     }),

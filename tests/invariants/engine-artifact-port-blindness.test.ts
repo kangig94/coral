@@ -231,6 +231,7 @@ describe('engine artifact port blindness', () => {
 
     const present = await createNeedleArtifactPort(
       { runtimeDir: root },
+      filesPort(),
       {
         addonPath: resolve(root, 'addon.node'),
         expectedProjectionIdentityHash: 'current-projection',
@@ -248,6 +249,7 @@ describe('engine artifact port blindness', () => {
 
     const corrupt = await createNeedleArtifactPort(
       { runtimeDir: root },
+      filesPort(),
       {
         addonPath: resolve(root, 'addon.node'),
         expectedProjectionIdentityHash: 'current-projection',
@@ -267,5 +269,19 @@ describe('engine artifact port blindness', () => {
     expect(source).not.toContain('ACTIVE');
     expect(source).not.toContain('manifest.json');
     expect(source).toContain('engineArtifactRegistry.describeArtifacts()');
+  });
+
+  it('engine artifact ports route file IO through projectionArtifacts.files (no ambient node:fs)', () => {
+    // Single Runtime World rule: engine artifact descriptors must not read
+    // ambient node:fs. They consume the injected
+    // KbProjectionArtifactFilePort so port replacement (e.g. test fixtures,
+    // simulation runtime) lands cleanly without monkey-patching fs.
+    for (const relativePath of ['src/engines/orama/artifact-port.ts', 'src/engines/needle/artifact-port.ts']) {
+      const source = readFileSync(resolve(process.cwd(), relativePath), 'utf-8');
+      expect(source, `${relativePath} must not import from node:fs`).not.toMatch(/from\s+['"]node:fs['"]/);
+      expect(source, `${relativePath} must not import from node:fs/promises`).not.toMatch(
+        /from\s+['"]node:fs\/promises['"]/,
+      );
+    }
   });
 });
