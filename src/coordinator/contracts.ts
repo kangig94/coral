@@ -19,14 +19,10 @@ import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 
-type ExecIntent = JobLaunchRequest;
-type ResumeIntent = JobResumeRequest;
-type ForkIntent = JobForkRequest;
-
 interface CoordinatorSessionOps {
-  start(providerName: string, input: ExecIntent, ctx: InvocationContext): Promise<LaunchDecision>;
-  resumeBySessionId(input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision>;
-  forkBySessionId(input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision>;
+  start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
+  resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision>;
+  forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 interface CoordinatorJobOps {

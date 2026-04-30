@@ -20,14 +20,12 @@ import {
   claimJobAtomic,
   type CoralIntent,
   type EffectiveContinuationProfile,
-  type ExecIntent,
-  type ForkIntent,
   mapResolverError,
   resolveAgentLaunchProfile,
-  type ResumeIntent,
   runProviderPreflight,
   toPreflightRuntime,
 } from './execution-policies.js';
+import type { JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../../jobs/launch.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
@@ -46,7 +44,7 @@ export interface JobLaunchServiceDeps {
 export class JobLaunchService {
   constructor(private readonly deps: JobLaunchServiceDeps) {}
 
-  async start(providerName: string, input: ExecIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -124,7 +122,7 @@ export class JobLaunchService {
     });
   }
 
-  async resume(providerName: string, input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -159,7 +157,7 @@ export class JobLaunchService {
     return this.resumeResolved(providerName, spec, session, effectiveInput, ctx);
   }
 
-  async fork(providerName: string, input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async fork(providerName: string, input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -170,7 +168,7 @@ export class JobLaunchService {
     return this.forkResolved(providerName, spec, sourceSession, input, ctx);
   }
 
-  async resumeBySessionId(input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
@@ -180,7 +178,7 @@ export class JobLaunchService {
     return this.resumeResolved(resolved.providerName, spec, resolved.session, input, ctx);
   }
 
-  async forkBySessionId(input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
@@ -272,7 +270,7 @@ export class JobLaunchService {
 
   private buildContinuationProfile(
     input: Pick<
-      ResumeIntent | ForkIntent,
+      JobResumeRequest | JobForkRequest,
       'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'
     >,
     session: SessionEntry,
@@ -300,7 +298,7 @@ export class JobLaunchService {
     providerName: string,
     provider: ProviderSpec,
     session: SessionEntry,
-    input: ResumeIntent,
+    input: JobResumeRequest,
     ctx: InvocationContext,
   ): Promise<LaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -357,7 +355,7 @@ export class JobLaunchService {
     providerName: string,
     provider: ProviderSpec,
     sourceSession: SessionEntry,
-    input: ForkIntent,
+    input: JobForkRequest,
     ctx: InvocationContext,
   ): Promise<LaunchDecision> {
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;

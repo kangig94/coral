@@ -32,9 +32,6 @@ import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-clai
 import type { SessionEntry } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
-export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
-export type ResumeIntent = Parameters<ProjectRequestPort['resumeBySessionId']>[0];
-export type ForkIntent = Parameters<ProjectRequestPort['forkBySessionId']>[0];
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool'> & {
   sessionId?: string;
   effort?: EffortLevel;

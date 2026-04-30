@@ -26,7 +26,8 @@ import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';
-import type { CoralIntent, ExecIntent, ForkIntent, ResumeIntent } from './services/execution-policies.js';
+import type { CoralIntent } from './services/execution-policies.js';
+import type { JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
 import { JobLaunchService } from './services/job-launch-service.js';
 import { WorkflowExecutionService } from './services/workflow-execution-service.js';
 import { JobAbortService } from './services/job-abort-service.js';
@@ -155,7 +156,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           ),
         resume: (providerName, input, requestCtx) =>
           this.runWithInvocationScope(requestCtx, () =>
-            this.launchService.resume(providerName, input as ResumeIntent, requestCtx),
+            this.launchService.resume(providerName, input as JobResumeRequest, requestCtx),
           ),
         abort: (jobIds) => this.abortService.abort(jobIds),
         awaitLaunch: (jobId, timeoutMs) => this.waitService.awaitLaunch(jobId, timeoutMs),
@@ -186,23 +187,23 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     );
   }
 
-  async start(providerName: string, input: ExecIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
   }
 
-  async resume(providerName: string, input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
-  async fork(providerName: string, input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async fork(providerName: string, input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.fork(providerName, input, ctx));
   }
 
-  async resumeBySessionId(input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resumeBySessionId(input, ctx));
   }
 
-  async forkBySessionId(input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+  async forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.forkBySessionId(input, ctx));
   }
 

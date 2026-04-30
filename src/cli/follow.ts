@@ -27,12 +27,11 @@ const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
-type FollowLaunchDecision = AcceptedLaunchResponse;
 type WaitCursorRef = { serializedCursor?: string };
 type BackoffScheduler = (delayMs: number) => Promise<void>;
 
 type FollowOptions = {
-  launchResult: FollowLaunchDecision;
+  launchResult: AcceptedLaunchResponse;
   abortJob: (jobId: string) => Promise<unknown>;
   pluginRoot: string;
   projectRoot: string;
@@ -42,7 +41,7 @@ type FollowOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
-function emitLaunch(decision: FollowLaunchDecision): void {
+function emitLaunch(decision: AcceptedLaunchResponse): void {
   process.stdout.write(formatLaunch(decision) + '\n');
 }
 
