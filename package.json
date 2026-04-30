@@ -22,9 +22,10 @@
     "bridge/manifest.json"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-server.mjs --flavor prod",
-    "build:dev": "tsc && node scripts/build-server.mjs --flavor dev",
-    "build:release": "tsc && node scripts/build-server.mjs --flavor prod --release",
+    "clean:dist": "node scripts/clean-dist.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc && node scripts/build-server.mjs --flavor prod",
+    "build:dev": "node scripts/clean-dist.mjs && tsc && node scripts/build-server.mjs --flavor dev",
+    "build:release": "node scripts/clean-dist.mjs && tsc && node scripts/build-server.mjs --flavor prod --release",
     "check:simulation": "node scripts/check-simulation.mjs",
     "dev": "CORAL_FLAVOR=dev tsc --watch",
     "lint": "eslint src/ tests/ tools/",

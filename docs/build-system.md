@@ -6,9 +6,10 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (prod flavor) |
-| `npm run build:dev` | TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (dev flavor) |
-| `npm run build:release` | TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `build/` to `bridge/` |
+| `npm run clean:dist` | Remove `dist/` so deleted source paths cannot survive in package output |
+| `npm run build` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (prod flavor) |
+| `npm run build:dev` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (dev flavor) |
+| `npm run build:release` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `build/` to `bridge/` |
 | `npm run check:simulation` | Typecheck `tools/simulation` against `src` and verify sealing |
 | `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` | Run the debug-only simulation harness |
 | `npm run dev` | TypeScript watch mode |
@@ -36,6 +37,9 @@ CI verifies that committed `bridge/` files match a fresh build via hash comparis
 ```text
 src/**/*.ts
   │
+  ▼  clean:dist (`scripts/clean-dist.mjs`)
+dist/ removed
+  │
   ▼  tsc
 dist/**/*.js + dist/**/*.d.ts
   │
@@ -61,6 +65,11 @@ The runtime is anchored by two primary entry points:
 The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude-appserver/server.ts` for the Claude appserver helper runtime.
 
 ## Build Script Responsibilities
+
+The npm build commands run `scripts/clean-dist.mjs` before `tsc`. TypeScript
+does not delete outputs for source files that were removed or moved, so cleaning
+`dist/` before compile is required for `package.json`'s `dist/` export to match
+the current `src/` tree.
 
 `scripts/build-server.mjs` does five things:
 
