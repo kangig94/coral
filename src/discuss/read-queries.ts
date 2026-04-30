@@ -117,7 +117,6 @@ export function readDiscussDiscovery(
     sessions: snapshots.map((snapshot) => ({
       sessionId: snapshot.sessionId,
       topic: snapshot.state.topic,
-      journalRef: snapshot.sessionId,
       createdAt: snapshot.state.created_at,
     })),
   };

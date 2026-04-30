@@ -3,7 +3,6 @@ import type { DiscussState } from './session-types.js';
 export interface DiscussDiscoverySession {
   sessionId: string;
   topic: string;
-  journalRef: string;
   createdAt: string;
 }
 

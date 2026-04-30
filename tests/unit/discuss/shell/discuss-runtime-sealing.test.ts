@@ -236,7 +236,6 @@ describe('runtime-sealed discuss behavior', () => {
     expect(harness.store.listRecoveryCandidates()).toEqual([
       expect.objectContaining({
         sessionId: 'sim-discuss-1',
-        journalRef: 'sim-discuss-1',
       }),
     ]);
 
