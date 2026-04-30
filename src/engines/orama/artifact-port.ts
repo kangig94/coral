@@ -43,7 +43,10 @@ function isOramaProjectionMetadata(value: unknown): value is OramaProjectionMeta
   );
 }
 
-export function createOramaProjectionMetadata(snapshot: KbCorpusSnapshot, artifactDigest: string): OramaProjectionMetadata {
+export function createOramaProjectionMetadata(
+  snapshot: KbCorpusSnapshot,
+  artifactDigest: string,
+): OramaProjectionMetadata {
   return {
     snapshotId: snapshot.snapshotId,
     contentSeq: snapshot.contentSeq,
@@ -95,10 +98,7 @@ export class OramaArtifactPort implements EngineArtifactPort {
     ];
   }
 
-  private readPresentFreshness(
-    artifactPath: string,
-    metadataPath: string,
-  ): EngineArtifactDescriptor['freshness'] {
+  private readPresentFreshness(artifactPath: string, metadataPath: string): EngineArtifactDescriptor['freshness'] {
     try {
       const artifactRaw = this.files.readFileSync(artifactPath, 'utf-8');
       const metadata = JSON.parse(this.files.readFileSync(metadataPath, 'utf-8')) as unknown;

@@ -168,7 +168,10 @@ export class NeedleArtifactPort implements EngineArtifactPort {
 
   private async readNativeState(
     storePath: string,
-  ): Promise<{ readonly status: 'present'; readonly specId: string | null } | { readonly status: 'corrupt'; readonly diagnostic: string }> {
+  ): Promise<
+    | { readonly status: 'present'; readonly specId: string | null }
+    | { readonly status: 'corrupt'; readonly diagnostic: string }
+  > {
     let store: NeedleStore | null = null;
     try {
       store =

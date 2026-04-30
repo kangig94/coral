@@ -19,10 +19,7 @@ export const agentIdentSchema = z.preprocess(
   (value) => (typeof value === 'string' && value.endsWith('.md') ? value.slice(0, -3) : value),
   z
     .string()
-    .regex(
-      AGENT_IDENT_RE,
-      'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)',
-    ),
+    .regex(AGENT_IDENT_RE, 'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)'),
 );
 
 export const sessionIdSchema = z.string().min(1, 'Session ID is required');
@@ -76,4 +73,3 @@ export const sessionMessageRequestSchema = sessionMessageSchema.extend({
 export const sessionForkRequestSchema = sessionForkSchema.extend({
   sessionId: sessionIdSchema,
 });
-

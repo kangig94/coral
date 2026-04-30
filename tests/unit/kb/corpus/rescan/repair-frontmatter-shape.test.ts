@@ -10,7 +10,9 @@ describe('repair fixtures: frontmatter shape', () => {
       fixture: 'frontmatter-shape-unterminated-yaml',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(() => loadKbNote(harness.storage, harness.path('notes/unterminated-yaml-note.md'))).toThrow('Missing YAML frontmatter');
+        expect(() => loadKbNote(harness.storage, harness.path('notes/unterminated-yaml-note.md'))).toThrow(
+          'Missing YAML frontmatter',
+        );
       },
       expectedIncidents: [
         expectedDetectedIncident({

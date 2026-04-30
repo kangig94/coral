@@ -15,12 +15,7 @@ export type DiscussStatus = (typeof discussStatuses)[number];
 
 export const resolveReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition'] as const;
 
-export const endReasons = [
-  'all_below_threshold',
-  'max_epochs_reached',
-  'all_blocked',
-  'no_participants',
-] as const;
+export const endReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants'] as const;
 
 export const sessionEventKinds = ['force_end', 'synthesis'] as const;
 export type SessionEventKind = (typeof sessionEventKinds)[number];

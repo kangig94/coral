@@ -36,14 +36,10 @@ describe('events.seq schema (S3)', () => {
       // AUTOINCREMENT. Absence of the row for `events` proves the column has
       // no SQLite-side counter that could drift from coordinator-reserved seq.
       const sequenceRow = db
-        .prepare(
-          `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`,
-        )
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`)
         .get() as { name: string } | undefined;
       if (sequenceRow) {
-        const eventsRow = db
-          .prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'events'`)
-          .get();
+        const eventsRow = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'events'`).get();
         expect(eventsRow).toBeUndefined();
       }
     } finally {

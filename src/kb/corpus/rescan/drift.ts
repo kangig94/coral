@@ -365,10 +365,7 @@ export function detectProjectionArtifactLag(
   });
 }
 
-export async function detectRescanInfo(
-  kb: KbRuntime,
-  scan: CorpusScanView,
-): Promise<RescanInfo> {
+export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Promise<RescanInfo> {
   const artifactDescriptors = await kb.engineArtifactRegistry.describeArtifacts();
   const projectionArtifactLag = detectProjectionArtifactLag(kb, artifactDescriptors);
   const indexPath = join(kb.runtimeDir, INDEX_FILE);
@@ -390,10 +387,7 @@ export async function detectRescanInfo(
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (currentIndex !== null) {
-      externalMutation = mergeMutationLane(
-        externalMutation,
-        detectEntityGraphDrift(scan.entityGraph, currentIndex),
-      );
+      externalMutation = mergeMutationLane(externalMutation, detectEntityGraphDrift(scan.entityGraph, currentIndex));
     }
 
     const principleFiles = scan.markdownFiles.filter((file) => file.kind === 'principle');
@@ -408,14 +402,7 @@ export async function detectRescanInfo(
     if (currentIndex !== null) {
       externalMutation = mergeMutationLane(
         externalMutation,
-        await detectStructuredTextDrift(
-          kb,
-          scan,
-          currentIndex,
-          pendingRepairIds,
-          indexMtime,
-          storedAuthorityHashes,
-        ),
+        await detectStructuredTextDrift(kb, scan, currentIndex, pendingRepairIds, indexMtime, storedAuthorityHashes),
       );
     }
 
@@ -492,4 +479,3 @@ function canonicalRelationships(relationships: readonly EntityRelationship[]): s
     })),
   );
 }
-

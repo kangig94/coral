@@ -7,18 +7,10 @@ import {
   type BackendInfo,
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
-import type {
-  ProviderTerminal,
-  PreflightRuntime,
-  ProviderSpec,
-} from '../../../src/providers/contract.js';
+import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
-import {
-  providerProgressEvent,
-  providerTerminalEvent,
-  streamProviderEvents,
-} from '../../../src/providers/stream.js';
+import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
 import { formatError } from '../../../src/infra/error-format.js';
 import { nowIsoString } from '../../../src/infra/time.js';
@@ -239,10 +231,7 @@ export function createFakeProvider(
           },
         }
       : {}),
-    run: (
-      request: Parameters<ProviderSpec['run']>[0],
-      providerRuntime: Parameters<ProviderSpec['run']>[1],
-    ) =>
+    run: (request: Parameters<ProviderSpec['run']>[0], providerRuntime: Parameters<ProviderSpec['run']>[1]) =>
       streamProviderEvents(async (emit) => {
         const startedAt = runtime.time.now();
 
@@ -412,16 +401,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
   const storeDb = openBackendStoreDb(runtime, { path: ':memory:' });
-  const progressStore = new JobStore(
-    namespace,
-    runtime,
-    createDefaultUpcasterRegistry(),
-    {
-      eventBus,
-      db: storeDb,
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-    },
-  );
+  const progressStore = new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    eventBus,
+    db: storeDb,
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+  });
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
@@ -445,7 +429,10 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     recoverPersistedDiscussCalls: 0,
   };
 
-  const createInvocationContext = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): InvocationContext => ({
+  const createInvocationContext = (
+    root = projectRoot,
+    coralEnv = { ...runtime.env.coralSnapshot() },
+  ): InvocationContext => ({
     projectRoot: root,
     pluginRoot,
     coralEnv: { ...coralEnv },

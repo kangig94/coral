@@ -15,10 +15,7 @@ export {
   type WorkflowExecutionPort,
 } from './execution-contract.js';
 
-export function describeTerminalFailure(
-  result: JobTerminal,
-  options: { exitCode?: number | null } = {},
-): string {
+export function describeTerminalFailure(result: JobTerminal, options: { exitCode?: number | null } = {}): string {
   switch (result.outcome.kind) {
     case 'failed':
     case 'job_fault':

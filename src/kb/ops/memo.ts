@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { resolveProjectSource } from "../../infra/project-source.js";
+import { resolveProjectSource } from '../../infra/project-source.js';
 import { SYSTEM_TIME_PORT, nowDate } from '../../infra/time.js';
 import type { IdPort, StoragePort, TimePort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
@@ -116,11 +116,7 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   return { display: match[1], sortKey };
 }
 
-export function listMemos(
-  storage: MemoStorage,
-  projectRoot: string,
-  ownerFilter?: string,
-): KbMemoListResult {
+export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter?: string): KbMemoListResult {
   const dir = memoDir(projectRoot);
   const memos = readMemoDir(storage, projectRoot)
     .filter((filename) => filename.endsWith('.md'))
@@ -159,11 +155,7 @@ export function listMemos(
   };
 }
 
-export function deleteMemos(
-  storage: MemoStorage,
-  projectRoot: string,
-  input: KbMemoDeleteInput,
-): KbMemoDeleteResult {
+export function deleteMemos(storage: MemoStorage, projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
   const dir = memoDir(projectRoot);
   const matcher = globToRegex(input.pattern);
   const deleted = readMemoDir(storage, projectRoot)

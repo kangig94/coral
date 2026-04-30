@@ -13,8 +13,7 @@ export function formatErrorEnvelope(envelope: CliErrorEnvelope, statusCode?: num
   const tags = [`code=${envelope.code}`];
   if (statusCode !== undefined) tags.push(`http=${statusCode}`);
   const needsCoordinatorStatusHint =
-    envelope.code === 'backend_unreachable'
-    && !envelope.message.includes('backend status');
+    envelope.code === 'backend_unreachable' && !envelope.message.includes('backend status');
   const message = needsCoordinatorStatusHint
     ? `${envelope.message} Run 'coral-cli backend status' to diagnose.`
     : envelope.message;

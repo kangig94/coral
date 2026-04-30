@@ -182,10 +182,12 @@ export function recordSpawn(child: ChildProcessLike, now: () => number = Date.no
     pushEvent({ type: 'stderr', data: chunk.toString() });
   });
 
-  const stdin = child.stdin as (ChildStdinLike & {
-    write: ChildStdinLike['write'];
-    end: ChildStdinLike['end'];
-  }) | null;
+  const stdin = child.stdin as
+    | (ChildStdinLike & {
+        write: ChildStdinLike['write'];
+        end: ChildStdinLike['end'];
+      })
+    | null;
   if (stdin) {
     const originalWrite = stdin.write.bind(stdin);
     const originalEnd = stdin.end.bind(stdin);

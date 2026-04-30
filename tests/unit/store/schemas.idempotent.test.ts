@@ -75,12 +75,7 @@ describe('store schema idempotency', () => {
         key,
         value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value,
       }));
-      expect(meta.map((row) => row.key)).toEqual([
-        'coordinator_id',
-        'created_ts',
-        'journal_version',
-        'schema_version',
-      ]);
+      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
       expect(meta.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
 
       expect(
@@ -113,11 +108,7 @@ describe('store schema idempotency', () => {
         'registration_kind',
       ]);
 
-      expect(tableColumns(db, 'expansion_state')).toEqual([
-        'id',
-        'version',
-        'installed_at',
-      ]);
+      expect(tableColumns(db, 'expansion_state')).toEqual(['id', 'version', 'installed_at']);
 
       expect(tableColumns(db, 'kb_curate_scheduler')).toEqual([
         'id',

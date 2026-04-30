@@ -45,12 +45,12 @@ function isConsumerStuck(value: unknown): value is Array<{ id: string; elapsedSi
   if (!Array.isArray(value)) {
     return false;
   }
-  return value.every((entry) => isRecord(entry) && typeof entry.id === 'string' && Number.isFinite(entry.elapsedSinceStopMs));
+  return value.every(
+    (entry) => isRecord(entry) && typeof entry.id === 'string' && Number.isFinite(entry.elapsedSinceStopMs),
+  );
 }
 
-function isKbHealth(
-  value: unknown,
-): value is BackendHealth['subsystems']['kb'] {
+function isKbHealth(value: unknown): value is BackendHealth['subsystems']['kb'] {
   if (!isRecord(value)) {
     return false;
   }

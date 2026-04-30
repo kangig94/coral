@@ -440,7 +440,12 @@ Note body.
       'utf-8',
     );
 
-    expect(readEntry({ note: '20260323-010203-shared-slug' }, { storage: readStorage, projectRoot, paths: createReadPaths(paths) })).toEqual({
+    expect(
+      readEntry(
+        { note: '20260323-010203-shared-slug' },
+        { storage: readStorage, projectRoot, paths: createReadPaths(paths) },
+      ),
+    ).toEqual({
       kind: 'memo',
       note: '20260323-010203-shared-slug',
       title: '20260323-010203-shared-slug',
@@ -458,7 +463,9 @@ Note body.
       'utf-8',
     );
 
-    expect(readEntry({ note: 'contract-first-design' }, { storage: readStorage, paths: createReadPaths(paths) })).toEqual({
+    expect(
+      readEntry({ note: 'contract-first-design' }, { storage: readStorage, paths: createReadPaths(paths) }),
+    ).toEqual({
       kind: 'principle',
       note: 'contract-first-design',
       title: 'contract-first-design',
@@ -495,7 +502,9 @@ Note body.
       'utf-8',
     );
 
-    expect(readEntry({ note: 'contract-first-design' }, { storage: readStorage, paths: createReadPaths(paths) })).toEqual({
+    expect(
+      readEntry({ note: 'contract-first-design' }, { storage: readStorage, paths: createReadPaths(paths) }),
+    ).toEqual({
       kind: 'note',
       note: 'contract-first-design',
       title: 'Note Title',
@@ -508,6 +517,8 @@ Note body.
 
   it('throws when reading a non-existent note', async () => {
     const { readEntry, paths } = await loadKbModules();
-    expect(() => readEntry({ note: 'does-not-exist' }, { storage: readStorage, paths: createReadPaths(paths) })).toThrow('not found');
+    expect(() =>
+      readEntry({ note: 'does-not-exist' }, { storage: readStorage, paths: createReadPaths(paths) }),
+    ).toThrow('not found');
   });
 });

@@ -66,9 +66,7 @@ export interface CoordinatorIdentity {
  * once at boot by the KB-init aggregator. Curate publish-health degradation
  * is a separate concept (`CurateHealth`) and does NOT flip this field.
  */
-export type KbStatus =
-  | { kind: 'ok'; subsystem: KnowledgeBaseRuntime }
-  | { kind: 'unavailable'; reason: string };
+export type KbStatus = { kind: 'ok'; subsystem: KnowledgeBaseRuntime } | { kind: 'unavailable'; reason: string };
 
 /**
  * Curate publication-queue health. Mutated only by the curate-scheduler

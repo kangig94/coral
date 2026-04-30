@@ -3,24 +3,13 @@ import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { TimerHandle } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
-import {
-  buildEntityConsolidationDelta,
-  buildMetadataTargets,
-} from './classification/assignments.js';
+import { buildEntityConsolidationDelta, buildMetadataTargets } from './classification/assignments.js';
 import { runCommunitySubphase } from './community/index.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
-import {
-  clearCurateRetryState,
-  clearCurateRetryStateLocked,
-  recordCurateFailure,
-} from './operations.js';
+import { clearCurateRetryState, clearCurateRetryStateLocked, recordCurateFailure } from './operations.js';
 import { runPrincipleDiscovery } from './principles.js';
-import {
-  claimCurateRun,
-  hasPendingEntriesBeyondCursor,
-  runClassificationBatches,
-} from './runner.js';
+import { claimCurateRun, hasPendingEntriesBeyondCursor, runClassificationBatches } from './runner.js';
 import {
   INVARIANT,
   isClaimStale,
@@ -40,17 +29,10 @@ export type {
   DiscoveryProposal,
   SpawnCliFn,
 } from './pipeline-types.js';
-export {
-  buildClassificationPrompt,
-  chunkEntriesByPromptBudget,
-} from './classification/prompt.js';
+export { buildClassificationPrompt, chunkEntriesByPromptBudget } from './classification/prompt.js';
 export { buildMetadataTargets, validateAssignments } from './classification/assignments.js';
 export { parseClassificationResponse } from './classification/parse.js';
-export {
-  buildDiscoveryPrompt,
-  parseDiscoveryResponse,
-  validateDiscoveryProposals,
-} from './discovery.js';
+export { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from './discovery.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 
@@ -119,14 +101,11 @@ export function createCurateScheduler({
       nextFailures = state.consecutiveCommunityBatchFailures + 1;
       // Stamp on the healthy → disabled transition; preserve any earlier stamp
       // so operators see the original trip time across subsequent retries.
-      const tripped =
-        nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
+      const tripped = nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
       writeCurateState(kb, {
         ...state,
         consecutiveCommunityBatchFailures: nextFailures,
-        communityBatchLaneDisabledAt: tripped
-          ? nowIsoString(kb.time)
-          : state.communityBatchLaneDisabledAt,
+        communityBatchLaneDisabledAt: tripped ? nowIsoString(kb.time) : state.communityBatchLaneDisabledAt,
       });
     });
 
@@ -265,11 +244,13 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
-    if (isUsageBudgetExhausted({
-      homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
-      now: kb.time.now,
-      storage: storagePort,
-    })) {
+    if (
+      isUsageBudgetExhausted({
+        homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
+        now: kb.time.now,
+        storage: storagePort,
+      })
+    ) {
       return;
     }
     const claimLanePermanentlyDisabled =
@@ -285,9 +266,7 @@ export function createCurateScheduler({
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
-        lastCompletedThrough = claimLanePermanentlyDisabled
-          ? null
-          : await runScheduledCurate(runController.signal);
+        lastCompletedThrough = claimLanePermanentlyDisabled ? null : await runScheduledCurate(runController.signal);
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
           if (await runCommunityBatch(runController.signal)) {
             gitSync.gitAutoCommit('curate: detect communities');

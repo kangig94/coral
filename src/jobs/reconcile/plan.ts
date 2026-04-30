@@ -80,10 +80,8 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
   const markStaleRunning: CleanupAction[] = [];
 
   for (const jobId of jobIds) {
-    const planned = planJobRecovery(
-      snapshot.readJob(jobId),
-      snapshot.currentNamespace,
-      (pid) => snapshot.isPidAlive(pid),
+    const planned = planJobRecovery(snapshot.readJob(jobId), snapshot.currentNamespace, (pid) =>
+      snapshot.isPidAlive(pid),
     );
     if (planned === null) continue;
 
@@ -172,11 +170,7 @@ function planJobRecovery(
     return null;
   }
 
-  if (
-    facts.hasLaunchRequest &&
-    status.phase === 'queued' &&
-    !facts.hasRuntimeStart
-  ) {
+  if (facts.hasLaunchRequest && status.phase === 'queued' && !facts.hasRuntimeStart) {
     return facts.launchRecord === null
       ? null
       : {
@@ -205,11 +199,7 @@ function planJobRecovery(
     };
   }
 
-  if (
-    facts.hasLaunchRequest &&
-    facts.hasRuntimeStart &&
-    (status.phase === 'launching' || status.phase === 'running')
-  ) {
+  if (facts.hasLaunchRequest && facts.hasRuntimeStart && (status.phase === 'launching' || status.phase === 'running')) {
     if (facts.launchRecord === null || facts.runtimeRecord === null) {
       return null;
     }
@@ -296,9 +286,6 @@ function readSessionRefs(snapshot: RecoveryProjectionSnapshot): Array<{ sessionI
 
   return refs.filter(
     (ref): ref is { sessionId: string; provider: string } =>
-      ref !== null &&
-      typeof ref === 'object' &&
-      typeof ref.sessionId === 'string' &&
-      typeof ref.provider === 'string',
+      ref !== null && typeof ref === 'object' && typeof ref.sessionId === 'string' && typeof ref.provider === 'string',
   );
 }

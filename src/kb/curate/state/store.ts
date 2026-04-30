@@ -1,8 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3';
-import type {
-  KbCurateActiveClaimRow,
-  KbCurateCommunitySummaryInputFingerprintRow,
-} from '../../state/schema.js';
+import type { KbCurateActiveClaimRow, KbCurateCommunitySummaryInputFingerprintRow } from '../../state/schema.js';
 import { parsePositiveInteger } from '../../validation.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
 import { readCurateRetryQueue } from '../retry.js';
@@ -163,12 +160,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
          through_entry_kind,
          started_at
        ) VALUES (1, ?, ?, ?, ?)`,
-    ).run(
-      activeClaim.through.entrySeq,
-      activeClaim.through.entryId,
-      throughEntryKind,
-      activeClaim.startedAt,
-    );
+    ).run(activeClaim.through.entrySeq, activeClaim.through.entryId, throughEntryKind, activeClaim.startedAt);
     return;
   }
 
@@ -180,12 +172,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
             through_entry_kind = ?,
             started_at = ?
       WHERE id = 1`,
-  ).run(
-    activeClaim.through.entrySeq,
-    activeClaim.through.entryId,
-    throughEntryKind,
-    activeClaim.startedAt,
-  );
+  ).run(activeClaim.through.entrySeq, activeClaim.through.entryId, throughEntryKind, activeClaim.startedAt);
 }
 
 function readCommunitySummaryInputFingerprints(target: CurateStateTarget): Record<string, string> | undefined {
@@ -219,7 +206,9 @@ function writeCommunitySummaryInputFingerprints(
     }
   }
 
-  for (const [communitySlug, fingerprint] of Object.entries(next).sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [communitySlug, fingerprint] of Object.entries(next).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
     if (!(communitySlug in existing)) {
       prepareCached<[string, string]>(
         target,

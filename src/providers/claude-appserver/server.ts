@@ -18,11 +18,7 @@ import {
   requireTurnInterruptParams,
   requireTurnStartParams,
 } from './protocol.js';
-import {
-  buildClaudeChildEnv,
-  type ClaudeBrokerChild,
-  type SpawnClaudeChildOptions,
-} from './controller.js';
+import { buildClaudeChildEnv, type ClaudeBrokerChild, type SpawnClaudeChildOptions } from './controller.js';
 import { createBrokerSession, type ClaudeBrokerSession } from './broker-pool.js';
 
 interface CreateClaudeBrokerServerOptions {
@@ -81,7 +77,9 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
     try {
       switch (message.method) {
         case 'session/ensure':
-          send(buildJsonRpcSuccess(message.id, await session.sessionEnsure(requireSessionEnsureParams(message.params))));
+          send(
+            buildJsonRpcSuccess(message.id, await session.sessionEnsure(requireSessionEnsureParams(message.params))),
+          );
           return;
         case 'session/probe':
           send(buildJsonRpcSuccess(message.id, await session.sessionProbe(requireSessionProbeParams(message.params))));
@@ -90,7 +88,9 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
           send(buildJsonRpcSuccess(message.id, await session.turnStart(requireTurnStartParams(message.params))));
           return;
         case 'turn/interrupt':
-          send(buildJsonRpcSuccess(message.id, await session.turnInterrupt(requireTurnInterruptParams(message.params))));
+          send(
+            buildJsonRpcSuccess(message.id, await session.turnInterrupt(requireTurnInterruptParams(message.params))),
+          );
           return;
         case 'broker/shutdown': {
           shutdownRequested = true;
@@ -156,7 +156,9 @@ export function createNodeClaudeChildFactory(
     child.stderr.setEncoding('utf8');
 
     const stdoutHandlers = new Set<(line: string) => void>();
-    const exitHandlers = new Set<(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void>();
+    const exitHandlers = new Set<
+      (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void
+    >();
     const stderrHandlers = new Set<(chunk: string) => void>();
     const stdoutReader = createInterface({ input: child.stdout });
 
@@ -210,7 +212,9 @@ export function createNodeClaudeChildFactory(
           stdoutHandlers.delete(handler);
         };
       },
-      onExit(handler: (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void): () => void {
+      onExit(
+        handler: (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void,
+      ): () => void {
         exitHandlers.add(handler);
         return () => {
           exitHandlers.delete(handler);

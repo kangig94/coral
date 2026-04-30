@@ -104,10 +104,7 @@ export async function performRescan(
  * Sweeps stale typed-incident rows: a queue entry whose entryId no longer appears in
  * the current incident set means the underlying file has been repaired since enqueue.
  */
-function syncRetryQueueAgainstIncidents(
-  kb: KbRuntime,
-  incidents: readonly DetectedIncident[],
-): void {
+function syncRetryQueueAgainstIncidents(kb: KbRuntime, incidents: readonly DetectedIncident[]): void {
   const stillDetected = new Set(incidents.map((incident) => incident.entryId));
   for (const queued of readCurateRetryQueue(kb)) {
     if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {

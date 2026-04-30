@@ -114,49 +114,73 @@ describe('backend-warm-start.mjs', () => {
     };
   }
 
-  it('exits early without spawning when the live backend already matches the manifest flavor', async () => {
-    const setup = await setupWarmStartFixture('prod', 'prod');
-    try {
-      const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
-        HOME: setup.fixture.root,
-        CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
-      });
+  it(
+    'exits early without spawning when the live backend already matches the manifest flavor',
+    async () => {
+      const setup = await setupWarmStartFixture('prod', 'prod');
+      try {
+        const result = await runHookAsync(
+          BACKEND_WARM_START_HOOK,
+          {},
+          {
+            HOME: setup.fixture.root,
+            CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+          },
+        );
 
-      expect(result.status).toBe(0);
-      expect(await waitForFile(setup.markerPath)).toBe(false);
-      expect(setup.shutdownCount()).toBe(0);
-    } finally {
+        expect(result.status).toBe(0);
+        expect(await waitForFile(setup.markerPath)).toBe(false);
+        expect(setup.shutdownCount()).toBe(0);
+      } finally {
+        await setup.closeServer();
+      }
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it(
+    'requests shutdown and spawns a replacement when the live backend flavor differs from the manifest flavor',
+    async () => {
+      const setup = await setupWarmStartFixture('dev', 'prod');
+      try {
+        const result = await runHookAsync(
+          BACKEND_WARM_START_HOOK,
+          {},
+          {
+            HOME: setup.fixture.root,
+            CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+          },
+        );
+
+        expect(result.status).toBe(0);
+        expect(await waitForFile(setup.markerPath)).toBe(true);
+        expect(setup.shutdownCount()).toBe(1);
+      } finally {
+        await setup.closeServer();
+      }
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it(
+    'spawns a replacement when the backend pid is live but the health check fails',
+    async () => {
+      const setup = await setupWarmStartFixture('prod', 'prod');
       await setup.closeServer();
-    }
-  }, WARM_START_TIMEOUT_MS);
 
-  it('requests shutdown and spawns a replacement when the live backend flavor differs from the manifest flavor', async () => {
-    const setup = await setupWarmStartFixture('dev', 'prod');
-    try {
-      const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
-        HOME: setup.fixture.root,
-        CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
-      });
+      const result = await runHookAsync(
+        BACKEND_WARM_START_HOOK,
+        {},
+        {
+          HOME: setup.fixture.root,
+          CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+        },
+      );
 
       expect(result.status).toBe(0);
       expect(await waitForFile(setup.markerPath)).toBe(true);
-      expect(setup.shutdownCount()).toBe(1);
-    } finally {
-      await setup.closeServer();
-    }
-  }, WARM_START_TIMEOUT_MS);
-
-  it('spawns a replacement when the backend pid is live but the health check fails', async () => {
-    const setup = await setupWarmStartFixture('prod', 'prod');
-    await setup.closeServer();
-
-    const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
-      HOME: setup.fixture.root,
-      CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
-    });
-
-    expect(result.status).toBe(0);
-    expect(await waitForFile(setup.markerPath)).toBe(true);
-    expect(setup.shutdownCount()).toBe(0);
-  }, WARM_START_TIMEOUT_MS);
+      expect(setup.shutdownCount()).toBe(0);
+    },
+    WARM_START_TIMEOUT_MS,
+  );
 });

@@ -135,11 +135,7 @@ async function awaitJobId(world: ServiceWorld, timeoutMs = 1000): Promise<string
   }
 }
 
-async function awaitTerminalOutcome(
-  store: JobStore,
-  jobId: string,
-  timeoutMs = 4000,
-): Promise<TerminalOutcome> {
+async function awaitTerminalOutcome(store: JobStore, jobId: string, timeoutMs = 4000): Promise<TerminalOutcome> {
   const startedAt = Date.now();
   for (;;) {
     const status = store.readStatus(jobId);

@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { REPAIR_INCIDENT_ID, repairIncidentLocus, type DetectedIncident } from '#src/kb/corpus/rescan/incidents/catalog.js';
+import {
+  REPAIR_INCIDENT_ID,
+  repairIncidentLocus,
+  type DetectedIncident,
+} from '#src/kb/corpus/rescan/incidents/catalog.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import { detectRescanInfo } from '#src/kb/corpus/rescan/drift.js';
 import { buildCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
@@ -135,11 +139,10 @@ describe('rebuild pipeline wires typed detectors into the retry queue', () => {
     await reindex(kb);
 
     const queue = readCurateRetryQueue(kb);
-    const collisions = queue.filter((entry) => entry.canonicalIncident === REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION);
-    expect(collisions.map((entry) => entry.entryId).sort()).toEqual([
-      'note:colliding-alpha',
-      'note:colliding-beta',
-    ]);
+    const collisions = queue.filter(
+      (entry) => entry.canonicalIncident === REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
+    );
+    expect(collisions.map((entry) => entry.entryId).sort()).toEqual(['note:colliding-alpha', 'note:colliding-beta']);
   });
 
   it('persists a reference-integrity/orphan-principle-refs incident enqueued by the typed pipeline', async () => {

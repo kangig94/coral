@@ -7,14 +7,11 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 describe('UpcasterRegistry', () => {
   it('registerUpcaster records the type/fromVersion pair (verified via parseBody behavior)', () => {
     const registry = createDefaultUpcasterRegistry();
-    registry.registerUpcaster('test.recorded', 1, 2, (body) => ({ upgraded: (body as { previous: number }).previous * 10 }));
+    registry.registerUpcaster('test.recorded', 1, 2, (body) => ({
+      upgraded: (body as { previous: number }).previous * 10,
+    }));
 
-    const result = registry.parseBody(
-      'test.recorded',
-      1,
-      { previous: 3 },
-      z.object({ upgraded: z.number() }),
-    );
+    const result = registry.parseBody('test.recorded', 1, { previous: 3 }, z.object({ upgraded: z.number() }));
     expect(result).toEqual({ upgraded: 30 });
   });
 

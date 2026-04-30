@@ -71,10 +71,7 @@ function fromEvents(events: readonly ProviderEventBody[]): Provider {
 
 describe('compose() terminalOnce guard', () => {
   it('passes progress, continuity, and terminal through unchanged on the happy path', async () => {
-    const stream = compose([], fromEvents([PROGRESS, CONTINUITY, COMPLETED_TERMINAL]))(
-      BASE_REQUEST,
-      BASE_RUNTIME,
-    );
+    const stream = compose([], fromEvents([PROGRESS, CONTINUITY, COMPLETED_TERMINAL]))(BASE_REQUEST, BASE_RUNTIME);
 
     const collected: ProviderEventBody[] = [];
     for await (const event of stream) {
@@ -116,10 +113,7 @@ describe('compose() terminalOnce guard', () => {
   });
 
   it('drops post-terminal progress and continuity yields', async () => {
-    const stream = compose([], fromEvents([COMPLETED_TERMINAL, PROGRESS, CONTINUITY]))(
-      BASE_REQUEST,
-      BASE_RUNTIME,
-    );
+    const stream = compose([], fromEvents([COMPLETED_TERMINAL, PROGRESS, CONTINUITY]))(BASE_REQUEST, BASE_RUNTIME);
 
     const collected: ProviderEventBody[] = [];
     for await (const event of stream) {

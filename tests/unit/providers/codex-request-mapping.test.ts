@@ -97,10 +97,13 @@ describe('mapTurnStartParams effort mapping', () => {
     expect(params.effort).toBe(codex);
   });
 
-  it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)('Coral %s produces a valid Codex effort value', (coral) => {
-    const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
-    expect(VALID_CODEX_EFFORT.has(params.effort as string)).toBe(true);
-  });
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)(
+    'Coral %s produces a valid Codex effort value',
+    (coral) => {
+      const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
+      expect(VALID_CODEX_EFFORT.has(params.effort as string)).toBe(true);
+    },
+  );
 
   it('defaults to xhigh when no explicit or env effort is set', () => {
     const params = mapTurnStartParams(makeRequest({ effort: undefined }), 'thread-1');
@@ -136,10 +139,7 @@ describe('mapTurnStartParams effort mapping', () => {
 
   it('throws a user-friendly error when CORAL_CODEX_EFFORT is invalid', () => {
     expect(() =>
-      mapTurnStartParams(
-        makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }),
-        'thread-1',
-      ),
+      mapTurnStartParams(makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }), 'thread-1'),
     ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
   });
 });
@@ -313,16 +313,26 @@ describe('TOML fallback', () => {
     const home = useTempCodexConfig('service_tier = "fast"');
     const request = makeRequest();
 
-    expect(mapThreadStartParams(request, resolvedServiceTier(request, home, () => {
-      throw eioError;
-    }))).not.toHaveProperty('serviceTier');
+    expect(
+      mapThreadStartParams(
+        request,
+        resolvedServiceTier(request, home, () => {
+          throw eioError;
+        }),
+      ),
+    ).not.toHaveProperty('serviceTier');
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_FAST'));
 
     stderrSpy.mockClear();
     const missingHome = useTempCodexConfig();
-    expect(mapThreadStartParams(request, resolvedServiceTier(request, missingHome, () => {
-      throw enoentError;
-    }))).not.toHaveProperty('serviceTier');
+    expect(
+      mapThreadStartParams(
+        request,
+        resolvedServiceTier(request, missingHome, () => {
+          throw enoentError;
+        }),
+      ),
+    ).not.toHaveProperty('serviceTier');
     expect(stderrSpy).not.toHaveBeenCalled();
   });
 

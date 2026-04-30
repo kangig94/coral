@@ -285,9 +285,7 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
   });
 }
 
-export function serializeCommunityFrontmatter(
-  meta: Omit<CommunityFrontmatter, 'level'> & { level?: number },
-): string {
+export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, 'level'> & { level?: number }): string {
   const level = parseNonNegativeInteger(meta.level ?? 0, 'level');
   const parent = normalizeCommunityParent(meta.parent);
   const children = normalizeCommunityChildren(meta.children);

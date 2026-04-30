@@ -1,10 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import {
-  isAppServerRuntime,
-  type AppServerRuntime,
-  type JobLaunch,
-} from '../../jobs/records.js';
+import { isAppServerRuntime, type AppServerRuntime, type JobLaunch } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -36,7 +32,11 @@ export class JobAbortService {
 
       const status = this.deps.progressStore.readStatus(jobId);
       const pool = this.deps.jobPools.get(jobId) ?? 'default';
-      if (status?.phase === 'queued' && status.sessionId !== null && this.deps.launchAdmission.cancelQueued(jobId, pool)) {
+      if (
+        status?.phase === 'queued' &&
+        status.sessionId !== null &&
+        this.deps.launchAdmission.cancelQueued(jobId, pool)
+      ) {
         this.finishQueuedAbort(jobId, status.sessionId, 'queue_shutdown');
         aborted.push(jobId);
         continue;

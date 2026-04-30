@@ -65,9 +65,7 @@ export function resolveClaudeModel(model: string | undefined, env: Record<string
   return resolveModelTier(model, cap);
 }
 
-export function resolveClaudeEffort(
-  request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>,
-): EffortLevel {
+export function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
   if (resolved !== 'xhigh') {
     return resolved;

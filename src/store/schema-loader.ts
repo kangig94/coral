@@ -57,7 +57,9 @@ export const CURRENT_STORE_SCHEMA_VERSION = 1;
 
 function readCurrentVersion(db: BetterSqlite3.Database): number {
   try {
-    const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
+      | { value: string }
+      | undefined;
     return row ? Number(row.value) : 0;
   } catch {
     return 0;
@@ -113,10 +115,7 @@ export function copySchemaAssets(
   return true;
 }
 
-export function ensureStoreSchemasDir(
-  storage: SchemaSeedStorage,
-  seededDir: string = SEEDED_SCHEMAS_DIR,
-): string {
+export function ensureStoreSchemasDir(storage: SchemaSeedStorage, seededDir: string = SEEDED_SCHEMAS_DIR): string {
   const schemasDir = resolveDefaultSchemasDir();
   if (storage.existsSync(schemasDir)) {
     return schemasDir;
@@ -129,7 +128,11 @@ export function ensureStoreSchemasDir(
   return schemasDir;
 }
 
-export function applyStoreSchemas({ db, storage, schemasDir = resolveDefaultSchemasDir() }: ApplyStoreSchemasOptions): void {
+export function applyStoreSchemas({
+  db,
+  storage,
+  schemasDir = resolveDefaultSchemasDir(),
+}: ApplyStoreSchemasOptions): void {
   const currentVersion = readCurrentVersion(db);
   const files = storage
     .readdirSync(schemasDir, { withFileTypes: true })

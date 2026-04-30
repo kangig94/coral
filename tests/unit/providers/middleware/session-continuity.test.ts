@@ -72,14 +72,12 @@ function cloneState(state: TestState): TestState {
   };
 }
 
-function makeContract(
-  options: {
-    opening: TestState;
-    applyUpdate?: (state: TestState, update: ProviderContinuityUpdate) => TestState;
-    applyTransportClosed?: (state: TestState, closed: ProviderTransportClose) => TestState;
-    isSessionUnavailable?: (err: unknown) => boolean;
-  },
-): SessionContinuityContract<TestState> {
+function makeContract(options: {
+  opening: TestState;
+  applyUpdate?: (state: TestState, update: ProviderContinuityUpdate) => TestState;
+  applyTransportClosed?: (state: TestState, closed: ProviderTransportClose) => TestState;
+  isSessionUnavailable?: (err: unknown) => boolean;
+}): SessionContinuityContract<TestState> {
   return {
     read: () => {
       const state = cloneState(options.opening);
@@ -383,7 +381,8 @@ describe('sessionContinuity', () => {
   it('throws assertion errors for post-deactivation bridge calls when CORAL_DEV_ASSERTIONS=1', async () => {
     process.env[DEV_ASSERTIONS] = '1';
     vi.resetModules();
-    const { sessionContinuity: sessionContinuityWithAssertions } = await import('#src/providers/middleware/session-continuity.js');
+    const { sessionContinuity: sessionContinuityWithAssertions } =
+      await import('#src/providers/middleware/session-continuity.js');
 
     let capturedBridge: ProviderRuntime['continuityBridge'] | null = null;
     const provider: Provider = async function* postDeactivationAssertProvider(_request, runtime) {

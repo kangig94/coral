@@ -1,10 +1,5 @@
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type {
-  ChildProcessLike,
-  ExecResult,
-  RuntimeSpawnOptions,
-  TimerHandle,
-} from './ports.js';
+import type { ChildProcessLike, ExecResult, RuntimeSpawnOptions, TimerHandle } from './ports.js';
 
 export interface BuildExecPromiseOptions {
   command: string;
@@ -56,20 +51,8 @@ function appendOutput(
 }
 
 export function buildExecPromise(options: BuildExecPromiseOptions): Promise<ExecResult> {
-  const {
-    args,
-    clearTimeout,
-    command,
-    cwd,
-    encoding,
-    env,
-    inheritEnv,
-    kill,
-    maxBuffer,
-    setTimeout,
-    spawn,
-    timeoutMs,
-  } = options;
+  const { args, clearTimeout, command, cwd, encoding, env, inheritEnv, kill, maxBuffer, setTimeout, spawn, timeoutMs } =
+    options;
 
   return new Promise<ExecResult>((resolveResult) => {
     let stdout = '';

@@ -98,7 +98,7 @@ describe('subscription primitive', () => {
       socket.end();
     });
 
-    const subscription = await subscribeIpcMethod<typeof events[number]>(socketPath, 'jobs.wait', {
+    const subscription = await subscribeIpcMethod<(typeof events)[number]>(socketPath, 'jobs.wait', {
       jobIds: ['job-1'],
       projectRoot: '/tmp/project',
       timeoutSeconds: 30,
@@ -180,10 +180,15 @@ describe('subscription primitive', () => {
     });
 
     const controller = new AbortController();
-    const subscription = await subscribeIpcMethod(socketPath, 'jobs.wait', {
-      jobIds: ['job-1'],
-      projectRoot: '/tmp/project',
-    }, { signal: controller.signal });
+    const subscription = await subscribeIpcMethod(
+      socketPath,
+      'jobs.wait',
+      {
+        jobIds: ['job-1'],
+        projectRoot: '/tmp/project',
+      },
+      { signal: controller.signal },
+    );
     const iterator = subscription[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 

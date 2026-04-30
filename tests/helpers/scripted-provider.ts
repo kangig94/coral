@@ -16,10 +16,7 @@ import type {
 
 export type { PreflightRuntime } from '#src/providers/contract.js';
 
-type TestProviderInvocation = (
-  request: ProviderRequest,
-  runtime: ProviderRuntime,
-) => AsyncIterable<ProviderEventBody>;
+type TestProviderInvocation = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
 
 type TestAppServerLifecycle = {
   buildServerSpec(
@@ -39,9 +36,7 @@ type TestAppServerLifecycle = {
 };
 
 type TestArtifactRecovery = {
-  finalizeFromArtifacts(
-    options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
-  ): Promise<
+  finalizeFromArtifacts(options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0]): Promise<
     | ProviderTerminalEventBody
     | {
         terminal: ProviderTerminalEventBody;
@@ -96,10 +91,7 @@ export function toProviderSpec(provider: Provider | ProviderSpec | undefined): P
     ? {
         name: provider.name,
         subscriptionPhase: inferSubscriptionPhase(provider.name),
-        buildServerSpec: (
-          request: ProviderRequest,
-          persistedContinuity: ProviderContinuityBlob | undefined,
-        ) =>
+        buildServerSpec: (request: ProviderRequest, persistedContinuity: ProviderContinuityBlob | undefined) =>
           appServerLifecycle.buildServerSpec(persistedContinuity, request),
         interrupt: appServerLifecycle.interrupt,
       }
@@ -115,9 +107,8 @@ export function toProviderSpec(provider: Provider | ProviderSpec | undefined): P
           finalizeFromArtifacts: (() => {
             const artifactRecovery = provider.artifactRecovery;
             return artifactRecovery
-              ? async (
-                  options: Parameters<NonNullable<TestArtifactRecovery['finalizeFromArtifacts']>>[0],
-                ) => normalizeRecoveryResult(await artifactRecovery.finalizeFromArtifacts(options))
+              ? async (options: Parameters<NonNullable<TestArtifactRecovery['finalizeFromArtifacts']>>[0]) =>
+                  normalizeRecoveryResult(await artifactRecovery.finalizeFromArtifacts(options))
               : async () => {
                   throw new Error(`Provider ${provider.name} does not support artifact recovery.`);
                 };

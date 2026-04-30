@@ -119,10 +119,7 @@ export const claudeRecoveryLifecycle = {
   },
 } satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;
 
-async function cleanupSessions(
-  runtime: ArtifactCleanupRuntime,
-  conversationRefs: readonly string[],
-): Promise<void> {
+async function cleanupSessions(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void> {
   if (conversationRefs.length === 0) {
     return;
   }
@@ -161,6 +158,8 @@ export const claudeArtifactCleanup = {
 } as const;
 
 function readTurnConversationRef(value: unknown): string | undefined {
-  return readString((value as { conversationRef?: unknown; sessionId?: unknown }).conversationRef)
-    ?? readString((value as { conversationRef?: unknown; sessionId?: unknown }).sessionId);
+  return (
+    readString((value as { conversationRef?: unknown; sessionId?: unknown }).conversationRef) ??
+    readString((value as { conversationRef?: unknown; sessionId?: unknown }).sessionId)
+  );
 }

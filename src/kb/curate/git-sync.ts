@@ -153,7 +153,10 @@ export function createGitSyncController({
   function parseNameStatusDiff(raw: string): GitSyncPathChange[] | null {
     const changes: GitSyncPathChange[] = [];
 
-    for (const line of raw.split('\n').map((entry) => entry.trim()).filter((entry) => entry !== '')) {
+    for (const line of raw
+      .split('\n')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '')) {
       const columns = line.split('\t');
       const status = columns[0] ?? '';
       if (status === 'A') {
@@ -206,7 +209,10 @@ export function createGitSyncController({
 
   function diffKbPathsBetweenRevisions(previousHead: string, nextHead: string): GitSyncResult {
     try {
-      const raw = git(['diff', '--name-status', '--find-renames', `${previousHead}..${nextHead}`, '--', ...KB_GIT_DIFF_PATHS], 10000);
+      const raw = git(
+        ['diff', '--name-status', '--find-renames', `${previousHead}..${nextHead}`, '--', ...KB_GIT_DIFF_PATHS],
+        10000,
+      );
       const changes = parseNameStatusDiff(raw);
       if (changes === null) {
         return { kind: 'ambiguous' };

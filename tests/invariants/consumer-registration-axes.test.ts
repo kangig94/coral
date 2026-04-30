@@ -114,15 +114,17 @@ describe('Two-axis kind/registrationKind invariant', () => {
       host.registerConsumer({ id: 'cursor-expansion', authority: 'journal', kind: 'cursor' }, scope);
     }
 
-    expect([
-      _statelessAsBase,
-      _statelessAsExpansion,
-      _cursorAsStateless,
-      _applyAsStateless,
-      _corpusAsStateless,
-      _statelessWithAuthority,
-      _crossAssign,
-    ].length).toBe(7);
+    expect(
+      [
+        _statelessAsBase,
+        _statelessAsExpansion,
+        _cursorAsStateless,
+        _applyAsStateless,
+        _corpusAsStateless,
+        _statelessWithAuthority,
+        _crossAssign,
+      ].length,
+    ).toBe(7);
   });
 
   it('runtime: ConsumerDriver.register() accepts every type-valid two-axis combination', () => {

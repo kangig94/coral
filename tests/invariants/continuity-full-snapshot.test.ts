@@ -59,11 +59,7 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
     // Body parsing requires the full continuity snapshot — patch shapes are
     // rejected by the strict schema before the reducer ever runs.
     expect(sessionContinuityCheckpointedBodySchema.safeParse(ok).success).toBe(true);
-    expect(
-      sessionContinuityCheckpointedBodySchema.safeParse({ entry, snapshot: { delta: {} } }).success,
-    ).toBe(false);
-    expect(
-      sessionContinuityCheckpointedBodySchema.safeParse({ entry }).success,
-    ).toBe(false);
+    expect(sessionContinuityCheckpointedBodySchema.safeParse({ entry, snapshot: { delta: {} } }).success).toBe(false);
+    expect(sessionContinuityCheckpointedBodySchema.safeParse({ entry }).success).toBe(false);
   });
 });

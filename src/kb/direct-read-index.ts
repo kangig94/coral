@@ -1,13 +1,7 @@
 import type { KbRuntime } from './contract.js';
 import type { KbIndex } from './entry-types.js';
 import { buildCorpusScanView } from './corpus/rescan/scan.js';
-import {
-  buildKbIndex,
-  loadCommunities,
-  loadNotes,
-  loadPrinciples,
-  loadSources,
-} from './corpus/rescan/projections.js';
+import { buildKbIndex, loadCommunities, loadNotes, loadPrinciples, loadSources } from './corpus/rescan/projections.js';
 
 function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const scan = buildCorpusScanView(kb);

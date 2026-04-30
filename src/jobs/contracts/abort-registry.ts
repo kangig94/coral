@@ -1,4 +1,3 @@
-
 export interface JobAbortRegistryPort {
   register(jobId?: string, onAbort?: () => void): string;
   getSignal(jobId: string): AbortSignal | null;

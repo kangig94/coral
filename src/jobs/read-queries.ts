@@ -86,7 +86,11 @@ type JobInternalRuntimeProjection = {
   startTime: string;
 };
 
-type JobRuntimeProjection = JobCliRuntimeProjection | JobAppServerRuntimeProjection | JobInternalRuntimeProjection | null;
+type JobRuntimeProjection =
+  | JobCliRuntimeProjection
+  | JobAppServerRuntimeProjection
+  | JobInternalRuntimeProjection
+  | null;
 
 type JobExitProjection = {
   outcome: JobTerminal['outcome'];
@@ -188,10 +192,7 @@ function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>
   return statement as BetterSqlite3.Statement<TParams, TResult>;
 }
 
-function readProjectionRow(
-  db: BetterSqlite3.Database,
-  jobId: string,
-): ProjectionRow | null {
+function readProjectionRow(db: BetterSqlite3.Database, jobId: string): ProjectionRow | null {
   const row = prepareCached<[string], ProjectionRow | undefined>(
     db,
     `SELECT job_id, phase, terminal, diagnostics,
@@ -204,10 +205,7 @@ function readProjectionRow(
   return row ?? null;
 }
 
-function readProjectionRows(
-  db: BetterSqlite3.Database,
-  jobIds: string[],
-): Map<string, ProjectionRow> {
+function readProjectionRows(db: BetterSqlite3.Database, jobIds: string[]): Map<string, ProjectionRow> {
   if (jobIds.length === 0) {
     return new Map();
   }
@@ -224,10 +222,7 @@ function readProjectionRows(
   return new Map(rows.map((row) => [row.job_id, row]));
 }
 
-function readOrderedProjectionRows(
-  db: BetterSqlite3.Database,
-  filters?: JobsListFilters,
-): ProjectionRow[] {
+function readOrderedProjectionRows(db: BetterSqlite3.Database, filters?: JobsListFilters): ProjectionRow[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
 
@@ -264,11 +259,7 @@ function readOrderedProjectionRows(
   ).all(...params);
 }
 
-function readLatestEventsForJobs(
-  db: BetterSqlite3.Database,
-  jobIds: string[],
-  type: string,
-): Map<string, EventRow> {
+function readLatestEventsForJobs(db: BetterSqlite3.Database, jobIds: string[], type: string): Map<string, EventRow> {
   if (jobIds.length === 0) {
     return new Map();
   }
@@ -289,14 +280,14 @@ function readLatestEventsForJobs(
       continue;
     }
 
-      eventsByJob.set(row.stream_id, {
-        seq: row.seq,
-        ts: row.ts,
-        type: row.type,
-        refs: row.refs,
-        body_version: row.body_version,
-        body: row.body,
-      });
+    eventsByJob.set(row.stream_id, {
+      seq: row.seq,
+      ts: row.ts,
+      type: row.type,
+      refs: row.refs,
+      body_version: row.body_version,
+      body: row.body,
+    });
   }
 
   return eventsByJob;
@@ -366,13 +357,14 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
   const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
   const refs = decodeLaunchRefs(row);
   if (body.jobKind === 'kb') {
-    const request = body.operation === 'kb.source_import'
-      ? {
-          filePath: body.request.filePath,
-          ...(body.request.slug === undefined ? {} : { slug: body.request.slug }),
-          readiness: body.request.readiness,
-        }
-      : {};
+    const request =
+      body.operation === 'kb.source_import'
+        ? {
+            filePath: body.request.filePath,
+            ...(body.request.slug === undefined ? {} : { slug: body.request.slug }),
+            readiness: body.request.readiness,
+          }
+        : {};
     return {
       jobId,
       sessionId: null,
@@ -428,11 +420,12 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
       providerMeta: {
         provider: typeof providerMeta?.provider === 'string' ? providerMeta.provider : '',
         leaseState: providerMeta?.leaseState === 'acquired' ? 'acquired' : 'waiting',
-        serverGeneration: typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined,
+        serverGeneration:
+          typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined,
         providerContinuity:
           providerMeta?.providerContinuity && typeof providerMeta.providerContinuity === 'object'
-          ? (providerMeta.providerContinuity as Record<string, unknown>)
-          : undefined,
+            ? (providerMeta.providerContinuity as Record<string, unknown>)
+            : undefined,
       },
     };
   }
@@ -463,10 +456,7 @@ function emptyDiagnostics(): JobDiagnostics {
   return { progressFaults: [] };
 }
 
-function mergeDiagnostics(
-  base: JobDiagnostics,
-  patch: JobTerminalDiagnostics,
-): JobDiagnostics {
+function mergeDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
   const warnings = patch.warnings ?? base.warnings;
   const usage = patch.usage ?? base.usage;
   const processExit = patch.processExit ?? base.processExit;
@@ -685,18 +675,17 @@ export function loadJobDetail(
   };
 }
 
-export function readJobProgress(
-  db: BetterSqlite3.Database,
-  jobId: string,
-  ctx: StoreReadContext,
-): JobProgress[] {
-  const rows = prepareCached<[string], {
-    seq: number;
-    ts: string;
-    type: string;
-    body_version: number;
-    body: Uint8Array | Buffer;
-  }>(
+export function readJobProgress(db: BetterSqlite3.Database, jobId: string, ctx: StoreReadContext): JobProgress[] {
+  const rows = prepareCached<
+    [string],
+    {
+      seq: number;
+      ts: string;
+      type: string;
+      body_version: number;
+      body: Uint8Array | Buffer;
+    }
+  >(
     db,
     `SELECT
        seq,
@@ -709,14 +698,13 @@ export function readJobProgress(
        AND stream_id = ?
        AND type IN ('job.progress.emitted', 'job.terminal.recorded')
      ORDER BY seq ASC`,
-  )
-    .all(jobId) as Array<{
-      seq: number;
-      ts: string;
-      type: string;
-      body_version: number;
-      body: Uint8Array | Buffer;
-    }>;
+  ).all(jobId) as Array<{
+    seq: number;
+    ts: string;
+    type: string;
+    body_version: number;
+    body: Uint8Array | Buffer;
+  }>;
 
   const sessionId = readProjectionRow(db, jobId)?.session_id ?? null;
 

@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { acquireSharedProviderServerLease, releaseSharedProviderServerLease } from '#src/coordinator/live/provider-hosts/lease.js';
+import {
+  acquireSharedProviderServerLease,
+  releaseSharedProviderServerLease,
+} from '#src/coordinator/live/provider-hosts/lease.js';
 import { maybeArmIdleTimer } from '#src/coordinator/live/provider-hosts/idle.js';
-import { createEntry, createFakeProviderServerHandle, randomSequence, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
+import {
+  createEntry,
+  createFakeProviderServerHandle,
+  randomSequence,
+  runtime,
+} from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 describe('provider host idle properties', () => {
   it('never evicts a currently-acquired lease across 100 random idle sequences', async () => {

@@ -3,12 +3,7 @@ import type { JobProgress } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { LaunchReadiness } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contract.js';
-import type {
-  JobWaitPort,
-  WaitStreamEvent,
-  WaitStreamOnceResult,
-  WaitStreamRequest,
-} from '../../jobs/wait.js';
+import type { JobWaitPort, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
@@ -36,11 +31,13 @@ export class JobWaitService {
     }
 
     const controller = new AbortController();
-    const iterator = this.deps.subscribeJobEvents({
-      afterSeq: this.deps.getCurrentJournalSeq(),
-      jobIds: [jobId],
-      abortSignal: controller.signal,
-    })[Symbol.asyncIterator]();
+    const iterator = this.deps
+      .subscribeJobEvents({
+        afterSeq: this.deps.getCurrentJournalSeq(),
+        jobIds: [jobId],
+        abortSignal: controller.signal,
+      })
+      [Symbol.asyncIterator]();
 
     try {
       const start = this.deps.runtime.time.now();

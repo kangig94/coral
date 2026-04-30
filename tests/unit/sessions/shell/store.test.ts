@@ -323,11 +323,17 @@ describe('sessions shell store', () => {
 
     const appendFailure = new Error('append failed');
     let shouldThrow = false;
-    const mgr = new SessionManager(workDir, runtime, () => {
-      if (shouldThrow) {
-        throw appendFailure;
-      }
-    }, undefined, openSessionDb());
+    const mgr = new SessionManager(
+      workDir,
+      runtime,
+      () => {
+        if (shouldThrow) {
+          throw appendFailure;
+        }
+      },
+      undefined,
+      openSessionDb(),
+    );
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
     const entryBeforeFailure = mgr.readById(entry.sessionId);
 

@@ -38,10 +38,9 @@ describe('provider_exit outcome materialization', () => {
   });
 
   it('preserves a numeric exit code without a note', () => {
-    const recipe = materializeProviderTerminal(
-      baseTerminal({ outcome: { kind: 'provider_exit', code: 137 } }),
-      { jobId: 'job-2' },
-    );
+    const recipe = materializeProviderTerminal(baseTerminal({ outcome: { kind: 'provider_exit', code: 137 } }), {
+      jobId: 'job-2',
+    });
 
     expect(recipe.outcomePlan).toEqual({
       kind: 'immediate',
@@ -61,10 +60,9 @@ describe('provider_exit outcome materialization', () => {
   });
 
   it('completed and aborted outcomes remain immediate without domain events', () => {
-    const completedRecipe = materializeProviderTerminal(
-      baseTerminal({ outcome: { kind: 'completed' } }),
-      { jobId: 'job-4' },
-    );
+    const completedRecipe = materializeProviderTerminal(baseTerminal({ outcome: { kind: 'completed' } }), {
+      jobId: 'job-4',
+    });
     expect(completedRecipe.outcomePlan).toEqual({
       kind: 'immediate',
       domainEvents: [],

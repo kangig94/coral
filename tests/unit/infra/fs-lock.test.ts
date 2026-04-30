@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  acquireDirectoryLockSync,
-  type DirectoryLockDeps,
-} from '#src/infra/fs-lock.js';
+import { acquireDirectoryLockSync, type DirectoryLockDeps } from '#src/infra/fs-lock.js';
 
 function errno(code: string): NodeJS.ErrnoException {
   const error = new Error(code) as NodeJS.ErrnoException;

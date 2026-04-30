@@ -13,10 +13,7 @@ import type {
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 
-type ContinuitySnapshot = Pick<
-  ProviderContinuityEventBody,
-  'conversationRef' | 'resumable' | 'providerContinuity'
->;
+type ContinuitySnapshot = Pick<ProviderContinuityEventBody, 'conversationRef' | 'resumable' | 'providerContinuity'>;
 
 type ContinuityQueue = {
   lastEmitted: ContinuitySnapshot;
@@ -49,9 +46,7 @@ function buildSessionUnavailableFailureCause(provider: string, reason: string) {
   return providerSessionUnavailable({ provider, reason });
 }
 
-export function sessionContinuity<TState>(
-  contract: SessionContinuityContract<TState>,
-): ProviderMiddleware;
+export function sessionContinuity<TState>(contract: SessionContinuityContract<TState>): ProviderMiddleware;
 export function sessionContinuity<TState>(
   providerName: string,
   contract: SessionContinuityContract<TState>,
@@ -189,11 +184,7 @@ function createContinuityBridge<TState>(
   };
 }
 
-function runWithBridge(
-  next: Provider,
-  request: ProviderRequest,
-  runtime: ProviderRuntime,
-): ReturnType<Provider> {
+function runWithBridge(next: Provider, request: ProviderRequest, runtime: ProviderRuntime): ReturnType<Provider> {
   return next(request, runtime);
 }
 

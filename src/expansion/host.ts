@@ -115,7 +115,11 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
       handles.push(handle);
       expandedScope[REGISTERED_CONSUMER_HANDLES] = handles;
       decorateDispose(scope, () => {
-        void handle.stop().catch(() => {}).then(() => handle.unregister()).catch(() => {});
+        void handle
+          .stop()
+          .catch(() => {})
+          .then(() => handle.unregister())
+          .catch(() => {});
       });
       return handle;
     },

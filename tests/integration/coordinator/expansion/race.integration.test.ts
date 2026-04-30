@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -42,12 +51,7 @@ function createPrebuildArchive(filePath: string, entryName: string, content: Buf
   writeTarOctal(header, checksum, 148, 8);
 
   const paddingSize = (512 - (content.length % 512)) % 512;
-  const archive = Buffer.concat([
-    header,
-    content,
-    Buffer.alloc(paddingSize, 0),
-    Buffer.alloc(1024, 0),
-  ]);
+  const archive = Buffer.concat([header, content, Buffer.alloc(paddingSize, 0), Buffer.alloc(1024, 0)]);
 
   writeFileSync(filePath, gzipSync(archive));
 }
@@ -189,7 +193,11 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
 
     try {
       await waitForCondition('the install lock to appear', () => existsSync(lockPath), 5_000);
-      await waitForCondition('the winner to reach the fake curl barrier', () => enteredWorkerIds(curlMarkDir).length >= 1, 5_000);
+      await waitForCondition(
+        'the winner to reach the fake curl barrier',
+        () => enteredWorkerIds(curlMarkDir).length >= 1,
+        5_000,
+      );
       expect(enteredWorkerIds(curlMarkDir)).toHaveLength(1);
 
       const firstCompleted = await waitForFirstCompletion(workers, 5_000);

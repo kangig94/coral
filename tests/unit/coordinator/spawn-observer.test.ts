@@ -6,7 +6,11 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { ChildProcessLike } from '#src/runtime/ports.js';
 import { SimulationRuntime, flushMicrotasks } from '#tools/simulation/core/backend.js';
 import { loadRecording } from '#src/infra/spawn-recording.js';
-import { EventEmitterObserver, attachRecordingObserver, observeRuntimeSpawns } from '#src/coordinator/spawn-observer.js';
+import {
+  EventEmitterObserver,
+  attachRecordingObserver,
+  observeRuntimeSpawns,
+} from '#src/coordinator/spawn-observer.js';
 
 const tempDirs: string[] = [];
 

@@ -84,11 +84,7 @@ describe('entity-community', () => {
         omega: 1,
       },
       modularity: 0.61,
-      dendrogram: [
-        Uint32Array.from([0, 1, 2, 3]),
-        Uint32Array.from([0, 0, 1, 1]),
-        Uint32Array.from([0, 0, 0, 0]),
-      ],
+      dendrogram: [Uint32Array.from([0, 1, 2, 3]), Uint32Array.from([0, 0, 1, 1]), Uint32Array.from([0, 0, 0, 0])],
     }));
     const graph = buildEntityRelationshipGraph({
       entityMeta: {

@@ -204,11 +204,7 @@ function scanCorpus(markdownRoot: string) {
   });
 }
 
-function scanMarkdownDirectory(
-  markdownRoot: string,
-  kind: CorpusMarkdownKind,
-  relativeDir: string,
-) {
+function scanMarkdownDirectory(markdownRoot: string, kind: CorpusMarkdownKind, relativeDir: string) {
   const dirPath = join(markdownRoot, relativeDir);
   return sortedMarkdownEntries(createRealRuntime('prod').storage, dirPath).map((entry) =>
     createCorpusMarkdownFileScan({

@@ -96,12 +96,10 @@ export class ReciprocalRankFusion implements HybridFusion {
     }
 
     return {
-      hits: [...fused.values()]
-        .sort(compareFusedHits)
-        .map((hit, index) => ({
-          ...hit,
-          rank: index + 1,
-        })),
+      hits: [...fused.values()].sort(compareFusedHits).map((hit, index) => ({
+        ...hit,
+        rank: index + 1,
+      })),
     };
   }
 }

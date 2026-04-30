@@ -146,10 +146,7 @@ function interfaceMemberNames(relativePath: string, interfaceName: string): stri
   const visit = (node: ts.Node): void => {
     if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
       for (const member of node.members) {
-        if (
-          (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
-          member.name !== undefined
-        ) {
+        if ((ts.isPropertySignature(member) || ts.isMethodSignature(member)) && member.name !== undefined) {
           const name = propertyNameText(member.name);
           if (name !== null) {
             members.push(name);
@@ -192,14 +189,19 @@ ${body}
 }
 
 async function createWritableKbRuntime() {
-  const [{ createRealRuntime }, { openStoreDatabase }, { ensureStoreSchemasDir }, { createKbRuntime }, { kbRuntimeDir }] =
-    await Promise.all([
-      import('#src/runtime/real.js'),
-      import('#src/store/db.js'),
-      import('#src/store/schema-loader.js'),
-      import('#src/kb/runtime.js'),
-      import('#src/kb/paths.js'),
-    ]);
+  const [
+    { createRealRuntime },
+    { openStoreDatabase },
+    { ensureStoreSchemasDir },
+    { createKbRuntime },
+    { kbRuntimeDir },
+  ] = await Promise.all([
+    import('#src/runtime/real.js'),
+    import('#src/store/db.js'),
+    import('#src/store/schema-loader.js'),
+    import('#src/kb/runtime.js'),
+    import('#src/kb/paths.js'),
+  ]);
 
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
@@ -262,7 +264,10 @@ describe('KB read port shape', () => {
     const writableDatabaseLeaks: string[] = [];
 
     const visit = (node: ts.Node): void => {
-      if (ts.isInterfaceDeclaration(node) && (node.name.text === 'KbReadPort' || node.name.text === 'ReadonlyDatabase')) {
+      if (
+        ts.isInterfaceDeclaration(node) &&
+        (node.name.text === 'KbReadPort' || node.name.text === 'ReadonlyDatabase')
+      ) {
         const rendered = node.getText(readPortSource);
         if (/\bBetterSqlite3\s*\.\s*Database\b/.test(rendered)) {
           writableDatabaseLeaks.push(node.name.text);
@@ -297,7 +302,12 @@ describe('KB read port shape', () => {
     const runtimeDir = kb.runtimeDir;
     const context: KbQueryContext = { pluginRoot: REPO_ROOT, runtime };
 
-    writeNote(notesDir(runtime.paths.coral.corpus.kbRoot), 'read-port-note', 'Read Port Note', 'Read-side search probe.');
+    writeNote(
+      notesDir(runtime.paths.coral.corpus.kbRoot),
+      'read-port-note',
+      'Read Port Note',
+      'Read-side search probe.',
+    );
     await reindex(kb);
 
     const artifactPath = oramaIndexPath(runtimeDir);

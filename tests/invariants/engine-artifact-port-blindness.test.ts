@@ -9,7 +9,11 @@ import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { createNeedleArtifactPort } from '#src/engines/needle/artifact-port.js';
 import { needleIndexDir } from '#src/engines/needle/paths.js';
-import { NEEDLE_STORE_MIN_NAPI_VERSION, NEEDLE_STORE_SCHEMA_VERSION, type NeedleStore } from '#src/engines/needle/store.js';
+import {
+  NEEDLE_STORE_MIN_NAPI_VERSION,
+  NEEDLE_STORE_SCHEMA_VERSION,
+  type NeedleStore,
+} from '#src/engines/needle/store.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import type { EngineArtifactPort } from '#src/kb/corpus/artifact-port.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';

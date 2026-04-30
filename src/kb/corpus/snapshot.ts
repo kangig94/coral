@@ -128,10 +128,7 @@ export function computeRawBytesSurfaceHash(rawBytes: Uint8Array | string): strin
 }
 
 /** Canonicalizes one frontmatter value, preserving list-vs-set semantics by field name. */
-export function canonicalizeFrontmatterValue(
-  value: CanonicalFrontmatterValue,
-  fieldName?: string,
-): string | undefined {
+export function canonicalizeFrontmatterValue(value: CanonicalFrontmatterValue, fieldName?: string): string | undefined {
   if (value === null || value === undefined) {
     return undefined;
   }
@@ -210,7 +207,7 @@ function canonicalizeObject(record: { [key: string]: CanonicalFrontmatterValue }
   const entries = Object.entries(record)
     .map(([key, value]) => {
       const canonicalValue = canonicalizeFrontmatterValue(value, key);
-      return canonicalValue === undefined ? null : [key, canonicalValue] as const;
+      return canonicalValue === undefined ? null : ([key, canonicalValue] as const);
     })
     .filter((entry): entry is readonly [string, string] => entry !== null)
     .sort(([leftKey], [rightKey]) => compareUtf8Lexicographically(leftKey, rightKey));

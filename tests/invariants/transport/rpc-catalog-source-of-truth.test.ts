@@ -47,10 +47,12 @@ describe('rpc catalog source of truth', () => {
       method,
       spec,
     }));
-    const mapped = rpcCatalog.map((spec) => ipcAdapter(spec, rpcPorts)).map(({ method, spec }) => ({
-      method,
-      spec,
-    }));
+    const mapped = rpcCatalog
+      .map((spec) => ipcAdapter(spec, rpcPorts))
+      .map(({ method, spec }) => ({
+        method,
+        spec,
+      }));
 
     expect(projected).toEqual(mapped);
   });

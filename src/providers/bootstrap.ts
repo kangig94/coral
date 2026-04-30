@@ -1,9 +1,5 @@
 import type { StoragePort } from '../runtime/ports.js';
-import {
-  type ProviderRecoveryContract,
-  type ProviderSpec,
-  type ProviderTerminalOutcome,
-} from './contract.js';
+import { type ProviderRecoveryContract, type ProviderSpec, type ProviderTerminalOutcome } from './contract.js';
 import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { adapterOutputUnparseable } from './fault.js';
 import { parseClaudeStreamJson } from './claude/output-parser.js';

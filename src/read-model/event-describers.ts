@@ -46,7 +46,7 @@ export function assertDescriberCoverage(
     code: 'describer_missing',
     userMessage: `Event describer missing for: ${missing.join(', ')}.`,
     remediation:
-      'Add an entry to the owning domain\'s event-describers.ts and re-export it from read-model/event-describers.ts.',
+      "Add an entry to the owning domain's event-describers.ts and re-export it from read-model/event-describers.ts.",
     context: { missing },
   });
 }

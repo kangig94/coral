@@ -10,10 +10,7 @@ import type {
   KbProjectionInput,
   KbProjectionRecord,
 } from '../../kb/contract.js';
-import {
-  computeContentSurfaceHash,
-  computeMetadataSurfaceHash,
-} from '../../kb/corpus/snapshot.js';
+import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../../kb/corpus/snapshot.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
 import {
   createOramaDb,
@@ -25,12 +22,7 @@ import {
 } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { OramaSnapshotStore } from './snapshot.js';
-import type {
-  FtsHit,
-  FtsSearchResult,
-  RetrievedDocument,
-  RetrievalScope,
-} from '../../kb/search/contract.js';
+import type { FtsHit, FtsSearchResult, RetrievedDocument, RetrievalScope } from '../../kb/search/contract.js';
 
 export {
   createOramaDb,
@@ -301,10 +293,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     this.searchPort.probeFreshness();
   }
 
-  private materializeDocuments(
-    records: readonly KbProjectionRecord[],
-    communityFresh: boolean,
-  ): KbOramaDocument[] {
+  private materializeDocuments(records: readonly KbProjectionRecord[], communityFresh: boolean): KbOramaDocument[] {
     return records.map((record) => {
       if (record.kind === 'note') {
         return toOramaDocument(
@@ -381,7 +370,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       );
     });
   }
-
 }
 
 /** Creates the shared Orama projection wrapper for a KB runtime. */

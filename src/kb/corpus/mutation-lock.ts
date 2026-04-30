@@ -66,7 +66,9 @@ export interface KbMutationLockRunner<
   getCurrentLock(): Promise<void>;
   setCurrentLock(lock: Promise<void>): void;
   setActiveContext(context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta> | null): void;
-  finalizePendingMutation(context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>): void | Promise<void>;
+  finalizePendingMutation(
+    context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
+  ): void | Promise<void>;
   enqueuePublication(publication: TPublication): void;
   hasQueuedPublications(): boolean;
   processPublishQueue(): Promise<void> | void;

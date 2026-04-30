@@ -13,11 +13,16 @@ vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
-    readFileSync: vi.fn((path: NodeFs.PathOrFileDescriptor, encoding?: BufferEncoding | { encoding?: BufferEncoding | null; flag?: string } | null) => {
-      const normalizedPath = String(path);
-      fsSpyState.readCalls.push(normalizedPath);
-      return actual.readFileSync(path, encoding as BufferEncoding);
-    }),
+    readFileSync: vi.fn(
+      (
+        path: NodeFs.PathOrFileDescriptor,
+        encoding?: BufferEncoding | { encoding?: BufferEncoding | null; flag?: string } | null,
+      ) => {
+        const normalizedPath = String(path);
+        fsSpyState.readCalls.push(normalizedPath);
+        return actual.readFileSync(path, encoding as BufferEncoding);
+      },
+    ),
     readdirSync: vi.fn((path: NodeFs.PathLike, options?: NodeFs.ObjectEncodingOptions & { withFileTypes?: false }) => {
       fsSpyState.dirCalls.push(String(path));
       return actual.readdirSync(path, options as never);
@@ -127,7 +132,9 @@ function corpusReadCalls(kb: {
   entityGraphPath(): string;
 }): string[] {
   const roots = [kb.notesDir(), kb.sourcesDir(), kb.principlesDir(), kb.communitiesDir()];
-  return fsSpyState.readCalls.filter((path) => roots.some((root) => path.startsWith(root)) || path === kb.entityGraphPath());
+  return fsSpyState.readCalls.filter(
+    (path) => roots.some((root) => path.startsWith(root)) || path === kb.entityGraphPath(),
+  );
 }
 
 function corpusDirWalks(kb: {

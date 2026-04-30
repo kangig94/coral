@@ -14,12 +14,7 @@ export class RecoveryRegistry {
 
   constructor(private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>) {}
 
-  register(
-    jobId: string,
-    launchRecord: JobLaunch,
-    runtimeRecord?: JobRuntime,
-    abortHandler?: () => void,
-  ): void {
+  register(jobId: string, launchRecord: JobLaunch, runtimeRecord?: JobRuntime, abortHandler?: () => void): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });
 
     if (abortHandler) {

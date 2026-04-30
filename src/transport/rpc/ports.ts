@@ -1,11 +1,6 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../coordinator/expansion/rpc.js';
-import type {
-  JobForkRequest,
-  JobLaunchRequest,
-  JobResumeRequest,
-  LaunchDecision,
-} from '../../jobs/launch.js';
+import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
@@ -98,7 +93,11 @@ export interface DiscussRequestPort {
   seed(args: unknown): ToolDomainResult;
   start(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   listSessions(): DiscussSummaryDto[];
-  loadDetail(projectRoot: string, sessionId: string, view: DiscussView): DiscussDetailResponse | 'audit_requires_ended_session' | null;
+  loadDetail(
+    projectRoot: string,
+    sessionId: string,
+    view: DiscussView,
+  ): DiscussDetailResponse | 'audit_requires_ended_session' | null;
   watch(args: Record<string, unknown>, ctx: InvocationContext): ToolDomainResult;
   bid(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   speech(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;

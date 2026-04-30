@@ -303,7 +303,10 @@ export async function awaitStepCompletion(
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
 
-    if (state.failureDrain !== null && (state.pending.size === 0 || options.time.now() >= state.failureDrain.drainDeadline)) {
+    if (
+      state.failureDrain !== null &&
+      (state.pending.size === 0 || options.time.now() >= state.failureDrain.drainDeadline)
+    ) {
       throw createWorkflowExecutionError(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,

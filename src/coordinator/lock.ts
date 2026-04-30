@@ -100,10 +100,7 @@ function snapshotKey(snapshot: LockSnapshot): string {
   ].join(':');
 }
 
-function readLockSnapshotAt(
-  lockPath: string,
-  storage: Pick<LockFileStorage, 'readFileSync'>,
-): LockSnapshot | null {
+function readLockSnapshotAt(lockPath: string, storage: Pick<LockFileStorage, 'readFileSync'>): LockSnapshot | null {
   try {
     const raw = storage.readFileSync(lockPath, 'utf-8');
     return { raw, record: parseLockRecord(raw) };
@@ -115,9 +112,7 @@ function readLockSnapshotAt(
   }
 }
 
-function readLockSnapshot(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-): LockSnapshot | null {
+function readLockSnapshot(runtime: Pick<Runtime, 'paths' | 'storage'>): LockSnapshot | null {
   return readLockSnapshotAt(lockFilePath(runtime), runtime.storage);
 }
 
@@ -132,10 +127,7 @@ function writeLockFileAt(
   });
 }
 
-function writeLockFile(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-  record: LockRecord,
-): boolean {
+function writeLockFile(runtime: Pick<Runtime, 'paths' | 'storage'>, record: LockRecord): boolean {
   return writeLockFileAt(lockFilePath(runtime), record, runtime.storage);
 }
 
@@ -181,10 +173,7 @@ function removeLockIfSnapshotMatchesAt(
   }
 }
 
-function removeLockIfSnapshotMatches(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-  snapshot: LockSnapshot,
-): boolean {
+function removeLockIfSnapshotMatches(runtime: Pick<Runtime, 'paths' | 'storage'>, snapshot: LockSnapshot): boolean {
   return removeLockIfSnapshotMatchesAt(lockFilePath(runtime), snapshot, runtime.storage);
 }
 
@@ -372,10 +361,7 @@ export async function acquireLock(
   }
 }
 
-export function releaseLock(
-  instanceId: string | undefined,
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-): void {
+export function releaseLock(instanceId: string | undefined, runtime: Pick<Runtime, 'paths' | 'storage'>): void {
   const key = instanceId ?? [...activeLocks.keys()].at(-1);
   if (!key) {
     return;

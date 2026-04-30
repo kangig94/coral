@@ -5,15 +5,8 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../contract.js';
-import {
-  bindAppServerLease,
-  getAppServerNotificationHandler,
-  type AppServerContract,
-} from '../app-server/driver.js';
-import type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-} from '../app-server/driver-types.js';
+import { bindAppServerLease, getAppServerNotificationHandler, type AppServerContract } from '../app-server/driver.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from '../app-server/driver-types.js';
 import type { ProviderTransportClose } from '../protocol.js';
 
 type DownstreamStep = IteratorResult<ProviderEventBody>;
@@ -112,10 +105,7 @@ function raceNextAndClosed(
   pendingNext: Promise<DownstreamStep>,
   pendingClosed: Promise<ClosedResult>,
 ): Promise<ClosedResult | NextResult> {
-  return Promise.race([
-    pendingClosed,
-    pendingNext.then((step): NextResult => ({ kind: 'next', step })),
-  ]);
+  return Promise.race([pendingClosed, pendingNext.then((step): NextResult => ({ kind: 'next', step }))]);
 }
 
 async function teardownSession(options: {

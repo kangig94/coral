@@ -47,10 +47,7 @@ function buildBodyInvocationContext(
   return buildInvocationContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
-function buildQueryContext(
-  request: { projectRoot: string },
-  rpcPorts: HttpHandlerPorts,
-): InvocationContext {
+function buildQueryContext(request: { projectRoot: string }, rpcPorts: HttpHandlerPorts): InvocationContext {
   return buildInvocationContextFromQuery(request.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
@@ -231,11 +228,14 @@ export async function executeCatalogRequest(
         );
       }
       if (scopeCheck.missing.length === parsed.jobs.length) {
-        return unary({
-          code: 'jobs_not_found',
-          message: 'Requested jobs were not found',
-          detail: { jobs: parsed.jobs },
-        }, 404);
+        return unary(
+          {
+            code: 'jobs_not_found',
+            message: 'Requested jobs were not found',
+            detail: { jobs: parsed.jobs },
+          },
+          404,
+        );
       }
 
       return unary(rpcPorts.jobs.abort(parsed.jobs));
@@ -278,17 +278,22 @@ export async function executeCatalogRequest(
         );
       }
       if (scopeCheck.missing.length === parsed.jobIds.length) {
-        return unary({
-          code: 'jobs_not_found',
-          message: 'Requested jobs were not found',
-          detail: { jobs: scopeCheck.missing },
-        }, 404);
+        return unary(
+          {
+            code: 'jobs_not_found',
+            message: 'Requested jobs were not found',
+            detail: { jobs: scopeCheck.missing },
+          },
+          404,
+        );
       }
 
       const waitRequest: WaitStreamRequest = { ...parsed };
       return {
         kind: 'subscription',
-        notifications: rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
+        notifications: rpcPorts.jobs.waitStream(
+          withAbortSignal(waitRequest, abortSignal),
+        ) as AsyncIterable<WaitStreamEvent>,
       };
     }
 
@@ -414,7 +419,9 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteNote(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))));
+      return unaryHttp(
+        domainResultToHttp(await rpcPorts.kb.deleteNote(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))),
+      );
     }
 
     case 'kb.source.list':
@@ -438,9 +445,10 @@ export async function executeCatalogRequest(
         return unaryHttp(response);
       }
       const data = result.data;
-      const status = typeof data === 'object' && data !== null && 'status' in data
-        ? (data as { status?: unknown }).status
-        : undefined;
+      const status =
+        typeof data === 'object' && data !== null && 'status' in data
+          ? (data as { status?: unknown }).status
+          : undefined;
       return unary(response.body, status === 'running' || status === 'queued' ? 202 : 201);
     }
 
@@ -448,7 +456,9 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteSource(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))));
+      return unaryHttp(
+        domainResultToHttp(await rpcPorts.kb.deleteSource(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))),
+      );
     }
 
     case 'kb.community.read': {
@@ -474,14 +484,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string; projectRoot: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(
-        domainResultToHttp(
-          rpcPorts.kb.readMemo(
-            slug,
-            buildQueryContext(parsed, rpcPorts),
-          ),
-        ),
-      );
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts))));
     }
 
     case 'kb.memo.create': {
@@ -495,7 +498,12 @@ export async function executeCatalogRequest(
     }
 
     case 'kb.memo.delete': {
-      const parsed = request as Record<string, unknown> & { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
+      const parsed = request as Record<string, unknown> & {
+        projectRoot: string;
+        pattern?: string;
+        owner?: string;
+        all?: boolean;
+      };
       const ctx = buildBodyInvocationContext(parsed, rpcPorts) ?? buildQueryContext(parsed, rpcPorts);
       return unaryHttp(
         domainResultToHttp(
@@ -535,7 +543,10 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       return unaryHttp(
         domainResultToHttp(
-          await rpcPorts.kb.reindex({ async: parsed.async === true }, maybeBuildBodyInvocationContext(parsed, rpcPorts)),
+          await rpcPorts.kb.reindex(
+            { async: parsed.async === true },
+            maybeBuildBodyInvocationContext(parsed, rpcPorts),
+          ),
         ),
       );
     }

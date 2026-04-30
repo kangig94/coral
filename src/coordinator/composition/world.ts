@@ -2,7 +2,7 @@ declare const __VERSION__: string;
 
 import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
-import { pluginRootNamespace } from "../../infra/plugin-identity.js";
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { providerLookupPortFromCatalog } from '../../providers/catalog.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -10,10 +10,7 @@ import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js'
 import type { CoordinatorIdentity } from '../lifecycle.js';
 import { TypedEventBus } from '../event-bus.js';
 import type { CoordinatorCoreOptions } from './types.js';
-import {
-  createDiscussContextRegistry,
-  type DiscussContextRegistry,
-} from '../../discuss/shell/live-registry.js';
+import { createDiscussContextRegistry, type DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
@@ -82,9 +79,9 @@ export function createCoordinatorWorld(
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const progressStoreEventBus = options.progressStore?.getEventBus();
   const eventBus =
-    options.eventBus
-    ?? (progressStoreEventBus instanceof TypedEventBus ? progressStoreEventBus : undefined)
-    ?? new TypedEventBus();
+    options.eventBus ??
+    (progressStoreEventBus instanceof TypedEventBus ? progressStoreEventBus : undefined) ??
+    new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
@@ -94,17 +91,12 @@ export function createCoordinatorWorld(
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const progressStore =
     options.progressStore ??
-    new JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: options.storeDb ?? openBackendStoreDb(runtime),
-        eventBus,
-        reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-        providers: providerLookupPortFromCatalog(providerRegistry),
-      },
-    );
+    new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+      db: options.storeDb ?? openBackendStoreDb(runtime),
+      eventBus,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+      providers: providerLookupPortFromCatalog(providerRegistry),
+    });
   const providerHostManager =
     options.providerHostManager ??
     createProviderHostManager({

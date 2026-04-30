@@ -44,10 +44,7 @@ const sessionCreated = typedDescriber(
   (body) => `Discuss session created: ${body.input.topic}.`,
 );
 const biddingOpened = typedDescriber(discussBiddingOpenedBodySchema, () => 'Discuss bidding opened.');
-const bidSubmitted = typedDescriber(
-  discussBidSubmittedBodySchema,
-  (body) => `Discuss bid submitted by ${body.agent}.`,
-);
+const bidSubmitted = typedDescriber(discussBidSubmittedBodySchema, (body) => `Discuss bid submitted by ${body.agent}.`);
 const participantsExpelled = typedDescriber(
   discussParticipantsExpelledBodySchema,
   (body) => `Discuss participants expelled: ${body.agents.join(', ')}.`,
@@ -96,8 +93,7 @@ const agentJobStarted = typedDescriber(
 );
 const agentJobFinished = typedDescriber(
   discussAgentJobFinishedBodySchema,
-  (body) =>
-    `Discuss agent ${body.agent} job ${body.jobId} ${describeOutcome(body.outcome)} (attempt ${body.attempt}).`,
+  (body) => `Discuss agent ${body.agent} job ${body.jobId} ${describeOutcome(body.outcome)} (attempt ${body.attempt}).`,
 );
 
 export const discussEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([

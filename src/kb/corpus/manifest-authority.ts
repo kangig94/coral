@@ -4,12 +4,7 @@ import type { StoragePort } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
 import { noteEntryId, sourceEntryId } from '../entry-types.js';
 import { stripMdExt } from '../paths.js';
-import {
-  extractBody,
-  extractTitle,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-} from './frontmatter.js';
+import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import {
   computeContentSurfaceHash,
@@ -58,10 +53,7 @@ export function createManifestAuthority(): ManifestAuthority {
     cachedMetadataManifestHash = null;
   }
 
-  function replaceLaneHashes(
-    lane: ManifestAuthorityLane,
-    nextHashes: ReadonlyMap<string, string>,
-  ): void {
+  function replaceLaneHashes(lane: ManifestAuthorityLane, nextHashes: ReadonlyMap<string, string>): void {
     const nextMap = new Map(nextHashes);
     if (!surfaceHashMapsEqual(mapForLane(lane), nextMap)) {
       if (lane === 'content') {
@@ -360,10 +352,7 @@ export function collectFullManifestSurfaceHashes(target: ManifestAuthorityTarget
   return { content, metadata };
 }
 
-export function computeFullCollectorManifestHash(
-  target: ManifestAuthorityTarget,
-  lane: ManifestAuthorityLane,
-): string {
+export function computeFullCollectorManifestHash(target: ManifestAuthorityTarget, lane: ManifestAuthorityLane): string {
   const hashes = collectFullManifestSurfaceHashes(target);
   return computeManifestHashFromSurfaceHashes(hashes[lane]);
 }
@@ -392,10 +381,7 @@ function applyDeltasToSurfaceHashes(
   }
 }
 
-function surfaceHashMapsEqual(
-  left: ReadonlyMap<string, string>,
-  right: ReadonlyMap<string, string>,
-): boolean {
+function surfaceHashMapsEqual(left: ReadonlyMap<string, string>, right: ReadonlyMap<string, string>): boolean {
   return (
     left.size === right.size &&
     [...left.entries()].every(([manifestId, surfaceHash]) => right.get(manifestId) === surfaceHash)

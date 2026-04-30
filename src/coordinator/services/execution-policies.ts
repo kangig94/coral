@@ -20,10 +20,7 @@ import {
 } from '../../jobs/agent-resolution.js';
 import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import type { SessionClaimAtomicPort } from '../../sessions/contracts.js';
-import {
-  describeSessionInterrupted,
-  type SessionInterruptedFault,
-} from '../../sessions/fault.js';
+import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { rejectLaunch } from '../../jobs/launch.js';
@@ -135,10 +132,7 @@ export function buildEffectiveCoralEnv(
   return merged;
 }
 
-export function buildInterruptedAppServerReport(
-  fault: SessionInterruptedFault,
-  conversationRef?: string,
-): string {
+export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, conversationRef?: string): string {
   const lines = [describeSessionInterrupted(fault), ''];
 
   if (fault.continuity === 'verified') {
@@ -198,10 +192,7 @@ export function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
   };
 }
 
-export async function runProviderPreflight(
-  provider: ProviderSpec,
-  runtime: PreflightRuntime,
-): Promise<string | null> {
+export async function runProviderPreflight(provider: ProviderSpec, runtime: PreflightRuntime): Promise<string | null> {
   if (!provider.preflight) return null;
   try {
     await provider.preflight(runtime);

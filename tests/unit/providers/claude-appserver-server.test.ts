@@ -35,7 +35,9 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   readonly kills: Array<NodeJS.Signals | undefined> = [];
 
   private readonly stdoutHandlers = new Set<(line: string) => void>();
-  private readonly exitHandlers = new Set<(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void>();
+  private readonly exitHandlers = new Set<
+    (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void
+  >();
   private readonly stderrHandlers = new Set<(chunk: string) => void>();
 
   constructor(
@@ -318,10 +320,7 @@ function countControlRequests(child: FakeClaudeChild, subtype: string): number {
   }).length;
 }
 
-async function ensureSession(
-  session: ClaudeBrokerSession,
-  params: Partial<SessionEnsureParams> = {},
-) {
+async function ensureSession(session: ClaudeBrokerSession, params: Partial<SessionEnsureParams> = {}) {
   return session.sessionEnsure({
     ...BOOTSTRAP,
     ...params,
@@ -501,12 +500,14 @@ describe('Claude broker session', () => {
     await flush();
 
     await expect(
-      session.turnStart(startParams(ensureResult.brokerSessionKey, {
-        brokerTurnId: 'turn-1',
-        prompt: 'hello',
-        model: 'claude-sonnet-4-6',
-        maxThinkingTokens: 256,
-      })),
+      session.turnStart(
+        startParams(ensureResult.brokerSessionKey, {
+          brokerTurnId: 'turn-1',
+          prompt: 'hello',
+          model: 'claude-sonnet-4-6',
+          maxThinkingTokens: 256,
+        }),
+      ),
     ).resolves.toEqual({
       brokerSessionKey: ensureResult.brokerSessionKey,
       brokerTurnId: 'turn-1',
@@ -515,10 +516,12 @@ describe('Claude broker session', () => {
     });
 
     await expect(
-      session.turnStart(startParams(ensureResult.brokerSessionKey, {
-        brokerTurnId: 'turn-2',
-        prompt: 'overlap',
-      })),
+      session.turnStart(
+        startParams(ensureResult.brokerSessionKey, {
+          brokerTurnId: 'turn-2',
+          prompt: 'overlap',
+        }),
+      ),
     ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
     });
@@ -538,7 +541,9 @@ describe('Claude broker session', () => {
     const controlRequests = child.writes.filter(
       (message) => isRecord(message) && message.type === 'control_request' && isRecord(message.request),
     );
-    const subtypes = controlRequests.map((message) => String(((message as Record<string, unknown>).request as Record<string, unknown>).subtype));
+    const subtypes = controlRequests.map((message) =>
+      String(((message as Record<string, unknown>).request as Record<string, unknown>).subtype),
+    );
     expect(subtypes).toContain('set_model');
     expect(subtypes).toContain('set_max_thinking_tokens');
     expect(subtypes.filter((subtype) => subtype === 'interrupt')).toHaveLength(1);
@@ -567,9 +572,7 @@ describe('Claude broker session', () => {
       },
     });
 
-    expect(
-      notifications.filter((notification) => notification.method === 'host/stats'),
-    ).toEqual([
+    expect(notifications.filter((notification) => notification.method === 'host/stats')).toEqual([
       {
         method: 'host/stats',
         params: {
@@ -619,7 +622,9 @@ describe('Claude broker session', () => {
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-progress');
     await flush();
-    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-progress', prompt: 'work' }));
+    await session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-progress', prompt: 'work' }),
+    );
 
     child.emitPermissionRequest('req-1', 'Write', { file_path: '/workspace/out.txt' });
     child.emitAssistantTool('sess-progress', 'Read', { file_path: '/workspace/in.txt' });
@@ -630,7 +635,10 @@ describe('Claude broker session', () => {
     expect(readAllowBehavior(child, 'req-1')).toBe('allow');
 
     const progressMessages = notifications
-      .filter((notification): notification is Extract<ClaudeBrokerNotification, { method: 'turn/progress' }> => notification.method === 'turn/progress')
+      .filter(
+        (notification): notification is Extract<ClaudeBrokerNotification, { method: 'turn/progress' }> =>
+          notification.method === 'turn/progress',
+      )
       .map((notification) => notification.params.message);
     expect(progressMessages.some((message) => message.includes('Write'))).toBe(true);
     expect(progressMessages.some((message) => message.includes('Read'))).toBe(true);
@@ -645,7 +653,9 @@ describe('Claude broker session', () => {
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-fail');
     await flush();
-    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-fail', prompt: 'long run' }));
+    await session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-fail', prompt: 'long run' }),
+    );
 
     child.emitStderr('fatal stderr chunk');
     child.emitExit({ code: 1, signal: null });
@@ -710,9 +720,13 @@ describe('broker: duplicate turn/start rejection', () => {
     child.emitSystemInit('sess-pending');
     await flush();
 
-    const first = session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'hello' }));
+    const first = session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-1', prompt: 'hello' }),
+    );
     await firstInFlight;
-    const second = session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'world' }));
+    const second = session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-2', prompt: 'world' }),
+    );
 
     await expect(second).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -929,7 +943,9 @@ describe('broker: child crash during active turn produces terminal failure, not 
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-crash');
     await flush();
-    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-crash', prompt: 'long op' }));
+    await session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-crash', prompt: 'long op' }),
+    );
 
     child.crash(1);
 
@@ -1109,14 +1125,18 @@ describe('broker: turn/completed notification carries cost metadata', () => {
     const ensureResult = await ensureSession(session);
     child.emitSystemInit('sess-nocost');
     await flush();
-    await session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-nocost', prompt: 'work' }));
+    await session.turnStart(
+      startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-nocost', prompt: 'work' }),
+    );
 
     child.emitResultWithoutCost('sess-nocost', 'ok');
     await flush();
 
     expect(notifications.find((notification) => notification.method === 'turn/completed')).toBeUndefined();
     await expect(
-      session.turnStart(startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-overlap', prompt: 'still busy' })),
+      session.turnStart(
+        startParams(ensureResult.brokerSessionKey, { brokerTurnId: 'turn-overlap', prompt: 'still busy' }),
+      ),
     ).rejects.toMatchObject({
       code: CLAUDE_BROKER_BUSY_RPC_CODE,
     });

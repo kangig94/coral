@@ -446,11 +446,7 @@ export const workflowRegistry: DomainEventRegistry = {
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
     }),
   ],
-  appendValidators: [
-    validateWorkflowPlanDeclaredOnce,
-    validateWorkflowPlanValidity,
-    validateWorkflowCompletedOnce,
-  ],
+  appendValidators: [validateWorkflowPlanDeclaredOnce, validateWorkflowPlanValidity, validateWorkflowCompletedOnce],
 };
 
 export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {

@@ -96,7 +96,7 @@ function detectMalformedMarkdown(entry: CorpusMarkdownFileScan): DetectedInciden
       continue;
     }
 
-    const previousLine = index === 0 ? null : lines[index - 1] ?? null;
+    const previousLine = index === 0 ? null : (lines[index - 1] ?? null);
     const invalidPreviousLine =
       previousLine === null ||
       previousLine.trim() === '' ||

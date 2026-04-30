@@ -105,9 +105,7 @@ type TestLaunchAndFollowOptions = {
   backoffScheduler?: (delayMs: number) => Promise<void>;
 };
 
-function makeOptions(
-  overrides: Partial<TestLaunchAndFollowOptions> = {},
-): TestLaunchAndFollowOptions {
+function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestLaunchAndFollowOptions {
   return {
     launchResult: {
       launchState: 'running',
@@ -316,9 +314,7 @@ describe('cli follow', () => {
     const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
     const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
 
-    mockState.ensure
-      .mockResolvedValueOnce(makeBackend('backend-1'))
-      .mockResolvedValueOnce(makeBackend('backend-2'));
+    mockState.ensure.mockResolvedValueOnce(makeBackend('backend-1')).mockResolvedValueOnce(makeBackend('backend-2'));
     mockState.subscribe
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
         expect(params.cursor).toBeUndefined();
@@ -355,9 +351,7 @@ describe('cli follow', () => {
     const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
-    mockState.ensure
-      .mockResolvedValueOnce(makeBackend('backend-1'))
-      .mockResolvedValueOnce(makeBackend('backend-2'));
+    mockState.ensure.mockResolvedValueOnce(makeBackend('backend-1')).mockResolvedValueOnce(makeBackend('backend-2'));
     mockState.subscribe
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
         expect(params.cursor).toBeUndefined();
@@ -443,15 +437,14 @@ describe('cli follow', () => {
     const abortJob = vi.fn().mockResolvedValue(undefined);
 
     mockState.ensure.mockResolvedValueOnce(makeBackend());
-    mockState.subscribe.mockImplementationOnce(async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
-      makeSubscription(
-        async function* () {
+    mockState.subscribe.mockImplementationOnce(
+      async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
+        makeSubscription(async function* () {
           started.resolve();
           await new Promise<never>((_resolve, reject) => {
             options?.signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
           });
-        },
-      ),
+        }),
     );
 
     const followPromise = launchAndFollow(makeOptions({ abortJob }));

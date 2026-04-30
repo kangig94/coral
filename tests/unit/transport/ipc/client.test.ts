@@ -87,9 +87,7 @@ describe('ipc client', () => {
       destroyed = false;
       writableEnded = false;
 
-      constructor(
-        private readonly behavior: 'refused' | 'success',
-      ) {
+      constructor(private readonly behavior: 'refused' | 'success') {
         super();
         queueMicrotask(() => {
           if (behavior === 'refused') {

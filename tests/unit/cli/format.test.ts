@@ -259,9 +259,7 @@ describe('cli format', () => {
         cursor: 9,
       } satisfies WatchState;
 
-      expect(
-        formatDiscussWatch(result),
-      ).toBe(
+      expect(formatDiscussWatch(result)).toBe(
         'Session session-1 [bidding]\n' + 'Topic: Risk tradeoffs\n' + 'Epoch: 2 | Step: 3 | Events: 2 | Cursor: 9',
       );
     });
@@ -501,9 +499,7 @@ describe('cli format', () => {
     });
 
     it('formats async kb reindex job launch results', () => {
-      expect(formatKbReindex({ status: 'running', job: 'kb-reindex-job' })).toBe(
-        'Reindex job kb-reindex-job running',
-      );
+      expect(formatKbReindex({ status: 'running', job: 'kb-reindex-job' })).toBe('Reindex job kb-reindex-job running');
     });
   });
 
@@ -755,9 +751,9 @@ describe('cli format', () => {
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n'
-          + 'Result path: /tmp/result.md\n'
-          + 'Remaining jobs: job-2',
+        'Job job-1 errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n' +
+          'Result path: /tmp/result.md\n' +
+          'Remaining jobs: job-2',
       );
     });
 
@@ -771,9 +767,9 @@ describe('cli format', () => {
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 provider exited 7: forced timeout at 600s\n'
-          + 'Result path: /tmp/result.md\n'
-          + 'Remaining jobs: job-2',
+        'Job job-1 provider exited 7: forced timeout at 600s\n' +
+          'Result path: /tmp/result.md\n' +
+          'Remaining jobs: job-2',
       );
     });
 
@@ -821,16 +817,12 @@ describe('cli format', () => {
         formatWaitTerminal(providerSessionUnavailable, null, false, {
           describeCauseRef: () => 'Codex session unavailable: thread missing.',
         }),
-      ).toContain(
-        'Job job-1 failed: Failed: Codex session unavailable: thread missing.',
-      );
+      ).toContain('Job job-1 failed: Failed: Codex session unavailable: thread missing.');
       expect(
         formatWaitTerminal(adapterOutputUnparseable, null, false, {
           describeCauseRef: () => 'Claude produced unparseable output: bad json.',
         }),
-      ).toContain(
-        'Job job-1 failed: Failed: Claude produced unparseable output: bad json.',
-      );
+      ).toContain('Job job-1 failed: Failed: Claude produced unparseable output: bad json.');
     });
 
     it('formats waiting output with pending jobs', () => {
@@ -840,9 +832,7 @@ describe('cli format', () => {
     });
 
     it('formats waiting output without pending jobs', () => {
-      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe(
-        'Still waiting; jobs: none',
-      );
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe('Still waiting; jobs: none');
     });
 
     it('renders TTY wait lines with carriage return and padding', () => {

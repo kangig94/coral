@@ -9,7 +9,7 @@ import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';

@@ -1,8 +1,18 @@
 import { errorMessage } from '../../infra/error-format.js';
 import type { TimePort } from '../../runtime/ports.js';
 import { resolveModelTier } from '../request-policy.js';
-import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../contract.js';
-import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server/driver.js';
+import type {
+  Provider,
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerLease,
+} from '../contract.js';
+import {
+  bindAppServerNotificationHandler,
+  buildProviderFailureMessage,
+  requireAppServerLease,
+} from '../app-server/driver.js';
 import type { AppServerNotificationMessage } from '../app-server/driver.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -16,12 +26,7 @@ import {
   resolveCodexServiceTier,
   type CodexServiceTier,
 } from './request-mapping.js';
-import type {
-  AppServerMethod,
-  AppServerRequestParams,
-  AppServerResponse,
-  Turn,
-} from './protocol.js';
+import type { AppServerMethod, AppServerRequestParams, AppServerResponse, Turn } from './protocol.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -531,7 +536,11 @@ async function initializeThread(
   if (request.action === 'resume') {
     const conversationRef = requireResumeConversationRef(request);
     try {
-      const response = await rpc(lease, 'thread/resume', mapThreadResumeParams(request, conversationRef, state.serviceTier));
+      const response = await rpc(
+        lease,
+        'thread/resume',
+        mapThreadResumeParams(request, conversationRef, state.serviceTier),
+      );
       threadId = response.thread.id;
     } catch (error) {
       if (isCodexSessionUnavailable(error)) {
@@ -678,10 +687,7 @@ function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody,
   };
 }
 
-function buildFailedTerminal(
-  state: CodexTurnState,
-  message: string,
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
+function buildFailedTerminal(state: CodexTurnState, message: string): Extract<ProviderEventBody, { kind: 'terminal' }> {
   return {
     kind: 'terminal',
     terminal: buildJobTerminal({
@@ -698,16 +704,13 @@ function buildFailedTerminal(
   };
 }
 
-function buildCompletedTerminal(
-  state: CodexTurnState,
-  turn: Turn,
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
+function buildCompletedTerminal(state: CodexTurnState, turn: Turn): Extract<ProviderEventBody, { kind: 'terminal' }> {
   const turnStatus = turn?.status;
   const turnFailed = !isSuccessfulTurn(turnStatus);
   const turnAborted = isAbortedTurn(turnStatus);
   const failureNote = turnFailed
-    ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus) ??
-      'Codex session driver reported a failed turn.'
+    ? (buildProviderFailureMessage('Codex', state.error?.message, turnStatus) ??
+      'Codex session driver reported a failed turn.')
     : undefined;
 
   return {

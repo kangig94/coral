@@ -5,9 +5,7 @@ import { markProviderCommand } from '../classify.js';
 import { UsageError } from '../errors.js';
 import { getProviderNames, makeClient, type ProviderRunOptions } from '../dispatch.js';
 import { emitError, handleLaunchResult } from '../emit.js';
-import {
-  resolveInput,
-} from '../flags.js';
+import { resolveInput } from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
@@ -15,7 +13,10 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
     markProviderCommand(provider);
     provider
       .argument('[agent]', 'Agent name (omit for raw execution)')
-      .option('-i, --input <text-or-file...>', 'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
+      .option(
+        '-i, --input <text-or-file...>',
+        'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+      )
       .option('-s, --session <id>', 'Session ID')
       .option('-w, --work-dir <path>', 'Working directory')
       .option('-m, --model <model>', 'Model override')
@@ -38,11 +39,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
           };
           const result = opts.session
             ? await client.sendMessage(opts.session, prompt, { ...requestOptions, provider: providerName })
-            : await client.createSession(
-                providerName,
-                prompt,
-                agent ? { agent, ...requestOptions } : requestOptions,
-              );
+            : await client.createSession(providerName, prompt, agent ? { agent, ...requestOptions } : requestOptions);
           await handleLaunchResult(result, opts.detach, client);
         } catch (error) {
           emitError(error);

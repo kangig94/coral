@@ -18,7 +18,10 @@ function assertSqlIdentifier(identifier: string, label: string): string {
   return identifier;
 }
 
-export function upsertProjection(db: Database, { table, pkColumn, pkValue, columns, lastSeq }: ProjectionUpsertOptions): void {
+export function upsertProjection(
+  db: Database,
+  { table, pkColumn, pkValue, columns, lastSeq }: ProjectionUpsertOptions,
+): void {
   const safeTable = assertSqlIdentifier(table, 'table identifier');
   const safePkColumn = assertSqlIdentifier(pkColumn, 'primary key column identifier');
   const columnEntries = Object.entries(columns)

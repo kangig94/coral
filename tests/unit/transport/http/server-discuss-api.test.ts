@@ -196,18 +196,71 @@ describe('server discuss API', () => {
     await persistSession(harness, {
       sessionId: 'ended-session',
       buildTail: (current) => [
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'keep sealed' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:01:01.000Z', { agent: 'beta', score: 42, thought: 'also sealed' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:01:02.000Z', {
-          allBids: { alpha: 88, beta: 42 },
-          effectiveBids: { alpha: 88, beta: 42 },
-          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 4, 'speech.recorded', '2026-03-11T00:01:03.000Z', { agent: 'alpha', content: 'Open the street to buses and bikes first.', decrementQuota: true, recordLastSpeechStep: 1 }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 5, 'session.ended', '2026-03-11T00:01:04.000Z', { endReason: 'all_below_threshold', endReasonContent: 'Consensus reached.' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 6, 'session.synthesized', '2026-03-11T00:01:05.000Z', { synthesis: 'Build the transit-first pilot and measure results.' }),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-11T00:01:00.000Z',
+          { agent: 'alpha', score: 88, thought: 'keep sealed' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-11T00:01:01.000Z',
+          { agent: 'beta', score: 42, thought: 'also sealed' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-11T00:01:02.000Z',
+          {
+            allBids: { alpha: 88, beta: 42 },
+            effectiveBids: { alpha: 88, beta: 42 },
+            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 4,
+          'speech.recorded',
+          '2026-03-11T00:01:03.000Z',
+          {
+            agent: 'alpha',
+            content: 'Open the street to buses and bikes first.',
+            decrementQuota: true,
+            recordLastSpeechStep: 1,
+          },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 5,
+          'session.ended',
+          '2026-03-11T00:01:04.000Z',
+          { endReason: 'all_below_threshold', endReasonContent: 'Consensus reached.' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 6,
+          'session.synthesized',
+          '2026-03-11T00:01:05.000Z',
+          { synthesis: 'Build the transit-first pilot and measure results.' },
+        ),
       ],
     });
 
@@ -218,15 +271,39 @@ describe('server discuss API', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (current) => [
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:02:00.000Z', { agent: 'alpha', score: 40, thought: 'alpha' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:02:01.000Z', { agent: 'user', score: 80, thought: 'user' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:02:02.000Z', {
-          allBids: { alpha: 40, user: 80 },
-          effectiveBids: { alpha: 40, user: 80 },
-          thoughts: { alpha: 'alpha', user: 'user' },
-          outcome: { winner: 'user', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-11T00:02:00.000Z',
+          { agent: 'alpha', score: 40, thought: 'alpha' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-11T00:02:01.000Z',
+          { agent: 'user', score: 80, thought: 'user' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-11T00:02:02.000Z',
+          {
+            allBids: { alpha: 40, user: 80 },
+            effectiveBids: { alpha: 40, user: 80 },
+            thoughts: { alpha: 'alpha', user: 'user' },
+            outcome: { winner: 'user', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
       ],
     });
 
@@ -327,7 +404,15 @@ describe('server discuss API', () => {
     // Append an extra event only to firstHarness so it has the higher seq and
     // wins the dedup (the server's own projectRoot should be preferred).
     const firstSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
-      makeEvent(current.sessionId, secondHarness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:02:30.000Z', { agent: 'alpha', score: 61, thought: 'alt checkout update' }),
+      makeEvent(
+        current.sessionId,
+        secondHarness.projectRoot,
+        current.state.topic,
+        current.lastAppliedSeq + 1,
+        'bid.submitted',
+        '2026-03-11T00:02:30.000Z',
+        { agent: 'alpha', score: 61, thought: 'alt checkout update' },
+      ),
     ]);
     const secondSnapshot = secondHarness.store.load('shared-session')!;
 
@@ -369,15 +454,39 @@ describe('server discuss API', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (current) => [
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:03:00.000Z', { agent: 'alpha', score: 40, thought: 'alpha' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:03:01.000Z', { agent: 'user', score: 80, thought: 'user' }),
-        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:03:02.000Z', {
-          allBids: { alpha: 40, user: 80 },
-          effectiveBids: { alpha: 40, user: 80 },
-          thoughts: { alpha: 'alpha', user: 'user' },
-          outcome: { winner: 'user', speaker_type: 'quota' as const },
-          stateMutations: { cold_start: false },
-        }),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-11T00:03:00.000Z',
+          { agent: 'alpha', score: 40, thought: 'alpha' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-11T00:03:01.000Z',
+          { agent: 'user', score: 80, thought: 'user' },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-11T00:03:02.000Z',
+          {
+            allBids: { alpha: 40, user: 80 },
+            effectiveBids: { alpha: 40, user: 80 },
+            thoughts: { alpha: 'alpha', user: 'user' },
+            outcome: { winner: 'user', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
       ],
     });
 

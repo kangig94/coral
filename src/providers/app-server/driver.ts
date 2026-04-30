@@ -1,17 +1,9 @@
-import type {
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLease,
-  ProviderServerSpec,
-} from '../contract.js';
+import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../contract.js';
 import type { StoragePort } from '../../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './driver-types.js';
 
-export type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-} from './driver-types.js';
+export type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './driver-types.js';
 
 export interface AppServerContract {
   readonly name: string;
@@ -26,15 +18,9 @@ export interface AppServerContract {
 }
 
 const appServerLeaseBindings = new WeakMap<ProviderRuntime, ProviderServerLease>();
-const appServerNotificationBindings = new WeakMap<
-  ProviderRuntime,
-  (message: AppServerNotificationMessage) => void
->();
+const appServerNotificationBindings = new WeakMap<ProviderRuntime, (message: AppServerNotificationMessage) => void>();
 
-export function bindAppServerLease(
-  runtime: ProviderRuntime,
-  lease: ProviderServerLease,
-): () => void {
+export function bindAppServerLease(runtime: ProviderRuntime, lease: ProviderServerLease): () => void {
   appServerLeaseBindings.set(runtime, lease);
   return () => {
     if (appServerLeaseBindings.get(runtime) === lease) {
@@ -65,10 +51,7 @@ export function getAppServerNotificationHandler(
   return appServerNotificationBindings.get(runtime);
 }
 
-export function requireAppServerLease(
-  runtime: ProviderRuntime,
-  providerName: string,
-): ProviderServerLease {
+export function requireAppServerLease(runtime: ProviderRuntime, providerName: string): ProviderServerLease {
   const lease = getAppServerLease(runtime);
   if (!lease) {
     throw new Error(`${providerName} provider requires app-server session middleware to bind a ProviderServerLease.`);

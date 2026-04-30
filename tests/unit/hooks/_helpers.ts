@@ -161,10 +161,14 @@ export async function runHookAsync(
     let stderr = '';
 
     child.stdout.setEncoding('utf-8');
-    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
 
     child.stderr.setEncoding('utf-8');
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
 
     child.once('error', reject);
     child.once('close', (status) => {
@@ -182,7 +186,8 @@ export function parseHookOutput(stdout: string): HookOutput | null {
   try {
     const parsed = JSON.parse(trimmed) as Partial<HookOutput>;
     if (
-      parsed.hookSpecificOutput === null || parsed.hookSpecificOutput === undefined ||
+      parsed.hookSpecificOutput === null ||
+      parsed.hookSpecificOutput === undefined ||
       typeof parsed.hookSpecificOutput.hookEventName !== 'string' ||
       typeof parsed.hookSpecificOutput.additionalContext !== 'string'
     ) {
@@ -234,9 +239,11 @@ export function expectCliResolveOutput(result: HookRunResult): CliResolveOutput 
   const output = parseJsonOutput<Partial<CliResolveOutput>>(result.stdout);
   if (
     output === null ||
-    output.hookSpecificOutput === null || output.hookSpecificOutput === undefined ||
+    output.hookSpecificOutput === null ||
+    output.hookSpecificOutput === undefined ||
     output.hookSpecificOutput.hookEventName !== 'PreToolUse' ||
-    output.hookSpecificOutput.updatedInput === null || output.hookSpecificOutput.updatedInput === undefined ||
+    output.hookSpecificOutput.updatedInput === null ||
+    output.hookSpecificOutput.updatedInput === undefined ||
     typeof output.hookSpecificOutput.updatedInput.command !== 'string'
   ) {
     throw new Error(

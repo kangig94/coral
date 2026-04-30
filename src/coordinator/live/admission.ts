@@ -14,12 +14,7 @@ import {
 } from './durable-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
-import type {
-  AdmissionResult,
-  AdmittedHandle,
-  LaunchPool,
-  QueuedHandle,
-} from '../../jobs/contracts/admission.js';
+import type { AdmissionResult, AdmittedHandle, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
 
 export type { LaunchPool } from '../../jobs/contracts/admission.js';
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { createExclusiveSpec, createFakeProviderServerHandle, createSpawnProviderServerMock, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
+import {
+  createExclusiveSpec,
+  createFakeProviderServerHandle,
+  createSpawnProviderServerMock,
+  runtime,
+} from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 describe('provider host recovery', () => {
   it('borrows a live exclusive host only when the generation matches', async () => {
@@ -15,9 +20,9 @@ describe('provider host recovery', () => {
 
     expect(borrowed).not.toBeNull();
     expect(mismatched).toBeNull();
-    await expect(borrowed?.rpc('ping', { ok: true }) ?? Promise.reject(new Error('missing attachment'))).resolves.toEqual(
-      {},
-    );
+    await expect(
+      borrowed?.rpc('ping', { ok: true }) ?? Promise.reject(new Error('missing attachment')),
+    ).resolves.toEqual({});
 
     lease.release();
     await expect(manager.borrowLiveServer(spec, { serverGeneration: 41 })).resolves.toBeNull();

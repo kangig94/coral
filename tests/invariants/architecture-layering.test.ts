@@ -91,7 +91,9 @@ function shellOwner(path: string): string | null {
 }
 
 function collectViolations(predicate: (source: string, target: string) => boolean): string[] {
-  return IMPORT_EDGES.filter(({ source, target }) => predicate(source, target)).map(({ source, target }) => `${source} -> ${target}`);
+  return IMPORT_EDGES.filter(({ source, target }) => predicate(source, target)).map(
+    ({ source, target }) => `${source} -> ${target}`,
+  );
 }
 
 describe('architecture layering invariants', () => {
@@ -111,11 +113,7 @@ describe('architecture layering invariants', () => {
         return false;
       }
 
-      if (
-        target.startsWith('src/transport/')
-        || target.startsWith('src/runtime/')
-        || target.startsWith('src/infra/')
-      ) {
+      if (target.startsWith('src/transport/') || target.startsWith('src/runtime/') || target.startsWith('src/infra/')) {
         return false;
       }
 
@@ -140,10 +138,10 @@ describe('architecture layering invariants', () => {
       }
 
       if (
-        target.startsWith('src/coordinator/')
-        || target.startsWith('src/runtime/')
-        || target.startsWith('src/infra/')
-        || target.startsWith('src/store/')
+        target.startsWith('src/coordinator/') ||
+        target.startsWith('src/runtime/') ||
+        target.startsWith('src/infra/') ||
+        target.startsWith('src/store/')
       ) {
         return false;
       }

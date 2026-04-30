@@ -1,8 +1,4 @@
-import type {
-  KbCorpusPublishCallbacks,
-  KbCorpusPublication,
-  KbPersistCorpusStateResult,
-} from '../contract.js';
+import type { KbCorpusPublishCallbacks, KbCorpusPublication, KbPersistCorpusStateResult } from '../contract.js';
 import type { CorpusSnapshot } from './snapshot.js';
 import { mergeCorpusLanes } from './lanes.js';
 
@@ -41,10 +37,7 @@ function isLaterSnapshot(next: CorpusSnapshot, current: CorpusSnapshot): boolean
   );
 }
 
-export function mergePublication(
-  current: KbCorpusPublication | null,
-  next: KbCorpusPublication,
-): KbCorpusPublication {
+export function mergePublication(current: KbCorpusPublication | null, next: KbCorpusPublication): KbCorpusPublication {
   if (current === null) {
     return {
       snapshot: { ...next.snapshot },

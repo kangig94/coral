@@ -17,9 +17,7 @@ export type SessionAllocateOptions = {
   controllerProfile?: SessionControllerProfile;
 };
 
-export type SessionJobContinuityCheckpointResult =
-  | { ok: true; nextVersion: number }
-  | { ok: false };
+export type SessionJobContinuityCheckpointResult = { ok: true; nextVersion: number } | { ok: false };
 
 export interface SessionJobReadPort {
   get(provider: string, sessionId: string): SessionEntry | null;

@@ -105,10 +105,7 @@ describe('refs.workflowId producer invariant', () => {
     );
 
     // A plain job (no workflow involvement): no workflowId.
-    store.appendLaunchRequested(
-      'p-1',
-      makeProviderLaunch({ jobId: 'p-1', sessionId: 'session-p-1' }),
-    );
+    store.appendLaunchRequested('p-1', makeProviderLaunch({ jobId: 'p-1', sessionId: 'session-p-1' }));
 
     const events = readPersistedLaunches(db);
     expect(events).toHaveLength(3);

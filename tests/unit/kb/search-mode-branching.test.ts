@@ -190,11 +190,9 @@ describe('kb search mode branching', () => {
         search: needleSearchSpy,
       },
       createCorpusHandle(
-        seedNeedleRouteState(
-          writableDbByRuntime.get(kb)!,
-          kb.captureCorpusSnapshot(),
-          { invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot() },
-        ),
+        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+          invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
+        }),
       ),
     );
     oramaSearchSpy.mockClear();
@@ -242,11 +240,9 @@ describe('kb search mode branching', () => {
         search: vi.fn(async () => ({ hits: [] })),
       },
       createCorpusHandle(
-        seedNeedleRouteState(
-          writableDbByRuntime.get(kb)!,
-          kb.captureCorpusSnapshot(),
-          { invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot() },
-        ),
+        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+          invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
+        }),
       ),
     );
 

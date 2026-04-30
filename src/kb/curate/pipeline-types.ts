@@ -1,10 +1,4 @@
-import type {
-  EnvPort,
-  IdPort,
-  ProcessPort,
-  StoragePort,
-  TimePort,
-} from '../../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../../runtime/ports.js';
 import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
 import type { CurateCursor } from './state/index.js';
 

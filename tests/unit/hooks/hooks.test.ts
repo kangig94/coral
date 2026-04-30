@@ -78,11 +78,7 @@ describe('session-start.mjs', () => {
     const fixture = createFixture();
     writeInjectMd(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
 
-    const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-1' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
+    const result = runHook(SESSION_START_HOOK, { session_id: 'sess-1' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     expect(result.status).toBe(0);
 
@@ -322,7 +318,11 @@ describe('kb-lookup-reminder.mjs', () => {
     const previousKbPath = process.env.CORAL_KB_PATH;
     process.env.CORAL_KB_PATH = join(fixture.root, 'parent-kb');
     try {
-      const result = runHook(KB_LOOKUP_REMINDER_HOOK, { hook_event_name: 'PostToolUseFailure' }, { HOME: fixture.root });
+      const result = runHook(
+        KB_LOOKUP_REMINDER_HOOK,
+        { hook_event_name: 'PostToolUseFailure' },
+        { HOME: fixture.root },
+      );
 
       expect(result.status).toBe(0);
 

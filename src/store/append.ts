@@ -189,10 +189,10 @@ function resolveJobTerminalCauseRef(
 function rejectResidualTokens(value: unknown, path: readonly string[] = ['body'], seen = new WeakSet<object>()): void {
   if (isCauseRefToken(value)) {
     throw new Error(
-      `CauseRefToken is not allowed at ${tokenPath(path)}. Tokens may appear only at: `
-        + 'workflow.completed:body.causeRef, '
-        + 'job.terminal.recorded:body.terminal.outcome.causeRef. '
-        + 'Move the token to a pinned path or pass a resolved CauseRef instead.',
+      `CauseRefToken is not allowed at ${tokenPath(path)}. Tokens may appear only at: ` +
+        'workflow.completed:body.causeRef, ' +
+        'job.terminal.recorded:body.terminal.outcome.causeRef. ' +
+        'Move the token to a pinned path or pass a resolved CauseRef instead.',
     );
   }
 

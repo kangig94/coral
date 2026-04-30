@@ -10,10 +10,7 @@ export type CoordinatorInvocationScope = {
 
 const invocationScopeStorage = new AsyncLocalStorage<CoordinatorInvocationScope>();
 
-export function withInvocationScope<T>(
-  scope: CoordinatorInvocationScope,
-  run: () => T,
-): T {
+export function withInvocationScope<T>(scope: CoordinatorInvocationScope, run: () => T): T {
   return invocationScopeStorage.run(scope, run);
 }
 

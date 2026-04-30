@@ -2,26 +2,25 @@ import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import {
-  HEALTH_TIMEOUT_MS,
-  parseJsonResponse,
-} from '../sse.js';
+import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
-export type BackendStatus = {
-  status: 'ok';
-  version: string;
-  bundleHash: string;
-  instanceId: string;
-  uptimeMs: number;
-  active: number;
-  activeJobs: number;
-  inflightRequests: number;
-  subsystems: BackendHealth['subsystems'];
-} | {
-  status: 'shutting_down';
-};
+export type BackendStatus =
+  | {
+      status: 'ok';
+      version: string;
+      bundleHash: string;
+      instanceId: string;
+      uptimeMs: number;
+      active: number;
+      activeJobs: number;
+      inflightRequests: number;
+      subsystems: BackendHealth['subsystems'];
+    }
+  | {
+      status: 'shutting_down';
+    };
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
@@ -60,4 +59,3 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     return { status: 'not_running' };
   }
 }
-

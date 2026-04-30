@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '#src/providers/contract.js';
+import type {
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerLease,
+} from '#src/providers/contract.js';
 
 const kernelInvocations = {
   exec: 0,
@@ -27,9 +32,11 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-function makeLease(options: {
-  rpcImpl?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-} = {}): ProviderServerLease & {
+function makeLease(
+  options: {
+    rpcImpl?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  } = {},
+): ProviderServerLease & {
   emit(message: { method: string; params?: Record<string, unknown> }): void;
   releaseMock: ReturnType<typeof vi.fn>;
   rpcMock: ReturnType<typeof vi.fn>;

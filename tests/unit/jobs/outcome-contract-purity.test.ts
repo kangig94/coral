@@ -4,10 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  listProductionSourceFiles,
-  parseProductionImportEdges,
-} from '#tests/helpers/ts-import-scanner.js';
+import { listProductionSourceFiles, parseProductionImportEdges } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const SOURCE_ROOT = join(REPO_ROOT, 'src');
@@ -50,7 +47,9 @@ describe('jobs outcome contract purity', () => {
       ['path', /from\s+['"]path['"]/],
     ];
 
-    const offendingPaths = [...reachable].filter((filePath) => bannedPathPrefixes.some((prefix) => filePath.startsWith(prefix)));
+    const offendingPaths = [...reachable].filter((filePath) =>
+      bannedPathPrefixes.some((prefix) => filePath.startsWith(prefix)),
+    );
     expect(offendingPaths).toEqual([]);
 
     const sourceText = readFileSync(join(REPO_ROOT, START), 'utf-8');

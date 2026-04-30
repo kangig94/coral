@@ -41,11 +41,7 @@ export function recordCurateFailureLocked(
   );
 }
 
-export async function recordCurateFailure(
-  kb: KbRuntime,
-  through: CurateCursor | null,
-  error: unknown,
-): Promise<void> {
+export async function recordCurateFailure(kb: KbRuntime, through: CurateCursor | null, error: unknown): Promise<void> {
   await kb.withMutationLock(() => {
     const state = readCurateState(kb);
     recordCurateFailureLocked(kb, state, through, error);

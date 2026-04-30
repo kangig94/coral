@@ -69,7 +69,8 @@ describe('encodeInstallError', () => {
       status: 'error',
       code: 'installer_payload_invalid',
       userMessage: 'Expansion installer returned an invalid payload.',
-      remediation: 'Retry the command. If this persists, report the code because the installer response failed internal validation.',
+      remediation:
+        'Retry the command. If this persists, report the code because the installer response failed internal validation.',
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });

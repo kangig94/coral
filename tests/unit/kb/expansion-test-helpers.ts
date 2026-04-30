@@ -90,7 +90,7 @@ export async function bindEmbedding(
     registry().delete(previousKey);
   }
 
-  const key = `embedder-${nextEmbedderId += 1}`;
+  const key = `embedder-${(nextEmbedderId += 1)}`;
   const id = options.id ?? 'test-embedder';
   registry().set(key, embedding);
   embedderKeys.set(runtime, key);
@@ -115,14 +115,16 @@ export async function bindEmbedding(
   `;
   const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
   const { makeHost } = createTestRuntime({ kb: runtime });
-  const scopes = await loadExpansions(makeHost, [{
-    id,
-    version: '0.0.0',
-    specifier,
-    tier: 'installed',
-    description: 'test embedder',
-    fills: ['kb.embedding'],
-  }]);
+  const scopes = await loadExpansions(makeHost, [
+    {
+      id,
+      version: '0.0.0',
+      specifier,
+      tier: 'installed',
+      description: 'test embedder',
+      fills: ['kb.embedding'],
+    },
+  ]);
   rebind(embedderScopes, runtime, scopes, disposeScopes);
 }
 
@@ -209,9 +211,8 @@ export function seedNeedleRouteState(
     invalidateCorpusStateSnapshot?: () => void;
   } = {},
 ): Extract<ConsumerHandleStatus, { authority: 'corpus' }> {
-  db
-    .prepare(
-      `
+  db.prepare(
+    `
         INSERT INTO kb_corpus_state (
           id,
           snapshot_id,
@@ -229,15 +230,14 @@ export function seedNeedleRouteState(
           metadata_manifest_hash = excluded.metadata_manifest_hash,
           last_mutation = excluded.last_mutation
       `,
-    )
-    .run(
-      snapshot.snapshotId,
-      snapshot.contentSeq,
-      snapshot.metadataSeq,
-      snapshot.contentManifestHash,
-      snapshot.metadataManifestHash,
-      '2026-04-01T00:00:00.000Z',
-    );
+  ).run(
+    snapshot.snapshotId,
+    snapshot.contentSeq,
+    snapshot.metadataSeq,
+    snapshot.contentManifestHash,
+    snapshot.metadataManifestHash,
+    '2026-04-01T00:00:00.000Z',
+  );
 
   options.invalidateCorpusStateSnapshot?.();
 

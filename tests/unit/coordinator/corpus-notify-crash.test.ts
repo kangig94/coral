@@ -156,8 +156,9 @@ function createNeedleConsumer(options: {
     registrationKind: 'expansion',
     corpusInterest: 'content',
     async apply({ snapshot }) {
-      options.db.prepare(
-        `
+      options.db
+        .prepare(
+          `
           INSERT INTO test_needle_projection (
             snapshot_id,
             content_seq,
@@ -173,14 +174,15 @@ function createNeedleConsumer(options: {
             metadata_manifest_hash = excluded.metadata_manifest_hash,
             applied_by = excluded.applied_by
         `,
-      ).run(
-        snapshot.snapshotId,
-        snapshot.contentSeq,
-        snapshot.metadataSeq,
-        snapshot.contentManifestHash,
-        snapshot.metadataManifestHash,
-        options.appliedBy,
-      );
+        )
+        .run(
+          snapshot.snapshotId,
+          snapshot.contentSeq,
+          snapshot.metadataSeq,
+          snapshot.contentManifestHash,
+          snapshot.metadataManifestHash,
+          options.appliedBy,
+        );
 
       options.applyCalls.push({
         appliedBy: options.appliedBy,

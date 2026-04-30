@@ -57,10 +57,10 @@ function describeKnownEvent(event: CoralEvent): string {
   }
 
   if (
-    event.type === 'workflow.lifecycle_fault'
-    && isRecord(body)
-    && typeof body.kind === 'string'
-    && typeof body.message === 'string'
+    event.type === 'workflow.lifecycle_fault' &&
+    isRecord(body) &&
+    typeof body.kind === 'string' &&
+    typeof body.message === 'string'
   ) {
     return `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
   }

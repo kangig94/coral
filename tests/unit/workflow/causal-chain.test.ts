@@ -259,7 +259,11 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
+      {
+        now: () => NOW,
+        reducers: composeReducers(jobsRegistry, workflowRegistry),
+        upcasters: createDefaultUpcasterRegistry(),
+      },
     ).at(-1)?.seq ?? 0;
   const workflowCompletedSeq =
     commitInputs(
@@ -277,7 +281,11 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
+      {
+        now: () => NOW,
+        reducers: composeReducers(jobsRegistry, workflowRegistry),
+        upcasters: createDefaultUpcasterRegistry(),
+      },
     ).at(-1)?.seq ?? 0;
   const workflowJobTerminalSeq =
     commitInputs(
@@ -300,7 +308,11 @@ async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDrive
           },
         },
       ],
-      { now: () => NOW, reducers: composeReducers(jobsRegistry, workflowRegistry), upcasters: createDefaultUpcasterRegistry() },
+      {
+        now: () => NOW,
+        reducers: composeReducers(jobsRegistry, workflowRegistry),
+        upcasters: createDefaultUpcasterRegistry(),
+      },
     ).at(-1)?.seq ?? 0;
 
   driver.notify('journal', workflowJobTerminalSeq);

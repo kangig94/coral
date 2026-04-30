@@ -74,7 +74,7 @@ export class JobLaunchService {
     const pool = input.pool ?? 'default';
     const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
     const instruction = resolvedAgent?.instruction ?? input.instruction;
-    const bypassPermissions = input.bypassPermissions ?? (resolvedAgent !== null);
+    const bypassPermissions = input.bypassPermissions ?? resolvedAgent !== null;
 
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
@@ -128,7 +128,10 @@ export class JobLaunchService {
 
     const session = this.deps.sessionManager.get(providerName, input.sessionId);
     if (!session) {
-      return rejectLaunch('session_not_found', `Session not found: ${input.sessionId}. Use exec to start a new session.`);
+      return rejectLaunch(
+        'session_not_found',
+        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+      );
     }
 
     let effectiveInput = input;
@@ -163,7 +166,10 @@ export class JobLaunchService {
 
     const sourceSession = this.deps.sessionManager.get(providerName, input.sessionId);
     if (!sourceSession) {
-      return rejectLaunch('session_not_found', `Session not found: ${input.sessionId}. Use exec to start a new session.`);
+      return rejectLaunch(
+        'session_not_found',
+        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+      );
     }
     return this.forkResolved(providerName, spec, sourceSession, input, ctx);
   }

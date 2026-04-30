@@ -59,7 +59,12 @@ export interface ResumeInput {
 }
 
 export interface WorkflowExecutionPort {
-  coralDispatch(providerName: string, coralName: string, input: CoralDispatchInput, ctx: InvocationContext): Promise<{
+  coralDispatch(
+    providerName: string,
+    coralName: string,
+    input: CoralDispatchInput,
+    ctx: InvocationContext,
+  ): Promise<{
     status: 'running' | 'queued' | 'rejected';
     job?: string;
     session?: string;
@@ -67,7 +72,11 @@ export interface WorkflowExecutionPort {
     code?: string;
     message?: string;
   }>;
-  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<{
+  resume(
+    providerName: string,
+    input: ResumeInput,
+    ctx: InvocationContext,
+  ): Promise<{
     status: 'running' | 'queued' | 'rejected';
     job?: string;
     session?: string;
@@ -192,12 +201,12 @@ export function createWorkflowExecutionError(
 
 export function failureMetadata(metadata: Partial<WaitFailure>): Partial<WaitFailure> | undefined {
   if (
-    metadata.failedStep === undefined
-    && metadata.failedAtom === undefined
-    && metadata.failedJobId === undefined
-    && metadata.failedSlotId === undefined
-    && metadata.causeRef === undefined
-    && metadata.terminalOutcome === undefined
+    metadata.failedStep === undefined &&
+    metadata.failedAtom === undefined &&
+    metadata.failedJobId === undefined &&
+    metadata.failedSlotId === undefined &&
+    metadata.causeRef === undefined &&
+    metadata.terminalOutcome === undefined
   ) {
     return undefined;
   }

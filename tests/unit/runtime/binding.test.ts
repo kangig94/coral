@@ -29,7 +29,11 @@ describe('createRuntimeBinding', () => {
   it('throws binding_empty after scope disposal', () => {
     const binding = createRuntimeBinding<string>('kb.vector');
     let disposeCalls = 0;
-    const scope: Disposable = { [Symbol.dispose]: () => { disposeCalls += 1; } };
+    const scope: Disposable = {
+      [Symbol.dispose]: () => {
+        disposeCalls += 1;
+      },
+    };
     binding.bind('needle', scope, 'needle');
     scope[Symbol.dispose]();
     expect(disposeCalls).toBe(1);

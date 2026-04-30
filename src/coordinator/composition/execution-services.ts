@@ -52,10 +52,9 @@ export function createExecutionServices({
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (
-          world.progressStore
-            .getDb()
-            .prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
-            .get() as { seq: number }
+          world.progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as {
+            seq: number;
+          }
         ).seq,
     });
     services.set(key, created);

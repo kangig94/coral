@@ -317,11 +317,7 @@ export function createSearchExecutionContext(
     } catch (error) {
       const setupError = serializeCoralSetupError(error);
       const binding = setupError?.context?.binding;
-      if (
-        setupError?.code === 'binding_empty' &&
-        typeof binding === 'string' &&
-        isVectorBindingName(binding)
-      ) {
+      if (setupError?.code === 'binding_empty' && typeof binding === 'string' && isVectorBindingName(binding)) {
         if (explicit) {
           options.rethrowMissingVectorBinding(error);
         }

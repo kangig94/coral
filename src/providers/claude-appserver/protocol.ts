@@ -11,14 +11,7 @@ import {
 import { isRecord } from '../../infra/json.js';
 import type { PermissionMode, SDKSystemMessage } from '../claude/control-protocol.js';
 
-export type {
-  JsonRpcErrorObject,
-  JsonRpcFailure,
-  JsonRpcId,
-  JsonRpcNotification,
-  JsonRpcRequest,
-  JsonRpcSuccess,
-};
+export type { JsonRpcErrorObject, JsonRpcFailure, JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcSuccess };
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
@@ -297,9 +290,7 @@ export function readControllerEnv(value: unknown): Record<string, string> | unde
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-export function toBootstrapSignature(
-  params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
-): ClaudeBootstrapSignature {
+export function toBootstrapSignature(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): ClaudeBootstrapSignature {
   return {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,

@@ -4,12 +4,13 @@ import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import { makeEmptySnapshot, reduceDiscussEvent } from './reducer.js';
-import type {
-  DiscussAuditView,
-  DiscussControlTranscriptEntryDto,
-  DiscussControlView,
-} from './view-types.js';
-import { discussKindFromEventType, type DiscussDomainEvent, type DiscussJournalBody, type PersistedDiscussSnapshot } from './events.js';
+import type { DiscussAuditView, DiscussControlTranscriptEntryDto, DiscussControlView } from './view-types.js';
+import {
+  discussKindFromEventType,
+  type DiscussDomainEvent,
+  type DiscussJournalBody,
+  type PersistedDiscussSnapshot,
+} from './events.js';
 import type { TranscriptEntry } from './session-types.js';
 
 type ProjectionDiscussRow = {
@@ -58,10 +59,7 @@ export function listProjectionDiscussSnapshots(db: Database): ProjectionDiscussR
   }));
 }
 
-function topicForEvent(
-  event: CoralEvent<DiscussProjectionBody>,
-  previous: PersistedDiscussSnapshot | null,
-): string {
+function topicForEvent(event: CoralEvent<DiscussProjectionBody>, previous: PersistedDiscussSnapshot | null): string {
   if (typeof previous?.state.topic === 'string' && previous.state.topic.length > 0) {
     return previous.state.topic;
   }
@@ -157,4 +155,3 @@ export function buildAuditView(snapshot: PersistedDiscussSnapshot): DiscussAudit
     lastSeq: snapshot.lastAppliedSeq,
   };
 }
-

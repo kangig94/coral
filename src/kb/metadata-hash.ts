@@ -1,7 +1,4 @@
-import {
-  computeMetadataSurfaceHash,
-  type CanonicalFrontmatterRecord,
-} from './corpus/snapshot.js';
+import { computeMetadataSurfaceHash, type CanonicalFrontmatterRecord } from './corpus/snapshot.js';
 import type { NoteEntry, SourceEntry } from './entry-types.js';
 
 type NoteMetadataHashInput = Pick<

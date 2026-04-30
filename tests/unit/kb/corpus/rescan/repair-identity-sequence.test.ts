@@ -51,7 +51,9 @@ describe('repair fixtures: identity sequence', () => {
         const raw = harness.readText('notes/entryseq-format-note.md');
         expect(raw).toContain('entrySeq: 31');
         expect(raw).not.toContain('entrySeq: "31"');
-        expect(loadKbNote(harness.storage, harness.path('notes/entryseq-format-note.md')).frontmatter.entrySeq).toBe(31);
+        expect(loadKbNote(harness.storage, harness.path('notes/entryseq-format-note.md')).frontmatter.entrySeq).toBe(
+          31,
+        );
       },
       expectedIncidents: [
         expectedDetectedIncident({

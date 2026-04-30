@@ -3,10 +3,7 @@ import { z } from 'zod';
 import type { KbCurateRetryQueueRow } from '../state/schema.js';
 import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema, type PendingRepair } from './state/model.js';
-import {
-  prepareCached,
-  type SqliteTarget,
-} from './sqlite.js';
+import { prepareCached, type SqliteTarget } from './sqlite.js';
 
 const DEFAULT_RETRY_REASON = 'pending-repair';
 
@@ -48,7 +45,10 @@ const pendingRepairRowSchema = z.object({
 
 type PendingRepairRow = Pick<KbCurateRetryQueueRow, 'entry_id' | 'observed_at' | 'observed_content_hash' | 'reason'>;
 
-export type PendingRepairRetryCandidate = Pick<PendingRepair, 'entryId' | 'detectedAt' | 'observedContentHash' | 'reason'>;
+export type PendingRepairRetryCandidate = Pick<
+  PendingRepair,
+  'entryId' | 'detectedAt' | 'observedContentHash' | 'reason'
+>;
 
 function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
@@ -220,10 +220,7 @@ export function syncCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArra
 
   for (const [entryId, entry] of nextById) {
     const existing = existingById.get(entryId);
-    if (
-      existing === undefined ||
-      !samePendingRepairRow(pendingRepairToRow(existing), pendingRepairToRow(entry))
-    ) {
+    if (existing === undefined || !samePendingRepairRow(pendingRepairToRow(existing), pendingRepairToRow(entry))) {
       upsertCurateRetryEntry(target, entry);
     }
   }

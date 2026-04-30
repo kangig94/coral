@@ -52,7 +52,10 @@ describe('adapterParseGuard', () => {
     };
 
     const events = await collect(
-      adapterParseGuard('claude', (err) => (err === parseError ? parseFailure : null))(provider)(BASE_REQUEST, BASE_RUNTIME),
+      adapterParseGuard('claude', (err) => (err === parseError ? parseFailure : null))(provider)(
+        BASE_REQUEST,
+        BASE_RUNTIME,
+      ),
     );
 
     expect(events).toEqual([
@@ -80,9 +83,7 @@ describe('adapterParseGuard', () => {
       throw nonParseError;
     };
 
-    const result = collect(
-      adapterParseGuard('claude', () => null)(provider)(BASE_REQUEST, BASE_RUNTIME),
-    );
+    const result = collect(adapterParseGuard('claude', () => null)(provider)(BASE_REQUEST, BASE_RUNTIME));
 
     await expect(result).rejects.toThrow('non-parse failure');
     await expect(result).rejects.toBe(nonParseError);

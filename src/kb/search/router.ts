@@ -1,5 +1,11 @@
 import type { KbRuntime } from '../contract.js';
-import type { GraphRetrieval, GraphRetrievalResult, HybridFusion, RetrievalScope, VectorRetrieval } from './contract.js';
+import type {
+  GraphRetrieval,
+  GraphRetrievalResult,
+  HybridFusion,
+  RetrievalScope,
+  VectorRetrieval,
+} from './contract.js';
 import { createHybridFusion } from './hybrid.js';
 
 export interface SearchRouter {

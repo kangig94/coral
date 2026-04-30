@@ -10,9 +10,10 @@ function isBackendUnreachableCause(error: unknown): boolean {
         return true;
       }
     }
-    current = typeof current === 'object' && current !== null && 'cause' in current
-      ? (current as { cause?: unknown }).cause
-      : undefined;
+    current =
+      typeof current === 'object' && current !== null && 'cause' in current
+        ? (current as { cause?: unknown }).cause
+        : undefined;
   }
   return false;
 }

@@ -32,7 +32,10 @@ export interface StoragePort {
   readdirSync(path: string): string[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(path: string, options: { bigint: true }): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+  statSync(
+    path: string,
+    options: { bigint: true },
+  ): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
   lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
   realpathSync(path: string): string;
   existsSync(path: string): boolean;
@@ -42,9 +45,17 @@ export interface StoragePort {
   appendFileSync(path: string, data: string): void;
   appendFileDurableSync(path: string, data: string): boolean;
   unlinkSync(path: string): void;
-  tryExclusiveWriteSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  tryExclusiveWriteSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number },
+  ): boolean;
   writeAtomicSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicDurableSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  writeAtomicDurableSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number },
+  ): boolean;
   chmodSync(path: string, mode: number): void;
 }
 

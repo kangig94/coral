@@ -42,12 +42,7 @@ const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity
 
 type RecoverStaleOptions = Parameters<WaitStaleRecoveryHandler>[3];
 
-function staleFailureMetadata(
-  atom: LaunchedAtom,
-  stepDetails: StepDetail[],
-  message: string,
-  aborted = false,
-): never {
+function staleFailureMetadata(atom: LaunchedAtom, stepDetails: StepDetail[], message: string, aborted = false): never {
   throw createWorkflowExecutionError(message, aborted, stepDetails, {
     failedStep: atom.stepIndex,
     failedAtom: atom.agent,

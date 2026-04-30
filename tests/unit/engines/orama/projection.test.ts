@@ -6,11 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { writeCurateState } from '#src/kb/curate/state/index.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph, type KbIndex } from '#src/kb/entry-types.js';
-import {
-  buildCommunityIndexEntry,
-  buildNoteIndexEntry,
-  buildSourceIndexEntry,
-} from '#src/kb/corpus/index-records.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '#src/kb/corpus/index-records.js';
 import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/engines/orama/backend.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';

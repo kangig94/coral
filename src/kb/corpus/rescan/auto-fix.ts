@@ -23,16 +23,8 @@ import { stripMdExt } from '../../paths.js';
 import type { GitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
 import { writeFileAtomic } from '../file-atomic.js';
-import {
-  commitIndexUpdate,
-  recordContentAndMetadataMutation,
-  recordMetadataMutation,
-} from '../index-mutations.js';
-import {
-  buildCommunityIndexEntry,
-  buildNoteIndexEntry,
-  buildSourceIndexEntry,
-} from '../index-records.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index-mutations.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   extractBody,
@@ -52,10 +44,8 @@ import {
   type RepairIncidentId,
 } from './incidents/catalog.js';
 
-const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
-  /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
-const ENTRYSEQ_LEADING_ZERO_PATTERN =
-  /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?:#.*)?)(?=\r?\n|$)/;
+const ENTRYSEQ_QUOTED_DECIMAL_PATTERN = /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
+const ENTRYSEQ_LEADING_ZERO_PATTERN = /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?:#.*)?)(?=\r?\n|$)/;
 const LENIENT_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)(?:\r?\n---(?:\r?\n|$)|$)/;
 const LENIENT_ENTRYSEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
 
@@ -107,10 +97,18 @@ export const REPAIR_HINTS = {
 } as const satisfies Readonly<Record<RepairIncidentId, string>>;
 
 const AUTO_FIX_HANDLERS: Readonly<
-  Partial<Record<RepairIncidentId, (kb: KbRuntime, mutation: KbMutationEffects, incident: DetectedIncident) => LockedAutoFixOutcome>>
+  Partial<
+    Record<
+      RepairIncidentId,
+      (kb: KbRuntime, mutation: KbMutationEffects, incident: DetectedIncident) => LockedAutoFixOutcome
+    >
+  >
 > = {
-  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]: (kb: KbRuntime, mutation: KbMutationEffects, incident: DetectedIncident) =>
-    applyEntrySeqFormatFixLocked(kb, mutation, incident),
+  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]: (
+    kb: KbRuntime,
+    mutation: KbMutationEffects,
+    incident: DetectedIncident,
+  ) => applyEntrySeqFormatFixLocked(kb, mutation, incident),
   [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS]: (kb: KbRuntime, mutation: KbMutationEffects) =>
     applyOrphanEntityGraphFixLocked(kb, mutation),
 };
@@ -260,7 +258,14 @@ function applyEntrySeqFormatFixLocked(
     return { kind: 'manual' };
   }
 
-  applyPreparedMarkdownFixLocked(kb, mutation, target, prepared, 'metadata', 'KB metadata snapshot is stale after kb_repair.');
+  applyPreparedMarkdownFixLocked(
+    kb,
+    mutation,
+    target,
+    prepared,
+    'metadata',
+    'KB metadata snapshot is stale after kb_repair.',
+  );
   return { kind: 'fixed' };
 }
 
@@ -394,10 +399,7 @@ function applyPreparedMarkdownFixLocked(
   }
 }
 
-function captureRepairTargetManifestDeltas(
-  target: MarkdownRepairTarget,
-  content: string,
-): ManifestAuthorityDelta[] {
+function captureRepairTargetManifestDeltas(target: MarkdownRepairTarget, content: string): ManifestAuthorityDelta[] {
   switch (target.kind) {
     case 'note':
       return captureNoteManifestDeltas(target.slug, content);

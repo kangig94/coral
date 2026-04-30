@@ -19,9 +19,11 @@ function createDb(): InstanceType<typeof Database> {
   return db;
 }
 
-function createDriver(
-  apply: Extract<JournalConsumerRegistration, { kind: 'apply' }>['apply'] = async () => {},
-): { db: InstanceType<typeof Database>; driver: ConsumerDriver; consumerId: string } {
+function createDriver(apply: Extract<JournalConsumerRegistration, { kind: 'apply' }>['apply'] = async () => {}): {
+  db: InstanceType<typeof Database>;
+  driver: ConsumerDriver;
+  consumerId: string;
+} {
   const db = createDb();
   const driver = new ConsumerDriver({ db });
   const consumerId = 'journal-consumer';
@@ -184,7 +186,9 @@ describe('ConsumerDriver waitFreshUntil', () => {
     const { db, driver, consumerId } = createDriver();
 
     try {
-      const waits = Array.from({ length: 1000 }, () => driver.waitFreshUntil('journal', 100, consumerId, 50).catch((error) => error));
+      const waits = Array.from({ length: 1000 }, () =>
+        driver.waitFreshUntil('journal', 100, consumerId, 50).catch((error) => error),
+      );
 
       await vi.advanceTimersByTimeAsync(50);
 

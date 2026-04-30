@@ -11,10 +11,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import {
-  assertDescriberCoverage,
-  defaultEventDescribers,
-} from '#src/read-model/event-describers.js';
+import { assertDescriberCoverage, defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 describe('describer coverage invariant', () => {
   it('every registered Journal event type has a default describer', () => {

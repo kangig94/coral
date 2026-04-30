@@ -46,7 +46,13 @@ const ALLOWED_ENGINE_IMPORTERS = new Set<string>([
   'src/coordinator/expansion/lifecycle.ts',
 ]);
 
-const ENGINE_BLIND_SCOPES = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'] as const;
+const ENGINE_BLIND_SCOPES = [
+  'src/kb/',
+  'src/coordinator/',
+  'src/cli/expansion/',
+  'src/infra/',
+  'src/runtime/',
+] as const;
 const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx', 'kb-scann']);
 const ENGINE_ID_LITERAL_ALLOWED_FILES = new Set<string>(['src/coordinator/expansion/lifecycle.ts']);
 
@@ -67,8 +73,8 @@ describe('engine acceptance — kb_scann gate', () => {
         continue;
       }
 
-      const relativeEdges = parseSourceImportEdges(REPO_ROOT, filePath, PRODUCTION_FILE_INDEX).filter(
-        (edge) => edge.target.startsWith('src/engines/'),
+      const relativeEdges = parseSourceImportEdges(REPO_ROOT, filePath, PRODUCTION_FILE_INDEX).filter((edge) =>
+        edge.target.startsWith('src/engines/'),
       );
       const subpathEdges = parseSourceSubpathImportEdges(REPO_ROOT, filePath).filter((edge) =>
         edge.target.startsWith('src/engines/'),

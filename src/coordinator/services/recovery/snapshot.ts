@@ -2,7 +2,11 @@ import { formatError } from '../../../infra/error-format.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
 import type { ProcessPort } from '../../../runtime/ports.js';
-import type { RecoveryJobFacts, RecoveryProjectionSnapshot, RecoverySessionFacts } from '../../../jobs/reconcile/plan.js';
+import type {
+  RecoveryJobFacts,
+  RecoveryProjectionSnapshot,
+  RecoverySessionFacts,
+} from '../../../jobs/reconcile/plan.js';
 
 export function buildRecoverySnapshot(
   progressStore: JobStore,

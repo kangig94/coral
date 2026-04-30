@@ -7,11 +7,7 @@ type TimeoutPort = {
   clearTimeout(handle: TimeoutHandle | null): void;
 };
 
-export function raceTimeout(
-  promise: Promise<unknown>,
-  timeoutMs: number,
-  time?: TimeoutPort,
-): Promise<boolean> {
+export function raceTimeout(promise: Promise<unknown>, timeoutMs: number, time?: TimeoutPort): Promise<boolean> {
   const timers = time ?? {
     setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
     clearTimeout: (handle: ReturnType<typeof setTimeout> | null) => {

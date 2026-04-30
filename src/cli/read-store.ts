@@ -1,4 +1,4 @@
-import { pluginRootNamespace } from "../infra/plugin-identity.js";
+import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
@@ -91,10 +91,7 @@ function readStoreCacheKey(projectRoot: string): string {
   });
 }
 
-export function getSharedReadCoralStore(
-  projectRoot: string,
-  options: SharedReadStoreOptions = {},
-): CoralStore {
+export function getSharedReadCoralStore(projectRoot: string, options: SharedReadStoreOptions = {}): CoralStore {
   return defaultRegistry.getShared(projectRoot, options);
 }
 
@@ -145,4 +142,3 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
     close: () => db.close(),
   };
 }
-

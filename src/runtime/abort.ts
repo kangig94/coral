@@ -15,10 +15,7 @@ export class AbortError extends Error {
   readonly reason: unknown;
 
   constructor(opts: { stage: string; reason?: unknown }) {
-    super(
-      `Operation aborted at stage '${opts.stage}'.`,
-      opts.reason === undefined ? {} : { cause: opts.reason },
-    );
+    super(`Operation aborted at stage '${opts.stage}'.`, opts.reason === undefined ? {} : { cause: opts.reason });
     this.name = 'AbortError';
     this.stage = opts.stage;
     this.reason = opts.reason;

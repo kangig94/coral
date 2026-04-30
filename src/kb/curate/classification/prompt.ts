@@ -41,9 +41,7 @@ export type ClassificationPromptVocabularyEntry = {
   support: number;
 };
 
-export type ClassificationPromptVocabularyInput =
-  | readonly string[]
-  | readonly ClassificationPromptVocabularyEntry[];
+export type ClassificationPromptVocabularyInput = readonly string[] | readonly ClassificationPromptVocabularyEntry[];
 
 export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
@@ -299,7 +297,9 @@ function buildClassificationPromptHeader(
   ];
 
   if (shape === 'source-only') {
-    lines.push('Each source entry must return tags, related, newEntities, and relationships. Omit principles or return [].');
+    lines.push(
+      'Each source entry must return tags, related, newEntities, and relationships. Omit principles or return [].',
+    );
     return lines.join('\n\n');
   }
 

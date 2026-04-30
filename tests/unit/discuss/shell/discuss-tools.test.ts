@@ -188,9 +188,7 @@ describe('execution discuss tools', () => {
     const harness = createDiscussHarness(
       createExecutionServiceStub({
         start: vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-1' }),
-        waitStreamOnce: vi
-          .fn()
-          .mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', continuity: null }),
+        waitStreamOnce: vi.fn().mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', continuity: null }),
       }),
     );
     const registry = createDiscussContextRegistry();
@@ -845,7 +843,9 @@ describe('execution discuss tools', () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
         getExecutionService: (_ctx: InvocationContext) => harness.service,
-        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new TypeError('Cannot read property'); },
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => {
+          throw new TypeError('Cannot read property');
+        },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
@@ -872,7 +872,9 @@ describe('execution discuss tools', () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
         getExecutionService: (_ctx: InvocationContext) => harness.service,
-        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => {
+          throw new RangeError('out of bounds');
+        },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
@@ -904,7 +906,9 @@ describe('execution discuss tools', () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
         getExecutionService: (_ctx: InvocationContext) => harness.service,
-        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => {
+          throw new RangeError('out of bounds');
+        },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };

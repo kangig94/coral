@@ -72,9 +72,7 @@ describe('detectIncidentRetryDrift', () => {
     const slug = 'broken';
     const content = 'frontmatter: [unterminated';
     const scan = noteScan(slug, content);
-    expect(
-      detectIncidentRetryDrift([pendingRepair(slug, content)], [detectedIncident(slug)], scan),
-    ).toBeNull();
+    expect(detectIncidentRetryDrift([pendingRepair(slug, content)], [detectedIncident(slug)], scan)).toBeNull();
   });
 
   it('returns "both" when retry queue has an entry no longer matching any current incident', () => {
@@ -95,9 +93,7 @@ describe('detectIncidentRetryDrift', () => {
     const queuedContent = 'first broken version';
     const currentContent = 'second broken version';
     const scan = noteScan(slug, currentContent);
-    expect(
-      detectIncidentRetryDrift([pendingRepair(slug, queuedContent)], [detectedIncident(slug)], scan),
-    ).toBe('both');
+    expect(detectIncidentRetryDrift([pendingRepair(slug, queuedContent)], [detectedIncident(slug)], scan)).toBe('both');
   });
 
   it('returns "both" for a legacy queue row with no observed content hash', () => {

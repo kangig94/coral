@@ -1,10 +1,7 @@
 import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
-import {
-  sessionContinuityMutationSchema,
-  type SessionContinuityMutation,
-} from '#src/sessions/continuity-mutation.js';
+import { sessionContinuityMutationSchema, type SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
 import {
   compose,
   providerFailureCauseSchema,
@@ -22,8 +19,8 @@ import {
 import type { ProviderFailureCause } from '#src/providers/fault.js';
 
 type IsEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2)
-    ? (<T>() => T extends B ? 1 : 2) extends (<T>() => T extends A ? 1 : 2)
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
       ? true
       : false
     : false;
@@ -105,10 +102,7 @@ describe('compose', () => {
 
     const events = await collect(compose(outer, inner, provider)(BASE_REQUEST, BASE_RUNTIME));
 
-    expect(events).toEqual([
-      { kind: 'progress', message: 'leaf-progress' },
-      terminal('leaf-terminal'),
-    ]);
+    expect(events).toEqual([{ kind: 'progress', message: 'leaf-progress' }, terminal('leaf-terminal')]);
     expect(calls).toEqual([
       'outer:before:job-contract',
       'inner:before:job-contract',

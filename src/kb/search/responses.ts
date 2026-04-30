@@ -114,9 +114,7 @@ function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
   if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.slug))) {
     matchedBy.add('filename');
   }
-  if (
-    hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(principle)))
-  ) {
+  if (hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(principle)))) {
     matchedBy.add('principle');
   }
   if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(tag)))) {

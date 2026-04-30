@@ -180,9 +180,16 @@ describe('kb-tools', () => {
     ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbSubsystem())],
     ['diagnose', () => handleKbDiagnose({ extra: true }, createKbSubsystem())],
     ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbSubsystem())],
-    ['memo', () => handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext, testRuntime)],
+    [
+      'memo',
+      () =>
+        handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext, testRuntime),
+    ],
     ['memo-list', () => handleKbMemoList({ owner: 'owner-a', extra: true }, testContext, testRuntime)],
-    ['memo-delete', () => handleKbMemoDelete({ pattern: '*', owner: 'owner-a', extra: true }, testContext, testRuntime)],
+    [
+      'memo-delete',
+      () => handleKbMemoDelete({ pattern: '*', owner: 'owner-a', extra: true }, testContext, testRuntime),
+    ],
     ['memo-purge', () => handleKbMemoPurge({ owner: 'owner-a', extra: true }, testContext, testRuntime)],
   ])('rejects undeclared fields for %s', async (_name, run) => {
     expectInvalidRequest(await run());

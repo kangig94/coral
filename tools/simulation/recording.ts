@@ -19,9 +19,7 @@ function collectChunks(recording: SpawnRecording, type: 'stdout' | 'stderr') {
   return chunks.length > 0 ? chunks : undefined;
 }
 
-function toReplayError(
-  event: SpawnRecording['events'][number] | undefined,
-): Error | undefined {
+function toReplayError(event: SpawnRecording['events'][number] | undefined): Error | undefined {
   if (!event || typeof event.data !== 'string' || event.data.length === 0) {
     return undefined;
   }

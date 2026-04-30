@@ -29,12 +29,7 @@ import {
   writeCurateState,
   type CurateCursor,
 } from './state/index.js';
-import type {
-  ClaimCandidate,
-  ClassificationAssignment,
-  CurateClaim,
-  SpawnCliFn,
-} from './pipeline-types.js';
+import type { ClaimCandidate, ClassificationAssignment, CurateClaim, SpawnCliFn } from './pipeline-types.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;

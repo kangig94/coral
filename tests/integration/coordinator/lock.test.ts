@@ -127,10 +127,7 @@ describe('coordinator lock integration', () => {
       const prodRecord = readDiscoveryRecordForHome(home, 'prod');
       const devRecord = readDiscoveryRecordForHome(home, 'dev');
       return (
-        prodRecord !== null &&
-        devRecord !== null &&
-        isProcessAlive(prodRecord.pid) &&
-        isProcessAlive(devRecord.pid)
+        prodRecord !== null && devRecord !== null && isProcessAlive(prodRecord.pid) && isProcessAlive(devRecord.pid)
       );
     }, 2_000);
   });

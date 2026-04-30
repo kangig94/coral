@@ -9,9 +9,7 @@ import {
 import { workflowCommandSchema } from '#src/workflow/input.js';
 import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
 
-const AGENT_IDENT_CASES: ReadonlyArray<
-  readonly [input: string, accepted: boolean, canonicalForm: string | null]
-> = [
+const AGENT_IDENT_CASES: ReadonlyArray<readonly [input: string, accepted: boolean, canonicalForm: string | null]> = [
   ['architect', true, 'architect'],
   ['coral:architect', true, 'coral:architect'],
   ['my-plugin:my-agent', true, 'my-plugin:my-agent'],
@@ -28,21 +26,17 @@ const AGENT_IDENT_CASES: ReadonlyArray<
 ] as const;
 
 describe('agentIdentSchema', () => {
-  it.each(AGENT_IDENT_CASES)(
-    'parses %s with accepted=%s and canonical form %s',
-    (input, accepted, canonicalForm) => {
-      const result = agentIdentSchema.safeParse(input);
+  it.each(AGENT_IDENT_CASES)('parses %s with accepted=%s and canonical form %s', (input, accepted, canonicalForm) => {
+    const result = agentIdentSchema.safeParse(input);
 
-      expect(result.success).toBe(accepted);
-      if (accepted) {
-        if (!result.success) {
-          throw new Error(`Expected ${input} to be accepted by agentIdentSchema`);
-        }
-        expect(result.data).toBe(canonicalForm);
+    expect(result.success).toBe(accepted);
+    if (accepted) {
+      if (!result.success) {
+        throw new Error(`Expected ${input} to be accepted by agentIdentSchema`);
       }
-    },
-  );
-
+      expect(result.data).toBe(canonicalForm);
+    }
+  });
 });
 
 describe('sessionCreateSchema', () => {

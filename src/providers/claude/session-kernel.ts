@@ -117,13 +117,13 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       const outcome = await Promise.race([
         state.terminal,
-        lease.closed.then((closed): ClaudeTurnOutcome => ({
-          kind: 'failed',
-          message:
-            closed instanceof Error
-              ? closed.message
-              : 'Claude broker transport closed before the turn completed.',
-        })),
+        lease.closed.then(
+          (closed): ClaudeTurnOutcome => ({
+            kind: 'failed',
+            message:
+              closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
+          }),
+        ),
       ]);
 
       emit(finalizeOutcome(state, outcome, runtime.time.now()));
@@ -223,7 +223,12 @@ function applyNotification(
 
   const isTurnEvent =
     message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
-  if (isTurnEvent && state.brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== state.brokerTurnId) {
+  if (
+    isTurnEvent &&
+    state.brokerTurnId &&
+    typeof params.brokerTurnId === 'string' &&
+    params.brokerTurnId !== state.brokerTurnId
+  ) {
     return;
   }
 
@@ -293,9 +298,7 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
         model: outcome.turn.model,
         durationMs: outcome.turn.durationMs,
         usage: outcome.turn.costUsd === undefined ? undefined : { costUsd: outcome.turn.costUsd },
-        outcome: outcome.turn.isError
-          ? { kind: 'failed' }
-          : { kind: 'completed' },
+        outcome: outcome.turn.isError ? { kind: 'failed' } : { kind: 'completed' },
       }),
       diagnostics: buildJobDiagnostics({}),
       ...(outcome.turn.isError
@@ -328,12 +331,7 @@ function buildAbortedTerminal(model: string | undefined, startedAt: number, nowM
   };
 }
 
-function buildFailedTerminal(
-  content: string,
-  model: string | undefined,
-  durationMs: number,
-  message: string,
-) {
+function buildFailedTerminal(content: string, model: string | undefined, durationMs: number, message: string) {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({

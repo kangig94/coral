@@ -175,9 +175,7 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(
-      kb.ensureCorpusFreshness({ wait: true, signal: controller.signal }),
-    ).rejects.toThrow(/aborted/i);
+    await expect(kb.ensureCorpusFreshness({ wait: true, signal: controller.signal })).rejects.toThrow(/aborted/i);
   });
 
   it('5 concurrent non-blocking reads + 1 blocking readiness — only one rebuild, readiness blocks until release', async () => {

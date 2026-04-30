@@ -72,8 +72,7 @@ const COMMUNITY_RESOLUTION_MIN = 0.5;
 const COMMUNITY_RESOLUTION_MAX = 5;
 const COMMUNITY_RESOLUTION_TARGET_MIN = 20;
 const COMMUNITY_RESOLUTION_TARGET_MAX = 30;
-const COMMUNITY_RESOLUTION_TARGET_MIDPOINT =
-  (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
+const COMMUNITY_RESOLUTION_TARGET_MIDPOINT = (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
 
 function internalWeightedDegree(
@@ -158,14 +157,14 @@ export function seededRng(seed: number): () => number {
   };
 }
 
-function normalizeDendrogramLevels(
-  graph: TagGraph,
-  details: LouvainDetails,
-): number[][] {
+function normalizeDendrogramLevels(graph: TagGraph, details: LouvainDetails): number[][] {
   const rawDendrogram = (details as LouvainDetails & { dendrogram: LouvainDetails['dendrogram'] | null }).dendrogram;
   const levels = (rawDendrogram ?? []).map((level) => Array.from(level, (community) => Number(community)));
   const meaningfulLevels = levels.length > 1 ? levels.slice(1) : levels;
-  const normalizedLevels = meaningfulLevels.length > 0 ? meaningfulLevels : [graph.tags.map((tag, index) => details.communities[tag] ?? index)];
+  const normalizedLevels =
+    meaningfulLevels.length > 0
+      ? meaningfulLevels
+      : [graph.tags.map((tag, index) => details.communities[tag] ?? index)];
 
   const deduped: number[][] = [];
   for (const level of normalizedLevels) {
@@ -241,9 +240,7 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
       const parentGroup =
         nextPartition === undefined
           ? undefined
-          : groupsByLevel[level + 1]?.find(
-              (candidate) => candidate.id === nextPartition[group.nodeIndices[0] ?? 0],
-            );
+          : groupsByLevel[level + 1]?.find((candidate) => candidate.id === nextPartition[group.nodeIndices[0] ?? 0]);
       const key = `${level}:${group.id}`;
 
       seeds.set(key, {
@@ -454,19 +451,14 @@ function assignCommunitySlugs(
     const reusable = reusablePriorSlugs.get(buildCarryOverSignature(community));
     const carriedSlug = reusable?.shift();
 
-    assignedSlugs.set(
-      key,
-      ensureUniqueCommunitySlug(carriedSlug ?? community.freshSlug, usedSlugs, reservedSlugs),
-    );
+    assignedSlugs.set(key, ensureUniqueCommunitySlug(carriedSlug ?? community.freshSlug, usedSlugs, reservedSlugs));
   }
 
   return communities
     .map((community, index) => {
       const key = community.key ?? index;
       return {
-        slug:
-          assignedSlugs.get(key) ??
-          ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
+        slug: assignedSlugs.get(key) ?? ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
         title: community.title,
         level: community.level,
         members: community.members,
@@ -550,7 +542,10 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
     });
 }
 
-export function computeCommunityTopologyFingerprint(index: KbIndex, graph = buildEntityRelationshipGraphFromIndex(index)): string {
+export function computeCommunityTopologyFingerprint(
+  index: KbIndex,
+  graph = buildEntityRelationshipGraphFromIndex(index),
+): string {
   const communities = detectCommunitiesForHash(graph);
   return createHash('sha256')
     .update(

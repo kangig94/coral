@@ -136,10 +136,5 @@ export type JobDetailResponse = {
   exit: JobExit | null;
 };
 
-export type {
-  JobDiagnostics,
-  JobTerminal,
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-} from './terminal/result.js';
+export type { JobDiagnostics, JobTerminal, JobTerminalDiagnostics, JobTerminalInput } from './terminal/result.js';
 export { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';

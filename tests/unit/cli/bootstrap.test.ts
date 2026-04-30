@@ -11,16 +11,15 @@ describe('cli bootstrap', () => {
     process.exitCode = undefined;
   });
 
-  async function importBootstrapWith(options: {
-    parseError?: unknown;
-  }): Promise<{
+  async function importBootstrapWith(options: { parseError?: unknown }): Promise<{
     emitError: ReturnType<typeof vi.fn>;
     parseAsync: ReturnType<typeof vi.fn>;
   }> {
     const emitError = vi.fn();
-    const parseAsync = options.parseError === undefined
-      ? vi.fn().mockResolvedValue(undefined)
-      : vi.fn().mockRejectedValue(options.parseError);
+    const parseAsync =
+      options.parseError === undefined
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn().mockRejectedValue(options.parseError);
     const program = { parseAsync };
 
     vi.doMock('#src/cli/program.js', () => ({
@@ -70,9 +69,15 @@ describe('cli bootstrap', () => {
       // Simulate real emitError setting exit code for CommanderError → 2.
       process.exitCode = 2;
     });
-    const parseAsync = vi.fn().mockRejectedValue(
-      new CommanderError(2, 'commander.missingMandatoryOptionValue', "error: required option '--jobs <ids>' not specified"),
-    );
+    const parseAsync = vi
+      .fn()
+      .mockRejectedValue(
+        new CommanderError(
+          2,
+          'commander.missingMandatoryOptionValue',
+          "error: required option '--jobs <ids>' not specified",
+        ),
+      );
     const program = { parseAsync };
     vi.doMock('#src/cli/program.js', () => ({
       buildProgram: () => program,

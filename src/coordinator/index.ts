@@ -157,9 +157,7 @@ export async function waitForCorpusReadiness(params: {
     }
     case 'all-equipped': {
       const corpusConsumerIds = readBoundCorpusConsumerIds(kb);
-      await Promise.all(
-        corpusConsumerIds.map((consumerId) => waitFresh({ consumerId, snapshot, timeoutMs })),
-      );
+      await Promise.all(corpusConsumerIds.map((consumerId) => waitFresh({ consumerId, snapshot, timeoutMs })));
       return;
     }
   }
@@ -183,12 +181,7 @@ async function repairProjectionArtifactLagOnBoot(
   });
   await Promise.all(
     forced.consumers.map((consumerId) =>
-      driver.waitFreshUntil(
-        'corpus',
-        { snapshot, atLeastGeneration: forced.generation },
-        consumerId,
-        timeoutMs,
-      ),
+      driver.waitFreshUntil('corpus', { snapshot, atLeastGeneration: forced.generation }, consumerId, timeoutMs),
     ),
   );
 }

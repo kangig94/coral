@@ -482,10 +482,7 @@ class KbRuntimeImpl implements KbRuntime {
     fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
     options: KbMutationLockOptions = {},
   ): Promise<T> {
-    return this.mutationLockController.withMutationLock(
-      (_lockCtx, args) => fn(this.mutationEffects, args),
-      options,
-    );
+    return this.mutationLockController.withMutationLock((_lockCtx, args) => fn(this.mutationEffects, args), options);
   }
 
   mutationLockDiagnostics(): KbMutationLockDiagnostics {

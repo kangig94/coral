@@ -14,11 +14,7 @@ import {
   type CurateStateTarget,
   type CurateState,
 } from './state/index.js';
-import type {
-  DiscoveryCurateClaimedEntry,
-  DiscoveryProposal,
-  NoteClaimCandidate,
-} from './pipeline-types.js';
+import type { DiscoveryCurateClaimedEntry, DiscoveryProposal, NoteClaimCandidate } from './pipeline-types.js';
 
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;

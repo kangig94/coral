@@ -13,12 +13,7 @@ import type {
   TurnInterruptParams,
   TurnStartParams,
 } from '../claude-appserver/protocol.js';
-import {
-  hashSortedEnv,
-  normalizeControllerEnv,
-  readBootstrapSignature,
-  readString,
-} from './request-prep.js';
+import { hashSortedEnv, normalizeControllerEnv, readBootstrapSignature, readString } from './request-prep.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;
@@ -111,10 +106,7 @@ export function mapTurnStartParams(
   };
 }
 
-export function mapInterruptParams(
-  brokerSessionKey: string,
-  brokerTurnId?: string,
-): TurnInterruptParams {
+export function mapInterruptParams(brokerSessionKey: string, brokerTurnId?: string): TurnInterruptParams {
   return brokerTurnId ? { brokerSessionKey, brokerTurnId } : { brokerSessionKey };
 }
 

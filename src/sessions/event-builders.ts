@@ -1,9 +1,5 @@
 import type { CoralEventInput } from '../store/envelope.js';
-import type {
-  SessionAdapterUnparseableFault,
-  SessionInterruptedFault,
-  SessionProviderFailedFault,
-} from './fault.js';
+import type { SessionAdapterUnparseableFault, SessionInterruptedFault, SessionProviderFailedFault } from './fault.js';
 
 export interface SessionFaultEventOptions {
   readonly sessionId: string;
@@ -59,5 +55,9 @@ export function sessionAdapterUnparseableEvent(
   fault: SessionAdapterUnparseableFault,
   options: SessionFaultEventOptions,
 ): CoralEventInput<SessionAdapterUnparseableFault> {
-  return sessionFaultEvent('session.adapter_unparseable', fault, options) as CoralEventInput<SessionAdapterUnparseableFault>;
+  return sessionFaultEvent(
+    'session.adapter_unparseable',
+    fault,
+    options,
+  ) as CoralEventInput<SessionAdapterUnparseableFault>;
 }

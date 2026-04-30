@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -58,7 +67,11 @@ export function createPluginFixture(
   });
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
-  symlinkSync(join(process.cwd(), 'node_modules', 'better-sqlite3'), join(root, 'node_modules', 'better-sqlite3'), 'dir');
+  symlinkSync(
+    join(process.cwd(), 'node_modules', 'better-sqlite3'),
+    join(root, 'node_modules', 'better-sqlite3'),
+    'dir',
+  );
 
   return {
     root,

@@ -14,7 +14,9 @@ export interface CodexPersistedContinuity extends ProviderContinuityBlob {
   turnId?: string;
 }
 
-export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {
+export function buildCodexPrompt(
+  request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
+): string {
   const parts: string[] = [];
   if (request.action !== 'resume' && request.instruction) {
     parts.push(request.instruction.content);
@@ -27,7 +29,13 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
 }
 
 // Codex ceiling is 'xhigh'; 'max' collapses to it.
-const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
+const CODEX_EFFORT: Record<EffortLevel, string> = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'xhigh',
+};
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 export type CodexServiceTier = 'fast' | 'flex';
 const serviceTierCache = new Map<string, { mtimeMs: number; value: CodexServiceTier | undefined }>();
@@ -271,7 +279,9 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT' && code !== 'EACCES') {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[coral] Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.\n`);
+      process.stderr.write(
+        `[coral] Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.\n`,
+      );
     }
     return undefined;
   }

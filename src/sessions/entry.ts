@@ -79,9 +79,7 @@ export const sessionEntrySchema = z
   })
   .strict();
 
-export function sessionControllerFromProfile(
-  profile?: SessionControllerProfile,
-): SessionControllerId {
+export function sessionControllerFromProfile(profile?: SessionControllerProfile): SessionControllerId {
   if (typeof profile?.owner === 'string' && profile.owner.length > 0) {
     return profile.owner;
   }

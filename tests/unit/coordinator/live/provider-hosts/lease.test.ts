@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { acquireSharedProviderServerLease, releaseSharedProviderServerLease } from '#src/coordinator/live/provider-hosts/lease.js';
+import {
+  acquireSharedProviderServerLease,
+  releaseSharedProviderServerLease,
+} from '#src/coordinator/live/provider-hosts/lease.js';
 import { createEntry, randomSequence } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 describe('provider host lease properties', () => {

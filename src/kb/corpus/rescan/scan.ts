@@ -2,12 +2,7 @@ import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
-import {
-  extractTitle,
-  parseCommunityFrontmatter,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-} from '../frontmatter.js';
+import { extractTitle, parseCommunityFrontmatter, parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { parseEntityGraph } from '../entity-graph-store.js';
 import {
   noteEntryId,
@@ -145,9 +140,11 @@ export function createCorpusScanView(input: {
   };
 }
 
-export function buildCorpusScanView(
-  kb: { markdownRoot: string; corpusStorage: CorpusStorage; entityGraphPath(): string },
-): CorpusScanView {
+export function buildCorpusScanView(kb: {
+  markdownRoot: string;
+  corpusStorage: CorpusStorage;
+  entityGraphPath(): string;
+}): CorpusScanView {
   const markdownFiles: CorpusMarkdownFileScan[] = [];
   for (const handle of kb.corpusStorage.scan(kb.markdownRoot)) {
     markdownFiles.push(
@@ -164,9 +161,10 @@ export function buildCorpusScanView(
   });
 }
 
-function readEntityGraphScan(
-  kb: { corpusStorage: CorpusStorage; entityGraphPath(): string },
-): CorpusEntityGraphScan | null {
+function readEntityGraphScan(kb: {
+  corpusStorage: CorpusStorage;
+  entityGraphPath(): string;
+}): CorpusEntityGraphScan | null {
   const path = kb.entityGraphPath();
   try {
     const content = kb.corpusStorage.readFileSync(path, 'utf-8');

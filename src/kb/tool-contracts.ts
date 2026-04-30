@@ -197,8 +197,12 @@ export const kbNoteUpdateRequestSchema = kbUpdateSchema
     ...transportContextFieldsShape,
   })
   .strict();
-export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema, ...optionalTransportContextFieldsShape }).strict();
-export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema, ...optionalTransportContextFieldsShape }).strict();
+export const kbNoteDeleteRequestSchema = z
+  .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
+  .strict();
+export const kbSourceDeleteRequestSchema = z
+  .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
+  .strict();
 export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
 export const kbDiagnoseSchema = z.object({}).strict();
 export const kbDiagnoseRequestSchema = kbDiagnoseSchema;

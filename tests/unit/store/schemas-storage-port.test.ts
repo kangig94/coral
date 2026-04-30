@@ -26,9 +26,9 @@ describe('applyStoreSchemas with Runtime.storage', () => {
       applyStoreSchemas({ db, storage: runtime.storage, schemasDir });
 
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '1' });
-      expect(
-        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'widgets'").get(),
-      ).toEqual({ name: 'widgets' });
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'widgets'").get()).toEqual({
+        name: 'widgets',
+      });
     } finally {
       db.close();
     }

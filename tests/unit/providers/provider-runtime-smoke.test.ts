@@ -37,9 +37,7 @@ type SmokeRuntime = ProviderRuntime & {
   runCli: ReturnType<typeof vi.fn>;
 };
 
-function makeLease(
-  rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-): MockLease {
+function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => rpcImpl(method, params));
@@ -70,12 +68,14 @@ function makeLease(
   };
 }
 
-function makeRuntime(options: {
-  controller?: AbortController;
-  persistedContinuity?: ProviderRuntime['persistedContinuity'];
-  runCliImpl?: ProviderCliRunner;
-  acquireServerImpl?: () => Promise<ProviderServerLease>;
-} = {}): SmokeRuntime {
+function makeRuntime(
+  options: {
+    controller?: AbortController;
+    persistedContinuity?: ProviderRuntime['persistedContinuity'];
+    runCliImpl?: ProviderCliRunner;
+    acquireServerImpl?: () => Promise<ProviderServerLease>;
+  } = {},
+): SmokeRuntime {
   const controller = options.controller ?? new AbortController();
   const runCli = vi.fn<ProviderCliRunner>(
     options.runCliImpl ??
@@ -110,10 +110,7 @@ function makeRuntime(options: {
   };
 }
 
-function makeRequest(
-  provider: RegisteredProviderName,
-  overrides: Partial<ProviderRequest> = {},
-): ProviderRequest {
+function makeRequest(provider: RegisteredProviderName, overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
     action: 'exec',
     sessionId: `job-${provider}-runtime-smoke`,
@@ -135,9 +132,7 @@ function getProductionProvider(name: RegisteredProviderName): ProviderSpec {
   return provider;
 }
 
-function isTerminalEvent(
-  event: ProviderEventBody,
-): event is Extract<ProviderEventBody, { kind: 'terminal' }> {
+function isTerminalEvent(event: ProviderEventBody): event is Extract<ProviderEventBody, { kind: 'terminal' }> {
   return event.kind === 'terminal';
 }
 
@@ -145,9 +140,7 @@ function isContinuityEvent(event: ProviderEventBody): event is ProviderContinuit
   return event.kind === 'continuity';
 }
 
-function expectSingleTerminalLast(
-  events: ProviderEventBody[],
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
+function expectSingleTerminalLast(events: ProviderEventBody[]): Extract<ProviderEventBody, { kind: 'terminal' }> {
   const terminals = events.filter(isTerminalEvent);
   expect(terminals).toHaveLength(1);
   expect(events[events.length - 1]).toBe(terminals[0]);
@@ -524,7 +517,8 @@ describe('provider runtime smoke', () => {
       body: {
         provider: 'claude',
         reason: 'request_failed',
-        message: 'This Claude session already established persistent continuity. Start a new Coral session before forking.',
+        message:
+          'This Claude session already established persistent continuity. Start a new Coral session before forking.',
       },
     });
     expect(runtime.runCli).not.toHaveBeenCalled();

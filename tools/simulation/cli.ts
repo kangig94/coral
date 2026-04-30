@@ -44,7 +44,9 @@ function formatScenarioResult(result: ScenarioResult): string {
 
   for (const step of result.steps) {
     const summary = summarizeStep(step);
-    lines.push(`${step.ok ? 'PASS' : 'FAIL'} ${step.stepIndex} ${step.type} (${step.elapsedMs}ms)${summary ? ` ${summary}` : ''}`);
+    lines.push(
+      `${step.ok ? 'PASS' : 'FAIL'} ${step.stepIndex} ${step.type} (${step.elapsedMs}ms)${summary ? ` ${summary}` : ''}`,
+    );
 
     if (!step.ok) {
       if (step.expected !== undefined) {
@@ -80,7 +82,7 @@ function errorMessage(error: unknown): string {
 
 async function withMutedStderr<T>(fn: () => Promise<T>): Promise<T> {
   const originalWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((() => true) as unknown) as typeof process.stderr.write;
+  process.stderr.write = (() => true) as unknown as typeof process.stderr.write;
   try {
     return await fn();
   } finally {

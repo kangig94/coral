@@ -90,8 +90,9 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
 
   return {
     statusCode,
-    body: result.detail === undefined
-      ? { code: result.code, message: result.message }
-      : { code: result.code, message: result.message, detail: result.detail },
+    body:
+      result.detail === undefined
+        ? { code: result.code, message: result.message }
+        : { code: result.code, message: result.message, detail: result.detail },
   };
 }

@@ -625,9 +625,15 @@ describe('execution backend server', () => {
       setStartedAt: vi.fn((ts: number) => {
         startedAt = ts;
       }),
-      setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> } | { kind: 'unavailable'; reason: string }) => {
-        kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
-      }),
+      setKbStatus: vi.fn(
+        (
+          status:
+            | { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> }
+            | { kind: 'unavailable'; reason: string },
+        ) => {
+          kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
+        },
+      ),
       setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
         curateHealth = health;
       }),
@@ -1190,10 +1196,10 @@ describe('execution backend server', () => {
         kb: {
           ...(kbSubsystem.kb as Record<string, unknown>),
           projectionArtifacts: {
-            ...((kbSubsystem.kb as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts),
+            ...(kbSubsystem.kb as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts,
             files: {
-              ...((kbSubsystem.kb as { projectionArtifacts: { files: Record<string, unknown> } }).projectionArtifacts
-                .files),
+              ...(kbSubsystem.kb as { projectionArtifacts: { files: Record<string, unknown> } }).projectionArtifacts
+                .files,
               existsSync: vi.fn(() => true),
             },
           },
@@ -1715,11 +1721,10 @@ describe('execution backend server', () => {
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
       };
-      type KbSubFromStatus = Extract<
-        ReturnType<typeof created.runtimeState.getKbStatus>,
-        { kind: 'ok' }
-      >['subsystem'];
-      const withKb = <T>(run: (kbSubsystem: KbSubFromStatus) => T): T | { ok: false; code: string; message: string } => {
+      type KbSubFromStatus = Extract<ReturnType<typeof created.runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
+      const withKb = <T>(
+        run: (kbSubsystem: KbSubFromStatus) => T,
+      ): T | { ok: false; code: string; message: string } => {
         const status = created.runtimeState.getKbStatus();
         if (status.kind !== 'ok') {
           return {
@@ -4354,12 +4359,7 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = createSessionManager(projectRoot).allocate(
-      'codex',
-      'workflow-session',
-      'gpt-5',
-      projectRoot,
-    );
+    const session = createSessionManager(projectRoot).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
 
     createdJobIds.add(jobId);
     progressStore.initJob({

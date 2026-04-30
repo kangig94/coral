@@ -113,11 +113,7 @@ export async function acquireDirectoryLock(
 }
 
 export function acquireDirectoryLockSync(lockDir: string, timeoutMs?: number): () => void;
-export function acquireDirectoryLockSync(
-  lockDir: string,
-  deps: DirectoryLockDeps,
-  timeoutMs?: number,
-): () => void;
+export function acquireDirectoryLockSync(lockDir: string, deps: DirectoryLockDeps, timeoutMs?: number): () => void;
 export function acquireDirectoryLockSync(
   lockDir: string,
   depsOrTimeout: DirectoryLockDeps | number = 5000,

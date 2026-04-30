@@ -165,8 +165,9 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       driver.register(reg);
 
       db.prepare('DELETE FROM consumer_cursors WHERE consumer_id = ?').run(reg.id);
-      db.prepare('INSERT INTO consumer_cursors (consumer_id, authority, lane, cursor, registered_at) VALUES (?, ?, ?, 0, ?)')
-        .run(reg.id, 'corpus', 'content', '2026-04-18T00:00:00.000Z');
+      db.prepare(
+        'INSERT INTO consumer_cursors (consumer_id, authority, lane, cursor, registered_at) VALUES (?, ?, ?, 0, ?)',
+      ).run(reg.id, 'corpus', 'content', '2026-04-18T00:00:00.000Z');
 
       let thrown: unknown;
       try {
@@ -187,5 +188,4 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       db.close();
     }
   });
-
 });

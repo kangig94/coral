@@ -24,7 +24,7 @@ import {
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/path/compose.js';
-import { resolveProjectSource } from "../infra/project-source.js";
+import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type {
   ChildProcessLike,

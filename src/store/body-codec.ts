@@ -23,12 +23,7 @@ export function decodeBody<T>(
   schema: z.ZodType<T>,
   ctx: StoreReadContext,
 ): T {
-  return ctx.upcasters.parseBody(
-    row.type,
-    row.body_version,
-    decodeEventBody(row.body),
-    schema,
-  );
+  return ctx.upcasters.parseBody(row.type, row.body_version, decodeEventBody(row.body), schema);
 }
 
 export function decodeStoredBody(

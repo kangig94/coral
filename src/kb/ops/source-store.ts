@@ -1,8 +1,5 @@
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import {
-  captureRemovedSourceManifestDeltas,
-  captureSourceManifestDeltas,
-} from '../corpus/manifest-authority.js';
+import { captureRemovedSourceManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
 import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';

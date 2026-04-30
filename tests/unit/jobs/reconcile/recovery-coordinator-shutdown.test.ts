@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { jobsDir } from "#src/jobs/paths.js";
+import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
@@ -254,12 +254,10 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const { modules, runtime, pluginRoot, projectRoot } = options;
   const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
   const eventBus = new modules.eventBusModule.TypedEventBus();
-  const progressStore = new modules.progressStoreModule.JobStore(
-    namespace,
-    runtime,
-    createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime), eventBus },
-  );
+  const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    db: openTestStoreDb(runtime),
+    eventBus,
+  });
   const { runtimeState, setLifecycle } = createRuntimeStateMock();
   const idleTimer = createFakeIdleTimer();
   const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();

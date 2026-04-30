@@ -62,7 +62,7 @@ async function emitJsonLine(value: unknown): Promise<void> {
 }
 
 async function main() {
-  const [,, name, ...diagnosticArgs] = process.argv;
+  const [, , name, ...diagnosticArgs] = process.argv;
   if (!name) {
     await emitJsonLine(encodeInstallError(usageError()));
     process.exitCode = 2;

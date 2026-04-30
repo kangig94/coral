@@ -173,9 +173,10 @@ function planProviderOutcome(terminal: ProviderTerminalEventBody, options: Runti
       return {
         kind: 'immediate',
         domainEvents: [],
-        immediateOutcome: outcome.note === undefined
-          ? { kind: 'provider_exit', code: outcome.code }
-          : { kind: 'provider_exit', code: outcome.code, note: outcome.note },
+        immediateOutcome:
+          outcome.note === undefined
+            ? { kind: 'provider_exit', code: outcome.code }
+            : { kind: 'provider_exit', code: outcome.code, note: outcome.note },
       };
     case 'failed':
       if (terminal.failureCause === undefined) {
@@ -239,9 +240,7 @@ export function materializeProviderTerminal(
       ...(terminal.terminal.exitCode === undefined
         ? {}
         : { processExit: { exitCode: terminal.terminal.exitCode, signal: null } }),
-      ...(terminal.diagnostics.byteCounts === undefined
-        ? {}
-        : { byteCounts: { ...terminal.diagnostics.byteCounts } }),
+      ...(terminal.diagnostics.byteCounts === undefined ? {} : { byteCounts: { ...terminal.diagnostics.byteCounts } }),
     },
   };
 }

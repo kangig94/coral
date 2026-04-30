@@ -76,10 +76,7 @@ describe('cli-resolve.mjs', () => {
 
     expect(rewritten).toContain(`node "${cliBundle}" workflow -e architect`);
     expect(tempPaths).toHaveLength(2);
-    expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8'))).toEqual([
-      'start prompt',
-      'ctx "quoted"',
-    ]);
+    expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8'))).toEqual(['start prompt', 'ctx "quoted"']);
   });
 
   it('preserves kb-local -f json during rewrite', () => {
@@ -101,9 +98,7 @@ describe('cli-resolve.mjs', () => {
     });
 
     const output = expectCliResolveOutput(result);
-    expect(output.hookSpecificOutput.updatedInput.command).toBe(
-      `node "${cliBundle}" kb search q --output-format json`,
-    );
+    expect(output.hookSpecificOutput.updatedInput.command).toBe(`node "${cliBundle}" kb search q --output-format json`);
   });
 
   it('preserves quoted existing file paths for provider -i relative to input.cwd', () => {
@@ -395,7 +390,6 @@ describe('cli-resolve.mjs', () => {
     expect(second.status).toBe(0);
     expect(parseJsonOutput<unknown>(second.stdout)).toBeNull();
   });
-
 
   it('injects Bash timeout for coral-cli wait even when the command has shell redirection', () => {
     const result = runHook(CLI_RESOLVE_HOOK, {

@@ -12,7 +12,10 @@ function makeDirent(name: string, kind: 'file' | 'dir'): DirentLike {
   };
 }
 
-function makeRuntime(tree: Record<string, DirentLike[]>, homedir = '/home/user'): {
+function makeRuntime(
+  tree: Record<string, DirentLike[]>,
+  homedir = '/home/user',
+): {
   runtime: ArtifactCleanupRuntime;
   unlinkSync: ReturnType<typeof vi.fn>;
   existsSync: ReturnType<typeof vi.fn>;
@@ -57,14 +60,8 @@ describe('claudeProvider.artifactCleanup.cleanupSessions', () => {
         makeDirent('-home-user-proj-b', 'dir'),
         makeDirent('stray-file', 'file'),
       ],
-      [join(projectsDir, '-home-user-proj-a')]: [
-        makeDirent('ref-a.jsonl', 'file'),
-        makeDirent('other.jsonl', 'file'),
-      ],
-      [join(projectsDir, '-home-user-proj-b')]: [
-        makeDirent('ref-b.jsonl', 'file'),
-        makeDirent('subdir', 'dir'),
-      ],
+      [join(projectsDir, '-home-user-proj-a')]: [makeDirent('ref-a.jsonl', 'file'), makeDirent('other.jsonl', 'file')],
+      [join(projectsDir, '-home-user-proj-b')]: [makeDirent('ref-b.jsonl', 'file'), makeDirent('subdir', 'dir')],
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
 
@@ -88,10 +85,7 @@ describe('claudeProvider.artifactCleanup.cleanupSessions', () => {
   it('does not unlink non-matching filenames or nested directories named like a target', async () => {
     const tree = {
       [projectsDir]: [makeDirent('-proj', 'dir')],
-      [join(projectsDir, '-proj')]: [
-        makeDirent('other.jsonl', 'file'),
-        makeDirent('ref-a.jsonl', 'dir'),
-      ],
+      [join(projectsDir, '-proj')]: [makeDirent('other.jsonl', 'file'), makeDirent('ref-a.jsonl', 'dir')],
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
 
@@ -102,10 +96,7 @@ describe('claudeProvider.artifactCleanup.cleanupSessions', () => {
   it('swallows unlink failures and continues', async () => {
     const tree = {
       [projectsDir]: [makeDirent('-proj', 'dir')],
-      [join(projectsDir, '-proj')]: [
-        makeDirent('ref-a.jsonl', 'file'),
-        makeDirent('ref-b.jsonl', 'file'),
-      ],
+      [join(projectsDir, '-proj')]: [makeDirent('ref-a.jsonl', 'file'), makeDirent('ref-b.jsonl', 'file')],
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
     unlinkSync.mockImplementationOnce(() => {

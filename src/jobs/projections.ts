@@ -11,12 +11,7 @@ import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
 import type { JobPhase } from './phase.js';
-import {
-  phaseForOutcome,
-  type JobAbortedBody,
-  type JobLaunchRejected,
-  type JobProgressFault,
-} from './outcome.js';
+import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
 import {
   jobDiagnosticsSchema,
   jobTerminalSchema,
@@ -56,10 +51,7 @@ function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagno
   return body.diagnostics ?? {};
 }
 
-function mergeDiagnostics(
-  current: JobDiagnostics | undefined,
-  patch: JobTerminalDiagnostics,
-): JobDiagnostics {
+function mergeDiagnostics(current: JobDiagnostics | undefined, patch: JobTerminalDiagnostics): JobDiagnostics {
   const processExit = patch.processExit ?? current?.processExit;
   const byteCounts = patch.byteCounts ?? current?.byteCounts;
   return {
@@ -75,7 +67,8 @@ function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
   return new CoralSetupError({
     code: 'projection_jobs_premature_event',
     userMessage: `Job projection received '${event.type}' for '${event.stream.id}' before job.launch.requested.`,
-    remediation: 'Append job.launch.requested before any queued, runtime, progress, terminal, or aborted events for a job stream.',
+    remediation:
+      'Append job.launch.requested before any queued, runtime, progress, terminal, or aborted events for a job stream.',
     context: {
       jobId: event.stream.id,
       type: event.type,
@@ -84,9 +77,7 @@ function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
   });
 }
 
-type JobTerminalOrderState =
-  | { kind: 'existing'; seq: number }
-  | { kind: 'batch' };
+type JobTerminalOrderState = { kind: 'existing'; seq: number } | { kind: 'batch' };
 
 function jobTerminalOrderViolation(input: CoralEventInput, state: JobTerminalOrderState): CoralSetupError {
   const reason =
@@ -147,15 +138,12 @@ export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => 
   }
 };
 
-function createInitialProjectionJobState(
-  event: CoralEvent,
-  patch: Partial<ProjectedJobState>,
-): ProjectedJobState {
+function createInitialProjectionJobState(event: CoralEvent, patch: Partial<ProjectedJobState>): ProjectedJobState {
   if (
-    patch.projectRoot === undefined
-    || patch.backendNamespace === undefined
-    || patch.jobKind === undefined
-    || patch.createdAt === undefined
+    patch.projectRoot === undefined ||
+    patch.backendNamespace === undefined ||
+    patch.jobKind === undefined ||
+    patch.createdAt === undefined
   ) {
     throw prematureProjectionJobEvent(event);
   }
@@ -170,8 +158,8 @@ function createInitialProjectionJobState(
     backendNamespace: patch.backendNamespace,
     bundleHash: patch.bundleHash ?? null,
     jobKind: patch.jobKind,
-    parentWorkflowJobId: patch.parentWorkflowJobId ?? (event.refs?.parentJobId ?? null),
-    workflowSlot: patch.workflowSlot ?? (event.refs?.workflowSlotId ?? null),
+    parentWorkflowJobId: patch.parentWorkflowJobId ?? event.refs?.parentJobId ?? null,
+    workflowSlot: patch.workflowSlot ?? event.refs?.workflowSlotId ?? null,
     createdAt: patch.createdAt,
   };
 }
@@ -209,7 +197,8 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
   return {
     phase: row.phase as JobPhase,
     terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
-    diagnostics: row.diagnostics === null ? emptyDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
+    diagnostics:
+      row.diagnostics === null ? emptyDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,
@@ -222,11 +211,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
   };
 }
 
-function upsertProjectionJob(
-  db: Database,
-  event: CoralEvent,
-  patch: Partial<ProjectedJobState>,
-): void {
+function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<ProjectedJobState>): void {
   const previous = readProjectionJob(db, event.stream.id);
   if (!previous && event.type !== 'job.launch.requested') {
     throw prematureProjectionJobEvent(event);
@@ -317,9 +302,7 @@ export const reduceJobProgress: Reducer<JobProgressBody> = (db, event) => {
     ...(previous?.diagnostics.processExit === undefined
       ? {}
       : { processExit: { ...previous.diagnostics.processExit } }),
-    ...(previous?.diagnostics.byteCounts === undefined
-      ? {}
-      : { byteCounts: { ...previous.diagnostics.byteCounts } }),
+    ...(previous?.diagnostics.byteCounts === undefined ? {} : { byteCounts: { ...previous.diagnostics.byteCounts } }),
   };
 
   upsertProjectionJob(db, event, { diagnostics });

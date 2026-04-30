@@ -130,20 +130,23 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
 } {
   const root = mkdtempSync(join(tmpdir(), 'coral-expansion-test-'));
   const runtime = options.runtime ?? new SimulationRuntime({ roots: { coralRoot: root } });
-  const kb = options.kb ?? (() => {
-    const db = openStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      schemasDir: ensureStoreSchemasDir(runtime.storage),
-    });
-    return createTestKbRuntime({
-      markdownRoot: runtime.paths.coral.corpus.kbRoot,
-      runtimeDir: join(root, 'kb-runtime'),
-      db,
-      runtime,
-    });
-  })();
-  const registerConsumer = options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));
+  const kb =
+    options.kb ??
+    (() => {
+      const db = openStoreDatabase({
+        path: ':memory:',
+        storage: runtime.storage,
+        schemasDir: ensureStoreSchemasDir(runtime.storage),
+      });
+      return createTestKbRuntime({
+        markdownRoot: runtime.paths.coral.corpus.kbRoot,
+        runtimeDir: join(root, 'kb-runtime'),
+        db,
+        runtime,
+      });
+    })();
+  const registerConsumer =
+    options.registerConsumer ?? ((reg: ConsumerRegistration): ConsumerHandle => createHandle(reg));
   const consumerDriver: ConsumerDriverPort = {
     register: registerConsumer,
     getJournalReader: () => ({

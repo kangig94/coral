@@ -48,13 +48,10 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   const record = value as Record<string, unknown>;
   const pid = Number.isInteger(record.pid) && (record.pid as number) > 0 ? (record.pid as number) : null;
   const port = Number.isInteger(record.port) && (record.port as number) > 0 ? (record.port as number) : null;
-  const socketPath =
-    typeof record.socketPath === 'string' && record.socketPath.length > 0 ? record.socketPath : null;
-  const bundleHash =
-    typeof record.bundleHash === 'string' && record.bundleHash.length > 0 ? record.bundleHash : null;
+  const socketPath = typeof record.socketPath === 'string' && record.socketPath.length > 0 ? record.socketPath : null;
+  const bundleHash = typeof record.bundleHash === 'string' && record.bundleHash.length > 0 ? record.bundleHash : null;
   const flavor = record.flavor === 'prod' || record.flavor === 'dev' ? record.flavor : null;
-  const namespace =
-    typeof record.namespace === 'string' && record.namespace.length > 0 ? record.namespace : null;
+  const namespace = typeof record.namespace === 'string' && record.namespace.length > 0 ? record.namespace : null;
   const startedAt =
     Number.isFinite(record.startedAt) && (record.startedAt as number) > 0 ? (record.startedAt as number) : null;
   const token = typeof record.token === 'string' && record.token.length > 0 ? record.token : null;
@@ -121,17 +118,14 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
   return runtime.paths.coral.coordinator.infoFile;
 }
 
-export function writeDiscoveryRecord(
-  record: CoordinatorDiscoveryRecord,
-  runtime: DiscoveryRuntime,
-): void {
+export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryRuntime): void {
   const infoPath = discoveryFilePath(runtime);
   const payload = JSON.stringify({
     ...record,
     processStartedAt:
-      record.processStartedAt
-      ?? probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform)
-      ?? undefined,
+      record.processStartedAt ??
+      probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform) ??
+      undefined,
   });
 
   runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
@@ -158,7 +152,6 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
     throw error;
   }
 }
-
 
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const record = readDiscoveryRecord(runtime);

@@ -1,12 +1,7 @@
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { areCommunityDocumentsFresh } from './curate/community/freshness.js';
 import { extractBody, parseCommunityFrontmatter } from './corpus/frontmatter.js';
-import {
-  isCommunityEntry,
-  isNoteEntry,
-  isSourceEntry,
-  type KbIndex,
-} from './entry-types.js';
+import { isCommunityEntry, isNoteEntry, isSourceEntry, type KbIndex } from './entry-types.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './contract.js';
 import type {

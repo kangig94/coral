@@ -10,8 +10,14 @@ export function registerWorkflowCommands(program: Command): void {
   workflowCommand
     .description('Execute a workflow pipeline')
     .option('-e, --expression <expr>', 'Pipeline DSL expression')
-    .option('-s, --start-prompt <text-or-file...>', 'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
-    .option('-c, --context <text-or-file...>', 'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
+    .option(
+      '-s, --start-prompt <text-or-file...>',
+      'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+    )
+    .option(
+      '-c, --context <text-or-file...>',
+      'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+    )
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')

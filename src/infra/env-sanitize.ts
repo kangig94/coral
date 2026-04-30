@@ -116,7 +116,8 @@ export function shedIfOverBudget(
     }
   }
 
-  const shedList = shedNames.join(', ') + (shedCount > shedNames.length ? `, ... (+${shedCount - shedNames.length} more)` : '');
+  const shedList =
+    shedNames.join(', ') + (shedCount > shedNames.length ? `, ... (+${shedCount - shedNames.length} more)` : '');
   backendLog.warn(
     `child-env: shed ${shedCount}/${originalCount} vars ` +
       `(${(originalSize / 1024).toFixed(0)}KB -> ${(currentSize / 1024).toFixed(0)}KB, ` +

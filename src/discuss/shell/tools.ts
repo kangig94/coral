@@ -8,9 +8,7 @@ import * as discussOperations from './operations.js';
 import { seedPersonas } from '../persona-seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 
-type ToolDomainResult =
-  | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; detail?: unknown };
+type ToolDomainResult = { ok: true; data: unknown } | { ok: false; code: string; message: string; detail?: unknown };
 
 function domainSuccess(data: unknown): ToolDomainResult {
   return { ok: true, data };
@@ -91,14 +89,7 @@ async function executeDiscussStart(
   try {
     const ctx = helpers.getDiscussContext(context);
     const sessionId = ctx.runtime.ids.uuid();
-    await discussOperations.startDiscussSession(
-      ctx,
-      sessionId,
-      args.topic,
-      args.agents,
-      args.config ?? {},
-      context,
-    );
+    await discussOperations.startDiscussSession(ctx, sessionId, args.topic, args.agents, args.config ?? {}, context);
     return domainSuccess({ session: sessionId });
   } catch (error: unknown) {
     return domainError('start_failed', errorMessage(error));
@@ -246,4 +237,3 @@ export async function handleDiscussSpeech(
 
   return executeDiscussSpeech(parsed.data, context, helpers);
 }
-

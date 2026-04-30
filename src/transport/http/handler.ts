@@ -1,11 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ZodError } from 'zod';
-import {
-  parseSerializedWaitCursor,
-  serializeWaitCursor,
-  type WaitStreamEvent,
-} from '../../jobs/wait.js';
+import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
 import { isRecord } from '../../infra/json.js';
 import { executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc/catalog.js';
@@ -164,7 +160,12 @@ export type CatalogBackedHttpRoute = {
 
 type ProjectedCatalogBackedHttpRoute = CatalogBackedHttpRoute & {
   pattern: RegExp;
-  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL, pathParams: Record<string, string>) => Promise<void>;
+  handle: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsedUrl: URL,
+    pathParams: Record<string, string>,
+  ) => Promise<void>;
 };
 
 type TransportLocalRoute = {
@@ -214,11 +215,7 @@ function extractPathParams(match: RegExpExecArray): Record<string, string> {
   return { ...(match.groups ?? {}) };
 }
 
-function combineRouteInput(
-  method: HttpMethod,
-  payload: unknown,
-  pathParams: Record<string, string>,
-): unknown {
+function combineRouteInput(method: HttpMethod, payload: unknown, pathParams: Record<string, string>): unknown {
   if (method === 'GET' || method === 'DELETE') {
     return {
       ...(isRecord(payload) ? payload : {}),
@@ -598,7 +595,9 @@ function matchRoute<T extends { method: string; path: string; pattern: RegExp }>
 // Main request dispatcher
 // ---------------------------------------------------------------------------
 
-export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function createHttpHandler(
+  deps: HttpHandlerPorts,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { identity } = deps;
   const coordinatorRoutes = buildCoordinatorHttpDispatchTable(deps);
   const localRoutes = buildTransportLocalRouteTable(deps);

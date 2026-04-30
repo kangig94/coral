@@ -17,7 +17,9 @@ class TestClaudeChild implements ClaudeBrokerChild {
   readonly writes: unknown[] = [];
 
   private readonly stdoutHandlers = new Set<(line: string) => void>();
-  private readonly exitHandlers = new Set<(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void>();
+  private readonly exitHandlers = new Set<
+    (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void
+  >();
 
   writeLine(line: string): void {
     const message = JSON.parse(line) as {

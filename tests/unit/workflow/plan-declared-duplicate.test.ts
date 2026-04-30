@@ -73,9 +73,9 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
       ).toThrow(/workflow_plan_declared_duplicate|already present/);
 
       // The original plan must still be the one stored.
-      const row = db
-        .prepare(`SELECT plan FROM projection_workflows WHERE workflow_id = ?`)
-        .get('workflow-1') as { plan: string };
+      const row = db.prepare(`SELECT plan FROM projection_workflows WHERE workflow_id = ?`).get('workflow-1') as {
+        plan: string;
+      };
       expect(JSON.parse(row.plan)).toEqual(plan(['workflow-1:0:0']));
     } finally {
       db.close();
@@ -98,9 +98,7 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
       ).toThrow(/workflow_plan_declared_duplicate|already present/);
 
       const count = db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM events WHERE stream_kind = 'workflow' AND stream_id = ?`,
-        )
+        .prepare(`SELECT COUNT(*) AS n FROM events WHERE stream_kind = 'workflow' AND stream_id = ?`)
         .get('workflow-2') as { n: number };
       expect(count.n).toBe(0);
     } finally {

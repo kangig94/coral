@@ -1,10 +1,7 @@
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
-import {
-  capturePrincipleManifestDelta,
-  captureRemovedPrincipleManifestDelta,
-} from '../corpus/manifest-authority.js';
+import { capturePrincipleManifestDelta, captureRemovedPrincipleManifestDelta } from '../corpus/manifest-authority.js';
 import { extractPrincipleStatement } from '../corpus/frontmatter.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { markTextIndexStale, recordMetadataMutation } from '../corpus/index-mutations.js';

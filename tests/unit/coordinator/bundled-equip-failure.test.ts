@@ -264,12 +264,9 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
       expect(reason).toContain('broken-orama');
       expect(reason).toContain('boot-equip-boom');
 
-      const health = await requestIpcMethod<Record<string, unknown>>(
-        info.socketPath,
-        'transport.health',
-        undefined,
-        { timeoutMs: 1_000 },
-      );
+      const health = await requestIpcMethod<Record<string, unknown>>(info.socketPath, 'transport.health', undefined, {
+        timeoutMs: 1_000,
+      });
       expect(health.subsystems).toMatchObject({
         kb: { kind: 'unavailable', reason },
         kbCurate: 'ok',
@@ -286,7 +283,9 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         message: 'Knowledge base is not available. Check backend health for details.',
       });
 
-      await expect(requestIpcMethod(info.socketPath, 'jobs.list', { all: true }, { timeoutMs: 1_000 })).resolves.toEqual({
+      await expect(
+        requestIpcMethod(info.socketPath, 'jobs.list', { all: true }, { timeoutMs: 1_000 }),
+      ).resolves.toEqual({
         jobs: [],
       });
     } finally {

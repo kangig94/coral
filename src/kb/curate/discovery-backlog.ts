@@ -36,10 +36,7 @@ function canonicalPendingDiscovery(entry: PendingDiscovery): PendingDiscovery {
   };
 }
 
-function rowToPendingDiscovery(
-  row: KbCurateDiscoveryBacklogRow,
-  notes: readonly string[],
-): PendingDiscovery {
+function rowToPendingDiscovery(row: KbCurateDiscoveryBacklogRow, notes: readonly string[]): PendingDiscovery {
   const parsed = backlogRowSchema.parse(row);
   return {
     principle: parsed.principle_slug,
@@ -123,7 +120,6 @@ export function removeCurateDiscoveryBacklogEntry(
   ).run(entry.principle, entry.statement);
 }
 
-
 function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
   const canonicalEntry = canonicalPendingDiscovery(entry);
   prepareCached<[string, string | null, string]>(
@@ -150,10 +146,7 @@ function removeCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: strin
   ).run(backlogId, noteId);
 }
 
-export function syncCurateDiscoveryBacklog(
-  target: SqliteTarget,
-  entries: ReadonlyArray<PendingDiscovery>,
-): void {
+export function syncCurateDiscoveryBacklog(target: SqliteTarget, entries: ReadonlyArray<PendingDiscovery>): void {
   const existingById = new Map(
     readCurateDiscoveryBacklog(target).map((entry) => {
       const canonicalEntry = canonicalPendingDiscovery(entry);

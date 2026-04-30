@@ -141,7 +141,11 @@ export class CoralStore implements StoreReadContext {
       listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryContext('kb.listPrinciples')),
       listSources: () => listKnowledgeBaseSources(this.kbQueryContext('kb.listSources')),
       listMemos: (args) =>
-        listKnowledgeBaseMemos(this.requireRuntime('kb.listMemos').storage, this.requireProjectRoot('kb.listMemos'), args),
+        listKnowledgeBaseMemos(
+          this.requireRuntime('kb.listMemos').storage,
+          this.requireProjectRoot('kb.listMemos'),
+          args,
+        ),
     };
 
     this.discuss = {

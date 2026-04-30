@@ -44,7 +44,12 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner only\n<!-- OWNER_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      workingDirectory: '/wd',
+      ownerSessionId: 'valid-session-123',
+      coralEnv: {},
+    });
     expect(result).toContain('base');
     expect(result).not.toContain('owner only');
     expect(result).toContain('rest');
@@ -54,7 +59,12 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'valid-session-123', coralEnv: {} });
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      workingDirectory: '/wd',
+      ownerSessionId: 'valid-session-123',
+      coralEnv: {},
+    });
     expect(result).toContain('session content');
   });
 
@@ -94,7 +104,12 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'owner: {{SESSION_ID}}';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'my-session', coralEnv: {} });
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      workingDirectory: '/wd',
+      ownerSessionId: 'my-session',
+      coralEnv: {},
+    });
     expect(result).toContain('owner: my-session');
   });
 
@@ -102,7 +117,12 @@ describe('resolveInjectMd', () => {
     mockInjectMdError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', ownerSessionId: 'sess', coralEnv: {} });
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      workingDirectory: '/wd',
+      ownerSessionId: 'sess',
+      coralEnv: {},
+    });
     expect(result).toBe('');
   });
 });

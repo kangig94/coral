@@ -13,7 +13,9 @@ export function createRuntimeBinding<T>(name: string): RuntimeBinding<T> {
   let heldBy: string | undefined;
   return {
     name,
-    get heldBy() { return heldBy; },
+    get heldBy() {
+      return heldBy;
+    },
     read() {
       if (heldBy === undefined) {
         throw documentedCoralSetupError('binding_empty', { binding: name });

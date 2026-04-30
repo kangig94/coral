@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { memoDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
@@ -248,9 +248,13 @@ function readProbeAttempts(fixture: Fixture): Array<{ kind: string; args: unknow
 }
 
 function coordinatorArtifacts(fixture: Fixture): { infoFile: string; lockFile: string; socketPath: string } {
-  const paths = coordinatorPaths(fixture.flavor, { HOME: fixture.home, TMPDIR: fixture.home }, {
-    baseDir: join(fixture.home, '.coral'),
-  });
+  const paths = coordinatorPaths(
+    fixture.flavor,
+    { HOME: fixture.home, TMPDIR: fixture.home },
+    {
+      baseDir: join(fixture.home, '.coral'),
+    },
+  );
   return {
     infoFile: paths.infoFile,
     lockFile: paths.lockFile,

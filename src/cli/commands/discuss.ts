@@ -1,6 +1,11 @@
 import type { Command } from 'commander';
 
-import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
+import {
+  discussBidSchema,
+  discussSeedSchema,
+  discussSpeechSchema,
+  discussStartSchema,
+} from '../../discuss/command-schemas.js';
 import {
   makeClient,
   type DiscussAbortOptions,

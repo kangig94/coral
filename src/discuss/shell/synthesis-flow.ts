@@ -5,7 +5,13 @@ import { type DiscussContext } from './types.js';
 import { DiscussManagerError } from './errors.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import { detachSession } from './registry.js';
-import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext, renderTranscriptText } from './flow-primitives.js';
+import {
+  type SubflowResult,
+  SPEECH_TIMEOUT_MS,
+  ctxTs,
+  makeDecisionContext,
+  renderTranscriptText,
+} from './flow-primitives.js';
 
 export async function handleSynthesis(
   ctx: DiscussContext,

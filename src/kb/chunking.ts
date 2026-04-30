@@ -85,9 +85,8 @@ function splitAtParagraphBoundaries(prefix: string, section: string): string[] {
   };
 
   for (const paragraph of paragraphs) {
-    const parts = estimateTokens(`${prefix}${paragraph}`) <= MAX_CHUNK_TOKENS
-      ? [paragraph]
-      : splitOversizeParagraph(paragraph);
+    const parts =
+      estimateTokens(`${prefix}${paragraph}`) <= MAX_CHUNK_TOKENS ? [paragraph] : splitOversizeParagraph(paragraph);
 
     for (const part of parts) {
       const next = current === '' ? part : `${current}\n\n${part}`;

@@ -3,11 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  PdfMarkerConverter,
-  prepareSourceImport,
-  type SourceImportRuntime,
-} from '#src/kb/ops/source-import.js';
+import { PdfMarkerConverter, prepareSourceImport, type SourceImportRuntime } from '#src/kb/ops/source-import.js';
 
 const tempRoots: string[] = [];
 

@@ -35,9 +35,7 @@ export function kbVaultRoot(flavor: BuildFlavor, opts?: KbVaultRootOptions): str
     return join(coralRoot(opts.baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
   }
   if (opts?.customRoot) {
-    return opts.customRoot.startsWith('~')
-      ? join(homedir(), opts.customRoot.slice(1))
-      : opts.customRoot;
+    return opts.customRoot.startsWith('~') ? join(homedir(), opts.customRoot.slice(1)) : opts.customRoot;
   }
   return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
 }

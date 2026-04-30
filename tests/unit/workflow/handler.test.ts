@@ -33,10 +33,7 @@ function createProviderRegistry(): ProviderRegistry {
   return registry;
 }
 
-function compileOrThrow(
-  command: WorkflowCommand,
-  providerRegistry: ProviderRegistry,
-) {
+function compileOrThrow(command: WorkflowCommand, providerRegistry: ProviderRegistry) {
   const compiled = workflowCompiler.compile(command, providerRegistry);
   if ('status' in compiled) {
     throw new Error(`expected compiled workflow, got ${compiled.status}`);

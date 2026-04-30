@@ -4,7 +4,12 @@ import { z, ZodError } from 'zod';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
-import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
+import {
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+  type WaitCursor,
+  type WaitStreamEvent,
+} from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
@@ -203,22 +208,16 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         }
 
         const currentCursor: WaitCursor = { afterSeq: parsedCursor?.afterSeq ?? 0 };
-        const jobLabels =
-          jobIds.length > 1
-            ? new Map(jobIds.map((id, index) => [id, `j${index}`]))
-            : null;
+        const jobLabels = jobIds.length > 1 ? new Map(jobIds.map((id, index) => [id, `j${index}`])) : null;
         const causeRenderer = openCliCauseRefRenderer(projectRoot);
 
         try {
-          const subscription = await client.subscribe<WaitStreamEvent>(
-            'jobs.wait',
-            {
-              jobIds,
-              timeoutSeconds,
-              projectRoot,
-              ...(parsedCursor ? { cursor: parsedCursor } : {}),
-            },
-          );
+          const subscription = await client.subscribe<WaitStreamEvent>('jobs.wait', {
+            jobIds,
+            timeoutSeconds,
+            projectRoot,
+            ...(parsedCursor ? { cursor: parsedCursor } : {}),
+          });
 
           try {
             for await (const event of subscription) {

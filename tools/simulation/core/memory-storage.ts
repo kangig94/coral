@@ -391,7 +391,10 @@ export class InMemoryStorage implements StoragePort {
   }
 
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(path: string, options: { bigint: true }): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+  statSync(
+    path: string,
+    options: { bigint: true },
+  ): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
   statSync(
     path: string,
     options?: { bigint: true },
@@ -524,7 +527,11 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(parentPath(normalized));
   }
 
-  tryExclusiveWriteSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+  tryExclusiveWriteSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number },
+  ): boolean {
     const normalized = normalizePathForStorage(path);
     this.mkdirSync(parentPath(normalized), { recursive: true });
     if (this.existsSync(normalized)) {
@@ -560,7 +567,11 @@ export class InMemoryStorage implements StoragePort {
     return true;
   }
 
-  writeAtomicDurableSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+  writeAtomicDurableSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number },
+  ): boolean {
     return this.writeAtomicSync(path, data, options);
   }
 

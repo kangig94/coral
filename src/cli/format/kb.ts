@@ -33,10 +33,7 @@ function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'
     .replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
 }
 
-function normalizeKbWarnings(
-  warnings: string[] | undefined,
-  cliPrefix = 'coral-cli',
-): string[] | undefined {
+function normalizeKbWarnings(warnings: string[] | undefined, cliPrefix = 'coral-cli'): string[] | undefined {
   if (warnings === undefined || warnings.length === 0) {
     return undefined;
   }
@@ -44,9 +41,7 @@ function normalizeKbWarnings(
   return warnings.map((warning) => normalizeKbWarning(warning, cliPrefix) ?? warning);
 }
 
-function isVerbosePrincipleRows(
-  principles: KbPrinciplesResult['principles'],
-): principles is KbPrincipleVerboseRow[] {
+function isVerbosePrincipleRows(principles: KbPrinciplesResult['principles']): principles is KbPrincipleVerboseRow[] {
   return principles.length > 0 && typeof principles[0] !== 'string';
 }
 
@@ -146,11 +141,7 @@ export function formatKbPrinciples(data: KbPrinciplesResult, cliPrefix = 'coral-
     principlesText = rows.length === 0 ? 'No principles' : rows.join('\n');
   }
 
-  return joinLines([
-    principlesText,
-    `Total: ${data.total}`,
-    warning === undefined ? undefined : `Warning: ${warning}`,
-  ]);
+  return joinLines([principlesText, `Total: ${data.total}`, warning === undefined ? undefined : `Warning: ${warning}`]);
 }
 
 export function formatKbRead(data: KbReadResult): string {

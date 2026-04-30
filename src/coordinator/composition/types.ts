@@ -98,9 +98,7 @@ export type CoordinatorCoreOptions = {
    * mutation but `fn` has not yet settled. Wired against
    * `kbRuntime.mutationLockDiagnostics()`.
    */
-  getMutationBlocked: () =>
-    | { blocked: false }
-    | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
+  getMutationBlocked: () => { blocked: false } | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;

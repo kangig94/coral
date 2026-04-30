@@ -46,7 +46,9 @@ describe('formatToolProgress', () => {
     expect(formatToolProgress('Bash', { command: 'npm test' }, projectRoot)).toBe('Bash(npm test)');
     expect(formatToolProgress('Grep', { pattern: 'TODO' }, projectRoot)).toBe('Grep(TODO)');
     expect(formatToolProgress('Glob', { pattern: '**/*.ts' }, projectRoot)).toBe('Glob(**/*.ts)');
-    expect(formatToolProgress('Agent', { description: 'parallel subtask' }, projectRoot)).toBe('Agent(parallel subtask)');
+    expect(formatToolProgress('Agent', { description: 'parallel subtask' }, projectRoot)).toBe(
+      'Agent(parallel subtask)',
+    );
   });
 
   it('falls back to generic format for unknown tool', () => {
@@ -143,11 +145,15 @@ describe('formatToolProgress — adversarial', () => {
     });
 
     it('truncates long old_string in Edit display', () => {
-      const message = formatToolProgress('Edit', {
-        file_path: 'big.ts',
-        old_string: 'X'.repeat(200),
-        new_string: 'replacement',
-      }, projectRoot);
+      const message = formatToolProgress(
+        'Edit',
+        {
+          file_path: 'big.ts',
+          old_string: 'X'.repeat(200),
+          new_string: 'replacement',
+        },
+        projectRoot,
+      );
       expect(message.length).toBeLessThan(300);
     });
   });
@@ -174,10 +180,14 @@ describe('formatToolProgress — adversarial', () => {
     });
 
     it('prefers description over command when both present', () => {
-      const message = formatToolProgress('Bash', {
-        command: 'ls -la /some/path',
-        description: 'List directory contents',
-      }, projectRoot);
+      const message = formatToolProgress(
+        'Bash',
+        {
+          command: 'ls -la /some/path',
+          description: 'List directory contents',
+        },
+        projectRoot,
+      );
       expect(message).toContain('List directory contents');
     });
   });
@@ -202,10 +212,14 @@ describe('formatToolProgress — adversarial', () => {
 
   describe('Write and Agent edge cases', () => {
     it('formats Write with path outside cwd', () => {
-      const message = formatToolProgress('Write', {
-        file_path: '/very/deep/nested/path/to/output.ts',
-        content: 'file content',
-      }, projectRoot);
+      const message = formatToolProgress(
+        'Write',
+        {
+          file_path: '/very/deep/nested/path/to/output.ts',
+          content: 'file content',
+        },
+        projectRoot,
+      );
       expect(message).toBe('Write(/very/deep/nested/path/to/output.ts)');
     });
 

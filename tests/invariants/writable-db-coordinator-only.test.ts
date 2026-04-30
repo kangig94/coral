@@ -82,10 +82,7 @@ function staticallyReadOnlyOrMemory(expr: ts.Expression | undefined): boolean {
     return objectLiteralStaticallyReadOnlyOrMemory(unwrapped);
   }
   if (ts.isConditionalExpression(unwrapped)) {
-    return (
-      staticallyReadOnlyOrMemory(unwrapped.whenTrue) &&
-      staticallyReadOnlyOrMemory(unwrapped.whenFalse)
-    );
+    return staticallyReadOnlyOrMemory(unwrapped.whenTrue) && staticallyReadOnlyOrMemory(unwrapped.whenFalse);
   }
   return false;
 }
@@ -106,8 +103,7 @@ function collectDbOpenCalls(): DbOpenCall[] {
             relativePath,
             line: position.line + 1,
             callee,
-            staticallyReadOnlyOrMemory:
-              callee === 'openStoreDatabase' && staticallyReadOnlyOrMemory(node.arguments[0]),
+            staticallyReadOnlyOrMemory: callee === 'openStoreDatabase' && staticallyReadOnlyOrMemory(node.arguments[0]),
           });
         }
       }

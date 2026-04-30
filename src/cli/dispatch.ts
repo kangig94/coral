@@ -91,7 +91,11 @@ export type AbortCapableClient = {
 };
 
 export type CliCommandClient = AbortCapableClient & {
-  createSession(provider: string, prompt: string, options?: CreateSessionRequestOptions): Promise<AcceptedLaunchResponse>;
+  createSession(
+    provider: string,
+    prompt: string,
+    options?: CreateSessionRequestOptions,
+  ): Promise<AcceptedLaunchResponse>;
   sendMessage(sessionId: string, prompt: string, options?: SessionRequestOptions): Promise<AcceptedLaunchResponse>;
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
@@ -102,17 +106,8 @@ export type CliCommandClient = AbortCapableClient & {
     config?: { min_bid_delay_ms?: number };
   }): Promise<DiscussStartResponse>;
   discussWatch(session: string, cursor?: number): Promise<WatchState>;
-  discussBid(args: {
-    session: string;
-    agent_name: string;
-    score: number;
-    thought: string;
-  }): Promise<BidResult>;
-  discussSpeech(args: {
-    session: string;
-    agent_name: string;
-    content: string;
-  }): Promise<SpeechResult>;
+  discussBid(args: { session: string; agent_name: string; score: number; thought: string }): Promise<BidResult>;
+  discussSpeech(args: { session: string; agent_name: string; content: string }): Promise<SpeechResult>;
   discussAbort(session: string): Promise<DiscussAbortResponse>;
   kbSearch(args: KbSearchInput): Promise<KbSearchResponse>;
   kbDiagnose(args?: KbDiagnoseInput): Promise<KbDiagnoseResult>;
@@ -324,10 +319,7 @@ function buildKbMutationTransportContextBody(
   return body;
 }
 
-function buildProjectScopedQuery(
-  args: Record<string, unknown>,
-  context: InvocationContext,
-): Record<string, unknown> {
+function buildProjectScopedQuery(args: Record<string, unknown>, context: InvocationContext): Record<string, unknown> {
   return {
     ...args,
     projectRoot: context.projectRoot,
@@ -435,10 +427,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         return readStore().discuss.watch(session, cursor);
       }
 
-      return await request<WatchState>('discuss.session.events', buildProjectScopedQuery({
-        sessionId: session,
-        ...(cursor === undefined ? {} : { cursor }),
-      }, defaultContext));
+      return await request<WatchState>(
+        'discuss.session.events',
+        buildProjectScopedQuery(
+          {
+            sessionId: session,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+          defaultContext,
+        ),
+      );
     },
     discussBid: async (args) =>
       await request<BidResult>(

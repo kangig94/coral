@@ -677,9 +677,7 @@ describe('ExpansionLifecycleService', () => {
       expect(kb.embedding.heldBy).toBeUndefined();
       // Equip past the fence completed normally (state row written), shutdown
       // then disposed the scope cooperatively.
-      expect(state.snapshot()).toEqual([
-        { id: 'slow-embedder', version: '0.0.0', installed_at: FIXED_NOW },
-      ]);
+      expect(state.snapshot()).toEqual([{ id: 'slow-embedder', version: '0.0.0', installed_at: FIXED_NOW }]);
       expect(lifecycleScopes(lifecycle).get('slow-embedder')).toBeUndefined();
       expect(lifecycle.isActive('slow-embedder')).toBe(false);
     } finally {
@@ -703,11 +701,7 @@ describe('ExpansionLifecycleService', () => {
     } as const;
 
     const { kb, state, lifecycle } = createLifecycleHarness({
-      manifest: [
-        GEMINI_SYNTHETIC_ENTRY,
-        USER_VECTOR_ENTRY,
-        BUNDLED_VECTOR_SYNTHETIC_ENTRY,
-      ],
+      manifest: [GEMINI_SYNTHETIC_ENTRY, USER_VECTOR_ENTRY, BUNDLED_VECTOR_SYNTHETIC_ENTRY],
     });
 
     // `needle` requires `kb.embedding` to be filled before binding `kb.vector`,
@@ -766,9 +760,7 @@ describe('ExpansionLifecycleService', () => {
     const equipFirst = lifecycle.equip('test-embedder');
     // Without awaiting, fire unequip — the per-engine mutex must hold it
     // until the equip lifecycle bookkeeping completes.
-    const unequipPromise = lifecycle
-      .unequip('test-embedder')
-      .catch((error: unknown) => ({ failed: error as Error }));
+    const unequipPromise = lifecycle.unequip('test-embedder').catch((error: unknown) => ({ failed: error as Error }));
 
     await equipFirst;
     const unequipResult = await unequipPromise;

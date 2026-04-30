@@ -16,10 +16,7 @@ import type {
   SessionInterruptedBody,
   SessionOpenedBody,
 } from './event-bodies.js';
-import type {
-  SessionAdapterUnparseableFault,
-  SessionProviderFailedFault,
-} from './fault.js';
+import type { SessionAdapterUnparseableFault, SessionProviderFailedFault } from './fault.js';
 
 export type ProjectionSessionRow = {
   controller: string;
@@ -40,10 +37,7 @@ type SessionProjectionPatch = {
   scopeKey?: string;
 };
 
-export function readProjectionSession(
-  db: ReadonlyDatabase,
-  sessionId: string,
-): ProjectionSessionRow | null {
+export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): ProjectionSessionRow | null {
   const row = db
     .prepare(
       `SELECT controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
@@ -100,7 +94,9 @@ function parseProjectionSessionEntry(sessionId: string, rawEntry: string): Sessi
   return result.data;
 }
 
-function hasConversationRefPatch(patch: SessionProjectionPatch): patch is SessionProjectionPatch & { conversationRef: string | null } {
+function hasConversationRefPatch(
+  patch: SessionProjectionPatch,
+): patch is SessionProjectionPatch & { conversationRef: string | null } {
   return Object.prototype.hasOwnProperty.call(patch, 'conversationRef');
 }
 
@@ -108,7 +104,8 @@ function prematureProjectionSessionEvent(sessionId: string): CoralSetupError {
   return new CoralSetupError({
     code: 'projection_sessions_premature_event',
     userMessage: `Session projection received a non-opened event before session.opened for ${sessionId}.`,
-    remediation: 'Append session.opened before any continuity, provider_failed, adapter_unparseable, or interrupted events for a session stream.',
+    remediation:
+      'Append session.opened before any continuity, provider_failed, adapter_unparseable, or interrupted events for a session stream.',
     context: { sessionId },
   });
 }
@@ -156,10 +153,10 @@ function upsertProjectionSession(
   }
   const next = {
     controller:
-      patch.controller
-      ?? previous?.controller
-      ?? sessionControllerFromProfile(entry.controllerProfile)
-      ?? DEFAULT_SESSION_CONTROLLER,
+      patch.controller ??
+      previous?.controller ??
+      sessionControllerFromProfile(entry.controllerProfile) ??
+      DEFAULT_SESSION_CONTROLLER,
     provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)
@@ -238,7 +235,11 @@ export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: stri
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
-export function listProjectionSessionEntries(db: ReadonlyDatabase, provider?: string, scopeKey?: string): SessionEntry[] {
+export function listProjectionSessionEntries(
+  db: ReadonlyDatabase,
+  provider?: string,
+  scopeKey?: string,
+): SessionEntry[] {
   const clauses: string[] = [];
   const params: string[] = [];
   if (provider !== undefined) {

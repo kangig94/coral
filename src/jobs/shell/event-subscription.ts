@@ -62,9 +62,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
 }
 
 export function publishJobEvents(appended: readonly AppendedEvent[]): void {
-  const projected = appended
-    .map((event) => toJobEvent(event))
-    .filter((event): event is JobEvent => event !== null);
+  const projected = appended.map((event) => toJobEvent(event)).filter((event): event is JobEvent => event !== null);
 
   for (const event of projected) {
     for (const subscriber of [...subscribers]) {

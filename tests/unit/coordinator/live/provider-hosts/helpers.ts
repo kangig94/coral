@@ -58,12 +58,14 @@ export function createFakeProviderServerHandle(options?: {
     });
   const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
   const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-    handlers.add(handler);
-    return () => {
-      handlers.delete(handler);
-    };
-  });
+  const onNotificationMock = vi.fn(
+    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+      handlers.add(handler);
+      return () => {
+        handlers.delete(handler);
+      };
+    },
+  );
   const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {
     closed.resolve();

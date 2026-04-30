@@ -29,17 +29,11 @@ export interface JobEventBus {
 }
 
 class NoopJobEventBus implements JobEventBus {
-  on<K extends keyof JobObservedEvents>(
-    _event: K,
-    _listener: (payload: JobObservedEvents[K]) => void,
-  ): this {
+  on<K extends keyof JobObservedEvents>(_event: K, _listener: (payload: JobObservedEvents[K]) => void): this {
     return this;
   }
 
-  off<K extends keyof JobObservedEvents>(
-    _event: K,
-    _listener: (payload: JobObservedEvents[K]) => void,
-  ): this {
+  off<K extends keyof JobObservedEvents>(_event: K, _listener: (payload: JobObservedEvents[K]) => void): this {
     return this;
   }
 

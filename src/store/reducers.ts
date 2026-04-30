@@ -13,10 +13,7 @@ export interface DomainAppendValidationContext {
   readonly providers: ProviderLookupPort;
 }
 
-export type DomainAppendValidator = (
-  ctx: DomainAppendValidationContext,
-  inputs: readonly CoralEventInput[],
-) => void;
+export type DomainAppendValidator = (ctx: DomainAppendValidationContext, inputs: readonly CoralEventInput[]) => void;
 
 /**
  * A single event-type entry: type tag, body schema, and an optional reducer.

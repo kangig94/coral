@@ -38,10 +38,7 @@ export function readHostStats(params: Record<string, unknown> | undefined): Host
   };
 }
 
-export function clearIdleTimer(
-  entry: ProviderHostEntry,
-  time: Pick<TimePort, 'clearTimeout'>,
-): void {
+export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'clearTimeout'>): void {
   if (!entry.idleTimer) {
     return;
   }

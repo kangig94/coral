@@ -162,16 +162,15 @@ export const providerJobLaunchRequestBodySchema = z
   })
   .strict();
 
-const kbJobLaunchBaseSchema = z
-  .object({
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    jobKind: z.literal('kb'),
-    pool: z.string(),
-    enqueueSequence: z.number().int().nonnegative(),
-    createdAt: z.string(),
-  });
+const kbJobLaunchBaseSchema = z.object({
+  projectRoot: z.string(),
+  backendNamespace: z.string(),
+  bundleHash: z.string().optional(),
+  jobKind: z.literal('kb'),
+  pool: z.string(),
+  enqueueSequence: z.number().int().nonnegative(),
+  createdAt: z.string(),
+});
 
 export const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({

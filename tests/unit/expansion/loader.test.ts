@@ -19,14 +19,14 @@ describe('loadExpansions', () => {
       {
         id: 'alpha',
         version: '0.0.0',
-        specifier: toDataModule("export default async (host) => { globalThis.__expansionLoads.push(host.id); }"),
+        specifier: toDataModule('export default async (host) => { globalThis.__expansionLoads.push(host.id); }'),
         tier: 'installed',
         description: 'alpha',
       },
       {
         id: 'beta',
         version: '0.0.0',
-        specifier: toDataModule("export default async (host) => { globalThis.__expansionLoads.push(host.id); }"),
+        specifier: toDataModule('export default async (host) => { globalThis.__expansionLoads.push(host.id); }'),
         tier: 'installed',
         description: 'beta',
       },
@@ -48,9 +48,7 @@ describe('loadExpansions', () => {
         {
           id: 'alpha',
           version: '0.0.0',
-          specifier: toDataModule(
-            "export default (host) => { host.bind(globalThis.__vectorBinding, 'needle'); }",
-          ),
+          specifier: toDataModule("export default (host) => { host.bind(globalThis.__vectorBinding, 'needle'); }"),
           tier: 'installed',
           description: 'alpha',
         },

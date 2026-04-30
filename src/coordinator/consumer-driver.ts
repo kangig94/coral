@@ -910,11 +910,7 @@ export class ConsumerDriver {
     })();
   }
 
-  private async runJournalApply(
-    state: ConsumerState,
-    reg: JournalApplyRegistration,
-    target: number,
-  ): Promise<boolean> {
+  private async runJournalApply(state: ConsumerState, reg: JournalApplyRegistration, target: number): Promise<boolean> {
     try {
       const fromSeq = this.readJournalCursor(reg.id);
       const upToSeq = Math.max(fromSeq, target);
@@ -947,7 +943,10 @@ export class ConsumerDriver {
   ): Promise<boolean> {
     try {
       const current = this.readCorpusCursor(reg.id);
-      if (options.forceGeneration === undefined && !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
+      if (
+        options.forceGeneration === undefined &&
+        !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)
+      ) {
         return true;
       }
 
@@ -1190,10 +1189,7 @@ export class ConsumerDriver {
     if (isSnapshotFresherForInterest(snapshot, current, state.reg.corpusInterest)) {
       return false;
     }
-    return (
-      !isForcedCorpusFreshnessTarget(target) ||
-      state.lastAppliedForceGeneration >= target.atLeastGeneration
-    );
+    return !isForcedCorpusFreshnessTarget(target) || state.lastAppliedForceGeneration >= target.atLeastGeneration;
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number | KbCorpusSnapshot): void {

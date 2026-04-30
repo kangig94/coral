@@ -20,10 +20,7 @@ export interface CliErrorEnvelope {
   detail?: unknown;
 }
 
-function withExitCode(
-  envelope: CliErrorEnvelope,
-  exitCode: number,
-): { envelope: CliErrorEnvelope; exitCode: number } {
+function withExitCode(envelope: CliErrorEnvelope, exitCode: number): { envelope: CliErrorEnvelope; exitCode: number } {
   return { envelope, exitCode };
 }
 

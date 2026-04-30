@@ -18,10 +18,7 @@ export function parseEntityGraph(value: unknown): EntityGraph {
   };
 }
 
-export function readEntityGraphFile(
-  storage: Pick<StoragePort, 'readFileSync'>,
-  graphPath: string,
-): EntityGraph | null {
+export function readEntityGraphFile(storage: Pick<StoragePort, 'readFileSync'>, graphPath: string): EntityGraph | null {
   try {
     const raw = storage.readFileSync(graphPath, 'utf-8');
     if (raw.includes('<<<<<<<')) {

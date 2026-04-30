@@ -26,9 +26,9 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 function readJournalCursor(db: InstanceType<typeof Database>, consumerId: string): number {
-  const row = db
-    .prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?')
-    .get(consumerId) as { cursor: number } | undefined;
+  const row = db.prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?').get(consumerId) as
+    | { cursor: number }
+    | undefined;
 
   return row?.cursor ?? 0;
 }
@@ -82,11 +82,13 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       driver.notify('journal', 7);
       await driver.drainAll();
 
-      expect(onApplyFailure).toHaveBeenCalledWith(expect.objectContaining({
-        message: 'boom',
-        at: expect.any(String),
-        cause: expect.any(Error),
-      }));
+      expect(onApplyFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'boom',
+          at: expect.any(String),
+          cause: expect.any(Error),
+        }),
+      );
       expect(failingHandle.status()).toMatchObject({
         authority: 'journal',
         cursor: 0,
@@ -97,7 +99,10 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
           cause: expect.any(Error),
         },
       });
-      expect(errorSpy).toHaveBeenCalledWith('ConsumerDriver onApplyFailure failed (failing-consumer)', expect.any(Error));
+      expect(errorSpy).toHaveBeenCalledWith(
+        'ConsumerDriver onApplyFailure failed (failing-consumer)',
+        expect.any(Error),
+      );
       expect(errorSpy).toHaveBeenCalledWith('ConsumerDriver apply failed (failing-consumer)', expect.any(Error));
       expect(healthyCalls).toEqual([{ fromSeq: 0, upToSeq: 7 }]);
       expect(readJournalCursor(db, failing.id)).toBe(0);

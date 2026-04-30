@@ -148,9 +148,15 @@ function createRuntimeStateMock() {
     setStartedAt: vi.fn((ts: number) => {
       startedAt = ts;
     }),
-    setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> } | { kind: 'unavailable'; reason: string }) => {
-      kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
-    }),
+    setKbStatus: vi.fn(
+      (
+        status:
+          | { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> }
+          | { kind: 'unavailable'; reason: string },
+      ) => {
+        kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
+      },
+    ),
     setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
       curateHealth = health;
     }),
@@ -958,7 +964,13 @@ describe('lifecycle recovery', () => {
       createDefaultUpcasterRegistry(),
       { db, eventBus },
     );
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db);
+    const sessionManager = new modules.sessionManagerModule.SessionManager(
+      projectRoot,
+      runtime,
+      undefined,
+      undefined,
+      db,
+    );
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
     const scopeKey = pluginRootNamespace(projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();
@@ -1029,7 +1041,13 @@ describe('lifecycle recovery', () => {
       createDefaultUpcasterRegistry(),
       { db, eventBus },
     );
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db);
+    const sessionManager = new modules.sessionManagerModule.SessionManager(
+      projectRoot,
+      runtime,
+      undefined,
+      undefined,
+      db,
+    );
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
     const scopeKey = pluginRootNamespace(projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();

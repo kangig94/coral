@@ -107,10 +107,7 @@ describe('scenario runner', () => {
           preflightError: 'simulated preflight failure',
         },
       },
-      steps: [
-        { type: 'boot' },
-        { type: 'launch', provider: 'fake-provider', prompt: 'reject this launch' },
-      ],
+      steps: [{ type: 'boot' }, { type: 'launch', provider: 'fake-provider', prompt: 'reject this launch' }],
     });
     worlds.push(rejectedRun.world);
 
@@ -247,11 +244,7 @@ describe('scenario runner', () => {
   it('advances virtual time by the specified milliseconds', async () => {
     const run = await runScenario({
       world: {},
-      steps: [
-        { type: 'boot' },
-        { type: 'advance', ms: 500 },
-        { type: 'advance', ms: 1000 },
-      ],
+      steps: [{ type: 'boot' }, { type: 'advance', ms: 500 }, { type: 'advance', ms: 1000 }],
     });
     worlds.push(run.world);
 
@@ -271,10 +264,7 @@ describe('scenario runner', () => {
   it('shuts down the backend and reports the reason', async () => {
     const run = await runScenario({
       world: {},
-      steps: [
-        { type: 'boot' },
-        { type: 'shutdown', reason: 'test-shutdown' },
-      ],
+      steps: [{ type: 'boot' }, { type: 'shutdown', reason: 'test-shutdown' }],
     });
     worlds.push(run.world);
 
@@ -289,10 +279,7 @@ describe('scenario runner', () => {
   it('cycles the simulation world to the next generation', async () => {
     const run = await runScenario({
       world: {},
-      steps: [
-        { type: 'boot' },
-        { type: 'cycle' },
-      ],
+      steps: [{ type: 'boot' }, { type: 'cycle' }],
     });
     worlds.push(run.world);
 

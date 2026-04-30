@@ -151,9 +151,13 @@ describe('appServerSession', () => {
     expect(events).toEqual([terminal]);
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
-    expect(contract.buildServerSpec).toHaveBeenCalledWith(BASE_REQUEST, undefined, expect.objectContaining({
-      storage: expect.anything(),
-    }));
+    expect(contract.buildServerSpec).toHaveBeenCalledWith(
+      BASE_REQUEST,
+      undefined,
+      expect.objectContaining({
+        storage: expect.anything(),
+      }),
+    );
   });
 
   it('delivers notifications through the bound runtime handler with a single lease subscription', async () => {
@@ -242,18 +246,14 @@ describe('appServerSession', () => {
     const contract = makeContract();
     const started = createDeferred<void>();
     const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
-    const terminal = terminalEvent(
-      { kind: 'failed' },
-      '',
-      {
-        type: 'session.provider_failed',
-        body: {
-          provider: 'app-server-test',
-          reason: 'request_failed',
-          message: 'leaf-authored close handling',
-        },
+    const terminal = terminalEvent({ kind: 'failed' }, '', {
+      type: 'session.provider_failed',
+      body: {
+        provider: 'app-server-test',
+        reason: 'request_failed',
+        message: 'leaf-authored close handling',
       },
-    );
+    });
     const provider: Provider = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();

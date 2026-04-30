@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
 import type { LockRecord } from '#src/coordinator/lock.js';
 

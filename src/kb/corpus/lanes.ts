@@ -81,21 +81,14 @@ function mergeTextStaleReason(
   return state.textStaleReason === undefined ? {} : { textStaleReason: state.textStaleReason };
 }
 
-export function previewPendingMutationState(
-  state: KbIndexState,
-  pending: PendingMutationState,
-): KbIndexState {
+export function previewPendingMutationState(state: KbIndexState, pending: PendingMutationState): KbIndexState {
   return {
     ...applyMutationLane(state, pending.pendingMutationLane),
     ...mergeTextStaleReason(state, pending.pendingMutationReason),
   };
 }
 
-export function commitMutationState(
-  state: KbIndexState,
-  lane: KbIndexMutationLane,
-  reason?: string,
-): KbIndexState {
+export function commitMutationState(state: KbIndexState, lane: KbIndexMutationLane, reason?: string): KbIndexState {
   return {
     ...applyMutationLane(state, lane),
     ...(reason === undefined ? {} : { textStaleReason: reason }),

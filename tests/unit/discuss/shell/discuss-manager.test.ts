@@ -10,11 +10,7 @@ import {
   hasRunningSessions,
 } from '#src/discuss/shell/live-registry.js';
 import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '#src/discuss/shell/runtime-build.js';
-import {
-  abortDiscussSession,
-  getWatchState,
-  startDiscussSession,
-} from '#src/discuss/shell/operations.js';
+import { abortDiscussSession, getWatchState, startDiscussSession } from '#src/discuss/shell/operations.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { detachSession, getSession } from '#src/discuss/shell/registry.js';
 import {

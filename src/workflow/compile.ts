@@ -5,7 +5,13 @@ import type { LaunchDecision } from '../jobs/launch.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
 import type { WorkflowCommand } from './input.js';
-import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';
+import {
+  normalizeAst,
+  validateNamespaces,
+  validateParallelDuplicates,
+  findUnknownProviders,
+  WorkflowInputError,
+} from './normalize.js';
 import { parseExpression } from './parser.js';
 import { readWorkflowProjection } from './read-queries.js';
 

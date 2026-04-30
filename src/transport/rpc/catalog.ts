@@ -15,12 +15,7 @@ import {
   discussSessionListRequestSchema,
   discussSessionSpeechRequestSchema,
 } from './discuss.js';
-import {
-  jobAbortSchema,
-  jobDetailRequestSchema,
-  jobsListRequestSchema,
-  jobWaitSchema,
-} from './jobs.js';
+import { jobAbortSchema, jobDetailRequestSchema, jobsListRequestSchema, jobWaitSchema } from './jobs.js';
 import {
   kbCommunityReadRequestSchema,
   kbDiagnoseRequestSchema,

@@ -125,7 +125,12 @@ function importsNodeCryptoRandomness(source: string): boolean {
   while ((match = namedImportPattern.exec(source)) !== null) {
     const names = match[1]
       .split(',')
-      .map((name) => name.trim().split(/\s+as\s+/u)[0]?.trim())
+      .map((name) =>
+        name
+          .trim()
+          .split(/\s+as\s+/u)[0]
+          ?.trim(),
+      )
       .filter((name): name is string => Boolean(name));
     if (names.includes('randomUUID') || names.includes('randomBytes')) {
       return true;

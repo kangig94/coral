@@ -235,7 +235,9 @@ export const agentJobFinishedPayloadSchema = z
   })
   .strict();
 
-function withSourceSeq<T extends z.ZodRawShape>(shape: T): z.ZodObject<T & { sourceSeq: typeof sourceSeqSchema }, 'strict'> {
+function withSourceSeq<T extends z.ZodRawShape>(
+  shape: T,
+): z.ZodObject<T & { sourceSeq: typeof sourceSeqSchema }, 'strict'> {
   return z
     .object({
       ...shape,
@@ -244,22 +246,32 @@ function withSourceSeq<T extends z.ZodRawShape>(shape: T): z.ZodObject<T & { sou
     .strict();
 }
 
-export const discussSessionCreatedBodySchema = sessionCreatedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
+export const discussSessionCreatedBodySchema = sessionCreatedPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
 export const discussBiddingOpenedBodySchema = withSourceSeq({});
 export const discussBidSubmittedBodySchema = bidSubmittedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
 export const discussParticipantsExpelledBodySchema = participantsExpelledPayloadSchema
   .extend({ sourceSeq: sourceSeqSchema })
   .strict();
-export const discussBidRoundClosedBodySchema = bidRoundClosedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
-export const discussSpeechRecordedBodySchema = speechRecordedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
-export const discussSpeechTimedOutBodySchema = speechTimedOutPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
+export const discussBidRoundClosedBodySchema = bidRoundClosedPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
+export const discussSpeechRecordedBodySchema = speechRecordedPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
+export const discussSpeechTimedOutBodySchema = speechTimedOutPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
 export const discussEpochSummaryRecordedBodySchema = epochSummaryRecordedPayloadSchema
   .extend({ sourceSeq: sourceSeqSchema })
   .strict();
 export const discussMustAnswerCarryForwardSetBodySchema = mustAnswerCarryForwardSetPayloadSchema
   .extend({ sourceSeq: sourceSeqSchema })
   .strict();
-export const discussFollowUpQueueSetBodySchema = followUpQueueSetPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
+export const discussFollowUpQueueSetBodySchema = followUpQueueSetPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
 export const discussFollowUpAnsweredBodySchema = followUpAnsweredPayloadSchema
   .extend({ sourceSeq: sourceSeqSchema })
   .strict();
@@ -267,9 +279,15 @@ export const discussSessionEndedBodySchema = sessionEndedPayloadSchema.extend({ 
 export const discussSessionSynthesizedBodySchema = sessionSynthesizedPayloadSchema
   .extend({ sourceSeq: sourceSeqSchema })
   .strict();
-export const discussAgentRunBoundBodySchema = agentRunBoundPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
-export const discussAgentJobStartedBodySchema = agentJobStartedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
-export const discussAgentJobFinishedBodySchema = agentJobFinishedPayloadSchema.extend({ sourceSeq: sourceSeqSchema }).strict();
+export const discussAgentRunBoundBodySchema = agentRunBoundPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
+export const discussAgentJobStartedBodySchema = agentJobStartedPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
+export const discussAgentJobFinishedBodySchema = agentJobFinishedPayloadSchema
+  .extend({ sourceSeq: sourceSeqSchema })
+  .strict();
 
 export const discussEventBodySchemas = {
   'session.created': discussSessionCreatedBodySchema,

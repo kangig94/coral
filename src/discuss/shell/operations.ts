@@ -1,10 +1,4 @@
-import {
-  DEFAULT_MAX_EPOCHS,
-  decideBid,
-  decideEnd,
-  decideSessionCreate,
-  decideSpeech,
-} from '../state-machine.js';
+import { DEFAULT_MAX_EPOCHS, decideBid, decideEnd, decideSessionCreate, decideSpeech } from '../state-machine.js';
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -60,16 +54,10 @@ export async function startDiscussSession(
   };
 
   const created = unwrapResult(
-    decideSessionCreate(
-      input,
-      makeDecisionContext(ctx, sessionId, topic),
-      1,
-      nowIsoString(ctx.runtime.time),
-      {
-        maxEpochs: readDiscussMaxEpochs(ctx),
-        agentExecution: buildAgentExecutionConfig(agents),
-      },
-    ),
+    decideSessionCreate(input, makeDecisionContext(ctx, sessionId, topic), 1, nowIsoString(ctx.runtime.time), {
+      maxEpochs: readDiscussMaxEpochs(ctx),
+      agentExecution: buildAgentExecutionConfig(agents),
+    }),
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);

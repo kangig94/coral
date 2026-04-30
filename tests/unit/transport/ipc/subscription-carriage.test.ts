@@ -198,9 +198,7 @@ describe('subscription carriage', () => {
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });
-      expect(
-        Object.getOwnPropertyDescriptor(requests[0], 'abortSignal')?.value,
-      ).toBeInstanceOf(AbortSignal);
+      expect(Object.getOwnPropertyDescriptor(requests[0], 'abortSignal')?.value).toBeInstanceOf(AbortSignal);
     } finally {
       await closeIpcServer(listener);
     }
@@ -303,9 +301,7 @@ describe('subscription carriage', () => {
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });
-      expect(
-        Object.getOwnPropertyDescriptor(requests[1], 'abortSignal')?.value,
-      ).toBeInstanceOf(AbortSignal);
+      expect(Object.getOwnPropertyDescriptor(requests[1], 'abortSignal')?.value).toBeInstanceOf(AbortSignal);
     } finally {
       await closeIpcServer(listener);
     }

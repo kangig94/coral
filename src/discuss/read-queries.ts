@@ -1,15 +1,9 @@
 import type { Database } from 'better-sqlite3';
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
-import {
-  listProjectionDiscussSnapshots,
-  readProjectionDiscuss,
-} from './projections.js';
-import type {
-  DiscussDiscoveryData,
-  DiscussSummaryIndexData,
-} from './persistence-types.js';
-import { resolveProjectSource } from "../infra/project-source.js";
+import { listProjectionDiscussSnapshots, readProjectionDiscuss } from './projections.js';
+import type { DiscussDiscoveryData, DiscussSummaryIndexData } from './persistence-types.js';
+import { resolveProjectSource } from '../infra/project-source.js';
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 
@@ -31,10 +25,10 @@ function discussIdFromRef(ref: DiscussReadRef): string {
 function eventTopic(payload: Record<string, unknown>, snapshot: PersistedDiscussSnapshot | null): string {
   const input = payload.input;
   if (
-    input !== null
-    && typeof input === 'object'
-    && !Array.isArray(input)
-    && typeof (input as { topic?: unknown }).topic === 'string'
+    input !== null &&
+    typeof input === 'object' &&
+    !Array.isArray(input) &&
+    typeof (input as { topic?: unknown }).topic === 'string'
   ) {
     return (input as { topic: string }).topic;
   }
@@ -71,24 +65,19 @@ function snapshotsForSource(db: Database, source: string): PersistedDiscussSnaps
 }
 
 function latestUpdatedAt(snapshots: PersistedDiscussSnapshot[]): string {
-  return snapshots
-    .map((snapshot) => snapshot.updatedAt)
-    .sort()
-    .at(-1) ?? UNIX_EPOCH_ISO;
+  return (
+    snapshots
+      .map((snapshot) => snapshot.updatedAt)
+      .sort()
+      .at(-1) ?? UNIX_EPOCH_ISO
+  );
 }
 
-export function readDiscussSnapshot(
-  db: Database,
-  ref: DiscussReadRef,
-): DiscussSnapshotRow | null {
+export function readDiscussSnapshot(db: Database, ref: DiscussReadRef): DiscussSnapshotRow | null {
   return readProjectionDiscuss(db, discussIdFromRef(ref))?.state ?? null;
 }
 
-export function readDiscussEventLog(
-  db: Database,
-  ref: DiscussReadRef,
-  ctx: StoreReadContext,
-): DiscussEventLogEntry[] {
+export function readDiscussEventLog(db: Database, ref: DiscussReadRef, ctx: StoreReadContext): DiscussEventLogEntry[] {
   const discussId = discussIdFromRef(ref);
   const snapshot = readProjectionDiscuss(db, discussId)?.state ?? null;
   const rows = db
@@ -104,10 +93,7 @@ export function readDiscussEventLog(
   return rows.map((row) => toDiscussDomainEvent(row, snapshot, ctx));
 }
 
-export function readDiscussDiscovery(
-  db: Database,
-  source: string,
-): DiscussDiscoveryData | null {
+export function readDiscussDiscovery(db: Database, source: string): DiscussDiscoveryData | null {
   const snapshots = snapshotsForSource(db, source);
   if (snapshots.length === 0) return null;
 
@@ -122,10 +108,7 @@ export function readDiscussDiscovery(
   };
 }
 
-export function readDiscussSummaryIndex(
-  db: Database,
-  source: string,
-): DiscussSummaryIndexData | null {
+export function readDiscussSummaryIndex(db: Database, source: string): DiscussSummaryIndexData | null {
   const snapshots = snapshotsForSource(db, source);
   if (snapshots.length === 0) return null;
 

@@ -55,7 +55,10 @@ export class InMemoryPaths implements RuntimePaths {
   private readonly projectSourceCache = new Map<string, string>();
   readonly coral: CoralPaths;
 
-  constructor(private readonly roots: InMemoryRoots = {}, flavor: BuildFlavor = 'prod') {
+  constructor(
+    private readonly roots: InMemoryRoots = {},
+    flavor: BuildFlavor = 'prod',
+  ) {
     this.coral = composeCoralPaths(flavor, { baseDir: roots.coralRoot ?? DEFAULT_CORAL_ROOT });
   }
 
@@ -102,7 +105,6 @@ export class InMemoryPaths implements RuntimePaths {
     this.projectSourceCache.set(normalized, source);
     return source;
   }
-
 }
 
 export class SequentialIds implements IdPort {

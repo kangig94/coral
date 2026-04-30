@@ -156,6 +156,8 @@ describe('provider identifier boundary values', () => {
   });
 
   it('provider with underscore is rejected (providerIdentPattern excludes underscores)', () => {
-    expect(() => workflowCommandSchema.parse({ expression: 'a', startPrompt: 'hi', provider: 'my_provider' })).toThrow();
+    expect(() =>
+      workflowCommandSchema.parse({ expression: 'a', startPrompt: 'hi', provider: 'my_provider' }),
+    ).toThrow();
   });
 });

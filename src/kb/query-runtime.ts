@@ -166,7 +166,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
                   pending: false,
                   lastApplyError: null,
                 }
-          : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
+              : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
       };
     },
     getJournalReader() {

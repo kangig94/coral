@@ -4,7 +4,14 @@ import { dirname } from 'node:path';
 import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
 import { formatZodError } from '../validation.js';
-import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
+import {
+  encode,
+  decode,
+  type JsonRpcEnvelope,
+  type JsonRpcError,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+} from '../json-rpc.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
@@ -81,10 +88,7 @@ function writeEnvelope(socket: Socket, envelope: JsonRpcEnvelope): void {
   socket.write(`${encode(envelope)}\n`);
 }
 
-export function ipcAdapter(
-  spec: RpcMethodSpec<unknown, unknown>,
-  rpcPorts: HttpHandlerPorts,
-): IpcDispatchEntry {
+export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: HttpHandlerPorts): IpcDispatchEntry {
   return {
     method: spec.name,
     spec,
@@ -92,9 +96,7 @@ export function ipcAdapter(
   };
 }
 
-export function buildCoordinatorIpcDispatchTable(
-  rpcPorts: HttpHandlerPorts,
-): readonly IpcDispatchEntry[] {
+export function buildCoordinatorIpcDispatchTable(rpcPorts: HttpHandlerPorts): readonly IpcDispatchEntry[] {
   return rpcCatalog.map((spec) => ipcAdapter(spec, rpcPorts));
 }
 
@@ -381,7 +383,9 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
         frames = framer.push(chunk);
       } catch (error: unknown) {
         if (error instanceof FrameTooLargeError) {
-          rpcPorts.identity.log(`IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`);
+          rpcPorts.identity.log(
+            `IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`,
+          );
           if (!socket.destroyed) {
             writeEnvelope(
               socket,

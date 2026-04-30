@@ -2,15 +2,10 @@ import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import {
-  HEALTH_TIMEOUT_MS,
-  parseJsonResponse,
-} from '../sse.js';
+import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isRecord } from '../../../infra/json.js';
 
-export type ShutdownResult =
-  | { ok: true; alreadyDraining?: true }
-  | { ok: false; reason: string };
+export type ShutdownResult = { ok: true; alreadyDraining?: true } | { ok: false; reason: string };
 
 export function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';

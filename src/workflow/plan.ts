@@ -183,9 +183,7 @@ function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
 
     visiting.add(slotId);
     const stepIndex =
-      slot.dependencies.length === 0
-        ? 0
-        : Math.max(...slot.dependencies.map((dependency) => depth(dependency))) + 1;
+      slot.dependencies.length === 0 ? 0 : Math.max(...slot.dependencies.map((dependency) => depth(dependency))) + 1;
     visiting.delete(slotId);
     memo.set(slotId, stepIndex);
     return stepIndex;

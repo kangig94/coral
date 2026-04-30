@@ -3,8 +3,7 @@ import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
 import { computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint } from './detection.js';
 import { readCurateState, type CurateState, type CurateStateTarget } from '../state/index.js';
 
-type CommunityFreshnessRuntime = CurateStateTarget &
-  Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
+type CommunityFreshnessRuntime = CurateStateTarget & Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
 export function areCommunityDocumentsFresh(
   kb: CommunityFreshnessRuntime,
@@ -20,7 +19,10 @@ export function areCommunityDocumentsFresh(
 }
 
 function isCommunityStateFreshForIndex(
-  state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
+  state: Pick<
+    CurateState,
+    'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'
+  >,
   kb: CommunityFreshnessRuntime,
   index: KbIndex,
 ): boolean {
@@ -62,8 +64,7 @@ function isCommunitySummaryFresh(
   return (
     currentEntries.length === storedEntries.length &&
     currentEntries.every(
-      ([slug, fingerprint], index) =>
-        storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
+      ([slug, fingerprint], index) => storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
     )
   );
 }

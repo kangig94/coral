@@ -8,13 +8,8 @@ import {
   hasRunningSessions,
   listAttachedSessions,
 } from '#src/discuss/shell/live-registry.js';
-import {
-  abortDiscussSession,
-} from '#src/discuss/shell/operations.js';
-import {
-  persistAbortEndForShutdown,
-  recoverPersistedSessionsFromStore,
-} from '#src/discuss/shell/recovery.js';
+import { abortDiscussSession } from '#src/discuss/shell/operations.js';
+import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import {
@@ -373,9 +368,7 @@ describe('DiscussContext lifecycle boundaries', () => {
     await abortDiscussSession(harness.context, 'user-abort-synthesize-session');
 
     const events = readSessionEvents(harness.context, 'user-abort-synthesize-session');
-    const abortMarkers = events.filter(
-      (event) => event.kind === 'session.ended' && event.payload.reason === 'abort',
-    );
+    const abortMarkers = events.filter((event) => event.kind === 'session.ended' && event.payload.reason === 'abort');
 
     expect(liveSession?.controller.signal.aborted).toBe(true);
     expect(harness.context.sessions.get('user-abort-synthesize-session')).toBeUndefined();
@@ -429,7 +422,9 @@ describe('DiscussContext lifecycle boundaries', () => {
     await abortDiscussSession(harness.context, 'user-abort-ended-session');
 
     const events = readSessionEvents(harness.context, 'user-abort-ended-session');
-    expect(events.filter((event) => event.kind === 'session.ended' && event.payload.reason === 'abort')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'session.ended' && event.payload.reason === 'abort')).toHaveLength(
+      1,
+    );
     expect(events.at(-1)).toMatchObject({ payload: { reason: 'abort' } });
   });
 });

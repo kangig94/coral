@@ -55,14 +55,10 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
   }
 
   return rt.withMutationLock(async (mutation) =>
-    applyNoteUpdateLocked(
-      rt,
-      mutation,
-      {
-        note,
-        title: requestedTitle,
-        content: requestedContent,
-      },
-    ),
+    applyNoteUpdateLocked(rt, mutation, {
+      note,
+      title: requestedTitle,
+      content: requestedContent,
+    }),
   );
 }

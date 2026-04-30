@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { ExecResult, RuntimeExecOptions } from '#src/runtime/ports.js';
-import { createClaudeDetectorForTest, createCodexDetectorForTest } from '#tests/unit/providers/__helpers__/cli-detection-fixtures.js';
+import {
+  createClaudeDetectorForTest,
+  createCodexDetectorForTest,
+} from '#tests/unit/providers/__helpers__/cli-detection-fixtures.js';
 
 type ExecResponder = () => ExecResult | Promise<ExecResult>;
 
@@ -139,7 +142,12 @@ describe('detectCodexCli', () => {
 
   it('returns unavailable when codex --version fails and skips auth probe', async () => {
     setResponders({
-      '--version': () => ({ stdout: '', stderr: '', status: null, error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }),
+      '--version': () => ({
+        stdout: '',
+        stderr: '',
+        status: null,
+        error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      }),
     });
 
     const result = await detectCodexCli();
@@ -420,7 +428,12 @@ describe('detectClaudeCli', () => {
 
   it('returns unavailable when claude binary is missing', async () => {
     setResponders({
-      '--version': () => ({ stdout: '', stderr: '', status: null, error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }),
+      '--version': () => ({
+        stdout: '',
+        stderr: '',
+        status: null,
+        error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      }),
     });
 
     const result = await detectClaudeCli();

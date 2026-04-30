@@ -159,9 +159,9 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
       driver.notify('journal', target);
       await driver.waitFreshUntil('journal', target, 'jobs');
 
-      const cursorRow = db
-        .prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?')
-        .get('jobs') as { cursor: number } | undefined;
+      const cursorRow = db.prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?').get('jobs') as
+        | { cursor: number }
+        | undefined;
       expect(cursorRow?.cursor).toBe(target);
     } finally {
       await driver.shutdown();

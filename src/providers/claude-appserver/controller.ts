@@ -406,7 +406,8 @@ export class SingleSessionController {
     params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
     signature: ClaudeBootstrapSignature,
   ): Promise<void> {
-    const conversationRef = this.bootstrapConfig?.conversationRef ?? params.conversationRef ?? this.latestSessionId ?? undefined;
+    const conversationRef =
+      this.bootstrapConfig?.conversationRef ?? params.conversationRef ?? this.latestSessionId ?? undefined;
     const child = await this.spawnChild({
       cwd: signature.cwd,
       conversationRef,
@@ -650,11 +651,7 @@ export class SingleSessionController {
 
   private async sendControlRequest(request: ControlRequestPayload): Promise<unknown> {
     if (!this.childBinding) {
-      throw new ClaudeBrokerRpcError(
-        CLAUDE_BROKER_STATE_RPC_CODE,
-        'Claude child is unavailable.',
-        this.errorData(),
-      );
+      throw new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude child is unavailable.', this.errorData());
     }
 
     const requestId = this.ids.uuid();
@@ -698,11 +695,7 @@ export class SingleSessionController {
 
   private writeChild(message: unknown): void {
     if (!this.childBinding) {
-      throw new ClaudeBrokerRpcError(
-        CLAUDE_BROKER_STATE_RPC_CODE,
-        'Claude child is unavailable.',
-        this.errorData(),
-      );
+      throw new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude child is unavailable.', this.errorData());
     }
 
     try {

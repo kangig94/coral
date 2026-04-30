@@ -19,9 +19,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-function makeRuntime(
-  runCliImpl?: ProviderRuntime['runCli'],
-): ProviderRuntime & {
+function makeRuntime(runCliImpl?: ProviderRuntime['runCli']): ProviderRuntime & {
   acquireServer: ReturnType<typeof vi.fn>;
   runCli: ReturnType<typeof vi.fn>;
   continuityBridge: {
@@ -181,7 +179,9 @@ describe('claude exec-kernel', () => {
       aborted: false,
     }));
 
-    const error = await collectProviderEvents(claudeExecKernel(makeRequest(), runtime)).catch((caught: unknown) => caught);
+    const error = await collectProviderEvents(claudeExecKernel(makeRequest(), runtime)).catch(
+      (caught: unknown) => caught,
+    );
 
     expect(isClaudeExecParseError(error)).toEqual({
       exitCode: code,

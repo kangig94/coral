@@ -134,9 +134,12 @@ export async function spawnNodeScript<T = never>(opts: {
             reject(
               error instanceof Error
                 ? new Error(`Could not parse script output.\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error })
-                : new Error(`Script output parser rejected with a non-Error value.\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
-                    cause: error,
-                  }),
+                : new Error(
+                    `Script output parser rejected with a non-Error value.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+                    {
+                      cause: error,
+                    },
+                  ),
             ),
           );
           return;

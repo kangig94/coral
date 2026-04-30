@@ -17,9 +17,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 
 const runtime = createRealRuntime('prod');
 
-const AGENT_IDENT_CASES: ReadonlyArray<
-  readonly [input: string, accepted: boolean, canonicalForm: string | null]
-> = [
+const AGENT_IDENT_CASES: ReadonlyArray<readonly [input: string, accepted: boolean, canonicalForm: string | null]> = [
   ['architect', true, 'architect'],
   ['coral:architect', true, 'coral:architect'],
   ['my-plugin:my-agent', true, 'my-plugin:my-agent'],
@@ -35,7 +33,15 @@ const AGENT_IDENT_CASES: ReadonlyArray<
   ['.md', false, null],
 ] as const;
 
-const EXTRA_INVALID_AGENT_REFS = ['../evil', 'a/b', 'a\\b', 'evil\x00name', '-starts-with-hyphen', 'a:b:c', 'agent.txt'];
+const EXTRA_INVALID_AGENT_REFS = [
+  '../evil',
+  'a/b',
+  'a\\b',
+  'evil\x00name',
+  '-starts-with-hyphen',
+  'a:b:c',
+  'agent.txt',
+];
 
 const tmpDirs: string[] = [];
 
@@ -52,12 +58,14 @@ function writeFile(rootDir: string, relativePath: string, content: string): stri
   return filePath;
 }
 
-function createContext(options: {
-  projectRoot?: string;
-  coralPluginRoot?: string;
-  discoverPluginRoot?: (namespace: string) => string | null;
-  pluginRoots?: Readonly<Record<string, string>>;
-} = {}): AgentResolutionContext {
+function createContext(
+  options: {
+    projectRoot?: string;
+    coralPluginRoot?: string;
+    discoverPluginRoot?: (namespace: string) => string | null;
+    pluginRoots?: Readonly<Record<string, string>>;
+  } = {},
+): AgentResolutionContext {
   const discoverPluginRoot =
     options.discoverPluginRoot ?? ((namespace: string) => options.pluginRoots?.[namespace] ?? null);
 
@@ -89,30 +97,27 @@ afterEach(() => {
 });
 
 describe('parseAgentRef', () => {
-  it.each(AGENT_IDENT_CASES)(
-    'parses %s with accepted=%s and canonical form %s',
-    (input, accepted, canonicalForm) => {
-      if (!accepted) {
-        const error = captureError(() => parseAgentRef(input));
-        expect(error).toBeInstanceOf(InvalidAgentRefError);
-        expect((error as InvalidAgentRefError).kind).toBe('invalid_agent');
-        return;
-      }
+  it.each(AGENT_IDENT_CASES)('parses %s with accepted=%s and canonical form %s', (input, accepted, canonicalForm) => {
+    if (!accepted) {
+      const error = captureError(() => parseAgentRef(input));
+      expect(error).toBeInstanceOf(InvalidAgentRefError);
+      expect((error as InvalidAgentRefError).kind).toBe('invalid_agent');
+      return;
+    }
 
-      const ref = parseAgentRef(input);
-      expect(formatAgentRef(ref)).toBe(canonicalForm);
+    const ref = parseAgentRef(input);
+    expect(formatAgentRef(ref)).toBe(canonicalForm);
 
-      if (canonicalForm?.includes(':')) {
-        const colonIndex = canonicalForm.indexOf(':');
-        expect(ref).toEqual({
-          namespace: canonicalForm.slice(0, colonIndex),
-          name: canonicalForm.slice(colonIndex + 1),
-        });
-      } else {
-        expect(ref).toEqual({ namespace: null, name: canonicalForm });
-      }
-    },
-  );
+    if (canonicalForm?.includes(':')) {
+      const colonIndex = canonicalForm.indexOf(':');
+      expect(ref).toEqual({
+        namespace: canonicalForm.slice(0, colonIndex),
+        name: canonicalForm.slice(colonIndex + 1),
+      });
+    } else {
+      expect(ref).toEqual({ namespace: null, name: canonicalForm });
+    }
+  });
 
   it('strips trailing .md before parsing bare and namespaced refs', () => {
     expect(parseAgentRef('architect.md')).toEqual({ namespace: null, name: 'architect' });

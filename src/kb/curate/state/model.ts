@@ -3,11 +3,7 @@ import { z } from 'zod';
 import { errorMessage } from '../../../infra/error-format.js';
 import { SYSTEM_TIME_PORT, nowIsoString } from '../../../infra/time.js';
 import type { EnvPort } from '../../../runtime/ports.js';
-import {
-  noteEntryId,
-  parseKbEntryId,
-  type KbEntryId,
-} from '../../entry-types.js';
+import { noteEntryId, parseKbEntryId, type KbEntryId } from '../../entry-types.js';
 
 /**
  * Curate timing operator knobs (see §16(d) triage rule). Defaults match the
@@ -263,8 +259,7 @@ export function applyRecordCurateFailure(
   // Stamp the disabled-at marker on the *transition* from healthy to disabled
   // (`< cap` → `>= cap`); leave any prior stamp intact across the boundary so
   // operators see the moment the lane first tripped, not the most recent retry.
-  const tripped =
-    nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.claimLaneDisabledAt === null;
+  const tripped = nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.claimLaneDisabledAt === null;
 
   return {
     ...state,
@@ -280,12 +275,12 @@ export function applyRecordCurateFailure(
 
 export function applyClearCurateRetryState(state: CurateState): CurateState | null {
   if (
-    state.activeClaim === null
-    && state.retryNotBefore === null
-    && state.consecutiveClaimFailures === 0
-    && state.consecutiveCommunityBatchFailures === 0
-    && state.claimLaneDisabledAt === null
-    && state.communityBatchLaneDisabledAt === null
+    state.activeClaim === null &&
+    state.retryNotBefore === null &&
+    state.consecutiveClaimFailures === 0 &&
+    state.consecutiveCommunityBatchFailures === 0 &&
+    state.claimLaneDisabledAt === null &&
+    state.communityBatchLaneDisabledAt === null
   ) {
     return null;
   }
@@ -336,11 +331,7 @@ export function applyRemovePendingDiscovery(state: CurateState, entry: PendingDi
   };
 }
 
-export function isClaimStale(
-  state: CurateState,
-  now: string,
-  claimStaleMs: number = DEFAULT_CLAIM_STALE_MS,
-): boolean {
+export function isClaimStale(state: CurateState, now: string, claimStaleMs: number = DEFAULT_CLAIM_STALE_MS): boolean {
   if (state.activeClaim === null) {
     return false;
   }
@@ -357,4 +348,3 @@ export function isClaimStale(
 
   return nowMs - startedAt >= claimStaleMs;
 }
-

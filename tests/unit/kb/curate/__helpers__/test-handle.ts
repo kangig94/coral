@@ -13,7 +13,12 @@ import { claimCurateRun, runClassificationBatches } from '#src/kb/curate/runner.
 import { calculateCommunityBatchBackoffTicks } from '#src/kb/curate/scheduler.js';
 import { type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state/index.js';
 import { initializeCurateStateIfNeeded } from '#src/kb/curate/state/bootstrap.js';
-import type { ClassificationAssignment, CurateClaim, MetadataTarget, SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
+import type {
+  ClassificationAssignment,
+  CurateClaim,
+  MetadataTarget,
+  SpawnCliFn,
+} from '#src/kb/curate/pipeline-types.js';
 
 export type CurateTestHandle = {
   claimCurateRun(today: string): Promise<CurateClaim | null>;

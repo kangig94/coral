@@ -114,10 +114,6 @@ describe('coordinator api export scope invariant', () => {
     const exportedNames = collectExportNames(sourceFile);
     const forbidden = exportedNames.filter((name) => FORBIDDEN_COORDINATOR_ROOT_EXPORTS.has(name));
 
-    expect(
-      forbidden,
-      'src/coordinator/index.ts must not re-export composition helpers or types',
-    ).toEqual([]);
+    expect(forbidden, 'src/coordinator/index.ts must not re-export composition helpers or types').toEqual([]);
   });
-
 });

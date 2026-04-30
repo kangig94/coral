@@ -15,10 +15,7 @@ export interface KbCachedOramaIndex {
 }
 
 export type OramaSnapshotPorts = {
-  files: Pick<
-    KbProjectionArtifactFilePort,
-    'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'
-  >;
+  files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'>;
 };
 
 export class OramaSnapshotStore {

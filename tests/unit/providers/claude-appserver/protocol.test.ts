@@ -207,11 +207,7 @@ describe('claude-appserver protocol helpers', () => {
   });
 });
 
-function expectRpcError(
-  run: () => unknown,
-  code: number,
-  message: string | RegExp,
-): void {
+function expectRpcError(run: () => unknown, code: number, message: string | RegExp): void {
   let thrown: unknown;
   try {
     run();

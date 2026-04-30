@@ -165,11 +165,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     }
     return run(status.subsystem);
   };
-  const recordHostedKbFailure = (
-    operation: string,
-    ctx: InvocationContext | undefined,
-    result: KbToolResult,
-  ): void => {
+  const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
       return;
     }
@@ -526,8 +522,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     ipcServer,
     closeIpcServerFn: closeIpcServer,
     listenIpcFn:
-      options.listenIpcFn ??
-      ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath)),
+      options.listenIpcFn ?? ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath)),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

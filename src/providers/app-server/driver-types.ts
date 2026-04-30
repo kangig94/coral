@@ -1,4 +1,1 @@
-export type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-} from '../protocol.js';
+export type { AppServerNotificationMessage, AppServerSubscriptionPhase } from '../protocol.js';

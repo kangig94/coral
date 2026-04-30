@@ -185,9 +185,7 @@ function registerKbMemoCommands(kb: Command): void {
 export function registerKbCommands(program: Command): void {
   const cliPrefix = getCliDisplayPrefix();
   const kb = program.command('kb').description('Knowledge base operations');
-  kb.addOption(
-    new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'),
-  );
+  kb.addOption(new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
@@ -228,19 +226,17 @@ export function registerKbCommands(program: Command): void {
     });
 
   const kbDiagnoseCommand = kb.command('diagnose');
-  kbDiagnoseCommand
-    .description('Show KB entries with pending manual repair actions')
-    .action(async () => {
-      const outputFormat = getOutputFormat(kbDiagnoseCommand);
+  kbDiagnoseCommand.description('Show KB entries with pending manual repair actions').action(async () => {
+    const outputFormat = getOutputFormat(kbDiagnoseCommand);
 
-      try {
-        const client = makeClient(process.cwd(), kbDiagnoseCommand);
-        const result = await client.kbDiagnose({});
-        emit(result, outputFormat, formatKbDiagnose);
-      } catch (error) {
-        emitError(error);
-      }
-    });
+    try {
+      const client = makeClient(process.cwd(), kbDiagnoseCommand);
+      const result = await client.kbDiagnose({});
+      emit(result, outputFormat, formatKbDiagnose);
+    } catch (error) {
+      emitError(error);
+    }
+  });
 
   const kbPrinciplesCommand = kb.command('principles');
   kbPrinciplesCommand

@@ -179,10 +179,7 @@ export function createMockAppServerSpawnScript(script: MockAppServerScript): Moc
       };
 
       const handleTurnStart = (id: unknown, params: Record<string, unknown>, mode: 'start' | 'create'): void => {
-        const requestedThreadId =
-          typeof params.threadId === 'string'
-            ? params.threadId
-            : currentThreadId;
+        const requestedThreadId = typeof params.threadId === 'string' ? params.threadId : currentThreadId;
         const turnId = `mock-turn-${nextTurnId++}`;
         activeTurn = { threadId: requestedThreadId, turnId, completed: false };
 
@@ -190,9 +187,7 @@ export function createMockAppServerSpawnScript(script: MockAppServerScript): Moc
         scheduleEmit(responseDelay, {
           id,
           result:
-            mode === 'create'
-              ? { content: script.turnCreate?.result.content ?? '' }
-              : buildTurnStartResponse(turnId),
+            mode === 'create' ? { content: script.turnCreate?.result.content ?? '' } : buildTurnStartResponse(turnId),
         });
 
         const scriptedEvents = script.turnCreate?.events ?? [];

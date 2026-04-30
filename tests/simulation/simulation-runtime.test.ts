@@ -21,7 +21,7 @@ function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process'
 }
 
 function pendingTimerCount(time: VirtualTime): number {
-  return ((time as unknown as { timers: Map<number, unknown> }).timers).size;
+  return (time as unknown as { timers: Map<number, unknown> }).timers.size;
 }
 
 describe('simulation runtime', () => {
@@ -481,13 +481,10 @@ describe('simulation runtime', () => {
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);
     expect(worldB.progressStore.listJobIds()).toEqual([]);
     expect(
-      new SessionManager(
-        worldB.projectRoot,
-        worldB.runtime,
-        undefined,
-        undefined,
-        worldB.progressStore.getDb(),
-      ).get('fake-provider', sessionA.sessionId),
+      new SessionManager(worldB.projectRoot, worldB.runtime, undefined, undefined, worldB.progressStore.getDb()).get(
+        'fake-provider',
+        sessionA.sessionId,
+      ),
     ).toBeNull();
     expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
     expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');

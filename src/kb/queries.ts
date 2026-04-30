@@ -28,20 +28,14 @@ import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { listSources } from './ops/source-store.js';
 
-export async function searchKnowledgeBase(
-  args: KbSearchInput,
-  context: KbQueryContext,
-): Promise<KbSearchResponse> {
+export async function searchKnowledgeBase(args: KbSearchInput, context: KbQueryContext): Promise<KbSearchResponse> {
   const kb = createDefaultKbQueryRuntime(context);
   await ensureBundledEnginesLoaded(kb, context);
 
   return await searchKb(kb, args.query, args.top_k ?? 20, args.scope ?? 'all', args.mode);
 }
 
-export function readKnowledgeBaseEntry(
-  selector: KbReadInput,
-  context: KbQueryContext,
-): KbReadResult {
+export function readKnowledgeBaseEntry(selector: KbReadInput, context: KbQueryContext): KbReadResult {
   return readEntry(selector, {
     projectRoot: resolveQueryProjectRoot(context),
     storage: getDefaultKbQueryStorage(context),

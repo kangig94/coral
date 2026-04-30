@@ -374,10 +374,7 @@ describe('ConsumerDriver corpus registrations', () => {
       releaseFirstApply.resolve();
       await driver.drainAll();
 
-      expect(calls.map((entry) => entry.snapshot.snapshotId)).toEqual([
-        'snapshot-fail',
-        'snapshot-newer',
-      ]);
+      expect(calls.map((entry) => entry.snapshot.snapshotId)).toEqual(['snapshot-fail', 'snapshot-newer']);
       expect(readCursorRow(db, 'corpus-retry')).toMatchObject({
         snapshot_id: 'snapshot-newer',
         content_seq: 2,

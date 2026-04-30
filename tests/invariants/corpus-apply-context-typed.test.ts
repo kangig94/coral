@@ -174,10 +174,7 @@ describe('typed corpus apply boundary', () => {
       if (decl === undefined) return;
 
       for (const member of decl.members) {
-        if (
-          (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
-          member.name !== undefined
-        ) {
+        if ((ts.isPropertySignature(member) || ts.isMethodSignature(member)) && member.name !== undefined) {
           const memberName = propertyNameText(member.name);
           if (memberName !== null && forbidden.has(memberName)) {
             violations.push({ interfaceName: name, member: memberName });

@@ -162,7 +162,9 @@ export async function appendRuntimeEvents(
         syncLiveSnapshot(ctx, sessionId);
         const seqAfter = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
         if (seqBefore !== undefined && seqAfter === seqBefore) {
-          backendLog.warn(`appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`);
+          backendLog.warn(
+            `appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`,
+          );
           return null;
         }
         continue;

@@ -20,10 +20,7 @@ import {
   type SourceEntry,
   sourceEntryId,
 } from '../entry-types.js';
-import {
-  normalizeCommunityChildren,
-  normalizeCommunityParent,
-} from './frontmatter.js';
+import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
 import { writeFileAtomic, type FileAtomicHost } from './file-atomic.js';
 import {
   assertCommunitySlug,
@@ -237,11 +234,11 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
 
 export function parseIndex(value: unknown): KbIndex {
   if (
-    !isRecord(value)
-    || !isRecord(value.entries)
-    || !isRecord(value.principles)
-    || !('entityMeta' in value)
-    || !('relationships' in value)
+    !isRecord(value) ||
+    !isRecord(value.entries) ||
+    !isRecord(value.principles) ||
+    !('entityMeta' in value) ||
+    !('relationships' in value)
   ) {
     throw new Error('Invalid KB index');
   }

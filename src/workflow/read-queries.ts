@@ -151,10 +151,7 @@ export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): Pr
   };
 }
 
-function readWorkflowCompletionRow(
-  db: BetterSqlite3.Database,
-  workflowId: string,
-): WorkflowCompletionRow | null {
+function readWorkflowCompletionRow(db: BetterSqlite3.Database, workflowId: string): WorkflowCompletionRow | null {
   const row = db
     .prepare(
       `SELECT seq, type, body_version, body
@@ -170,10 +167,7 @@ function readWorkflowCompletionRow(
   return row ?? null;
 }
 
-function readWorkflowChildJobRows(
-  db: BetterSqlite3.Database,
-  workflowId: string,
-): WorkflowChildJobRow[] {
+function readWorkflowChildJobRows(db: BetterSqlite3.Database, workflowId: string): WorkflowChildJobRow[] {
   return db
     .prepare(
       `SELECT job_id, phase, terminal, workflow_slot, last_seq

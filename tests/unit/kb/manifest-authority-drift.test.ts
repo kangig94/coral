@@ -302,9 +302,21 @@ describe('manifest authority drift checks', () => {
       name: 'runPrincipleDiscovery',
       run: async () => {
         const fixture = await createRuntimeFixture((root) => {
-          writeRootNote(root, 'coral-discovery-01', renderNote({ title: 'One', tags: ['coral'], body: 'Shared principle A.', entrySeq: 1 }));
-          writeRootNote(root, 'coral-discovery-02', renderNote({ title: 'Two', tags: ['coral'], body: 'Shared principle B.', entrySeq: 2 }));
-          writeRootNote(root, 'coral-discovery-03', renderNote({ title: 'Three', tags: ['coral'], body: 'Shared principle C.', entrySeq: 3 }));
+          writeRootNote(
+            root,
+            'coral-discovery-01',
+            renderNote({ title: 'One', tags: ['coral'], body: 'Shared principle A.', entrySeq: 1 }),
+          );
+          writeRootNote(
+            root,
+            'coral-discovery-02',
+            renderNote({ title: 'Two', tags: ['coral'], body: 'Shared principle B.', entrySeq: 2 }),
+          );
+          writeRootNote(
+            root,
+            'coral-discovery-03',
+            renderNote({ title: 'Three', tags: ['coral'], body: 'Shared principle C.', entrySeq: 3 }),
+          );
         });
         setProcessedThrough(fixture.kb, 'coral-discovery-03', 3);
 
@@ -360,10 +372,7 @@ describe('manifest authority drift checks', () => {
           ],
         });
 
-        await runCommunitySubphase(
-          fixture.kb,
-          discoverySpawn('Shared themes across graph-backed retrieval.'),
-        );
+        await runCommunitySubphase(fixture.kb, discoverySpawn('Shared themes across graph-backed retrieval.'));
 
         assertAuthorityMatchesDisk(fixture.kb);
       },
@@ -493,9 +502,12 @@ describe('manifest authority drift checks', () => {
     {
       name: 'applyDetectedIncidentFixesLocked',
       run: async () => {
-        const fixture = await createRuntimeFixture((root) => {
-          writeRootNote(root, 'repair-target', renderMalformedEntrySeqNote());
-        }, { reindexOnBoot: false });
+        const fixture = await createRuntimeFixture(
+          (root) => {
+            writeRootNote(root, 'repair-target', renderMalformedEntrySeqNote());
+          },
+          { reindexOnBoot: false },
+        );
 
         const runtime = createRealRuntime('prod');
         const gitSync = createGitSyncController({

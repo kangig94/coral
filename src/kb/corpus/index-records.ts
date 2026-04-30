@@ -7,11 +7,7 @@ import type {
   NoteEntry,
   SourceEntry,
 } from '../entry-types.js';
-import {
-  isCommunityEntry,
-  isNoteEntry,
-  isSourceEntry,
-} from '../entry-types.js';
+import { isCommunityEntry, isNoteEntry, isSourceEntry } from '../entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;

@@ -9,12 +9,7 @@ import { noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from './index-records.js';
 import { stripMdExt } from '../paths.js';
-import {
-  extractBody,
-  extractTitle,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-} from './frontmatter.js';
+import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from './frontmatter.js';
 import {
   captureCommunityManifestDelta,
   captureEntityGraphManifestDelta,
@@ -30,11 +25,7 @@ import {
 } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
-import {
-  type CanonicalFrontmatterRecord,
-  computeContentSurfaceHash,
-  computeMetadataSurfaceHash,
-} from './snapshot.js';
+import { type CanonicalFrontmatterRecord, computeContentSurfaceHash, computeMetadataSurfaceHash } from './snapshot.js';
 import type { KbIndexMutationLane, KbRuntime } from '../contract.js';
 import { mergeMutationLane } from './lanes.js';
 
@@ -194,7 +185,9 @@ function captureMarkdownFileHashes(storage: SnapshotStorage, dirPath: string): M
   for (const entry of sortedMarkdownEntries(storage, dirPath)) {
     snapshot.set(
       stripMdExt(entry),
-      createHash('sha256').update(storage.readFileSync(join(dirPath, entry), 'utf-8')).digest('hex'),
+      createHash('sha256')
+        .update(storage.readFileSync(join(dirPath, entry), 'utf-8'))
+        .digest('hex'),
     );
   }
 
@@ -224,10 +217,7 @@ export function captureCorpusFilesystemSnapshot(target: InboundSyncTarget): Corp
 }
 
 function inboundSnapshotMapsEqual(left: Map<string, string>, right: Map<string, string>): boolean {
-  return (
-    left.size === right.size &&
-    [...left.entries()].every(([key, value]) => right.get(key) === value)
-  );
+  return left.size === right.size && [...left.entries()].every(([key, value]) => right.get(key) === value);
 }
 
 export function detectInboundSyncMutation(
@@ -306,7 +296,10 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedNoteManifestDeltas(trackedPath.slug);
     }
     try {
-      return captureNoteManifestDeltas(trackedPath.slug, storage.readFileSync(target.notePath(trackedPath.slug), 'utf-8'));
+      return captureNoteManifestDeltas(
+        trackedPath.slug,
+        storage.readFileSync(target.notePath(trackedPath.slug), 'utf-8'),
+      );
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedNoteManifestDeltas(trackedPath.slug);
@@ -320,7 +313,10 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedSourceManifestDeltas(trackedPath.slug);
     }
     try {
-      return captureSourceManifestDeltas(trackedPath.slug, storage.readFileSync(target.sourcePath(trackedPath.slug), 'utf-8'));
+      return captureSourceManifestDeltas(
+        trackedPath.slug,
+        storage.readFileSync(target.sourcePath(trackedPath.slug), 'utf-8'),
+      );
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedSourceManifestDeltas(trackedPath.slug);
@@ -334,7 +330,10 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedCommunityManifestDelta(trackedPath.slug);
     }
     try {
-      return captureCommunityManifestDelta(trackedPath.slug, storage.readFileSync(target.communityPath(trackedPath.slug), 'utf-8'));
+      return captureCommunityManifestDelta(
+        trackedPath.slug,
+        storage.readFileSync(target.communityPath(trackedPath.slug), 'utf-8'),
+      );
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedCommunityManifestDelta(trackedPath.slug);
@@ -348,7 +347,10 @@ function captureInboundSyncTrackedPathDeltas(
       return captureRemovedPrincipleManifestDelta(trackedPath.slug);
     }
     try {
-      return capturePrincipleManifestDelta(trackedPath.slug, storage.readFileSync(target.principlePath(trackedPath.slug), 'utf-8'));
+      return capturePrincipleManifestDelta(
+        trackedPath.slug,
+        storage.readFileSync(target.principlePath(trackedPath.slug), 'utf-8'),
+      );
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedPrincipleManifestDelta(trackedPath.slug);

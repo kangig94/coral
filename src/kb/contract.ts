@@ -21,11 +21,7 @@ export type {
   CorpusStateReadPort,
   JournalConsumerReadPort,
 } from '../store/consumer-contract.js';
-export type {
-  KbCorpusProjectionReader,
-  KbProjectionInput,
-  KbProjectionRecord,
-} from './projection-input-contract.js';
+export type { KbCorpusProjectionReader, KbProjectionInput, KbProjectionRecord } from './projection-input-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 

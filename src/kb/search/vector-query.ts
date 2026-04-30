@@ -44,11 +44,7 @@ export async function searchExplicitVectorResults(
   } catch (error) {
     const setupError = serializeCoralSetupError(error);
     const binding = setupError?.context?.binding;
-    if (
-      setupError?.code === 'binding_empty' &&
-      typeof binding === 'string' &&
-      VECTOR_PATH_BINDING_NAMES.has(binding)
-    ) {
+    if (setupError?.code === 'binding_empty' && typeof binding === 'string' && VECTOR_PATH_BINDING_NAMES.has(binding)) {
       throw error;
     }
     return {

@@ -110,22 +110,14 @@ function renderSource({
   return `${lines.join('\n')}\n`;
 }
 
-function writeNote(
-  runtime: KbRuntime,
-  slug: string,
-  options: Parameters<typeof renderNote>[0],
-): string {
+function writeNote(runtime: KbRuntime, slug: string, options: Parameters<typeof renderNote>[0]): string {
   mkdirSync(runtime.notesDir(), { recursive: true });
   const notePath = join(runtime.notesDir(), `${slug}.md`);
   writeFileSync(notePath, renderNote(options), 'utf-8');
   return notePath;
 }
 
-function writeSource(
-  runtime: KbRuntime,
-  slug: string,
-  options: Parameters<typeof renderSource>[0],
-): string {
+function writeSource(runtime: KbRuntime, slug: string, options: Parameters<typeof renderSource>[0]): string {
   mkdirSync(runtime.sourcesDir(), { recursive: true });
   const sourcePath = join(runtime.sourcesDir(), `${slug}.md`);
   writeFileSync(sourcePath, renderSource(options), 'utf-8');
@@ -216,9 +208,9 @@ describe('curate related-resolution and budget guards', () => {
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
 
     await internals.commitMetadataTargets([
       {
@@ -271,9 +263,9 @@ describe('curate related-resolution and budget guards', () => {
         },
       },
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
 
     await internals.commitMetadataTargets([
       {
@@ -354,7 +346,19 @@ describe('curate related-resolution and budget guards', () => {
     });
 
     const assignments: Array<{ entry: string; tags: string[]; related: string[] }> = [];
-    const entries: Record<string, { kind: 'source'; slug: string; title: string; type: string; tags: string[]; importedAt: string; related: string[]; entrySeq: number }> = {};
+    const entries: Record<
+      string,
+      {
+        kind: 'source';
+        slug: string;
+        title: string;
+        type: string;
+        tags: string[];
+        importedAt: string;
+        related: string[];
+        entrySeq: number;
+      }
+    > = {};
     for (let index = 1; index <= 10; index += 1) {
       const slug = `sqlite-source-${String(index).padStart(2, '0')}`;
       writeSource(runtime, slug, {

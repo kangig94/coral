@@ -35,9 +35,9 @@ function createIndex(noteTags: Record<string, string[]>): KbIndex {
       ]),
     ),
     principles: {},
-  entityMeta: {},
-  relationships: [],
-};
+    entityMeta: {},
+    relationships: [],
+  };
 }
 
 async function loadKbModules() {

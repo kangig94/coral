@@ -8,11 +8,7 @@ import { commit, type AppendContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import {
-  workflowCompletedEvent,
-  workflowPlanDeclaredEvent,
-  workflowRegistry,
-} from '#src/workflow/events.js';
+import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 
 // Spec §6.5: workflow stream identity is the truth — a workflow has exactly

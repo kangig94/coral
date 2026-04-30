@@ -13,11 +13,7 @@ export type UsageBudgetOptions = {
   now?: () => number;
 };
 
-export function isUsageBudgetExhausted({
-  storage,
-  homeDir,
-  now = Date.now,
-}: UsageBudgetOptions): boolean {
+export function isUsageBudgetExhausted({ storage, homeDir, now = Date.now }: UsageBudgetOptions): boolean {
   if (homeDir === undefined) {
     return false;
   }

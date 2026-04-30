@@ -126,10 +126,7 @@ describe('hook-utils flavor gating', () => {
 
     const result = runHookUtilsModule(
       fixture.modulePath,
-      [
-        'mod.exitIfWrongFlavor();',
-        "console.log('after');",
-      ].join('\n'),
+      ['mod.exitIfWrongFlavor();', "console.log('after');"].join('\n'),
       { CORAL_FLAVOR: coralFlavor },
     );
 
@@ -143,10 +140,7 @@ describe('hook-utils flavor gating', () => {
 
     const result = runHookUtilsModule(
       fixture.modulePath,
-      [
-        'mod.exitIfWrongFlavor();',
-        "console.log('after');",
-      ].join('\n'),
+      ['mod.exitIfWrongFlavor();', "console.log('after');"].join('\n'),
       { CORAL_FLAVOR: undefined },
     );
 
@@ -159,10 +153,7 @@ describe('hook-utils flavor gating', () => {
 
     const result = runHookUtilsModule(
       fixture.modulePath,
-      [
-        'mod.exitIfWrongFlavor();',
-        "console.log('after');",
-      ].join('\n'),
+      ['mod.exitIfWrongFlavor();', "console.log('after');"].join('\n'),
       { CORAL_FLAVOR: undefined },
     );
 
@@ -175,10 +166,7 @@ describe('hook-utils flavor gating', () => {
 
     const result = runHookUtilsModule(
       fixture.modulePath,
-      [
-        'mod.exitIfWrongFlavor();',
-        "console.log('after');",
-      ].join('\n'),
+      ['mod.exitIfWrongFlavor();', "console.log('after');"].join('\n'),
       { CORAL_FLAVOR: 'staging' },
     );
 
@@ -193,10 +181,7 @@ describe('hook-utils flavor gating', () => {
 
     const result = runHookUtilsModule(
       fixture.modulePath,
-      [
-        'mod.exitIfWrongFlavor();',
-        "console.log('after');",
-      ].join('\n'),
+      ['mod.exitIfWrongFlavor();', "console.log('after');"].join('\n'),
       { CORAL_FLAVOR: 'dev' },
     );
 
@@ -211,16 +196,14 @@ describe('hook-utils KB root resolution', () => {
     const prodFixture = createHookUtilsFixture('prod');
     const devFixture = createHookUtilsFixture('dev');
 
-    const prodResult = runHookUtilsModule(
-      prodFixture.modulePath,
-      'console.log(mod.resolveKbRoot());',
-      { HOME: prodFixture.root, CORAL_KB_PATH: undefined },
-    );
-    const devResult = runHookUtilsModule(
-      devFixture.modulePath,
-      'console.log(mod.resolveKbRoot());',
-      { HOME: devFixture.root, CORAL_KB_PATH: undefined },
-    );
+    const prodResult = runHookUtilsModule(prodFixture.modulePath, 'console.log(mod.resolveKbRoot());', {
+      HOME: prodFixture.root,
+      CORAL_KB_PATH: undefined,
+    });
+    const devResult = runHookUtilsModule(devFixture.modulePath, 'console.log(mod.resolveKbRoot());', {
+      HOME: devFixture.root,
+      CORAL_KB_PATH: undefined,
+    });
 
     expect(prodResult.status).toBe(0);
     expect(devResult.status).toBe(0);
@@ -231,14 +214,10 @@ describe('hook-utils KB root resolution', () => {
   it('keeps CORAL_KB_PATH as the markdown root override', () => {
     const fixture = createHookUtilsFixture('dev');
 
-    const result = runHookUtilsModule(
-      fixture.modulePath,
-      'console.log(mod.resolveKbRoot());',
-      {
-        HOME: fixture.root,
-        CORAL_KB_PATH: '~/custom-kb',
-      },
-    );
+    const result = runHookUtilsModule(fixture.modulePath, 'console.log(mod.resolveKbRoot());', {
+      HOME: fixture.root,
+      CORAL_KB_PATH: '~/custom-kb',
+    });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(join(fixture.root, 'custom-kb'));

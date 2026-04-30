@@ -143,10 +143,7 @@ export type ProviderTerminalEventBody = {
   failureCause?: ProviderFailureCause;
 };
 
-export type ProviderEventBody =
-  | ProviderProgressEventBody
-  | ProviderContinuityEventBody
-  | ProviderTerminalEventBody;
+export type ProviderEventBody = ProviderProgressEventBody | ProviderContinuityEventBody | ProviderTerminalEventBody;
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
 
@@ -343,9 +340,7 @@ export interface ProviderSpec {
 export function compose(middleware: readonly ProviderMiddleware[], provider: Provider): Provider;
 export function compose(...parts: readonly [...ProviderMiddleware[], Provider]): Provider;
 export function compose(
-  ...parts:
-    | readonly [readonly ProviderMiddleware[], Provider]
-    | readonly [...ProviderMiddleware[], Provider]
+  ...parts: readonly [readonly ProviderMiddleware[], Provider] | readonly [...ProviderMiddleware[], Provider]
 ): Provider {
   const [middleware, provider] =
     parts.length === 2 && Array.isArray(parts[0])

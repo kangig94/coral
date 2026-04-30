@@ -12,11 +12,7 @@ function defaultStorage(): FileTailStorage {
   return { closeSync, openSync, readSync, statSync };
 }
 
-export function readAppendedLines(
-  path: string,
-  fromOffset: number,
-  storage?: FileTailStorage,
-): FileTailChunk {
+export function readAppendedLines(path: string, fromOffset: number, storage?: FileTailStorage): FileTailChunk {
   const reader = storage ?? defaultStorage();
   try {
     const stats = reader.statSync(path);

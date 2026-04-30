@@ -139,10 +139,7 @@ function renderExistingCommunityDocument(community: ExistingGeneratedCommunity):
   };
 }
 
-function sameSnapshot(
-  left: KbCorpusSnapshot,
-  right: KbCorpusSnapshot,
-): boolean {
+function sameSnapshot(left: KbCorpusSnapshot, right: KbCorpusSnapshot): boolean {
   return (
     left.snapshotId === right.snapshotId &&
     left.contentSeq === right.contentSeq &&

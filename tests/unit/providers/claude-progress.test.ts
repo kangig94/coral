@@ -79,10 +79,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
 
     it('returns tool_use message when text block comes AFTER tool_use in same event', () => {
       const input = { command: 'ls -la', description: 'List files' };
-      const event = assistantEvent([
-        toolUseBlock('Bash', input),
-        textBlock('Listing directory contents...'),
-      ]);
+      const event = assistantEvent([toolUseBlock('Bash', input), textBlock('Listing directory contents...')]);
       expect(extractClaudeProgressMessage(event, TEST_PROJECT_ROOT)).toBe(
         formatToolProgress('Bash', input, TEST_PROJECT_ROOT),
       );

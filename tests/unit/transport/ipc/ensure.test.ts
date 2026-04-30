@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync }
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
-import { pluginRootNamespace } from "#src/infra/plugin-identity.js";
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
@@ -53,11 +53,7 @@ function createPluginRoot(flavor: 'prod' | 'dev' = 'prod'): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-ensure-root-'));
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
-  writeFileSync(
-    join(root, 'bridge', 'manifest.json'),
-    JSON.stringify({ bundleHash: 'test-hash', flavor }),
-    'utf-8',
-  );
+  writeFileSync(join(root, 'bridge', 'manifest.json'), JSON.stringify({ bundleHash: 'test-hash', flavor }), 'utf-8');
   return root;
 }
 
@@ -352,10 +348,10 @@ describe('ipc ensure', () => {
         namespace: pluginRootNamespace(root),
       };
     });
-    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid === process.pid && signal === 0) return true;
       return true;
-    }) as typeof process.kill));
+    }) as typeof process.kill);
 
     const { ensure } = await importEnsure();
     const ensuredPromise = ensure(root);
@@ -374,10 +370,10 @@ describe('ipc ensure', () => {
     const root = createPluginRoot();
     writeLockFile(root, 434343, { instanceId: 'other-launcher' });
 
-    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid === 434343 && signal === 0) return true;
       return true;
-    }) as typeof process.kill));
+    }) as typeof process.kill);
 
     setTimeout(() => {
       unlinkSync(lockPath(root));
@@ -429,7 +425,7 @@ describe('ipc ensure', () => {
     });
 
     let killed = false;
-    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid !== process.pid) return true;
       if (signal === 0) {
         if (killed) throw createErrnoError('ESRCH');
@@ -440,7 +436,7 @@ describe('ipc ensure', () => {
         return true;
       }
       return true;
-    }) as typeof process.kill));
+    }) as typeof process.kill);
 
     mockState.health.mockImplementation(async (currentSocketPath) => {
       if (currentSocketPath === socketPath(root)) {
@@ -505,7 +501,7 @@ describe('ipc ensure', () => {
     });
 
     let killed = false;
-    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid !== process.pid) return true;
       if (signal === 0) {
         if (killed) throw createErrnoError('ESRCH');
@@ -516,7 +512,7 @@ describe('ipc ensure', () => {
         return true;
       }
       return true;
-    }) as typeof process.kill));
+    }) as typeof process.kill);
 
     let healthCalls = 0;
     mockState.health.mockImplementation(async (currentSocketPath) => {
@@ -576,10 +572,10 @@ describe('ipc ensure', () => {
     });
     writeLockFile(root, process.pid, { instanceId: 'retired-coordinator' });
 
-    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid === process.pid && signal === 0) return true;
       return true;
-    }) as typeof process.kill));
+    }) as typeof process.kill);
 
     mockState.health.mockRejectedValue(new Error('coordinator hung'));
 

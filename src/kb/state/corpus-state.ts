@@ -74,19 +74,24 @@ function isSnapshotFresh(current: CorpusSnapshotCursorRow, next: KbCorpusSnapsho
   );
 }
 
-function deriveChangedLanes(current: CorpusSnapshotCursorRow, next: KbCorpusSnapshot): KbCorpusPublication['changedLanes'] {
+function deriveChangedLanes(
+  current: CorpusSnapshotCursorRow,
+  next: KbCorpusSnapshot,
+): KbCorpusPublication['changedLanes'] {
   const changedLanes: KbCorpusPublication['changedLanes'] = [];
 
   if (
     next.contentSeq > (current.content_seq ?? 0) ||
-    (next.contentSeq === (current.content_seq ?? 0) && next.contentManifestHash !== (current.content_manifest_hash ?? ''))
+    (next.contentSeq === (current.content_seq ?? 0) &&
+      next.contentManifestHash !== (current.content_manifest_hash ?? ''))
   ) {
     changedLanes.push('content');
   }
 
   if (
     next.metadataSeq > (current.metadata_seq ?? 0) ||
-    (next.metadataSeq === (current.metadata_seq ?? 0) && next.metadataManifestHash !== (current.metadata_manifest_hash ?? ''))
+    (next.metadataSeq === (current.metadata_seq ?? 0) &&
+      next.metadataManifestHash !== (current.metadata_manifest_hash ?? ''))
   ) {
     changedLanes.push('metadata');
   }

@@ -1,9 +1,6 @@
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
-import {
-  captureNoteManifestDeltas,
-  captureSourceManifestDeltas,
-} from '../corpus/manifest-authority.js';
+import { captureNoteManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
 import {
   extractTitle,
   parseFrontmatter,
@@ -62,7 +59,10 @@ type LiveMetadataDecision = {
   nextPrinciples: string[];
 };
 
-function snapshotEntityGraph(currentIndex: { entityMeta: Record<string, EntityMeta>; relationships: EntityRelationship[] }): EntityGraph {
+function snapshotEntityGraph(currentIndex: {
+  entityMeta: Record<string, EntityMeta>;
+  relationships: EntityRelationship[];
+}): EntityGraph {
   return {
     entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta),
     relationships: currentIndex.relationships.map(cloneEntityRelationship),
@@ -171,7 +171,10 @@ function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[])
   return [...liveRelated, ...additions];
 }
 
-function applyEntityReplacementMap(tags: string[] | undefined, replacementMap: EntityReplacementMap): string[] | undefined {
+function applyEntityReplacementMap(
+  tags: string[] | undefined,
+  replacementMap: EntityReplacementMap,
+): string[] | undefined {
   if (tags === undefined) {
     return undefined;
   }

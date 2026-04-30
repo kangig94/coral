@@ -453,7 +453,12 @@ describe('curate state', () => {
   });
 
   it('sorts cursors by mutation sequence before note name ties', () => {
-    const sorted = [cursor('coral-zeta', 1), cursor('coral-beta', 3), cursor('coral-gamma', 3), cursor('coral-alpha', 5)].sort(compareCursor);
+    const sorted = [
+      cursor('coral-zeta', 1),
+      cursor('coral-beta', 3),
+      cursor('coral-gamma', 3),
+      cursor('coral-alpha', 5),
+    ].sort(compareCursor);
 
     expect(sorted).toEqual([
       cursor('coral-zeta', 1),
@@ -584,7 +589,11 @@ describe('curate state', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
       mkdirSync(runtime.sourcesDir(), { recursive: true });
 
-      writeFileSync(join(runtime.notesDir(), 'coral-zeta.md'), renderNote({ title: 'Coral Zeta', entrySeq: 4 }), 'utf-8');
+      writeFileSync(
+        join(runtime.notesDir(), 'coral-zeta.md'),
+        renderNote({ title: 'Coral Zeta', entrySeq: 4 }),
+        'utf-8',
+      );
       writeFileSync(
         join(runtime.notesDir(), 'coral-broken.md'),
         [
@@ -603,7 +612,11 @@ describe('curate state', () => {
         ].join('\n'),
         'utf-8',
       );
-      writeFileSync(join(runtime.notesDir(), 'coral-alpha.md'), renderNote({ title: 'Coral Alpha', entrySeq: 2 }), 'utf-8');
+      writeFileSync(
+        join(runtime.notesDir(), 'coral-alpha.md'),
+        renderNote({ title: 'Coral Alpha', entrySeq: 2 }),
+        'utf-8',
+      );
       writeFileSync(
         join(runtime.sourcesDir(), 'bravo-source.md'),
         renderSource({ title: 'Bravo Source', entrySeq: 6 }),
@@ -652,9 +665,17 @@ describe('curate state', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
       mkdirSync(runtime.sourcesDir(), { recursive: true });
 
-      writeFileSync(join(runtime.notesDir(), 'coral-existing.md'), renderNote({ title: 'Existing', entrySeq: 8 }), 'utf-8');
+      writeFileSync(
+        join(runtime.notesDir(), 'coral-existing.md'),
+        renderNote({ title: 'Existing', entrySeq: 8 }),
+        'utf-8',
+      );
       writeFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), renderNote({ title: 'Needs Seq' }), 'utf-8');
-      writeFileSync(join(runtime.sourcesDir(), 'source-needs-seq.md'), renderSource({ title: 'Source Needs Seq' }), 'utf-8');
+      writeFileSync(
+        join(runtime.sourcesDir(), 'source-needs-seq.md'),
+        renderSource({ title: 'Source Needs Seq' }),
+        'utf-8',
+      );
 
       runtime.writeIndexState({
         contentSeq: 5,
@@ -714,7 +735,11 @@ describe('curate state', () => {
       mkdirSync(runtime.notesDir(), { recursive: true });
       mkdirSync(runtime.sourcesDir(), { recursive: true });
 
-      writeFileSync(join(runtime.notesDir(), 'coral-note.md'), renderNote({ title: 'Coral Note', entrySeq: 7 }), 'utf-8');
+      writeFileSync(
+        join(runtime.notesDir(), 'coral-note.md'),
+        renderNote({ title: 'Coral Note', entrySeq: 7 }),
+        'utf-8',
+      );
       writeFileSync(
         join(runtime.sourcesDir(), 'sqlite-source.md'),
         renderSource({
@@ -727,9 +752,9 @@ describe('curate state', () => {
       runtime.writeIndex({
         entries: {},
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
       const writeIndexSpy = vi.spyOn(runtime, 'writeIndex');
@@ -842,9 +867,9 @@ describe('curate state', () => {
         'coral-third': createIndexNote('Coral Third', 11),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 8,
       metadataSeq: 8,
@@ -854,15 +879,9 @@ describe('curate state', () => {
 
     await internals.initializeCurateStateIfNeeded();
 
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).entrySeq,
-    ).toBe(12);
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).entrySeq,
-    ).toBe(13);
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).entrySeq,
-    ).toBe(11);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).entrySeq).toBe(12);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).entrySeq).toBe(13);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).entrySeq).toBe(11);
     expect(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
@@ -871,9 +890,9 @@ describe('curate state', () => {
         'coral-third': createIndexNote('Coral Third', 11),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 13,
       metadataSeq: 13,
@@ -907,9 +926,9 @@ describe('curate state', () => {
     runtime.writeIndex({
       entries: {},
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 5,
       metadataSeq: 5,
@@ -918,9 +937,7 @@ describe('curate state', () => {
 
     await internals.initializeCurateStateIfNeeded();
 
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
-    ).toBe(31);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq).toBe(31);
     // Typed pipeline detects malformed YAML as frontmatter-shape and enqueues with the lenient
     // entrySeq (30) so assignEntrySeqs uses it as the floor when allocating new sequences.
     const queued = readCurateRetryQueue(runtime);
@@ -958,7 +975,11 @@ describe('curate state', () => {
       ].join('\n'),
       'utf-8',
     );
-    writeFileSync(join(runtime.notesDir(), 'coral-valid.md'), renderNote({ title: 'Coral Valid', entrySeq: 12 }), 'utf-8');
+    writeFileSync(
+      join(runtime.notesDir(), 'coral-valid.md'),
+      renderNote({ title: 'Coral Valid', entrySeq: 12 }),
+      'utf-8',
+    );
     writeFileSync(
       join(runtime.sourcesDir(), 'coral-malformed-source.md'),
       [
@@ -986,9 +1007,9 @@ describe('curate state', () => {
         'coral-valid': createIndexNote('Coral Valid', 12),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 6,
       metadataSeq: 6,
@@ -1064,9 +1085,9 @@ describe('curate state', () => {
         'coral-late-existing': createIndexNote('Late Existing', 11),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 20,
       metadataSeq: 20,
@@ -1075,15 +1096,13 @@ describe('curate state', () => {
 
     await internals.initializeCurateStateIfNeeded();
 
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).entrySeq,
-    ).toBe(9);
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), 'utf-8')).entrySeq,
-    ).toBe(11);
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
-    ).toBe(21);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-current-floor.md'), 'utf-8')).entrySeq).toBe(
+      9,
+    );
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-late-existing.md'), 'utf-8')).entrySeq).toBe(
+      11,
+    );
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq).toBe(21);
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
         'coral-current-floor': createIndexNote('Current Floor', 9),
@@ -1091,9 +1110,9 @@ describe('curate state', () => {
         'coral-needs-seq': createIndexNote('Needs Seq', 21),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 21,
       metadataSeq: 21,
@@ -1109,9 +1128,9 @@ describe('curate state', () => {
         'coral-skip': createIndexNote('Skip Bootstrap', 4),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 4,
       metadataSeq: 4,
@@ -1126,17 +1145,15 @@ describe('curate state', () => {
 
     await internals.initializeCurateStateIfNeeded();
 
-    expect(
-      parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).entrySeq,
-    ).toBeUndefined();
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-skip.md'), 'utf-8')).entrySeq).toBeUndefined();
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
         'coral-skip': createIndexNote('Skip Bootstrap', 4),
       }),
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 4,
       metadataSeq: 4,
@@ -1155,9 +1172,9 @@ describe('curate state', () => {
     runtime.writeIndex({
       entries: {},
       principles: {},
-    entityMeta: {},
-    relationships: [],
-});
+      entityMeta: {},
+      relationships: [],
+    });
     runtime.writeIndexState({
       contentSeq: 0,
       metadataSeq: 0,

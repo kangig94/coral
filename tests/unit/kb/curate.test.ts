@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -304,8 +313,12 @@ describe('curate', () => {
       expect(prompt).toContain('Principle names:\n\n- contract-first-design\n- deterministic-ordering');
       expect(prompt).toContain('## note:coral-alpha\nAlpha\nAlpha body.');
       expect(prompt).toContain('## note:coral-beta\nBeta\nBeta body.');
-      expect(prompt).toContain('"newEntities": { "<entity-name>": { "type": "<entity-type>", "description": "<one sentence>" } }');
-      expect(prompt).toContain('"relationships": [{ "source": "<entity-name>", "target": "<entity-name>", "type": "<relationship-type>", "description": "<one sentence>" }]');
+      expect(prompt).toContain(
+        '"newEntities": { "<entity-name>": { "type": "<entity-type>", "description": "<one sentence>" } }',
+      );
+      expect(prompt).toContain(
+        '"relationships": [{ "source": "<entity-name>", "target": "<entity-name>", "type": "<relationship-type>", "description": "<one sentence>" }]',
+      );
     });
 
     it('truncates oversized entity vocabularies under the prompt token budget', () => {
@@ -876,9 +889,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1095,9 +1108,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-};
+        entityMeta: {},
+        relationships: [],
+      };
       const assignments: ClassificationAssignment[] = [
         {
           entry: noteEntryId('coral-alpha'),
@@ -1162,9 +1175,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
 
       await internals.commitMetadataTargets([
         {
@@ -1239,9 +1252,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
 
       await internals.commitMetadataTargets([
         {
@@ -1316,9 +1329,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       writeCurateState(runtime, createCurateState());
       syncCurateRetryQueue(runtime, [
         {
@@ -1401,9 +1414,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
 
       await internals.commitMetadataTargets([
         {
@@ -1445,9 +1458,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
 
       await internals.commitMetadataTargets([
         {
@@ -1968,9 +1981,9 @@ describe('curate', () => {
       runtime.writeIndex({
         entries: createIndexEntries(notes),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       writeCurateState(runtime, {
         ...readCurateState(runtime),
         initialized: true,
@@ -2049,9 +2062,12 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(runtime, createCurateState({
-        initialized: true,
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          initialized: true,
+        }),
+      );
       useScheduler(spawn);
 
       await scheduler.start();
@@ -2109,9 +2125,9 @@ describe('curate', () => {
             }),
           }),
           principles: {},
-        entityMeta: {},
-        relationships: [],
-}),
+          entityMeta: {},
+          relationships: [],
+        }),
       ).rejects.toMatchObject({
         name: 'CurateJsonParseError',
         message: 'Curate classification returned invalid JSON.',
@@ -2148,9 +2164,7 @@ describe('curate', () => {
         aborted: false,
       }));
 
-      await expect(
-        internals.runPrincipleDiscovery(cursor('coral-discovery-50', 50)),
-      ).rejects.toMatchObject({
+      await expect(internals.runPrincipleDiscovery(cursor('coral-discovery-50', 50))).rejects.toMatchObject({
         name: 'CurateJsonParseError',
         message: 'Curate discovery returned invalid JSON.',
       });
@@ -2177,9 +2191,12 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(runtime, createCurateState({
-        initialized: true,
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          initialized: true,
+        }),
+      );
       useScheduler(async () => ({
         stdout: '[',
         stderr: '',
@@ -2276,9 +2293,9 @@ describe('curate', () => {
       runtime.writeIndex({
         entries: createIndexEntries(notes),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       const graph: EntityGraph = {
         entityMeta: {
           attention: { type: 'concept', description: 'Attention mechanisms.' },
@@ -2320,10 +2337,13 @@ describe('curate', () => {
         ],
       };
       await runtime.writeEntityGraph(graph);
-      writeCurateState(runtime, createCurateState({
-        initialized: true,
-        consecutiveClaimFailures: 3,
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          initialized: true,
+          consecutiveClaimFailures: 3,
+        }),
+      );
 
       const spawn = vi.fn<SpawnCliFn>(async () => ({
         stdout: 'Shared themes across the community.',
@@ -2357,7 +2377,9 @@ describe('curate', () => {
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(communityFiles.length).toBeGreaterThan(0);
       expect(
-        communityFiles.some((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
+        communityFiles.some((entry) =>
+          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        ),
       ).toBe(true);
     });
 
@@ -2377,9 +2399,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       await runtime.writeEntityGraph({
         entityMeta: {
           'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
@@ -2395,11 +2417,14 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(runtime, createCurateState({
-        initialized: true,
-        consecutiveClaimFailures: 2,
-        consecutiveCommunityBatchFailures: 4,
-      }));
+      writeCurateState(
+        runtime,
+        createCurateState({
+          initialized: true,
+          consecutiveClaimFailures: 2,
+          consecutiveCommunityBatchFailures: 4,
+        }),
+      );
 
       useScheduler(async () => {
         throw new Error('summary failed');
@@ -2429,7 +2454,9 @@ describe('curate', () => {
       const filesAfterRecovery = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(filesAfterRecovery.length).toBeGreaterThan(0);
       expect(
-        filesAfterRecovery.every((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
+        filesAfterRecovery.every((entry) =>
+          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        ),
       ).toBe(true);
       expect(readCurateState(runtime)).toMatchObject({
         consecutiveClaimFailures: 2,
@@ -2454,9 +2481,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      entityMeta: {},
-      relationships: [],
-});
+        entityMeta: {},
+        relationships: [],
+      });
       await runtime.writeEntityGraph({
         entityMeta: {
           'community-backoff': { type: 'concept', description: 'Tick-based community backoff.' },

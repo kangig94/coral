@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decideBid, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '#src/discuss/session-types.js';
-import {
-  DiscussSessionStore,
-  DiscussStaleWriteError,
-} from '#src/discuss/shell/session-store.js';
+import { DiscussSessionStore, DiscussStaleWriteError } from '#src/discuss/shell/session-store.js';
 import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
 
 const SESSION_ID = 'session-1';
@@ -36,10 +33,7 @@ function createStore(source = SOURCE): DiscussSessionStore {
   });
 }
 
-async function appendRoundTripHistory(
-  store: DiscussSessionStore,
-  sessionId = SESSION_ID,
-) {
+async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SESSION_ID) {
   const created = await store.append(
     sessionId,
     null,
@@ -87,10 +81,12 @@ describe('DiscussSessionStore', () => {
     const first = await appendRoundTripHistory(store, SESSION_ID);
     await appendRoundTripHistory(store, SECOND_SESSION_ID);
 
-    expect(store.listSummaries().map((summary) => summary.sessionId).sort()).toEqual([
-      SESSION_ID,
-      SECOND_SESSION_ID,
-    ]);
+    expect(
+      store
+        .listSummaries()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
     expect(store.listSummaries()).toContainEqual(
       expect.objectContaining({
         sessionId: SESSION_ID,

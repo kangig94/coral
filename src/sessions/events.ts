@@ -33,7 +33,11 @@ export const sessionsRegistry: DomainEventRegistry = {
       schema: sessionClaimReleasedBodySchema,
       reducer: reduceSessionClaimReleased,
     }),
-    defineDomainEvent({ type: 'session.interrupted', schema: sessionInterruptedBodySchema, reducer: reduceSessionInterrupted }),
+    defineDomainEvent({
+      type: 'session.interrupted',
+      schema: sessionInterruptedBodySchema,
+      reducer: reduceSessionInterrupted,
+    }),
     defineDomainEvent({
       type: 'session.provider_failed',
       schema: sessionProviderFailedBodySchema,

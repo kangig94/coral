@@ -3,11 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import type { CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
-import {
-  adapterOutputUnparseable,
-  providerRequestFailed,
-  providerSessionUnavailable,
-} from '#src/providers/fault.js';
+import { adapterOutputUnparseable, providerRequestFailed, providerSessionUnavailable } from '#src/providers/fault.js';
 import type { ProviderTerminalEventBody } from '#src/providers/contract.js';
 import {
   materializeJobRecoveryFaultInCommit,

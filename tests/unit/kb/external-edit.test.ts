@@ -64,9 +64,10 @@ async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
     embedQuery: async (text) => embedText(text),
   });
   kb.register({
-    persistCorpusState: (snapshot) => persistCorpusState(writableDbByRuntime.get(kb)!, snapshot, {
-      now: () => nowDate(kb.time),
-    }),
+    persistCorpusState: (snapshot) =>
+      persistCorpusState(writableDbByRuntime.get(kb)!, snapshot, {
+        now: () => nowDate(kb.time),
+      }),
     notifyCorpusMutation: () => {},
   });
   return kb;
@@ -430,9 +431,9 @@ describe('external edit absorption', () => {
           title: 'Coral Note',
           tags: ['coral'],
           body: 'Inbound sync replaced the note body.',
-      }),
-      'utf-8',
-    );
+        }),
+        'utf-8',
+      );
     });
     await initial.kb.retryPendingCorpusPublication();
     await applyBaseProjection(initial.kb);

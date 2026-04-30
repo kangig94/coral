@@ -16,8 +16,7 @@ import {
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
-const CODEX_AUTH_ERROR_MESSAGE =
-  'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
+const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 
 type PreflightCacheEntry = {
@@ -47,7 +46,10 @@ export async function codexPreflight(runtime: PreflightRuntime): Promise<void> {
 
 async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise<void> {
   const now = runtime.time.now();
-  if (codexAppServerAvailabilityCache && now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
+  if (
+    codexAppServerAvailabilityCache &&
+    now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS
+  ) {
     if (!codexAppServerAvailabilityCache.available) {
       throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
     }

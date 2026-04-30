@@ -32,9 +32,9 @@ export function resolveProviderEffort(
   env: Record<string, string>,
 ): EffortLevel | undefined {
   return (
-    request.effort
-    ?? parseEffortLevel(env[providerEnvKey], providerEnvKey)
-    ?? parseEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
+    request.effort ??
+    parseEffortLevel(env[providerEnvKey], providerEnvKey) ??
+    parseEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
   );
 }
 

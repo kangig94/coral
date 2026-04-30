@@ -178,10 +178,7 @@ describe('createExpansionHost', () => {
       tier: 'installed',
       consumerDriver,
     });
-    installedStatelessHost.registerConsumer(
-      { id: 'gemini', kind: 'stateless' },
-      installedStatelessHost.scope,
-    );
+    installedStatelessHost.registerConsumer({ id: 'gemini', kind: 'stateless' }, installedStatelessHost.scope);
 
     expect(captured.map((reg) => reg.registrationKind)).toEqual(['base', 'expansion', 'stateless']);
   });

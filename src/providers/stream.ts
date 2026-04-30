@@ -25,12 +25,10 @@ export function streamProviderEvents<TEvent>(
   producer: (emit: (event: TEvent) => void) => Promise<void> | void,
 ): AsyncIterable<TEvent> {
   const queue: ProviderEventQueueEntry<TEvent>[] = [];
-  let waiter:
-    | {
-        resolve: (entry: ProviderEventQueueEntry<TEvent>) => void;
-        reject: (error: unknown) => void;
-      }
-    | null = null;
+  let waiter: {
+    resolve: (entry: ProviderEventQueueEntry<TEvent>) => void;
+    reject: (error: unknown) => void;
+  } | null = null;
   let closed = false;
 
   const dispatch = (entry: ProviderEventQueueEntry<TEvent>): void => {
@@ -97,7 +95,7 @@ export function streamProviderEvents<TEvent>(
         if (entry.kind === 'done') {
           return;
         }
-        throw (entry.error instanceof Error ? entry.error : new Error(String(entry.error)));
+        throw entry.error instanceof Error ? entry.error : new Error(String(entry.error));
       }
     },
   };
@@ -115,10 +113,7 @@ export type ProviderTerminalInput = {
   failureCause?: ProviderTerminalEventBody['failureCause'];
 };
 
-export function providerProgressEvent(
-  message: string,
-  _ts?: string,
-): ProviderProgressEventBody {
+export function providerProgressEvent(message: string, _ts?: string): ProviderProgressEventBody {
   return {
     kind: 'progress',
     message,
@@ -141,10 +136,7 @@ export function providerContinuityEvent(
 }
 
 export function providerTerminalEvent(
-  event:
-    | ProviderTerminalEventBody
-    | Omit<ProviderTerminalEventBody, 'kind'>
-    | ProviderTerminalInput,
+  event: ProviderTerminalEventBody | Omit<ProviderTerminalEventBody, 'kind'> | ProviderTerminalInput,
 ): ProviderTerminalEventBody {
   if ('kind' in event && event.kind === 'terminal') {
     return event;
@@ -180,9 +172,7 @@ export function streamProviderTerminal(
     | ProviderTerminalEventBody
     | Omit<ProviderTerminalEventBody, 'kind'>
     | ProviderTerminalInput
-    | Promise<
-        ProviderTerminalEventBody | Omit<ProviderTerminalEventBody, 'kind'> | ProviderTerminalInput
-      >,
+    | Promise<ProviderTerminalEventBody | Omit<ProviderTerminalEventBody, 'kind'> | ProviderTerminalInput>,
 ): AsyncIterable<ProviderEventBody> {
   return streamProviderEvents(async (emit) => {
     const resolved = await terminal;
@@ -190,13 +180,10 @@ export function streamProviderTerminal(
   });
 }
 
-export async function collectProviderEvents(
-  stream: AsyncIterable<ProviderEventBody>,
-): Promise<ProviderEventBody[]> {
+export async function collectProviderEvents(stream: AsyncIterable<ProviderEventBody>): Promise<ProviderEventBody[]> {
   const events: ProviderEventBody[] = [];
   for await (const event of stream) {
     events.push(event);
   }
   return events;
 }
-

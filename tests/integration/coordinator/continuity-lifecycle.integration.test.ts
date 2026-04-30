@@ -16,7 +16,12 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '#src/providers/contract.js';
+import type {
+  ProviderSpec,
+  Provider,
+  ProviderContinuityUpdate,
+  ProviderTransportClose,
+} from '#src/providers/contract.js';
 import { providerTerminalEventBodySchema, jobTerminalSchema } from '#src/providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
@@ -484,9 +489,7 @@ describe('coordinator continuity lifecycle integration', () => {
         read: (jobId) => progressStore.readStatus(jobId),
       },
     });
-    const agents: AgentConfig[] = [
-      { name: 'alpha', persona: '# Alpha', provider: 'null-live', model: 'gpt-5' },
-    ];
+    const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'null-live', model: 'gpt-5' }];
 
     try {
       await startDiscussSession(

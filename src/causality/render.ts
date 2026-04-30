@@ -61,11 +61,7 @@ export interface CauseRefRenderResult {
 
 export interface CauseRefRenderer {
   describe(ref: CauseRef, store: CauseRefEventStore, missingLinkHint?: string): string;
-  describeDetailed(
-    ref: CauseRef,
-    store: CauseRefEventStore,
-    missingLinkHint?: string,
-  ): CauseRefRenderResult;
+  describeDetailed(ref: CauseRef, store: CauseRefEventStore, missingLinkHint?: string): CauseRefRenderResult;
 }
 
 export function createCauseRefRenderer(describers: EventDescriberMap): CauseRefRenderer {
@@ -104,9 +100,7 @@ function extractCauseRef(event: CoralEvent): CauseRef | null {
     return parseCauseRef(event.body.reason.causeRef);
   }
   if (!isRecord(event.body.terminal) || !isRecord(event.body.terminal.outcome)) return null;
-  return event.body.terminal.outcome.kind === 'failed'
-    ? parseCauseRef(event.body.terminal.outcome.causeRef)
-    : null;
+  return event.body.terminal.outcome.kind === 'failed' ? parseCauseRef(event.body.terminal.outcome.causeRef) : null;
 }
 
 function renderCauseRef(
@@ -131,9 +125,8 @@ function renderCauseRef(
   if (!event) {
     // Only the chain ROOT carries a missingLinkHint; deeper missing links fall
     // back to the bare marker because their terminal context is lost.
-    const description = path.length === 0 && missingLinkHint
-      ? `${markerForMissing(ref)} ${missingLinkHint}`
-      : markerForMissing(ref);
+    const description =
+      path.length === 0 && missingLinkHint ? `${markerForMissing(ref)} ${missingLinkHint}` : markerForMissing(ref);
     return {
       description,
       chain: [...path, description],

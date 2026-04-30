@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AppServerNotificationMessage, ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import type {
+  AppServerNotificationMessage,
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+} from '#src/providers/contract.js';
 import {
   PRE_TURN_MAILBOX_CAP,
   applyCodexNotificationForTest,

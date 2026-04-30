@@ -17,10 +17,7 @@ export function getDiscussMaxWorkers(env: Pick<Runtime['env'], 'get'>): number {
   return Math.min(Math.max(parsePositiveInt(env.get('CORAL_DISCUSS_MAX_WORKERS'), 5), 1), 10);
 }
 
-export function getActiveLimit(
-  pool: 'default' | 'discuss' | 'curate',
-  env: Pick<Runtime['env'], 'get'>,
-): number {
+export function getActiveLimit(pool: 'default' | 'discuss' | 'curate', env: Pick<Runtime['env'], 'get'>): number {
   if (pool === 'discuss') {
     return getDiscussMaxWorkers(env);
   }

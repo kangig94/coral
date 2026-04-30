@@ -37,11 +37,7 @@ export interface JsonRpcError {
   readonly error: JsonRpcErrorObject;
 }
 
-export type JsonRpcEnvelope<
-  TRequestParams = unknown,
-  TResponseResult = unknown,
-  TNotificationParams = unknown,
-> =
+export type JsonRpcEnvelope<TRequestParams = unknown, TResponseResult = unknown, TNotificationParams = unknown> =
   | JsonRpcRequest<TRequestParams>
   | JsonRpcResponse<TResponseResult>
   | JsonRpcNotification<TNotificationParams>

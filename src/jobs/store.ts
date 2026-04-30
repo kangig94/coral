@@ -389,8 +389,7 @@ export class JobStore implements JobProgressStore {
     // `refs.workflowId = jobId`. Workflow children carry
     // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
     // `refs.workflowSlotId`. Non-workflow jobs omit the field.
-    const workflowId =
-      launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId ?? null;
+    const workflowId = launch.jobKind === 'workflow' ? jobId : (launch.parentWorkflowJobId ?? null);
     const refs = {
       jobId,
       ...(launch.sessionId !== null && launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),

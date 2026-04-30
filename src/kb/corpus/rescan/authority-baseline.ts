@@ -2,16 +2,8 @@ import { createHash } from 'node:crypto';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
-import {
-  extractBody,
-  extractTitle,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-} from '../frontmatter.js';
-import {
-  computeContentSurfaceHash,
-  computeMetadataSurfaceHash,
-} from '../snapshot.js';
+import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
+import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../snapshot.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import type { CorpusScanView } from './scan.js';
 import type {
@@ -31,17 +23,15 @@ function rawSha256(raw: string): string {
 }
 
 export function ensureCorpusAuthorityBaselineTable(db: BetterSqlite3.Database): void {
-  db
-    .prepare(
-      `
+  db.prepare(
+    `
         CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
           entry_id      TEXT PRIMARY KEY,
           content_hash  TEXT NOT NULL,
           metadata_hash TEXT NOT NULL
         )
       `,
-    )
-    .run();
+  ).run();
 }
 
 export function readCorpusAuthorityBaseline(db: BetterSqlite3.Database): CorpusAuthorityBaselineMap {
@@ -164,7 +154,10 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
   return records;
 }
 
-export function rebuildCorpusAuthorityBaseline(db: BetterSqlite3.Database, scan: CorpusScanView): CorpusAuthorityBaselineMap {
+export function rebuildCorpusAuthorityBaseline(
+  db: BetterSqlite3.Database,
+  scan: CorpusScanView,
+): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
   replaceCorpusAuthorityBaseline(db, records);
   return new Map(records.map((record) => [record.entryId, record]));

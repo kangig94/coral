@@ -250,4 +250,3 @@ export function buildCounts(
     entityCoverage: uniqueTags.size === 0 ? 1 : coveredTags / uniqueTags.size,
   };
 }
-

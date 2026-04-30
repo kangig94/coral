@@ -147,11 +147,7 @@ function mapWaitSubscriptionError(error: unknown): unknown {
     return new TransientHttpError(503, error.cause.message);
   }
 
-  return new BackendToolHttpError(
-    error.cause.message,
-    waitSubscriptionStatusCode(error.cause),
-    error.cause,
-  );
+  return new BackendToolHttpError(error.cause.message, waitSubscriptionStatusCode(error.cause), error.cause);
 }
 
 export async function launchAndFollow(options: FollowOptions): Promise<number> {
@@ -184,7 +180,10 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       abortPromise ??
       Promise.resolve()
         .then(() => options.abortJob(options.launchResult.job))
-        .then(() => undefined, () => undefined);
+        .then(
+          () => undefined,
+          () => undefined,
+        );
   };
 
   emitLaunch(options.launchResult);
