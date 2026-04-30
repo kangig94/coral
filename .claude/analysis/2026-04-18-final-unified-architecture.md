@@ -142,7 +142,7 @@ The rewrite is judged by ownership, not by file count. Every module should answe
 | `kb/` | Corpus markdown authority and KB query semantics | Corpus files under mutation lock | Expansion view through KB runtime port | Expansion slot ownership, coordinator startup |
 | `coordinator/` | Live state, startup order, expansion lifecycle, ConsumerDriver, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary or wire formatting |
 | `transport/` | No truth; carriage only | Nothing authoritative | Coordinator ports and domain contracts | Business behavior, startup, recovery |
-| `cli/` | User command surface and local startup/activation glue | No domain truth directly | IPC/HTTP clients and `read-model/CoralStore` | Backend/domain truth |
+| `cli/` | User command surface and local startup/activation glue | No domain truth directly | IPC client and `read-model/CoralStore` | Backend/domain truth, HTTP client (CLI does not dispatch over HTTP — §11.3) |
 | `infra/` / `runtime/` | Low-level paths, build flavor, process/env/I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
 | `causality/` | Cross-stream event-reference vocabulary | Nothing authoritative | Domain event/fault models | Store/database access |
 
@@ -1898,7 +1898,9 @@ Verified today: `tests/unit/transport/ipc/ensure.test.ts` covers launch-on-absen
 
 **Token comparison MUST be constant-time.** `X-Coral-Backend-Token` is checked via `node:crypto.timingSafeEqual` over Buffer-encoded inputs (with a length-prefix pre-check). String `===` is forbidden because the network-exposed coordinator gateway leaks token prefix length under timing attack. Transport is allowed direct ambient `node:crypto` access per §16 #50 (transport is not a domain module).
 
-Route dispatch is table-driven (array at `src/transport/http/handler.ts`), but the route table is projected from a single catalog at `src/transport/rpc-catalog.ts`. IPC server dispatch and HTTP handler dispatch both derive from that catalog through `rpcPorts` injected by coordinator composition, so semantic parity is structural rather than aspirational. Operational `/health`, `/admin/shutdown`, and `/events/stream` remain explicit transport-local carveouts rather than catalog entries.
+Route dispatch is table-driven (array at `src/transport/http/handler.ts`), but the route table is projected from a single catalog at `src/transport/rpc/catalog.ts`. IPC server dispatch and HTTP handler dispatch both derive from that catalog through `rpcPorts` injected by coordinator composition, so semantic parity is structural rather than aspirational. Operational `/health`, `/admin/shutdown`, and `/events/stream` remain explicit transport-local carveouts rather than catalog entries.
+
+**Coral does not ship an HTTP client class.** The catalog is the source of truth for routes and request schemas; non-CLI consumers (`coral-reef`, future browser/external clients) build their own thin client against `rpcCatalog` rather than importing a hand-coded helper class from coral. A "convenience" HTTP client class would maintain a parallel route table that drifts from the catalog — the same asymmetry that motivated the catalog in the first place. Response shape types are exported from coral for consumer reuse, but no wire-encoding class is.
 
 Interactive/live subscriptions use the same transport primitive in both carriages. `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` field; HTTP projects notifications to SSE and IPC carries notifications directly. The steady state is one active subscription per connection; multiplexing is a transparent future optimization, not a second protocol.
 
