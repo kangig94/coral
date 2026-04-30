@@ -748,6 +748,8 @@ Rules:
 
 This is the endpoint's evolution story. "Clean-slate rewrite" starts every event at `v:1`; upcasters are zero on day one. But the **mechanism** exists, so the first real evolution is cheap.
 
+The empty-registry state is a deliberate keep, not an oversight: any new feature work that introduces a new event type or changes an existing body shape is a near-certain trigger for the first upcaster, so the registry plumbing — `registerUpcaster`, chain-walk, cycle detection, the `parseBody` enforcement under invariant #45 — stays in place even though `BUNDLED_UPCASTERS` is currently empty. Removing and re-introducing the mechanism on first evolution would be needless churn given that the entire surface is `~200` lines of pure, well-tested infrastructure that the read-path already routes through.
+
 ### 4.3 Reducer dispatch
 
 Projection tables carry materialized read-model columns for stable-at-launch identity fields + lifecycle summary.
@@ -1476,6 +1478,8 @@ Journal projections come in two shapes that share authority and cursor mechanics
 **Base journal projections** (`projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`) are written by the commit-time reducer inside `BEGIN IMMEDIATE` (§3.3, §12.1). The consumer is **cursor-only**: it owns no `apply()` body in production — `ConsumerDriver` advances its `consumer_cursors` row directly on `notify(authority, version)`. The consumer's role is to surface freshness through `waitFreshUntil`, not to re-execute the reducer.
 
 **Expansion-tier journal consumers** (added by an installed engine that derives its own state from journal events) use range-based replay through `apply(ctx: { upToSeq, signal })`. They are the only journal consumers that run `apply` in production.
+
+The expansion-tier journal consumer slot is **deliberately retained even though no expansion currently registers one**. Its intended consumers are in-process expansions that need durable, replayable derivation from journal events — the canonical example is a notification expansion (e.g., a Telegram alert on `job.terminal.recorded { outcome: 'failed' }`) that must not miss events across coordinator restart and therefore needs `consumer_cursors` + the catchup replay that `ConsumerDriver` provides. `TypedEventBus` subscription is the lighter alternative for transient observers (the SSE bridge that `coral-reef` consumes is one such subscriber), but it has no cursor and no catchup. When an in-process observer needs durability, the apply-kind journal consumer is the right primitive; it stays in the type union and the `apply()` idempotency invariant (#44) accordingly stays in scope. External clients (`coral-reef`, future browser/external consumers) speak the HTTP gateway and SSE event stream and are NOT apply-kind journal consumers (§11.3).
 
 ```ts
 type JournalConsumer = JournalCursorConsumer | JournalApplyConsumer;

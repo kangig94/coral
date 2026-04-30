@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, delimiter, extname, join } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
+import { throwIfAborted } from '../../runtime/abort.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { EnvPort, IdPort, ProcessPort, TimePort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
@@ -361,13 +362,20 @@ export async function prepareSourceImport(
   runtime: SourceImportRuntime = createDefaultSourceImportRuntime(),
   options?: { signal?: AbortSignal },
 ): Promise<PreparedSourceImport> {
-  // Phase 5 / AC8 threads the caller's AbortSignal from the KB job. Phase 6
-  // / AC9 will honor it at `'convert'` / `'persist'` checkpoints.
-  void options;
+  // Honor the caller's AbortSignal at the two checkpoints that bound the
+  // long-running phases of source import: `'convert'` (before invoking the
+  // converter, which may shell out to pandoc/uv etc.) and `'persist'`
+  // (before staging the converted markdown to disk). The signal is threaded
+  // from the KB job's coordinator-owned AbortRegistry; on `coral-cli abort`
+  // the registry calls `controller.abort('user_abort')`, which this throw
+  // propagates up to the surrounding KB-job recorder where it maps to a
+  // `terminal { outcome: 'aborted', reason: 'user_abort' }`.
+  const signal = options?.signal;
   const ext = extname(filePath).toLowerCase();
   const ctx: SourceImportContext = { runtime, runtimeRoot };
   const converter = resolveConverter(ext);
 
+  if (signal !== undefined) throwIfAborted(signal, 'convert');
   log(`Converting ${filePath}`);
   if (!(await converter.isAvailable(ctx))) {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
@@ -383,6 +391,7 @@ export async function prepareSourceImport(
   };
   const normalizedSlug = assertSourceSlug(slug ?? toKebabCase(meta.title), 'source');
 
+  if (signal !== undefined) throwIfAborted(signal, 'persist');
   log('Staging converted markdown for backend import');
   const stagedPath = await stagePreparedSourceMarkdown(
     sourceImportStageDir(runtimeRoot),
