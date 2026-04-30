@@ -18,6 +18,7 @@ import { writeResultArtifact } from '../jobs/terminal/export.js';
 import { StartupInterruptedError } from './startup-error.js';
 import type { JobStore } from '../jobs/store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
+import { kbRuntimeDir } from '../kb/paths.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode } from './shutdown.js';
@@ -408,8 +409,10 @@ async function runLifecycleStartup({
     try {
       const kbSub = await createKbSubsystemFn({
         db: progressStore.getDb(),
-        pluginRoot,
-        flavor,
+        paths: {
+          markdownRoot: runtime.paths.coral.corpus.kbRoot,
+          runtimeDir: kbRuntimeDir(flavor),
+        },
         spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
         processPort: runtime.process,
         storagePort: runtime.storage,

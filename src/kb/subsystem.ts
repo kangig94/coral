@@ -1,10 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
-import { kbRoot } from './paths.js';
-import type { BuildFlavor } from '../infra/build-flavor.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
-import { kbRuntimeDir } from './paths.js';
 import { createKbRuntime } from './runtime.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
@@ -16,10 +13,21 @@ export type KnowledgeBaseRuntime = {
   curateScheduler: CurateHandle;
 };
 
+/**
+ * Pre-composed KB paths. `markdownRoot` matches `runtime.paths.coral.corpus.kbRoot`
+ * (the runtime composes the CORAL_KB_PATH override at construction time);
+ * `runtimeDir` is the kb workspace where curate state files live. Both
+ * arrive from the caller (coordinator) — the KB subsystem does not
+ * recompute paths from flavor + env.
+ */
+export type KbSubsystemPaths = {
+  markdownRoot: string;
+  runtimeDir: string;
+};
+
 export type CreateKbSubsystemOptions = {
   db: Database;
-  pluginRoot: string;
-  flavor: BuildFlavor;
+  paths: KbSubsystemPaths;
   spawnCli: SpawnCliFn;
   processPort: ProcessPort;
   storagePort: StoragePort;
@@ -34,8 +42,7 @@ export type CreateKbSubsystemOptions = {
 
 export async function createKbSubsystem({
   db,
-  pluginRoot,
-  flavor,
+  paths,
   spawnCli: spawnKbCli,
   processPort,
   storagePort,
@@ -48,8 +55,8 @@ export async function createKbSubsystem({
   onCorpusPublishSuccess,
 }: CreateKbSubsystemOptions): Promise<KnowledgeBaseRuntime> {
   const kb = createKbRuntime({
-    markdownRoot: kbRoot(flavor, envPort.get('CORAL_KB_PATH')),
-    runtimeDir: kbRuntimeDir(flavor),
+    markdownRoot: paths.markdownRoot,
+    runtimeDir: paths.runtimeDir,
     db,
     time: timePort,
     ids: idsPort,
@@ -66,7 +73,6 @@ export async function createKbSubsystem({
       ...(onCorpusPublishSuccess === undefined ? {} : { onPublishSuccess: onCorpusPublishSuccess }),
     });
   }
-  void pluginRoot;
 
   const curateScheduler = createCurateScheduler({
     kb,

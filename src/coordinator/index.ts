@@ -326,7 +326,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
         db: getStoreDb(),
-        flavor,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => nowDate(runtime.time),

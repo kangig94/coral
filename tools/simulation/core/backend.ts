@@ -352,7 +352,7 @@ export type SimulationHookLog = {
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
   removeLockCalls: Array<{ pluginRoot: string; instanceId: string }>;
   createKbSubsystemCalls: Array<{
-    pluginRoot: string;
+    markdownRoot: string;
     processPort: Pick<Runtime['process'], 'exec' | 'execSync'>;
     storagePort: Pick<Runtime['storage'], 'writeAtomicSync'>;
     envPort: Pick<Runtime['env'], 'get'>;
@@ -514,9 +514,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     removeLockIfOwnerFn: (bootPluginRoot, instanceId) => {
       hooks.removeLockCalls.push({ pluginRoot: bootPluginRoot, instanceId });
     },
-    createKbSubsystemFn: async ({ pluginRoot: kbPluginRoot, processPort, storagePort, envPort }) => {
+    createKbSubsystemFn: async ({ paths: kbPaths, processPort, storagePort, envPort }) => {
       hooks.createKbSubsystemCalls.push({
-        pluginRoot: kbPluginRoot,
+        markdownRoot: kbPaths.markdownRoot,
         processPort,
         storagePort,
         envPort,
