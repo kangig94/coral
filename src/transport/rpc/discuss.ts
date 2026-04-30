@@ -1,10 +1,5 @@
 import { z } from 'zod';
-import {
-  discussBidSchema,
-  discussSeedSchema,
-  discussSpeechSchema,
-  discussStartSchema,
-} from '../../discuss/command-schemas.js';
+import { discussBidSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const sessionIdSchema = z.string().min(1, 'Session ID is required');
@@ -74,4 +69,3 @@ export const discussSessionSpeechRequestSchema = discussSpeechSchema
   })
   .strict();
 
-export { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema };

@@ -3,11 +3,9 @@ import { load, save, type RawData } from '@orama/orama';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import { computeOramaArtifactDigest, createOramaProjectionMetadata } from './artifact-port.js';
-import { ORAMA_INDEX_FILE, oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
+import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
-
-export { ORAMA_INDEX_FILE };
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;

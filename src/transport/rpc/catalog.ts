@@ -5,8 +5,8 @@ import {
   readBindingRequestSchema,
   unequipExpansionRequestSchema,
 } from '../../expansion/rpc-contract.js';
+import { discussSeedSchema } from '../../discuss/command-schemas.js';
 import {
-  discussSeedSchema,
   discussSessionBidRequestSchema,
   discussSessionCreateRequestSchema,
   discussSessionDeleteRequestSchema,
