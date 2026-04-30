@@ -1380,6 +1380,50 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(560);
   });
 
+  it('coordinator/composition/index.ts stays under the composition-assembly cap', () => {
+    // Wires RPC ports, KB failure recording glue, health response shaping,
+    // and HTTP/IPC dependency assembly. New domain composition belongs in
+    // sibling modules referenced from here; growth past the cap signals
+    // unwanted concentration in the composition root.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/coordinator/composition/index.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(570);
+  });
+
+  it('kb/tool-handlers.ts stays under the kb-tool-dispatch cap', () => {
+    // Routes KB tool calls (search, read, write, mutation, source/memo
+    // operations) through one dispatch surface. The cohesion is the
+    // tool-call envelope. New tool families that bring independent change
+    // reasons should live in a `kb/tool/` subdirectory; the cap is a
+    // review gate.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/kb/tool-handlers.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(550);
+  });
+
+  it('jobs/shell/launch.ts stays under the launch-orchestration cap', () => {
+    // LaunchOrchestrator owns session claim, admission/queueing, recovered
+    // queued jobs, provider runtime construction, stream consumption,
+    // terminal materialization, and abort cleanup as one cohesive unit —
+    // the launch state-machine shares mutable state across these phases
+    // and forced extraction would re-couple through exported state. The
+    // cap is a review gate.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/jobs/shell/launch.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(720);
+  });
+
+  it('jobs/store.ts stays under the jobs-store cap', () => {
+    // JobStore wraps journal commit, event-bus publication, projection
+    // read facade, result-artifact filesystem handling, namespace
+    // overrides, queue sequencing, and live-count SQL. New responsibilities
+    // belong in job-owned collaborators; the cap protects against silent
+    // accretion.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/jobs/store.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(670);
+  });
+
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 

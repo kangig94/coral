@@ -1807,7 +1807,7 @@ These principles prevent `shared/` re-emergence without introducing a central re
 5. `runtime/*` owns only port interfaces. Concrete implementations do not add to this layer.
 6. The only cross-cutting reference vocabulary is `CauseRef` (`{stream, seq}`), declared in `src/causality/cause-ref.ts` and re-exported where domain APIs need it. All other fault information lives on domain events — there is no central fault union.
 
-The architecture-boundary test verifies: (a) no type declared in two places, (b) no content-blank filenames anywhere in `src/` (`helper.ts`, `helpers.ts`, `utils.ts`, `shared.ts`, `shared-utils.ts` — see §10.4), (c) layer import rules (§10.2) hold, (d) per-file size invariants on specific magnet-prone files (e.g., `providers/contract.ts` capped at 450 lines). That is the whole enforcement surface — no normative registry, no CI gate on a map.
+The architecture-boundary test verifies: (a) no content-blank filenames anywhere in `src/` (`helper.ts`, `helpers.ts`, `utils.ts`, `shared.ts`, `shared-utils.ts` — see §10.4), (b) layer import rules (§10.2) hold, (c) per-file size invariants on specific magnet-prone files (e.g., `providers/contract.ts` capped at 450 lines, plus the coordinator/jobs/transport/engines/kb caps that have accreted via subsequent reviews). The "exactly one declaration site per type" rule (#1 above) is enforced by code review and TypeScript's own import graph rather than by an automated invariant — the canonical-home discipline lives in §10.4 and rule #2.
 
 ### 10.4 Naming and subdivision policy
 
