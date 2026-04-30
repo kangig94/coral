@@ -4599,7 +4599,6 @@ describe('execution backend server', () => {
             provider: 'codex',
             threadId: 'thread-1',
           },
-          recoveryPolicy: 'session_continuity_only',
         },
       });
 

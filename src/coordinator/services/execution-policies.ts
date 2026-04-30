@@ -37,7 +37,6 @@ export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool'> & 
 };
 
 export const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
-export const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
 
 export type ResolvedAgentLaunchProfile = {
   agentName: string;

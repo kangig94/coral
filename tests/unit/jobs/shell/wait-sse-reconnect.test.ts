@@ -125,7 +125,6 @@ describe('wait SSE reconnect', () => {
           body: {
             kind: 'message',
             message,
-            ts: '2026-04-19T00:00:02.000Z',
           },
         },
       ]);
@@ -304,7 +303,6 @@ describe('wait SSE reconnect', () => {
           body: {
             kind: 'message',
             message: 'progress-before-race',
-            ts: '2026-04-19T00:00:02.000Z',
           },
         },
       ]);

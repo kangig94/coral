@@ -574,7 +574,6 @@ export class JobStore implements JobProgressStore {
         body: {
           kind: 'message',
           message: stamped,
-          ts: nowIsoString(this.runtime.time),
         },
       });
       return undefined;

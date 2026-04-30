@@ -126,7 +126,6 @@ export class KbJobRecorder {
         body: {
           kind: 'message',
           message,
-          ts: nowIsoString(this.deps.runtime.time),
         },
       });
       return undefined;
@@ -153,7 +152,6 @@ export class KbJobRecorder {
         kind: 'domain',
         stage: 'kb_operation_failed',
         message: params.message,
-        ts: nowIsoString(this.deps.runtime.time),
         detail: params.detail,
       },
     } as const;
@@ -200,7 +198,6 @@ export class KbJobRecorder {
           kind: 'domain',
           stage: 'hosted_kb_operation_failed',
           message: `KB ${params.operation} failed: ${params.message}`,
-          ts: nowIsoString(this.deps.runtime.time),
           detail: {
             operation: params.operation,
             code: params.code,

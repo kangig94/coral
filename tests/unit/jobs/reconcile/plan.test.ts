@@ -200,7 +200,6 @@ function makeAppServerRuntime(overrides: Partial<JobRuntime> = {}): JobRuntime {
     providerMeta: {
       provider: 'fakeprovider',
       leaseState: 'acquired',
-      recoveryPolicy: 'session_continuity_only',
     },
     ...overrides,
   } as JobRuntime

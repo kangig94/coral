@@ -266,7 +266,6 @@ function stubAppServerRuntime(
     providerMeta: {
       provider,
       leaseState: 'acquired',
-      recoveryPolicy: 'session_continuity_only',
     },
   });
 }
@@ -1106,7 +1105,6 @@ describe('lifecycle recovery', () => {
           provider: 'fakeprovider',
           threadId: 'thread-1',
         },
-        recoveryPolicy: 'session_continuity_only',
       },
     });
 

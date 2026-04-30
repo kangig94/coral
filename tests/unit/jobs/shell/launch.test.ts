@@ -861,7 +861,6 @@ describe('ExecutionService launch', () => {
         provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
-        recoveryPolicy: 'session_continuity_only',
       },
     });
     expect(firstRuntime.startTime).toEqual(expect.any(String));
@@ -880,7 +879,6 @@ describe('ExecutionService launch', () => {
       transport: 'app-server',
       providerMeta: {
         leaseState: 'waiting',
-        recoveryPolicy: 'session_continuity_only',
       },
     });
     expect(waitingRuntime.startTime).toEqual(expect.any(String));
@@ -899,7 +897,6 @@ describe('ExecutionService launch', () => {
         provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
-        recoveryPolicy: 'session_continuity_only',
       },
     });
     expect(acquiredRuntime.startTime).toEqual(expect.any(String));
@@ -1011,7 +1008,6 @@ describe('ExecutionService launch', () => {
         provider: 'claude',
         leaseState: 'acquired',
         serverGeneration: 41,
-        recoveryPolicy: 'session_continuity_only',
       },
     });
 
@@ -1086,7 +1082,6 @@ describe('ExecutionService launch', () => {
           threadId: 'thread-1',
           turnId: 'turn-1',
         },
-        recoveryPolicy: 'session_continuity_only',
       },
     });
     abortRegistry.register(jobId);
@@ -1155,7 +1150,6 @@ describe('ExecutionService launch', () => {
           },
           envHash: 'sha256:env',
         },
-        recoveryPolicy: 'session_continuity_only',
       },
     };
 

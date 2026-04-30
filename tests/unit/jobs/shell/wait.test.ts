@@ -700,7 +700,6 @@ describe('ExecutionService wait', () => {
         providerMeta: {
           provider: 'codex',
           leaseState: 'waiting',
-          recoveryPolicy: 'session_continuity_only',
         },
       });
     }, 10);

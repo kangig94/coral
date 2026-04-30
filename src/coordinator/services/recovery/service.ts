@@ -24,7 +24,6 @@ import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registr
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import {
-  APP_SERVER_RECOVERY_POLICY,
   FINALIZE_CONTINUITY_MAX_RETRIES,
   buildInterruptedAppServerReport,
   isProviderContinuityBlob,
@@ -419,7 +418,6 @@ export class RecoveryService {
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
         providerContinuity: update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
-        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
       },
     };
     this.deps.progressStore.appendRuntimeStarted(jobId, record);

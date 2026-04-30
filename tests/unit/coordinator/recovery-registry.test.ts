@@ -37,7 +37,6 @@ function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntime['provide
     providerMeta: {
       provider: 'codex',
       leaseState: 'acquired',
-      recoveryPolicy: 'session_continuity_only',
       ...overrides,
     },
   };

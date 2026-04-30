@@ -1865,7 +1865,6 @@ describe('ExecutionService', () => {
         providerMeta: {
           provider: 'codex',
           leaseState: 'acquired',
-          recoveryPolicy: 'session_continuity_only',
           ...overrides,
         },
       };

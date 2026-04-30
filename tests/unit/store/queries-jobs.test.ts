@@ -223,7 +223,6 @@ describe('jobs queries', () => {
           leaseState: 'acquired',
           serverGeneration: 7,
           providerContinuity: { threadId: 'thread-completed' },
-          recoveryPolicy: 'session_continuity_only',
         },
       },
       exit: {

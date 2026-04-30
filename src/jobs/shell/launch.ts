@@ -146,7 +146,6 @@ export class LaunchOrchestrator {
     this.appendJobEvent(jobId, sessionId, 'job.progress.emitted', {
       kind: 'message',
       message,
-      ts: nowIsoString(this.deps.runtime.time),
     });
   }
 

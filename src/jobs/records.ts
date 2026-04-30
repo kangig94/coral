@@ -86,7 +86,6 @@ export interface AppServerRuntime {
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
     providerContinuity?: ProviderContinuityBlob;
-    recoveryPolicy: 'session_continuity_only';
   };
 }
 

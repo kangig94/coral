@@ -34,7 +34,6 @@ export type JobDomainProgress = {
   stage: string;
   message: string;
   detail?: unknown;
-  ts?: string;
 };
 
 export type TerminalOutcome =
@@ -87,7 +86,6 @@ export const jobDomainProgressSchema = z
     stage: z.string(),
     message: z.string(),
     detail: z.unknown().optional(),
-    ts: z.string().optional(),
   })
   .strict();
 

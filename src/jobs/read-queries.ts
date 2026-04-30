@@ -77,7 +77,6 @@ type JobAppServerRuntimeProjection = {
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
     providerContinuity?: Record<string, unknown>;
-    recoveryPolicy: 'session_continuity_only';
   };
 };
 
@@ -434,7 +433,6 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
           providerMeta?.providerContinuity && typeof providerMeta.providerContinuity === 'object'
           ? (providerMeta.providerContinuity as Record<string, unknown>)
           : undefined,
-        recoveryPolicy: 'session_continuity_only',
       },
     };
   }
