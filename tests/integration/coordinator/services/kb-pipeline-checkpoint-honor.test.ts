@@ -16,7 +16,7 @@
 // pool unit config (parallel workers) makes that pattern fragile; the
 // integration config runs single-fork with a 120s timeout.
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -91,9 +91,9 @@ function makeWorld(): ServiceWorld {
   // JobStore + AbortRegistry composed against the same DB.
   const jobsDb = new Database(':memory:');
   openDbs.push(jobsDb);
-  const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
-    readFileSync: readFileSync as StoragePort['readFileSync'],
-    readdirSync: readdirSync as StoragePort['readdirSync'],
+  const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
+    existsSync,
+    readFileSync: readFileSync as StoragePort['readFileSync'],    readdirSync: readdirSync as StoragePort['readdirSync'],
   };
   applyStoreSchemas({ db: jobsDb, storage: nodeStorage });
   const runtime = new SimulationRuntime();

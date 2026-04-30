@@ -22,7 +22,7 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(__dirname, '..', '..');
-const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs'] as const;
+const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs', 'src/store'] as const;
 const TIMER_SCOPED_ROOTS = [
   'src/kb',
   'src/jobs',
@@ -34,6 +34,12 @@ const TIMER_SCOPED_ROOTS = [
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
   'src/providers/claude-appserver/server.ts',
+  // store/db.ts bridges the StoragePort to ambient better-sqlite3. The
+  // `existsSync` here is a real-fs sanity check that decides whether to use
+  // the disk path or fall back to `:memory:` — better-sqlite3 itself uses
+  // ambient node:fs, so this check has to query the same surface to stay
+  // honest. Documented in the file with an inline rationale.
+  'src/store/db.ts',
 ]);
 const TIMER_EXEMPT_FILES = new Set<string>([
   // Local port interface: the `setTimeout` / `clearTimeout` identifiers here

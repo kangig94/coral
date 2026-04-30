@@ -4,7 +4,7 @@
 // producer with synthetic launches and asserts the field appears whenever the
 // launch belongs to a workflow.
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -16,7 +16,8 @@ import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
+const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
+  existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
   readdirSync: (path, options) => readdirSync(path, options),
 };

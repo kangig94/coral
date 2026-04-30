@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  type Dirent,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -30,6 +39,9 @@ const BASE_CREATED_AT = '2026-04-19T00:00:00.000Z';
 const BASE_UPDATED_AT = '2026-04-19T00:00:00.000Z';
 
 const nodeStorage = {
+  existsSync(path: string): boolean {
+    return existsSync(path);
+  },
   readFileSync(path: string, encoding: BufferEncoding): string {
     return readFileSync(path, encoding);
   },

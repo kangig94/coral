@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 import Database from 'better-sqlite3';
@@ -17,7 +17,8 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 
 const REPO_ROOT = process.cwd();
 
-const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
+const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
+  existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
   readdirSync: (path, options) => readdirSync(path, options),
 };

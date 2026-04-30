@@ -666,7 +666,7 @@ Pure reconstruction holds: for any `seq_cutoff`, the projection rows derived by 
 | Cross-stream atomicity gap | `BEGIN..COMMIT` transaction | Correct by construction |
 | Custom JSONL segment readers/parsers | Parameterized SQL queries | Delete code |
 
-`store/` becomes the SQL/Journal substrate. Domain-owned read query modules (`jobs/read/queries.ts`, `sessions/read-queries.ts`, `discuss/read-queries.ts`, `workflow/read-queries.ts`) sit above it, and `read-model/CoralStore` composes them with Corpus reads. The `CoralCoordinator` is the sole owner of a writable DB connection.
+`store/` becomes the SQL/Journal substrate. Domain-owned read query modules (`jobs/read-queries.ts`, `sessions/read-queries.ts`, `discuss/read-queries.ts`, `workflow/read-queries.ts`) sit above it, and `read-model/CoralStore` composes them with Corpus reads. The `CoralCoordinator` is the sole owner of a writable DB connection.
 
 **Terminology note**: SQL schema scripts live under `schemas/` (§10). They are ordered schema generations applied to an empty or existing Coral store and are never user-data migration scripts; this rewrite has no prior deployed SQL state to preserve (§0). `src/store/schemas/001_initial.sql` is the single SQL schema authority for the clean-slate baseline and first applied schema. `src/store/schema.sql` must not exist because duplicate DDL authority is worse than a larger first script. Until the first main-branch deploy that actually creates SQL state, schema changes edit `001_initial.sql` in place; `002+` begins only after deployed SQL exists.
 
@@ -999,13 +999,13 @@ The repair pipeline runs during rescan + curate passes. It classifies each detec
 | **Needs manual** | Queue the entry in `kb_curate_retry_queue` with a repair hint. User sees a diagnostic (`coral-cli kb diagnose` or dashboard). |
 | **Unrecoverable** | Log + skip. Entry absent from projections until user fixes the source file. |
 
-**Status note (current state)**: this section describes two surfaces that exist together by intent — the spec's earlier framing conflated them. They have distinct concerns and distinct lifetimes:
+**Status note (current state)**: repair surfaces converge through SQL — there is no on-disk JSON cache. Two surfaces exist together:
 
-1. **Classification-driven repair pipeline** (`src/kb/corpus/rescan/{auto-fix,drift,index,projections,scan,storage}.ts` plus `rescan/incidents/{catalog,file-syntax,frontmatter,identity,references}.ts`). This is the surface that owns *individual entry diagnosis + classified fix dispatch* per the table above. As of this writing, the rescan tree is in place and wired into KB freshness — `KbRuntime.ensureCorpusFreshness` (`src/kb/runtime.ts`) is gated by `textArtifactsNeedRebuild()` and runs `performRescan` under the Corpus mutation lock when needed. End-to-end automated dispatch of every classified outcome through the runtime drain loop is forward work; until that lands, malformed-entry detection during bulk reload (#2 below) covers the gap.
+1. **Classification-driven repair pipeline** (`src/kb/corpus/rescan/{auto-fix,authority-baseline,drift,index,projections,scan,storage}.ts` plus `rescan/incidents/{catalog,file-syntax,frontmatter,identity,references}.ts`). Owns individual-entry diagnosis and classified fix dispatch per the table above. Wired into freshness through `KbRuntime.ensureCorpusFreshness` (`src/kb/runtime.ts`), which runs `performRescan` under the Corpus mutation lock when drift is detected.
 
-2. **Derived-index cache maintenance** (`src/kb/curate/text-artifacts/`). This is *not* repair — it owns the drift detection and bulk rebuild of the derived `index.json` + `orama-index.json` artifacts vs the Corpus markdown. `detectTextArtifactRebuildInfo` answers "is the cached index stale?"; `rebuildTextArtifacts` reloads the derived snapshot from current markdown. The shallow `pendingRepair[]` it produces during reload is a side-effect of try/catching parse errors per file, persisted to `curate-state.json` and synced to `kb_curate_retry_queue` by `curate/state/store.ts`. This is structural cache machinery, not ad-hoc repair, and remains load-bearing.
+2. **Curate scheduler + retry queue** (SQL: `kb_curate_scheduler`, `kb_curate_retry_queue`; code: `src/coordinator/live/curate-scheduler.ts`, `src/kb/curate/retry.ts`, `src/kb/curate/state-scheduler.ts`). The scheduler owns daily curate cadence; the retry queue holds pending repair work regardless of which surface detected it. Both are SQLite tables — there is no `curate-state.json` and no `text-artifacts/` cache.
 
-Both surfaces converge at `kb_curate_retry_queue` — the SQL table that tracks pending repair work regardless of which surface detected it. Repair operations that mutate the Corpus go through the standard Corpus mutation lock (§6.4 mutations). No special substrate.
+Repair operations that mutate the Corpus go through the standard Corpus mutation lock (§6.4 mutations). No special substrate.
 
 ### 6.5 Workflow (`stream.kind = 'workflow'`)
 
@@ -1862,14 +1862,15 @@ When subdividing:
 
 ## 11. Transport Semantics
 
-Not topology-based (no `--local` flag); **command-class-based**:
+Not topology-based (no `--local` flag); **command-class-based**. The CLI declares three classes:
 
 | Class | Transport | Example commands |
 |---|---|---|
-| Read-only, fresh-enough | Library-direct (in-proc `CoralStore`) | `jobs list`, `jobs detail`, `kb search`, `kb read`, historical `discuss read` |
-| Mutating or live-stream | IPC (Unix socket → coordinator RPC) | `codex`, `claude`, `resume`, `fork`, `workflow`, `abort`, `wait`, live `discuss` |
+| `read` (read-only, fresh-enough) | Library-direct (in-proc `CoralStore`) | `jobs list`, `jobs detail`, `kb search`, `kb read`, historical `discuss read` |
+| `mutate` (state-changing) | IPC (Unix socket → coordinator RPC) | `codex`, `claude`, `resume`, `fork`, `workflow`, `abort`, live `discuss` |
+| `subscribe` (live event stream) | IPC (Unix socket → coordinator RPC) | `wait`, `discuss watch` |
 
-**The CLI has exactly these two command classes.** There is no third "remote" class. The HTTP gateway (§11.3) exposes the same coordinator RPC to **non-CLI consumers** — `coral-reef` and any future browser/external client. The `coral-cli` CLI itself never dispatches over HTTP. Remote-CLI — `coral-cli` on machine A talking to a coordinator on machine B — is **not a supported scenario by principle**, not represented in `CommandClass`, and not planned. Cross-host invocation uses SSH (`ssh user@host coral-cli ...`), the standard Unix answer; Coral declines to introduce a parallel network-routing path inside its own CLI to duplicate what SSH already provides. The architectural seam between local user (CLI) and networked consumer (gateway) lives at the *server* — IPC and HTTP both serve coordinator RPC — not at the client.
+**`mutate` and `subscribe` both route over IPC.** The split exists so the CLI surface can declare streaming vs one-shot semantics for each command (`assertCommandClassCoverage` enforces that every command is classified). There is no fourth "remote" class. The HTTP gateway (§11.3) exposes the same coordinator RPC to **non-CLI consumers** — `coral-reef` and any future browser/external client. The `coral-cli` CLI itself never dispatches over HTTP. Remote-CLI — `coral-cli` on machine A talking to a coordinator on machine B — is **not a supported scenario by principle**, not represented in `CommandClass`, and not planned. Cross-host invocation uses SSH (`ssh user@host coral-cli ...`), the standard Unix answer; Coral declines to introduce a parallel network-routing path inside its own CLI to duplicate what SSH already provides. The architectural seam between local user (CLI) and networked consumer (gateway) lives at the *server* — IPC and HTTP both serve coordinator RPC — not at the client.
 
 ### 11.1 Why command-class routing
 

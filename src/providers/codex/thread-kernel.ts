@@ -13,7 +13,7 @@ import {
   buildProviderFailureMessage,
   requireAppServerLease,
 } from '../app-server/driver.js';
-import type { AppServerNotificationMessage } from '../app-server/driver.js';
+import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import {

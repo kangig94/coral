@@ -112,6 +112,11 @@ export function openBackendStoreDb(
     runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
   }
 
+  // existsSync intentionally queries the real fs: better-sqlite3 itself opens
+  // through ambient `node:fs`, so the directory's existence on disk is what
+  // determines whether the disk path or the in-memory fallback is viable.
+  // Tests with a virtual StoragePort rely on this real-fs check to fall back
+  // to `:memory:` when their virtual mkdir never landed on disk.
   return openStoreDatabase({
     path: storeDbPath === ':memory:' ? ':memory:' : existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
     storage: runtime.storage,

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,8 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
+const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
+  existsSync,
   readFileSync: readFileSync as StoragePort['readFileSync'],
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };

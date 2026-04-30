@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { StoragePort } from '../runtime/ports.js';
@@ -42,7 +41,7 @@ function defaultSchemasDirCandidates(): string[] {
 
 const SEEDED_SCHEMAS_DIR = '/tmp/sim/store/schemas';
 
-type SchemaStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
+type SchemaStorage = Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'>;
 type SchemaReadStorage = Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'>;
 type SchemaWriteStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
 type SchemaSeedStorage = SchemaReadStorage & SchemaWriteStorage;
@@ -82,9 +81,9 @@ function parseVersion(filename: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function resolveDefaultSchemasDir(): string {
+export function resolveDefaultSchemasDir(storage: Pick<StoragePort, 'existsSync'>): string {
   const candidates = defaultSchemasDirCandidates();
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[candidates.length - 1];
+  return candidates.find((candidate) => storage.existsSync(candidate)) ?? candidates[candidates.length - 1];
 }
 
 export function copySchemaAssets(
@@ -116,7 +115,7 @@ export function copySchemaAssets(
 }
 
 export function ensureStoreSchemasDir(storage: SchemaSeedStorage, seededDir: string = SEEDED_SCHEMAS_DIR): string {
-  const schemasDir = resolveDefaultSchemasDir();
+  const schemasDir = resolveDefaultSchemasDir(storage);
   if (storage.existsSync(schemasDir)) {
     return schemasDir;
   }
@@ -131,7 +130,7 @@ export function ensureStoreSchemasDir(storage: SchemaSeedStorage, seededDir: str
 export function applyStoreSchemas({
   db,
   storage,
-  schemasDir = resolveDefaultSchemasDir(),
+  schemasDir = resolveDefaultSchemasDir(storage),
 }: ApplyStoreSchemasOptions): void {
   const currentVersion = readCurrentVersion(db);
   const files = storage

@@ -11,8 +11,8 @@ import type {
   PersonaSeedInput,
   PersonaSeedOutput,
   Result,
-} from './session-types.js';
-import { createSeededRng, drawUInt32, shuffleInPlace, weightedSample } from './util/rng.js';
+} from '../session-types.js';
+import { createSeededRng, drawUInt32, shuffleInPlace, weightedSample } from './rng.js';
 import {
   cartesianProduct,
   hammingDistance,
@@ -20,7 +20,7 @@ import {
   eigendecompose,
   sampleKDpp,
   MAX_POOL_SIZE,
-} from './util/dpp.js';
+} from './dpp.js';
 
 export const TONE_AXES = {
   formality: ['formal', 'conversational'] as const,

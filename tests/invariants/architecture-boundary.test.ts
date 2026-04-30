@@ -1326,6 +1326,39 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(870);
   });
 
+  it('transport/http/handler.ts stays under the http-dispatch cap', () => {
+    // The HTTP handler combines token-compare, body parsing, route-table
+    // construction, dispatch, SSE primitives, and subscription handlers.
+    // It is cohesive (one HTTP entry, one routing fabric) but at the size
+    // ceiling. New routes belong in dedicated handler modules referenced
+    // from the route table, not inlined here.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/transport/http/handler.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(680);
+  });
+
+  it('jobs/read-queries.ts stays under the jobs-read-queries cap', () => {
+    // Jobs read-queries owns the prepared-statement cache, body decode,
+    // hydration, and the list/detail/progress query APIs as a single
+    // read-port surface. Splitting fragments the SQL/projection lookup
+    // path; the cap is a review gate. New query helpers belong in a
+    // sibling read-* module owned by the same domain.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/jobs/read-queries.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(770);
+  });
+
+  it('engines/needle/backend.ts stays under the needle-backend cap', () => {
+    // Needle backend orchestrates Consumer apply/search, snapshot manifest
+    // bookkeeping, install/staging, and active-handle leasing as a single
+    // cohesive engine. Forced splits would re-couple through exported
+    // mutable state. The cap is a review gate; new helpers belong in
+    // sibling engines/needle modules with a contract-style entry.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/engines/needle/backend.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(770);
+  });
+
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 

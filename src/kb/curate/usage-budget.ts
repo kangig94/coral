@@ -10,10 +10,10 @@ export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 export type UsageBudgetOptions = {
   storage: UsageBudgetStorage;
   homeDir?: string;
-  now?: () => number;
+  now: () => number;
 };
 
-export function isUsageBudgetExhausted({ storage, homeDir, now = Date.now }: UsageBudgetOptions): boolean {
+export function isUsageBudgetExhausted({ storage, homeDir, now }: UsageBudgetOptions): boolean {
   if (homeDir === undefined) {
     return false;
   }

@@ -178,6 +178,9 @@ vi.mock('#src/engines/needle/store.js', async () => {
 });
 
 const nodeStorage = {
+  existsSync(path: string): boolean {
+    return existsSync(path);
+  },
   readFileSync(path: string, encoding: BufferEncoding): string {
     return readFileSync(path, encoding);
   },

@@ -45,7 +45,7 @@ interface Snapshot {
   readonly serialized: string;
 }
 
-type SchemaStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
+type SchemaStorage = Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'>;
 
 function openMemoryDatabase(storage: SchemaStorage, schemasDir: string): Database.Database {
   return openStoreDatabase({

@@ -14,7 +14,7 @@
 // `WorkflowView.slotOutcomes`, which together are the inputs that CLI
 // presentation composes from.
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -47,7 +47,8 @@ const SLOT_A = `${WORKFLOW_ID}:0:0`;
 const SLOT_B = `${WORKFLOW_ID}:1:0`;
 const SLOT_C = `${WORKFLOW_ID}:1:1`;
 
-const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
+const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
+  existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
   readdirSync: (path, options) => readdirSync(path, options),
 };

@@ -24,7 +24,7 @@ const nodeFsSchemaStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 're
 };
 
 function seedStoreSchemas(storage: InMemoryStorage): void {
-  const schemasDir = resolveDefaultSchemasDir();
+  const schemasDir = resolveDefaultSchemasDir(nodeFsSchemaStorage);
   if (storage.existsSync(schemasDir)) {
     return;
   }
