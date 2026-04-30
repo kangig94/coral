@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { createCorpusAuthorityBaselineStore } from '#src/kb/corpus/rescan/authority-baseline.js';
 import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
 import { createCorpusMarkdownFileScan, createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
@@ -122,7 +123,7 @@ describe('drift signal split', () => {
 
   it('forces unchanged-snapshot corpus apply through waitFreshUntil generation without seq bumps', async () => {
     const db = createKbTestDb(tempRoot());
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const secondStarted = deferred();
     const releaseSecond = deferred();
     let applyCount = 0;
@@ -172,7 +173,7 @@ describe('drift signal split', () => {
 
   it('surfaces force-apply lifecycle edges through existing waitFreshUntil errors', async () => {
     const stoppedDb = createKbTestDb(tempRoot());
-    const stoppedDriver = new ConsumerDriver({ db: stoppedDb });
+    const stoppedDriver = new ConsumerDriver({ db: stoppedDb, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const stopped = stoppedDriver.register({
       id: 'stopped-corpus',
       authority: 'corpus',
@@ -198,7 +199,7 @@ describe('drift signal split', () => {
     }
 
     const unregisteredDb = createKbTestDb(tempRoot());
-    const unregisteredDriver = new ConsumerDriver({ db: unregisteredDb });
+    const unregisteredDriver = new ConsumerDriver({ db: unregisteredDb, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const unregistered = unregisteredDriver.register({
       id: 'unregistered-corpus',
       authority: 'corpus',

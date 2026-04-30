@@ -13,6 +13,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -55,7 +56,7 @@ function createDb(): InstanceType<typeof Database> {
 describe('sessions consumer-driver notify', () => {
   it('projects the appended session after SessionManager uses the coordinator-bound appender', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     // Cursor-only base consumer; commit-time reducer writes projection_sessions.
     driver.register({
       id: 'sessions',

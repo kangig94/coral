@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbEngineRuntime, KbRuntime, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/contract.js';
@@ -379,6 +380,7 @@ describe('needle staging crash replay', () => {
     let secondRuntime: KbRuntime | null = null;
     const firstDriver = new ConsumerDriver({
       db,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
       now: () => FIXED_NOW,
       corpusProjectionReader: firstRuntime.corpusProjectionReader,
     });
@@ -449,6 +451,7 @@ describe('needle staging crash replay', () => {
       await bindEmbedding(secondRuntime, createMockEmbeddingService());
       secondDriver = new ConsumerDriver({
         db,
+        time: REAL_CONSUMER_DRIVER_TIMERS,
         now: () => FIXED_NOW,
         corpusProjectionReader: secondRuntime.corpusProjectionReader,
       });

@@ -18,6 +18,7 @@ import type { ExpansionHost } from '#src/expansion/contract.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type {
   ConsumerRegistration,
   CorpusConsumerRegistration,
@@ -130,7 +131,7 @@ describe('Two-axis kind/registrationKind invariant', () => {
 
   it('runtime: ConsumerDriver.register() accepts every type-valid two-axis combination', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       const valid: ConsumerRegistration[] = [
         {

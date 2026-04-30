@@ -22,7 +22,6 @@ import type {
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import type { TimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';
-import { nowDate } from '../infra/time.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor, readCorpusState } from '../kb/state/corpus-state.js';
 
 // Consumer-related contract types live at their canonical home in
@@ -152,15 +151,6 @@ export type Authority = 'journal' | 'corpus';
 
 type ConsumerDriverTimers = Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
 
-const SYSTEM_CONSUMER_DRIVER_TIMERS: ConsumerDriverTimers = {
-  setTimeout: (fn, ms) => setTimeout(fn, ms),
-  clearTimeout: (handle) => {
-    if (handle !== null) {
-      clearTimeout(handle as ReturnType<typeof setTimeout>);
-    }
-  },
-};
-
 const EMPTY_PROJECTION_INPUT: KbProjectionInput = {
   index: {
     entries: {},
@@ -224,8 +214,8 @@ interface CorpusCursorRow {
 
 export interface ConsumerDriverOptions {
   readonly db: BetterSqlite3.Database;
-  readonly now?: () => Date;
-  readonly time?: ConsumerDriverTimers;
+  readonly now: () => Date;
+  readonly time: ConsumerDriverTimers;
   readonly corpusProjectionReader?: KbCorpusProjectionReader;
   readonly onTextProjectionSync?: () => void;
 }
@@ -268,8 +258,8 @@ export class ConsumerDriver {
 
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
-    this.now = opts.now ?? (() => nowDate());
-    this.timers = opts.time ?? SYSTEM_CONSUMER_DRIVER_TIMERS;
+    this.now = opts.now;
+    this.timers = opts.time;
     this.corpusProjectionReader =
       opts.corpusProjectionReader ??
       ({

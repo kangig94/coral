@@ -6,6 +6,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { JournalApplyContext, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -52,7 +53,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
   it('register() populates consumer_cursors and re-registering journal is idempotent', () => {
     const db = createDb();
     const now = new Date('2026-04-18T10:11:12.345Z');
-    const driver = new ConsumerDriver({ db, now: () => now });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => now });
     const reg = createRegistration('journal-consumer', async () => {});
 
     try {
@@ -82,7 +83,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
   it('notify(journal, N) triggers apply() exactly once, advances only cursor, and re-notifying the same target is idempotent', async () => {
     const db = createDb();
     const now = new Date('2026-04-18T10:11:12.345Z');
-    const driver = new ConsumerDriver({ db, now: () => now });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => now });
     const calls: Pick<JournalApplyContext, 'fromSeq' | 'upToSeq'>[] = [];
     const reg = createRegistration('journal-consumer', async ({ fromSeq, upToSeq }) => {
       calls.push({ fromSeq, upToSeq });
@@ -122,7 +123,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
 
   it('coalesces concurrent notify() calls into one subsequent apply() at the latest target', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const firstApplyStarted = createDeferred<void>();
     const releaseFirstApply = createDeferred<void>();
     const calls: Pick<JournalApplyContext, 'fromSeq' | 'upToSeq'>[] = [];
@@ -159,7 +160,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
 
   it('throws CoralSetupError(consumer_authority_mismatch) when the stored authority conflicts on re-register', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const reg = createRegistration('same', async () => {});
 
     try {

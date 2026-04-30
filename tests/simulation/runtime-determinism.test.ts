@@ -6,6 +6,7 @@ import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { type AppendInput } from '#src/store/append.js';
@@ -149,7 +150,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const runtime = new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } });
   const { storage, schemasDir } = createSchemaStorage(runtime);
   const db = openMemoryDatabase(storage, schemasDir);
-  const driver = new ConsumerDriver({ db, now: () => new Date(runtime.time.now()) });
+  const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createDefaultUpcasterRegistry();
   const streamIds = Array.from({ length: 3 }, () => runtime.ids.uuid());
@@ -208,7 +209,7 @@ function createSequencePlan(): SequencePlan {
 async function runPlannedSequence(runtime: { storage: SchemaStorage }, plan: SequencePlan): Promise<Snapshot> {
   const { storage, schemasDir } = createSchemaStorage(runtime);
   const db = openMemoryDatabase(storage, schemasDir);
-  const driver = new ConsumerDriver({ db, now: () => new Date(plan.equippedAt) });
+  const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createDefaultUpcasterRegistry();
 

@@ -20,6 +20,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
@@ -144,7 +145,7 @@ function setup(): {
 } {
   const db = new Database(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
-  const driver = new ConsumerDriver({ db, now: () => NOW });
+  const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
   // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   driver.register({ id: 'workflow', authority: 'journal', kind: 'cursor', registrationKind: 'base' });

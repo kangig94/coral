@@ -22,6 +22,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
@@ -227,6 +228,7 @@ describe('Corpus notify crash replay', () => {
 
     const primaryDriver = new ConsumerDriver({
       db: primaryDb,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
       now: () => new Date(BASE_UPDATED_AT),
     });
     const applyCalls: Array<{ appliedBy: string; snapshotId: string }> = [];
@@ -296,6 +298,7 @@ describe('Corpus notify crash replay', () => {
       replayDb = new Database(dbPath);
       replayDriver = new ConsumerDriver({
         db: replayDb,
+        time: REAL_CONSUMER_DRIVER_TIMERS,
         now: () => new Date(BASE_UPDATED_AT),
       });
       replayDriver.register(

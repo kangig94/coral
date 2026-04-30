@@ -30,6 +30,7 @@ const TIMER_SCOPED_ROOTS = [
   'src/discuss',
   'src/workflow',
   'src/providers',
+  'src/coordinator',
 ] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.

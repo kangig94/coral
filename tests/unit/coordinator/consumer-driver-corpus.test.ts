@@ -7,6 +7,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -72,7 +73,7 @@ function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): C
 describe('ConsumerDriver corpus registrations', () => {
   it('rejects missing corpusInterest on corpus consumers', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const reg = {
       id: 'corpus-missing-interest',
       authority: 'corpus',
@@ -92,6 +93,7 @@ describe('ConsumerDriver corpus registrations', () => {
     const db = createDb();
     const driver = new ConsumerDriver({
       db,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
       now: () => new Date('2026-04-19T01:02:03.000Z'),
     });
     const calls: Array<{ id: string; snapshot: CorpusSnapshot }> = [];
@@ -200,7 +202,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
   it('rejects lane on journal consumers', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const reg = {
       id: 'journal-with-lane',
       authority: 'journal',
@@ -219,7 +221,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
   it('rejects stored corpus interest mismatches for corpus consumers', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     db.prepare(
       `
         INSERT INTO consumer_cursors (
@@ -267,7 +269,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
   it('preserves a later content snapshot after an interleaved metadata-only apply on a both-interest consumer', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const firstApplyStarted = createDeferred<void>();
     const releaseFirstApply = createDeferred<void>();
     const calls: CorpusSnapshot[] = [];
@@ -327,7 +329,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
   it('retries against a snapshot parked during a failed apply rather than discarding it', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const firstApplyStarted = createDeferred<void>();
     const releaseFirstApply = createDeferred<void>();
     const calls: Array<{ snapshot: CorpusSnapshot; outcome: 'fail' | 'ok' }> = [];
@@ -389,7 +391,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
   it('treats a replayed older snapshot as a no-op for both-interest consumers', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const calls: CorpusSnapshot[] = [];
     const olderSnapshot = buildSnapshot({
       snapshotId: 'snapshot-older',

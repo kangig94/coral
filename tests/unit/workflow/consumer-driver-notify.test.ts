@@ -9,6 +9,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -32,7 +33,7 @@ function createDb(): InstanceType<typeof Database> {
 describe('workflow consumer-driver notify', () => {
   it('projects the workflow after a coordinator-bound append', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     // Cursor-only base consumer; commit-time reducer writes projection_workflows.
     driver.register({
       id: 'workflow',

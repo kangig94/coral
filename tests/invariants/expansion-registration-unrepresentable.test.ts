@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 
@@ -55,7 +56,7 @@ function grepFiles(roots: readonly string[], pattern: RegExp): string[] {
 describe('expansion consumer registration boundary', () => {
   it('runtime: ConsumerDriver.register still accepts cursor + expansion directly', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       const handle = driver.register({
         id: 'cursor-expansion',

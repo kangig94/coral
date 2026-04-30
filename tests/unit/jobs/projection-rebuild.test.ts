@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -29,7 +30,7 @@ function createDb(): InstanceType<typeof Database> {
 describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consumer)', () => {
   it('commit-time reducer writes projection_jobs and the cursor-only consumer advances on notify + waitFreshUntil', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db, now: () => NOW });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
     // Base journal projection consumers register cursor-only — projection
     // state is written by the commit-time reducer (spec §3.3); the cursor
     // row exists so `waitFreshUntil` can resolve callers.

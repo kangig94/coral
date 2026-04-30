@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -26,7 +27,7 @@ function createDriver(apply: Extract<JournalConsumerRegistration, { kind: 'apply
   consumerId: string;
 } {
   const db = createDb();
-  const driver = new ConsumerDriver({ db });
+  const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
   const consumerId = 'journal-consumer';
 
   driver.register({
@@ -110,7 +111,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
       setTimeout: vi.fn(() => timerHandle),
       clearTimeout: vi.fn(),
     };
-    const driver = new ConsumerDriver({ db, time: timers });
+    const driver = new ConsumerDriver({ db, time: timers, now: realConsumerDriverNow });
     const consumerId = 'journal-consumer';
     driver.register({
       id: consumerId,

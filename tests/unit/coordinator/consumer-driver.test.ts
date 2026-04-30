@@ -8,6 +8,7 @@ import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type {
   ConsumerApplyError,
   CorpusConsumerRegistration,
@@ -49,7 +50,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('logs apply failures, invokes onApplyFailure, and isolates healthy consumers on the same journal notify', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
     const healthyCalls: Array<{ fromSeq: number; upToSeq: number }> = [];
     const onApplyFailure = vi.fn((_err: ConsumerApplyError) => {
@@ -116,7 +117,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('skips duplicate in-flight journal targets once the consumer is already caught up', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     let startApply!: () => void;
     let releaseApply!: () => void;
     const applyStarted = new Promise<void>((resolve) => {
@@ -157,7 +158,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('supports register -> stop -> unregister for expansion consumers and drops future notifications after stop', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const applyCalls: Array<{ fromSeq: number; upToSeq: number }> = [];
     let releaseApply!: () => void;
     const applyStarted = new Promise<void>((resolve) => {
@@ -210,7 +211,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('makes stop() idempotent', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const apply = vi.fn(async () => {});
 
     try {
@@ -242,7 +243,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('throws CoralSetupError when unregister() is called before stop()', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
 
     try {
       const handle = driver.register({
@@ -268,7 +269,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     const failureAt = new Date('2026-04-22T01:02:03.000Z');
     const successAt = new Date('2026-04-22T01:02:04.000Z');
     let now = failureAt;
-    const driver = new ConsumerDriver({ db, now: () => now });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => now });
     let journalShouldFail = true;
     let corpusShouldFail = true;
 
@@ -460,7 +461,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
 
   it('shutdown() stops handles without deleting persisted cursor rows', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
 
     try {
       driver.register({

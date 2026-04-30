@@ -19,6 +19,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -45,7 +46,7 @@ const SNAPSHOT: KbCorpusSnapshot = {
 describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
   it('statusFor() narrows correctly across journal-cursor, corpus-apply, and stateless arms', () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       const cursorHandle = driver.register({
         id: 'three-arm-cursor',
@@ -92,7 +93,7 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
 
   it("waitFreshUntil throws 'consumer_wait_fresh_invalid_target' for stateless ids and 'consumer_authority_mismatch' for cross-authority lookups", () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       driver.register({
         id: 'three-arm-cursor',
@@ -149,7 +150,7 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
 
   it('stuckConsumers() excludes stateless ids even after stopConsumer is invoked', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       // Pin a stuck apply consumer so the test proves `stuckConsumers()`
       // does report something: stateless exclusion must be explicit, not a
@@ -204,7 +205,7 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
 describe('Stateless lifecycle stop/unregister idempotency (Phase 7)', () => {
   it('onStop fires exactly once across stop -> stop -> unregister', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const onStop = vi.fn(async () => {});
     try {
       const handle = driver.register({
@@ -230,7 +231,7 @@ describe('Stateless lifecycle stop/unregister idempotency (Phase 7)', () => {
 
   it('unregister() before stop() rejects with consumer_unregister_requires_stop', async () => {
     const db = createDb();
-    const driver = new ConsumerDriver({ db });
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     try {
       const handle = driver.register({
         id: 'stateless-bad-order',
