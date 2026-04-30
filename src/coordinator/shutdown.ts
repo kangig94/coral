@@ -149,7 +149,7 @@ export async function runShutdownSequence({
   const serverClosed = closeServerFn(server);
   const ipcClosed = ipcServer && closeIpcServerFn ? closeIpcServerFn(ipcServer) : Promise.resolve();
   await waitForInflightDrain(idleTimer, remainingDrain(), runtime.time);
-  server.closeAllConnections?.();
+  server.closeAllConnections();
   for (const stream of streamResponses) {
     stream.end();
   }

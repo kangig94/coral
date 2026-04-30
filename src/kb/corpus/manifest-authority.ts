@@ -17,7 +17,6 @@ import {
   computeMetadataSurfaceHash,
   type CanonicalFrontmatterRecord,
 } from './snapshot.js';
-export type { ManifestAuthorityDelta, ManifestAuthorityLane } from './manifest-types.js';
 import type { ManifestAuthorityDelta, ManifestAuthorityLane } from './manifest-types.js';
 
 export type FullManifestSurfaceHashes = {

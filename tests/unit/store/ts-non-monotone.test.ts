@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { sessionsRegistry } from '#src/sessions/events.js';

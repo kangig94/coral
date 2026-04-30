@@ -10,7 +10,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { type AppendInput } from '#src/store/append.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';

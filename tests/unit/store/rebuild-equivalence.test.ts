@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';

@@ -18,7 +18,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';

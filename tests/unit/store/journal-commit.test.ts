@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

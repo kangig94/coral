@@ -11,7 +11,8 @@ import {
   type CommitContext,
   type CommitEventsFn,
 } from '../store/append.js';
-import type { ResolvableCoralEventInput, UpcasterRegistry } from '../store/envelope.js';
+import type { ResolvableCoralEventInput } from '../store/envelope.js';
+import type { UpcasterRegistry } from '../store/upcaster-registry.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';

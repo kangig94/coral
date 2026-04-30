@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';

@@ -66,8 +66,8 @@ import {
   createCorpusMarkdownFileScan,
   createCorpusScanView,
   ENTITY_GRAPH_SCAN_ENTRY_ID,
-  type CorpusMarkdownKind,
 } from './corpus/rescan/scan.js';
+import type { CorpusMarkdownKind } from './corpus/rescan/storage.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
 import { createKbProjectionInput } from './projection-input.js';
 import { EngineArtifactRegistry } from './corpus/artifact-registry.js';

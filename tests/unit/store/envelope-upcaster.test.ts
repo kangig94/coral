@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 
 describe('UpcasterRegistry', () => {
   it('registerUpcaster records the type/fromVersion pair (verified via parseBody behavior)', () => {

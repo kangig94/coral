@@ -10,7 +10,7 @@ import type {
 } from '../../../src/runtime/ports.js';
 import { composeCoralPaths, type CoralPaths } from '../../../src/infra/path/compose.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
-import { cloneSpawnEvent } from '../../../src/runtime/spawn.js';
+import { cloneSpawnEvent } from '../../../src/runtime/ports.js';
 import { hashToken } from '../../../src/infra/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';

@@ -15,7 +15,7 @@ import { toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '../../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 
 type CreateDiscussRuntimeDeps = {

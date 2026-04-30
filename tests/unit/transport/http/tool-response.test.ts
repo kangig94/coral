@@ -7,9 +7,9 @@ import {
   domainError,
   domainResultToHttp,
   domainSuccess,
-  formatZodError,
   launchToHttp,
 } from '#src/transport/response.js';
+import { formatZodError } from '#src/transport/validation.js';
 
 describe('tool response domain helpers', () => {
   it('creates success domain results', () => {

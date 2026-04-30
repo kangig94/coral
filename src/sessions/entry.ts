@@ -6,9 +6,15 @@ import type { ProviderContinuityBlob } from './continuity.js';
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
 
 export type SessionState = z.infer<typeof sessionStateSchema>;
-export type SessionController = string;
 
-export const DEFAULT_SESSION_CONTROLLER = 'default';
+/** Identifier string for the session controller selecting per-session
+ * provider continuity defaults. Distinct from the in-process
+ * `SingleSessionController` class in `providers/claude-appserver/` — that
+ * one orchestrates the live turn lifecycle, this one just names the
+ * profile. */
+export type SessionControllerId = string;
+
+export const DEFAULT_SESSION_CONTROLLER: SessionControllerId = 'default';
 
 export const sessionControllerProfileSchema = z
   .object({
@@ -77,7 +83,7 @@ export const sessionEntrySchema = z
 
 export function sessionControllerFromProfile(
   profile?: SessionControllerProfile,
-): SessionController {
+): SessionControllerId {
   if (typeof profile?.owner === 'string' && profile.owner.length > 0) {
     return profile.owner;
   }

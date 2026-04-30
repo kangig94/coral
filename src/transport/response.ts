@@ -6,7 +6,6 @@ import {
   toolValidationError,
   type ToolDomainResult,
 } from './tool-result.js';
-export { formatZodError } from './validation.js';
 
 export { deriveErrorMessage, domainError, domainSuccess, toolValidationError };
 export type { ToolDomainResult };

@@ -463,7 +463,7 @@ export class JobLaunchService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string } = {},
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string },
   ): LaunchDecision {
     return this.deps.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }

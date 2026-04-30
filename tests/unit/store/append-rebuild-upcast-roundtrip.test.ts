@@ -7,7 +7,7 @@ import { z } from 'zod';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';

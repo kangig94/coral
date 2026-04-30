@@ -9,7 +9,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { ProviderLookupPort } from '#src/providers/catalog.js';
 import { CoralAppendError } from '#src/store/append-error.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/envelope.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';

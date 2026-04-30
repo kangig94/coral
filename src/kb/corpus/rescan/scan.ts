@@ -23,7 +23,6 @@ import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
 import type { CorpusMarkdownKind, CorpusStorage } from './storage.js';
 
-export type { CorpusMarkdownKind } from './storage.js';
 export type PrincipleEntryId = `principle:${string}`;
 export type CorpusActiveEntryId = KbEntryId | PrincipleEntryId;
 

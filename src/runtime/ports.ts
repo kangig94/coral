@@ -41,6 +41,15 @@ export interface SpawnEvent {
   env?: Record<string, string>;
 }
 
+export function cloneSpawnEvent(event: SpawnEvent): SpawnEvent {
+  return {
+    child: event.child,
+    command: event.command,
+    args: [...event.args],
+    ...(event.env ? { env: { ...event.env } } : {}),
+  };
+}
+
 export type SpawnListener = (event: SpawnEvent) => void;
 
 export interface RuntimeObserver {

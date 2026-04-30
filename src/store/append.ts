@@ -8,8 +8,8 @@ import {
   type CoralEvent,
   type CoralEventInput,
   type ResolvableCoralEventInput,
-  type UpcasterRegistry,
 } from './envelope.js';
+import type { UpcasterRegistry } from './upcaster-registry.js';
 import type { ComposedReducers, DomainAppendValidationContext } from './reducers.js';
 import { applyReducer } from './reducers.js';
 
