@@ -74,7 +74,6 @@ export async function spawnProviderServerTransport(params: {
     cwd: options.cwd === '' ? undefined : options.cwd,
     shell: runtime.env.platform() === 'win32',
     envAdditions: options.extraEnv,
-    mode: 'piped',
   });
   const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
 

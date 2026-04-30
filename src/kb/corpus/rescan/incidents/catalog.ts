@@ -69,7 +69,7 @@ export interface Detector {
   detect(corpus: CorpusScanView): DetectedIncident[];
 }
 
-export type IncidentClassification = 'auto-fixable' | 'needs-manual' | 'unrecoverable';
+export type IncidentClassification = 'auto-fixable' | 'needs-manual';
 
 const INCIDENT_CLASSIFICATIONS = {
   [REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS]: 'needs-manual',
@@ -83,7 +83,10 @@ const INCIDENT_CLASSIFICATIONS = {
   [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS]: 'needs-manual',
 } as const satisfies Readonly<Record<RepairIncidentId, IncidentClassification>>;
 
-/** Maps a detected repair incident to the automation policy Coral should apply. */
+/** Maps a detected repair incident to the automation policy Coral should apply.
+ * The `satisfies Readonly<Record<RepairIncidentId, ...>>` constraint above keeps
+ * the registry exhaustive at compile time, so a runtime fallback for "unknown
+ * incident kind" is unnecessary — every detected incident has a classification. */
 export function classifyIncident(incident: DetectedIncident): IncidentClassification {
-  return INCIDENT_CLASSIFICATIONS[incident.canonical] ?? 'unrecoverable';
+  return INCIDENT_CLASSIFICATIONS[incident.canonical];
 }

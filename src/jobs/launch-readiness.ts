@@ -1,6 +1,5 @@
+import type { LaunchReadiness } from './records.js';
 import type { JobProjectionDetail } from './read-contract.js';
-
-export type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
 
 export function deriveLaunchReadiness(detail: JobProjectionDetail): LaunchReadiness {
   const status = detail.status;

@@ -6,6 +6,15 @@ import { type ProviderAction, type ProviderInstruction } from '../providers/cont
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
 
+/**
+ * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
+ * `runtime` answering "has the launch settled, and how?". Used by the workflow
+ * executor to decide whether to proceed past launch boundary, and surfaced in
+ * `JobDetailResponse` for debugging surfaces (CLI `jobs detail`, coral-reef,
+ * etc.). The pure derivation function lives at `./launch-readiness.ts`.
+ */
+export type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
+
 export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
   return (
     typeof status.backendNamespace === 'string' &&
@@ -109,10 +118,14 @@ export type JobsListResponse = {
   jobs: Array<{ jobId: string; status: JobStatus }>;
 };
 
-/** Response shape for jobs.detail. */
+/** Response shape for jobs.detail. Includes the derived launch-readiness view
+ * (`'pending' | 'queued' | 'ready' | 'error'`) so callers — debug surfaces,
+ * coral-reef, the CLI — can see whether a job has settled past its launch
+ * boundary without having to re-derive the mapping from `phase` + `runtime`. */
 export type JobDetailResponse = {
   status: JobStatus;
   events: JobProgress[];
+  readiness: LaunchReadiness;
 };
 
 export type {

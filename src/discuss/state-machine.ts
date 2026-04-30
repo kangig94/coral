@@ -18,7 +18,7 @@ export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
-const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
+const END_REASON_CONTENT: Record<EndReason, string> = {
   all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
   max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
   all_blocked:
@@ -26,7 +26,7 @@ const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = 
   no_participants: 'No eligible agents remaining. Ending discussion.',
 };
 
-export function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
+export function endContent(reason: EndReason): string {
   return END_REASON_CONTENT[reason];
 }
 
@@ -469,7 +469,7 @@ export function decideEpochSummary(
 
 export function decideEnd(
   state: DiscussState,
-  opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
+  opts: { force?: boolean; reason?: string; endReason?: EndReason },
   context: DecisionContext,
   seq: number,
   ts: string,

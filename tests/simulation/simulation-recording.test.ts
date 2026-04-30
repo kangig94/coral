@@ -203,7 +203,6 @@ describe('simulation app-server and recording', () => {
       envAdditions: {
         TOKEN: 'redacted',
       },
-      mode: 'piped',
     });
     const closePromise = waitForChildClose(child);
     const recording = recordSpawn(child);
@@ -235,7 +234,6 @@ describe('simulation app-server and recording', () => {
     const replayChild = replayRuntime.process.spawn({
       command: 'replay-provider',
       args: [],
-      mode: 'piped',
     });
     const replayClosePromise = waitForChildClose(replayChild);
     let replayStdout = '';

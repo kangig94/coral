@@ -13,6 +13,7 @@ import type { ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
+import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/server-ports.js';
 import {
   knownDiscussSources,
@@ -245,7 +246,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           return null;
         }
         const events = world.progressStore.readJobProgress(jobId);
-        return { status, events };
+        return { status, events, readiness: deriveLaunchReadiness(detail) };
       },
     },
     workflows: {

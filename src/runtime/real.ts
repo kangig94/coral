@@ -35,7 +35,6 @@ import type {
   Runtime,
   RuntimeExecOptions,
   RuntimePaths,
-  RuntimeSpawnMode,
   StorageData,
   StoragePort,
   TimePort,
@@ -302,11 +301,10 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
             })
           : buildSpawnEnv(options.envAdditions);
       const child = spawnChild(options.command, options.args, {
-        stdio: toNodeStdio(options.mode),
+        stdio: ['pipe', 'pipe', 'pipe'],
         cwd: options.cwd,
         shell: options.shell,
         env: spawnEnv,
-        detached: options.mode === 'detached',
       });
       return child as unknown as ChildProcessLike;
     },
@@ -467,13 +465,6 @@ function captureEnvState(): CapturedEnvState {
     arch: process.arch,
     cwd: process.cwd(),
   };
-}
-
-function toNodeStdio(mode: RuntimeSpawnMode): ['pipe' | 'ignore', 'pipe' | 'ignore', 'pipe' | 'ignore'] {
-  if (mode === 'piped') {
-    return ['pipe', 'pipe', 'pipe'];
-  }
-  return ['ignore', 'ignore', 'ignore'];
 }
 
 function writeAtomicJson(storage: StoragePort, path: string, value: unknown): void {

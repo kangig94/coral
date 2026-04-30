@@ -13,7 +13,7 @@ import type {
   JobTerminalDiagnostics,
   JobTerminalInput,
 } from '../jobs/records.js';
-import type { LaunchReadiness } from '../jobs/launch-readiness.js';
+import type { LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';

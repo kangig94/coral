@@ -217,7 +217,6 @@ describe('simulation runtime', () => {
     const child = runtime.process.spawn({
       command: 'fake-child',
       args: ['--spawn'],
-      mode: 'piped',
     });
 
     let stdout = '';
@@ -295,7 +294,6 @@ describe('simulation runtime', () => {
       envAdditions: {
         TOKEN: 'redacted',
       },
-      mode: 'piped',
     });
 
     expect(world.runtime.observer.events).toHaveLength(1);
@@ -318,7 +316,6 @@ describe('simulation runtime', () => {
     world.runtime.process.spawn({
       command: 'after-dispose',
       args: [],
-      mode: 'ignored',
     });
 
     expect(world.runtime.observer.events).toHaveLength(2);
@@ -348,7 +345,6 @@ describe('simulation runtime', () => {
       expect.objectContaining({
         command: 'fake-exec',
         args: ['--queued'],
-        mode: 'piped',
       }),
     ]);
     expect(observed).toEqual([

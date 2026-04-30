@@ -47,8 +47,6 @@ export interface RuntimeObserver {
   onSpawn(listener: SpawnListener): Disposable;
 }
 
-export type RuntimeSpawnMode = 'piped' | 'ignored' | 'detached';
-
 export type RuntimeSpawnOptions = {
   command: string;
   args: string[];
@@ -57,7 +55,6 @@ export type RuntimeSpawnOptions = {
   envAdditions?: Record<string, string>;
   inheritEnv?: boolean;
   shell?: boolean;
-  mode: RuntimeSpawnMode;
 };
 
 export type DurableLaunchOptions = {

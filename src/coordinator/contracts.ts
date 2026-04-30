@@ -4,7 +4,7 @@ import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import type { JobProgress } from '../jobs/records.js';
-import type { LaunchReadiness } from '../jobs/launch-readiness.js';
+import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { ProviderServerLease, ProviderServerSpec, ProviderSpec } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';

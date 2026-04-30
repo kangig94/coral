@@ -99,7 +99,6 @@ describe('createRealRuntime', () => {
         CORAL_OWNER: 'session-123',
         EXTRA_ENV: 'extra-value',
       },
-      mode: 'piped',
     });
 
     const result = await readPipedOutput(child);
@@ -123,7 +122,6 @@ describe('createRealRuntime', () => {
     const child = runtime.process.spawn({
       command: process.execPath,
       args: ['-e', "process.stdout.write('recorded\\n');"],
-      mode: 'piped',
     });
 
     const result = await readPipedOutput(child);
@@ -134,21 +132,6 @@ describe('createRealRuntime', () => {
       signal: null,
     });
     expect(existsSync(recordingDir)).toBe(false);
-  });
-
-  it('models ignored stdio launches explicitly', async () => {
-    const runtime = createRealRuntime('prod');
-    const child = runtime.process.spawn({
-      command: process.execPath,
-      args: ['-e', 'process.exit(0)'],
-      mode: 'ignored',
-    });
-
-    expect(child.stdin).toBeNull();
-    expect(child.stdout).toBeNull();
-    expect(child.stderr).toBeNull();
-
-    await expect(waitForClose(child)).resolves.toEqual({ code: 0, signal: null });
   });
 
   it('launches durable detached jobs without materializing runtime/exit sidecar files', async () => {

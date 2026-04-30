@@ -68,7 +68,6 @@ describe('recording observer', () => {
     const child = runtime.process.spawn({
       command: process.execPath,
       args: ['-e', "process.stdout.write('recorded\\n');"],
-      mode: 'piped',
     });
 
     const result = await readPipedOutput(child);

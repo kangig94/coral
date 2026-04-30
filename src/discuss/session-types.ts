@@ -20,7 +20,6 @@ export const endReasons = [
   'max_epochs_reached',
   'all_blocked',
   'no_participants',
-  'already_ended',
 ] as const;
 
 export const sessionEventKinds = ['force_end', 'synthesis'] as const;

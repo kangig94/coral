@@ -1,7 +1,14 @@
 import type { CorpusInterest } from '../../store/consumer-contract.js';
 import type { CorpusSnapshot } from './snapshot.js';
 
-export type EngineArtifactKind = 'authority-mirror' | 'projection-cache';
+/**
+ * Engine artifact category. `'projection-cache'` covers all current artifact
+ * kinds — files an engine derives from authority (Corpus markdown / Journal
+ * events) and that are fully rebuildable from that authority. New variants
+ * (e.g. an authoritative mirror format) will be added when an actual engine
+ * needs them.
+ */
+export type EngineArtifactKind = 'projection-cache';
 
 export type EngineArtifactProjectedSnapshot = Pick<
   CorpusSnapshot,

@@ -99,13 +99,12 @@ export class MockChildProcess extends EventEmitter implements ChildProcessLike {
 
   constructor(
     readonly pid: number,
-    mode: RuntimeSpawnOptions['mode'],
     private readonly onKill: (pid: number, signal?: NodeJS.Signals) => boolean,
   ) {
     super();
-    this.stdin = mode === 'piped' ? new MockStdin() : null;
-    this.stdout = mode === 'piped' ? (new PassThrough() as unknown as ChildReadableLike) : null;
-    this.stderr = mode === 'piped' ? (new PassThrough() as unknown as ChildReadableLike) : null;
+    this.stdin = new MockStdin();
+    this.stdout = new PassThrough() as unknown as ChildReadableLike;
+    this.stderr = new PassThrough() as unknown as ChildReadableLike;
   }
 
   kill(signal?: NodeJS.Signals): boolean {
@@ -207,7 +206,7 @@ export class MockProcessSpawner {
 
     const script = this.spawnScripts.shift() ?? {};
     const pid = script.pid ?? this.allocatePid();
-    const child = new MockChildProcess(pid, options.mode, (childPid, signal) => this.killChild(childPid, signal));
+    const child = new MockChildProcess(pid, (childPid, signal) => this.killChild(childPid, signal));
     const record = this.registerProcess(pid, child, script.kills ?? [], null);
     attachSpawnRecordingMetadata(child, {
       command: options.command,

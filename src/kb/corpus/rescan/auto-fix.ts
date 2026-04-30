@@ -147,11 +147,10 @@ export async function applyDetectedIncidentFixesLocked(
         } else {
           result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
         }
-      } else if (classification === 'needs-manual') {
+      } else {
+        // 'needs-manual' — the only other variant; registry is exhaustive.
         const enqueued = enqueueManualRepairLocked(kb, incident);
         result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
-      } else {
-        result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
       }
     } catch (error: unknown) {
       backendLog.warn(

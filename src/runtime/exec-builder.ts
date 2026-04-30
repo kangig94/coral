@@ -85,7 +85,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       cwd,
       env,
       inheritEnv,
-      mode: 'piped',
     });
 
     child.stdin?.end();
