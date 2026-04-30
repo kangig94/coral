@@ -9,7 +9,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const SIMULATION_ROOT = resolve(REPO_ROOT, 'tools', 'simulation');
 const TOOLS_TESTING_ROOT = resolve(REPO_ROOT, 'tools', 'testing');
-const MANIFEST_PATH = resolve(REPO_ROOT, 'sealed-inventory.json');
+const MANIFEST_PATH = resolve(SIMULATION_ROOT, 'sealed-inventory.json');
 const SIMULATION_CORE_ROOT = 'tools/simulation/core/backend.ts';
 const SERVER_ROOT = 'src/coordinator/bootstrap.ts';
 
