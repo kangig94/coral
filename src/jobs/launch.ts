@@ -48,7 +48,7 @@ export interface JobLaunchRequest {
    * The workflow job that owns the plan slot this child is filling. By spec
    * §6.1 line 813 convention `workflowJobId === workflowId`, so this value
    * also becomes `refs.workflowId` on the resulting `job.launch.requested`
-   * envelope — the launch path in `job-store.ts` is the producer.
+   * envelope — the launch path in `store.ts` is the producer.
    */
   parentWorkflowJobId?: string;
   agent?: string;
