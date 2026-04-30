@@ -1,22 +1,20 @@
 import type {
   KbDeleteResponse,
-  KbMemoResponse,
-  KbPromoteResponse,
-  KbSourceDeleteResponse,
-  KbSourceImportResponse,
-  KbUpdateResponse,
-} from '../../transport/http/client.js';
-import type {
   KbDiagnoseResult,
   KbMemoDeleteResult,
   KbMemoListResult,
   KbMemoPurgeResult,
+  KbMemoResponse,
   KbPrincipleVerboseRow,
   KbPrinciplesResult,
+  KbPromoteResponse,
   KbReadResult,
   KbReindexResponse,
   KbSearchResponse,
+  KbSourceDeleteResponse,
+  KbSourceImportResponse,
   KbSourceListResult,
+  KbUpdateResponse,
 } from '../../kb/entry-types.js';
 import { formatTable, joinLines } from '../../infra/text.js';
 

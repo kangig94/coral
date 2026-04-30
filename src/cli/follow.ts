@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
-import type { AcceptedLaunchResponse } from '../transport/http/client.js';
+import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';

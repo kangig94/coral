@@ -104,6 +104,17 @@ export interface JobProgress {
   continuity?: JobContinuitySnapshot | null;
 }
 
+/** Response shape for jobs.list. */
+export type JobsListResponse = {
+  jobs: Array<{ jobId: string; status: JobStatus }>;
+};
+
+/** Response shape for jobs.detail. */
+export type JobDetailResponse = {
+  status: JobStatus;
+  events: JobProgress[];
+};
+
 export type {
   JobDiagnostics,
   JobTerminal,

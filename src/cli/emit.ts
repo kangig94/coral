@@ -1,9 +1,7 @@
 import type { Command } from 'commander';
 
-import {
-  BackendToolHttpError,
-  type AcceptedLaunchResponse,
-} from '../transport/http/client.js';
+import { BackendToolHttpError } from '../transport/http/errors.js';
+import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import { buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
 import { formatLaunch } from './format/jobs.js';

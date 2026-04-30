@@ -1,5 +1,5 @@
 import { isRecord } from '../../infra/json.js';
-import type { BackendToolHttpError } from '../../transport/http/client.js';
+import type { BackendToolHttpError } from '../../transport/http/errors.js';
 import type { CliErrorEnvelope } from '../errors.js';
 import { formatUnknown } from '../../infra/text.js';
 

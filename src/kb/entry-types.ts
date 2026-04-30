@@ -428,3 +428,39 @@ export function isSourceEntry(entry: EntryRecord): entry is SourceEntry {
 export function isCommunityEntry(entry: EntryRecord): entry is CommunityEntry {
   return entry.kind === 'community';
 }
+
+/** Response shapes returned by KB hosted operations over IPC/HTTP. */
+export type KbMemoResponse = {
+  filename: string;
+  path: string;
+};
+
+export type KbPromoteResponse = {
+  path: string;
+};
+
+export type KbUpdateResponse = {
+  path: string;
+};
+
+export type KbDeleteResponse = {
+  deleted: string;
+};
+
+export type KbSourceImportResponse =
+  | {
+      status: 'completed';
+      job: string;
+      readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+      slug: string;
+      path: string;
+    }
+  | {
+      status: 'running' | 'queued';
+      job: string;
+      readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
+    };
+
+export type KbSourceDeleteResponse = {
+  deleted: string;
+};

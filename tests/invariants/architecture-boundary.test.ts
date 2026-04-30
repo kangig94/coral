@@ -1398,7 +1398,7 @@ describe('architecture boundary guard', () => {
       // role/coordinator distinction matters: things tied to the coordinator
       // role (composition, identity, world, lifecycle, server controllers)
       // stay coordinator-named. Things tied to the deployment unit (the
-      // running daemon) — BackendInfo, BackendClient, BackendStatus, the
+      // running daemon) — BackendInfo, BackendStatus, the
       // discovery file, the auth token, the user-facing CLI subcommand —
       // legitimately use "Backend" and are NOT in this registry.
       [/\bBackendCoreOptions\b/u, 'BackendCoreOptions'],

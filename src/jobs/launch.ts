@@ -13,6 +13,17 @@ export type LaunchDecision =
   | { status: 'queued'; job: string; session: string; message?: undefined }
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
 
+/**
+ * Coordinator response shape when a launch request is accepted (running or queued).
+ * Returned over IPC and HTTP for sessions.create / sessions.message / sessions.fork
+ * / workflow.run.
+ */
+export type AcceptedLaunchResponse = {
+  session: string;
+  job: string;
+  launchState: 'running' | 'queued';
+};
+
 export function rejectLaunch(code: string, message: string): LaunchDecision {
   return {
     status: 'rejected',

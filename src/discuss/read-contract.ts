@@ -71,6 +71,22 @@ export type DiscussAuditDetailResponse = {
 
 export type DiscussDetailResponse = DiscussControlDetailResponse | DiscussAuditDetailResponse;
 
+/** Response shape for discuss.start. */
+export type DiscussStartResponse = {
+  session: string;
+};
+
+/** Response shape for discuss.abort. */
+export type DiscussAbortResponse = {
+  ok: true;
+  session: string;
+};
+
+/** Response shape for discuss.list. */
+export type DiscussSessionsListResponse = {
+  sessions: DiscussSummaryDto[];
+};
+
 function buildDiscussAgents(state: DiscussState): DiscussAgentDto[] {
   return Object.entries(state.agents).map(([name, agent]) => ({
     name,

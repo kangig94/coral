@@ -1,10 +1,9 @@
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
-import type { JobsListResponse } from '../../transport/http/client.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
-import type { JobStatus, JobTerminal } from '../../jobs/records.js';
-import type { AcceptedLaunchResponse } from '../../transport/http/client.js';
+import type { JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
+import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from '../../infra/text.js';
 
 export type JobsListItem = {

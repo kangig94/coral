@@ -2,28 +2,17 @@ import type { Command } from 'commander';
 
 import { resolvePluginRoot } from './plugin-root.js';
 
-import {
-  type InvocationContext,
-  type DiscussAbortResponse,
-  type DiscussStartResponse,
-  type JobsListResponse,
-  type KbDeleteResponse,
-  type KbMemoResponse,
-  type KbPromoteResponse,
-  type KbSourceDeleteResponse,
-  type KbSourceImportResponse,
-  type KbUpdateResponse,
-  type SessionCreateResponse,
-  type SessionMessageResponse,
-  type WorkflowLaunchResponse,
-} from '../transport/http/client.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
-import type { JobStatus } from '../jobs/records.js';
+import type { AcceptedLaunchResponse } from '../jobs/launch.js';
+import type { JobStatus, JobsListResponse } from '../jobs/records.js';
 import type {
   KbDiagnoseInput,
   KbDiagnoseResult,
   KbDeleteInput,
+  KbDeleteResponse,
   KbMemoDeleteInput,
   KbMemoDeleteResult,
   KbMemoInput,
@@ -31,9 +20,11 @@ import type {
   KbMemoListResult,
   KbMemoPurgeInput,
   KbMemoPurgeResult,
+  KbMemoResponse,
   KbPrinciplesInput,
   KbPrinciplesResult,
   KbPromoteInput,
+  KbPromoteResponse,
   KbReadInput,
   KbReadResult,
   KbReindexInput,
@@ -41,9 +32,12 @@ import type {
   KbSearchInput,
   KbSearchResponse,
   KbSourceDeleteInput,
+  KbSourceDeleteResponse,
+  KbSourceImportResponse,
   KbSourceListResult,
   KbSourcePersistInput,
   KbUpdateInput,
+  KbUpdateResponse,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { getSharedReadCoralStore } from './read-store.js';
@@ -97,9 +91,9 @@ export type AbortCapableClient = {
 };
 
 export type CliCommandClient = AbortCapableClient & {
-  createSession(provider: string, prompt: string, options?: CreateSessionRequestOptions): Promise<SessionCreateResponse>;
-  sendMessage(sessionId: string, prompt: string, options?: SessionRequestOptions): Promise<SessionMessageResponse>;
-  workflow(expression: string, options: WorkflowRequestOptions): Promise<WorkflowLaunchResponse>;
+  createSession(provider: string, prompt: string, options?: CreateSessionRequestOptions): Promise<AcceptedLaunchResponse>;
+  sendMessage(sessionId: string, prompt: string, options?: SessionRequestOptions): Promise<AcceptedLaunchResponse>;
+  workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
@@ -393,19 +387,19 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   return {
     createSession: async (provider, prompt, options = {}) => {
-      return request<SessionCreateResponse>(
+      return request<AcceptedLaunchResponse>(
         'sessions.create',
         buildTransportContextBody({ provider, prompt, ...options }, defaultContext),
       );
     },
     sendMessage: async (sessionId, prompt, options = {}) => {
-      return request<SessionMessageResponse>(
+      return request<AcceptedLaunchResponse>(
         'sessions.message',
         buildTransportContextBody({ sessionId, prompt, ...options }, defaultContext),
       );
     },
     workflow: async (expression, options) => {
-      return request<WorkflowLaunchResponse>(
+      return request<AcceptedLaunchResponse>(
         'workflow.run',
         buildTransportContextBody({ expression, ...options }, defaultContext),
       );

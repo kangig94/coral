@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import type { BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { ShutdownResult } from '#src/transport/http/backend/shutdown.js';
-import type { AcceptedLaunchResponse } from '#src/transport/http/client.js';
+import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
 import type { WatchState } from '#src/discuss/watch.js';
 import type { KbReadResult } from '#src/kb/entry-types.js';
