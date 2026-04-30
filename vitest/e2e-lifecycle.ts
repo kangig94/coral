@@ -2,9 +2,9 @@ import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
 const alias = {
-  '#src': fileURLToPath(new URL('./src', import.meta.url)),
-  '#tests': fileURLToPath(new URL('./tests', import.meta.url)),
-  '#tools': fileURLToPath(new URL('./tools', import.meta.url)),
+  '#src': fileURLToPath(new URL('../src', import.meta.url)),
+  '#tests': fileURLToPath(new URL('../tests', import.meta.url)),
+  '#tools': fileURLToPath(new URL('../tools', import.meta.url)),
 };
 
 // E2E lifecycle suite: spawns long-lived backend subprocesses + waits for
@@ -12,6 +12,7 @@ const alias = {
 // flavor-coexistence 61s). Run when touching coordinator boot/shutdown,
 // IPC, backend bundle build, or flavor isolation.
 export default defineConfig({
+  root: fileURLToPath(new URL('..', import.meta.url)),
   resolve: { alias },
   test: {
     include: ['tests/e2e/lifecycle/**/*.test.ts', 'tests/e2e/**/lifecycle/**/*.test.ts'],

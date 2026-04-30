@@ -43,7 +43,7 @@ dist/ removed
   ▼  tsc
 dist/**/*.js + dist/**/*.d.ts
   │
-  ▼  check:simulation (`tsc -p tsconfig.simulation.json` + sealing)
+  ▼  check:simulation (`tsc -p tsconfig/simulation.json` + sealing)
   │
   ▼  esbuild (`scripts/build-server.mjs`)
 build/coral-backend.cjs
