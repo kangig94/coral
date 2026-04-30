@@ -1,7 +1,7 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
-import { joinLines } from '../../infra/text.js';
+import { joinLines } from './text.js';
 
 export function formatBackendStatus(result: BackendStatusFull): string {
   switch (result.status) {

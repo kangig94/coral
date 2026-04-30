@@ -1,5 +1,6 @@
 import type { AgentState, TranscriptEntry } from './session-types.js';
-import { pad2 } from './util/string.js';
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
 
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;

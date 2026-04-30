@@ -71,7 +71,10 @@ function canonicalSrcPath(filePath: string): string {
 }
 
 function importsNodeFs(source: string): boolean {
-  return /from\s+['"]node:fs['"]/u.test(source) || /import\s+['"]node:fs['"]/u.test(source);
+  // Match both `node:fs` and `node:fs/promises` (the async surface). Domain
+  // code MUST NOT import either; sync I/O goes through `StoragePort` and
+  // async file work — when needed at all — should be added to the port.
+  return /from\s+['"]node:fs(?:\/promises)?['"]/u.test(source) || /import\s+['"]node:fs(?:\/promises)?['"]/u.test(source);
 }
 
 function importsNodeOs(source: string): boolean {

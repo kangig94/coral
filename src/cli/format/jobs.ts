@@ -4,7 +4,7 @@ import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
-import { formatTable, joinLines } from '../../infra/text.js';
+import { formatTable, joinLines } from './text.js';
 
 export type JobsListItem = {
   jobId: string;

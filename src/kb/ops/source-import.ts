@@ -1,9 +1,8 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, delimiter, extname, join } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import type { EnvPort, IdPort, ProcessPort, TimePort } from '../../runtime/ports.js';
+import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
 import { sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';
@@ -40,6 +39,7 @@ export type SourceImportRuntime = {
   process: Pick<ProcessPort, 'exec'>;
   ids: Pick<IdPort, 'uuid'>;
   time: Pick<TimePort, 'now'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'rmSync' | 'writeFileSync'>;
 };
 
 export type SourceImportContext = {
@@ -73,6 +73,7 @@ function createDefaultSourceImportRuntime(): SourceImportRuntime {
     process: runtime.process,
     ids: runtime.ids,
     time: runtime.time,
+    storage: runtime.storage,
   };
 }
 
@@ -134,25 +135,25 @@ async function runCommand(
   throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`);
 }
 
-async function createPdfOutputDir(ctx: SourceImportContext): Promise<string> {
+function createPdfOutputDir(ctx: SourceImportContext): string {
   const pdfTempRoot = join(ctx.runtimeRoot, 'source-import-pdf');
-  await mkdir(pdfTempRoot, { recursive: true });
-  return await mkdtemp(join(pdfTempRoot, 'marker-'));
+  ctx.runtime.storage.mkdirSync(pdfTempRoot, { recursive: true });
+  // Random suffix via runtime.ids.uuid(); UUID collision is effectively zero,
+  // so a single mkdir suffices instead of mkdtemp's retry loop.
+  const outputDir = join(pdfTempRoot, `marker-${ctx.runtime.ids.uuid()}`);
+  ctx.runtime.storage.mkdirSync(outputDir, { recursive: true });
+  return outputDir;
 }
 
-async function stagePreparedSourceMarkdown(
-  stageRoot: string,
-  markdown: string,
-  runtime: SourceImportRuntime,
-): Promise<string> {
-  await mkdir(stageRoot, { recursive: true });
+function stagePreparedSourceMarkdown(stageRoot: string, markdown: string, runtime: SourceImportRuntime): string {
+  runtime.storage.mkdirSync(stageRoot, { recursive: true });
   const stagedPath = join(stageRoot, `${runtime.ids.uuid()}.md`);
-  await writeFile(stagedPath, markdown, 'utf8');
+  runtime.storage.writeFileSync(stagedPath, markdown, { encoding: 'utf-8' });
   return stagedPath;
 }
 
-async function findFirstMarkdownFile(root: string): Promise<string | undefined> {
-  const entries = await readdir(root, { withFileTypes: true });
+function findFirstMarkdownFile(root: string, storage: SourceImportRuntime['storage']): string | undefined {
+  const entries = storage.readdirSync(root, { withFileTypes: true });
 
   for (const entry of entries) {
     if (entry.isFile() && extname(entry.name).toLowerCase() === '.md') {
@@ -165,7 +166,7 @@ async function findFirstMarkdownFile(root: string): Promise<string | undefined> 
       continue;
     }
 
-    const nestedMarkdown = await findFirstMarkdownFile(join(root, entry.name));
+    const nestedMarkdown = findFirstMarkdownFile(join(root, entry.name), storage);
     if (nestedMarkdown) {
       return nestedMarkdown;
     }
@@ -393,7 +394,7 @@ export async function prepareSourceImport(
 
   if (signal !== undefined) throwIfAborted(signal, 'persist');
   log('Staging converted markdown for backend import');
-  const stagedPath = await stagePreparedSourceMarkdown(
+  const stagedPath = stagePreparedSourceMarkdown(
     sourceImportStageDir(runtimeRoot),
     renderSourceMarkdown(meta, converted.markdown),
     runtime,
@@ -415,8 +416,8 @@ export class MarkdownCopyConverter implements Converter {
     void log;
   }
 
-  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
-    const rawMarkdown = normalizeTextInput(await readFile(filePath, 'utf8'));
+  async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
     const withoutFrontmatter = stripLeadingFrontmatter(rawMarkdown);
     const { title, body } = splitLeadingMarkdownTitle(withoutFrontmatter);
 
@@ -436,8 +437,8 @@ export class HtmlTurndownConverter implements Converter {
     assertPackagesInstalled(['turndown'], log);
   }
 
-  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
-    const html = normalizeTextInput(await readFile(filePath, 'utf8'));
+  async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    const html = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
     const title = extractHtmlTitle(html);
     if (!title) {
       throw new Error('HTML import requires a <title> or first <h1>');
@@ -516,16 +517,16 @@ export class PdfMarkerConverter implements Converter {
       throw new Error('marker_single is not available');
     }
 
-    const outputDir = await createPdfOutputDir(ctx);
+    const outputDir = createPdfOutputDir(ctx);
 
     try {
       await runCommand(markerCommand, [filePath, '--output_dir', outputDir], 'marker_single', ctx);
-      const markdownPath = await findFirstMarkdownFile(outputDir);
+      const markdownPath = findFirstMarkdownFile(outputDir, ctx.runtime.storage);
       if (!markdownPath) {
         throw new Error('marker_single did not produce a markdown file');
       }
 
-      const rawMarkdown = normalizeTextInput(await readFile(markdownPath, 'utf8'));
+      const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(markdownPath, 'utf-8'));
       const { title, body } = splitLeadingMarkdownTitle(rawMarkdown);
       if (!title) {
         throw new Error('PDF import requires Marker output to begin with a top-level heading');
@@ -536,7 +537,7 @@ export class PdfMarkerConverter implements Converter {
         title,
       };
     } finally {
-      await rm(outputDir, { recursive: true, force: true });
+      ctx.runtime.storage.rmSync(outputDir, { recursive: true, force: true });
     }
   }
 }

@@ -1770,7 +1770,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | Current | Size | Decomposed destinations |
 |---|---|---|
 | `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`. The god-class dissolves into coordinator service helpers plus domain-shell modules; no unused public facade remains. |
-| `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/response.ts`, `transport/server-ports.ts`, `transport/validation.ts`, `transport/http/sse-subscribe.ts`. |
+| `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/response.ts`, `transport/server-ports.ts`, `transport/validation.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
 | `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts`, `state.ts`. |
 | `src/execution/progress-store.ts` | 24K | REMOVED — job lifecycle events replace six-file progress. `jobs/shell/wait.ts` owns live-tail + SSE. `jobs/reconcile/` owns startup classification. |
@@ -1781,7 +1781,7 @@ Split when the file has multiple independent reasons to change: persistence plus
 | `src/kb/curate/classification.ts` | 34K | Same file. Domain algorithm. |
 | `src/kb/curate/state.ts` | 31K | REDUCED — curate state moves to `kb_curate_scheduler` + `kb_curate_retry_queue` SQLite tables (§3.1). Remaining in-memory state logic collapses to ~5K. |
 | `src/execution/simulation/world.ts` + `core/*` | ~80K | `tools/simulation/runtime.ts`, `tools/simulation/runner.ts`, `tools/simulation/recording.ts`, `tools/simulation/adversarial.ts`, `tools/simulation/core/memory-storage.ts`, `tools/simulation/core/mock-app-server.ts`, `tools/simulation/core/mock-process.ts`, `tools/simulation/core/virtual-time.ts`. Simulation is a debug-only executable harness outside `src`; production code never imports it. |
-| `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
+| `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/flow/{bid,speech,followup,synthesis,primitives}.ts`. One file per sub-workflow under a cohesive `flow/` subdirectory; `primitives.ts` holds the shared invocation helper. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
 **Principle**: file size is an input to review, not the architecture. Decompose only along real responsibility boundaries and name each extracted file after the responsibility it owns. See §10.4 for the full naming and subdivision policy.

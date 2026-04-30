@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { PdfMarkerConverter, prepareSourceImport, type SourceImportRuntime } from '#src/kb/ops/source-import.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 
 const tempRoots: string[] = [];
 
@@ -29,6 +30,7 @@ function fakeRuntime(overrides: Partial<SourceImportRuntime> = {}): SourceImport
     time: {
       now: () => Date.parse('2026-04-24T00:00:00.000Z'),
     },
+    storage: createRealRuntime('prod').storage,
     ...overrides,
   };
 }

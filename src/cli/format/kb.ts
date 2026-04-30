@@ -16,7 +16,7 @@ import type {
   KbSourceListResult,
   KbUpdateResponse,
 } from '../../kb/entry-types.js';
-import { formatTable, joinLines } from '../../infra/text.js';
+import { formatTable, joinLines } from './text.js';
 
 type KbReadDisplayResult = KbReadResult & { age?: string };
 

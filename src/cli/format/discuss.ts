@@ -2,7 +2,7 @@ import { assertNever } from '../../infra/error-format.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../../discuss/session-types.js';
 import type { WatchState } from '../../discuss/watch.js';
 import type { DiscussStartResponse } from '../../discuss/read-contract.js';
-import { formatUnknown, joinLines } from '../../infra/text.js';
+import { formatUnknown, joinLines } from './text.js';
 
 type DiscussAbortResult = {
   ok: boolean;

@@ -16,7 +16,14 @@ import type {
 } from './events.js';
 import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
 import { appendEntry, resetBids } from './state-transitions.js';
-import { parseDisplayName } from './util/string.js';
+
+function parseDisplayName(persona: string, agentName: string): string {
+  const headerLine = persona.split('\n', 1)[0] ?? '';
+  const strippedHeader = headerLine.replace(/^#\s*/, '');
+  const match = strippedHeader.match(/^(.+?)\s+[—–-]\s+/);
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional: empty string should fall through to agentName
+  return match?.[1]?.trim() || agentName;
+}
 
 function makeEmptyState(sessionId: string): DiscussState {
   return {

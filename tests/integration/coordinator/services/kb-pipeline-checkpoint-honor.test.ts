@@ -97,6 +97,11 @@ function makeWorld(): ServiceWorld {
   };
   applyStoreSchemas({ db: jobsDb, storage: nodeStorage });
   const runtime = new SimulationRuntime();
+  // Mirror the on-disk runtime/markdown roots into the in-memory storage so
+  // `runtime.storage.*` can read/write the staged source file the test
+  // produces below. Source-import goes through the storage port now.
+  runtime.storage.mkdirSync(runtimeDir, { recursive: true });
+  runtime.storage.mkdirSync(markdownRoot, { recursive: true });
   const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
     db: jobsDb,
     providers: permissiveProviderLookupPort,
@@ -308,6 +313,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
     // is reached. The catch arm records the user-abort terminal.
     const stagedFile = join(world.runtimeDir, 'incoming.md');
     writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', 'utf-8');
+    world.runtime.storage.writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', { encoding: 'utf-8' });
 
     abortOnNextRegister(world.abortRegistry);
 
@@ -339,6 +345,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
     // readiness checkpoint to fire abort.
     const stagedFile = join(world.runtimeDir, 'incoming.md');
     writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', 'utf-8');
+    world.runtime.storage.writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', { encoding: 'utf-8' });
 
     const readinessGate = createDeferred<void>();
 

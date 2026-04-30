@@ -3,7 +3,7 @@ import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { type CauseRefDescriber, pickTerminalPreviewSource, truncatePreview } from './jobs.js';
-import { appendCursor, joinLines } from '../../infra/text.js';
+import { appendCursor, joinLines } from './text.js';
 
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
