@@ -455,7 +455,6 @@ export interface PersistedDiscussSnapshot {
   projectRoot: string;
   updatedAt: string;
   lastAppliedSeq: number;
-  logByteOffset?: number;
   state: DiscussState;
   runtime: PersistedDiscussRuntime;
 }

@@ -86,7 +86,6 @@ const installOnlyEntrySchema = z
     ...catalogEntryCommonShape,
     activation: z.literal('none'),
     status: z.enum(installOnlyCatalogStatusLiterals),
-    command: z.string().min(1).optional(),
   })
   .strict();
 
@@ -218,7 +217,6 @@ const installedResultSchema = z
     status: z.literal('installed'),
     method: z.string().min(1),
     version: z.string().min(1).optional(),
-    command: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
@@ -230,7 +228,6 @@ const updatedResultSchema = z
     status: z.literal('updated'),
     method: z.string().min(1),
     version: z.string().min(1).optional(),
-    command: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
@@ -242,7 +239,6 @@ const alreadyInstalledResultSchema = z
     status: z.literal('already_installed'),
     method: z.string().min(1),
     version: z.string().min(1).optional(),
-    command: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
@@ -254,7 +250,6 @@ const alreadyUpToDateResultSchema = z
     status: z.literal('already_up_to_date'),
     method: z.string().min(1),
     version: z.string().min(1).optional(),
-    command: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
