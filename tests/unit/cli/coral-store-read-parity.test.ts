@@ -241,7 +241,11 @@ describe('cli coral-store read parity', () => {
     rmSync(kbRuntimeDir('prod'), { recursive: true, force: true });
 
     const { searchKnowledgeBase } = await import('#src/kb/queries.js');
-    const result = await searchKnowledgeBase({ query: 'authoritative', mode: 'vector' }, { pluginRoot: REPO_ROOT });
+    const { createKbQueryHost } = await import('#src/read-model/kb-query-runtime.js');
+    const result = await searchKnowledgeBase(
+      { query: 'authoritative', mode: 'vector' },
+      createKbQueryHost({ pluginRoot: REPO_ROOT }),
+    );
 
     expect(result).toEqual({
       results: [],
@@ -283,7 +287,11 @@ This note must not be read from a dev plugin.
     delete process.env.CORAL_KB_PATH;
 
     const { readKnowledgeBaseEntry } = await import('#src/kb/queries.js');
-    const result = readKnowledgeBaseEntry({ note: 'coral-kb-mode' }, { projectRoot, pluginRoot: devPluginRoot });
+    const { createKbQueryHost } = await import('#src/read-model/kb-query-runtime.js');
+    const result = readKnowledgeBaseEntry(
+      { note: 'coral-kb-mode' },
+      createKbQueryHost({ projectRoot, pluginRoot: devPluginRoot }),
+    );
 
     expect(result.title).toBe('KB Mode');
     expect(result.content).toContain('Keep the JSON index authoritative.');

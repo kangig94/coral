@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3';
 
 import type { Runtime } from '../runtime/ports.js';
-import type { KbQueryContext } from '../kb/query-runtime.js';
+import { createKbQueryHost, type KbQueryContext } from './kb-query-runtime.js';
+import type { KbQueryHost } from '../kb/queries.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
 import type { EventsFilter, EventsPage } from '../store/event-queries.js';
@@ -134,12 +135,12 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.kb = {
-      search: (args) => searchKnowledgeBase(args, this.kbQueryContext('kb.search')),
-      diagnose: () => diagnoseKnowledgeBase(this.kbQueryContext('kb.diagnose')),
+      search: (args) => searchKnowledgeBase(args, this.kbQueryHost('kb.search')),
+      diagnose: () => diagnoseKnowledgeBase(this.kbQueryHost('kb.diagnose')),
       read: (selector) =>
-        readKnowledgeBaseEntry(selector, this.kbQueryContext('kb.read', { requireProjectRoot: true })),
-      listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryContext('kb.listPrinciples')),
-      listSources: () => listKnowledgeBaseSources(this.kbQueryContext('kb.listSources')),
+        readKnowledgeBaseEntry(selector, this.kbQueryHost('kb.read', { requireProjectRoot: true })),
+      listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryHost('kb.listPrinciples')),
+      listSources: () => listKnowledgeBaseSources(this.kbQueryHost('kb.listSources')),
       listMemos: (args) =>
         listKnowledgeBaseMemos(
           this.requireRuntime('kb.listMemos').storage,
@@ -210,7 +211,7 @@ export class CoralStore implements StoreReadContext {
     return this.runtime;
   }
 
-  private kbQueryContext(operation: string, options: { requireProjectRoot?: boolean } = {}): KbQueryContext {
+  private kbQueryHost(operation: string, options: { requireProjectRoot?: boolean } = {}): KbQueryHost {
     const context: KbQueryContext = {
       pluginRoot: this.requirePluginRoot(operation),
       readDb: this.db,
@@ -221,6 +222,6 @@ export class CoralStore implements StoreReadContext {
     if (this.runtime !== undefined) {
       context.runtime = this.runtime;
     }
-    return context;
+    return createKbQueryHost(context);
   }
 }

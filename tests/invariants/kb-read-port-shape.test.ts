@@ -6,7 +6,7 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
-import type { KbQueryContext } from '#src/kb/query-runtime.js';
+import type { KbQueryContext } from '#src/read-model/kb-query-runtime.js';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -295,16 +295,19 @@ describe('KB read port shape', () => {
       { applyBoundCorpusConsumerForTest },
       { bindOramaFtsForTest },
       { notesDir },
+      { createKbQueryHost },
     ] = await Promise.all([
       import('#src/kb/queries.js'),
       import('#src/kb/ops/reindex.js'),
       import('#tests/helpers/kb-test-runtime.js'),
       import('#tests/unit/kb/expansion-test-helpers.js'),
       import('#src/kb/paths.js'),
+      import('#src/read-model/kb-query-runtime.js'),
     ]);
     const { runtime, db, kb } = await createWritableKbRuntime();
     const runtimeDir = kb.runtimeDir;
     const context: KbQueryContext = { pluginRoot: REPO_ROOT, runtime };
+    const host = createKbQueryHost(context);
 
     writeNote(
       notesDir(runtime.paths.coral.corpus.kbRoot),
@@ -321,7 +324,7 @@ describe('KB read port shape', () => {
     bindOramaFtsForTest(kb);
     expect(kb.fts.read().read().warnings()).toContain('fts_index_uninitialized');
 
-    const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, context);
+    const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, host);
 
     expect(degraded).toEqual({
       mode: 'text',
@@ -336,7 +339,7 @@ describe('KB read port shape', () => {
     expect(existsSync(artifactPath)).toBe(true);
     expect(existsSync(metadataPath)).toBe(true);
 
-    const ready = await searchKnowledgeBase({ query: 'probe', mode: 'text' }, context);
+    const ready = await searchKnowledgeBase({ query: 'probe', mode: 'text' }, host);
     expect(ready.warnings).toBeUndefined();
     expect(ready.results.map((result) => result.note)).toEqual(['read-port-note']);
 

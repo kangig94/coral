@@ -1413,6 +1413,31 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(720);
   });
 
+  it('kb domain modules do not compose runtimes or load engines', () => {
+    // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)
+    // and bundled-engine loading (`BUNDLED_ENGINES`, `loadBundledEngine`)
+    // are coordinator/CLI/read-model concerns. The KB domain owns query
+    // semantics and operations but never composes the runtime that runs
+    // them — read-side composition lives at `read-model/kb-query-runtime.ts`.
+    const forbiddenSpecifiers = [
+      'runtime/real.js',
+      'expansion/bundled.js',
+      'expansion/host.js',
+      'expansion/scope.js',
+    ];
+    const violations: string[] = [];
+    for (const filePath of PRODUCTION_SOURCE_FILES) {
+      if (!filePath.startsWith('src/kb/')) continue;
+      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+      for (const specifier of forbiddenSpecifiers) {
+        if (source.includes(`from '${specifier.replace(/\.js$/, '')}`) || source.includes(`'../../${specifier}'`) || source.includes(`'../${specifier}'`)) {
+          violations.push(`${filePath} -> ${specifier}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it('jobs/store.ts stays under the jobs-store cap', () => {
     // JobStore wraps journal commit, event-bus publication, projection
     // read facade, result-artifact filesystem handling, namespace

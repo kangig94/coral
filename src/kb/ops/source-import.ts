@@ -1,7 +1,6 @@
 import { basename, delimiter, extname, join } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
-import { createRealRuntime } from '../../runtime/real.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
 import { sourceImportStageDir } from '../paths.js';
@@ -62,19 +61,6 @@ export interface Converter {
   isAvailable(ctx: SourceImportContext): Promise<boolean>;
   install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>;
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
-}
-
-function createDefaultSourceImportRuntime(): SourceImportRuntime {
-  // SourceImportRuntime only needs env/process/ids/time — no path-flavor dependency,
-  // so 'prod' is a safe placeholder.
-  const runtime = createRealRuntime('prod');
-  return {
-    env: runtime.env,
-    process: runtime.process,
-    ids: runtime.ids,
-    time: runtime.time,
-    storage: runtime.storage,
-  };
 }
 
 function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
@@ -360,7 +346,7 @@ export async function prepareSourceImport(
   slug: string | undefined,
   log: (msg: string) => void,
   runtimeRoot: string,
-  runtime: SourceImportRuntime = createDefaultSourceImportRuntime(),
+  runtime: SourceImportRuntime,
   options?: { signal?: AbortSignal },
 ): Promise<PreparedSourceImport> {
   // Honor the caller's AbortSignal at the two checkpoints that bound the

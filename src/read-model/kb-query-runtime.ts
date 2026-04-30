@@ -4,22 +4,23 @@ import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { KbRuntime } from './contract.js';
+import type { KbRuntime } from '../kb/contract.js';
 import {
   communityPathFromName,
   kbRuntimeDir,
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
-} from './paths.js';
-import { createKbRuntime } from './runtime.js';
+} from '../kb/paths.js';
+import { createKbRuntime } from '../kb/runtime.js';
 import { BUNDLED_ENGINES, loadBundledEngine } from '../expansion/bundled.js';
 import { createExpansionHost } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
-import type { SpawnCliFn } from './curate/spawn-cli.js';
-import type { KbReadPathResolver } from './read.js';
+import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
+import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
+import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
@@ -216,5 +217,45 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
 function createReadOnlyKbSpawnCli(): SpawnCliFn {
   return async () => {
     throw new Error('KB query runtime is read-only and cannot spawn provider CLIs.');
+  };
+}
+
+/**
+ * Compose a `KbQueryHost` for read-side KB queries. The host caches the
+ * built `KbRuntime` so search and metadata reads in the same CLI process
+ * share one runtime + bundled-engine load. Domain code receives the
+ * composed host through `kb/queries.ts`'s `KbQueryHost` interface — KB
+ * does not import composition itself.
+ */
+export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
+  let cachedKb: KbRuntime | undefined;
+  let bundledLoadPromise: Promise<void> | undefined;
+
+  const ensureKb = (): KbRuntime => (cachedKb ??= createDefaultKbQueryRuntime(context));
+
+  return {
+    async acquireKbRuntime(options) {
+      const kb = ensureKb();
+      if (options?.ensureBundledEngines === true) {
+        bundledLoadPromise ??= ensureBundledEnginesLoaded(kb, context);
+        await bundledLoadPromise;
+      }
+      return kb;
+    },
+    get readDb(): ReadonlyDatabase {
+      return getDefaultKbQueryDb(context);
+    },
+    get storage(): KbReadStorage {
+      return getDefaultKbQueryStorage(context);
+    },
+    get readPaths(): KbReadPathResolver {
+      return createDefaultKbReadPaths(context);
+    },
+    requireProjectRoot(operation: string): string {
+      if (!context.projectRoot) {
+        throw new Error(`KB ${operation} requires an explicit projectRoot in context`);
+      }
+      return context.projectRoot;
+    },
   };
 }
