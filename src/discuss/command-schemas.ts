@@ -1,10 +1,13 @@
 import { z } from 'zod';
 
+import type { ControversyAxis } from './session-types.js';
+
+export type { ControversyAxis };
+
 export const ControversyAxisSchema = z.object({
   axis: z.string(),
   positions: z.array(z.string()),
-});
-export type ControversyAxis = z.infer<typeof ControversyAxisSchema>;
+}) satisfies z.ZodType<ControversyAxis>;
 
 export const DemographicsSchema = z.object({
   origin_weights: z.record(z.number()),

@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+import type { JsonRpcErrorObject } from '../infra/json-rpc.js';
+
+// Coral's internal IPC speaks a *tagged* dialect of JSON-RPC: every envelope
+// carries an explicit `kind` discriminator so the inbound parser can route
+// without relying on field-presence heuristics. The error body shape comes
+// from `infra/json-rpc.ts`; the tagging is coral-specific. Non-error
+// envelopes narrow `id` to `string | number` — only the error variant
+// carries the spec-mandated nullable id (for parse failures where the id
+// couldn't be recovered).
+
 export type JsonRpcId = string | number;
 
 export interface JsonRpcRequest<TParams = unknown> {
@@ -21,16 +31,10 @@ export interface JsonRpcNotification<TParams = unknown> {
   readonly params?: TParams;
 }
 
-interface JsonRpcErrorBody {
-  readonly code: number;
-  readonly message: string;
-  readonly data?: unknown;
-}
-
 export interface JsonRpcError {
   readonly kind: 'error';
   readonly id: JsonRpcId | null;
-  readonly error: JsonRpcErrorBody;
+  readonly error: JsonRpcErrorObject;
 }
 
 export type JsonRpcEnvelope<

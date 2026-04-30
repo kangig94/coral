@@ -9,7 +9,8 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
-import type { FtsSearchResult, VectorRetrievalResult } from './search/contract.js';
+import type { FtsSearchResult, VectorRetrieval } from './search/contract.js';
+export type { VectorRetrieval };
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 export type {
   ConsumerApplyError,
@@ -79,10 +80,6 @@ export interface FtsRetrieval {
   search(query: string, topK: number, scope?: KbSearchScope): Promise<FtsSearchResult>;
   tokenize(text: string): readonly string[];
   warnings(): readonly string[];
-}
-
-export interface VectorRetrieval {
-  search(embedding: number[], topK: number, scope?: KbSearchScope): Promise<VectorRetrievalResult>;
 }
 
 export interface EmbeddingService {

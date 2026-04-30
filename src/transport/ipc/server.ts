@@ -8,7 +8,7 @@ import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRe
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
-import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
+import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { buildTransportErrorResponse } from '../error-response.js';

@@ -1,3 +1,7 @@
+import type { AbortReason } from '../jobs/outcome.js';
+
+export type { AbortReason };
+
 export type ProviderCliRequest = {
   command: string;
   args: string[];
@@ -18,8 +22,6 @@ export type ProviderCliResult = {
 export type ProviderCliRunner = (request: ProviderCliRequest) => Promise<ProviderCliResult>;
 
 export type AppServerSubscriptionPhase = 'beforeInitialize' | 'afterInitialize';
-
-export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
 
 export type AppServerNotificationMessage = {
   method: string;

@@ -1,7 +1,24 @@
 import { truncate } from '../../infra/text.js';
-import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
+import {
+  buildJsonRpcError,
+  type JsonRpcErrorObject,
+  type JsonRpcFailure,
+  type JsonRpcId,
+  type JsonRpcNotification,
+  type JsonRpcRequest,
+  type JsonRpcSuccess,
+} from '../../infra/json-rpc.js';
 import { isRecord } from '../../infra/json.js';
 import type { PermissionMode, SDKSystemMessage } from '../claude/control-protocol.js';
+
+export type {
+  JsonRpcErrorObject,
+  JsonRpcFailure,
+  JsonRpcId,
+  JsonRpcNotification,
+  JsonRpcRequest,
+  JsonRpcSuccess,
+};
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
@@ -10,38 +27,9 @@ export const CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE = -32002;
 export const CLAUDE_BROKER_STATE_RPC_CODE = -32003;
 export const CLAUDE_BROKER_CHILD_EXIT_RPC_CODE = -32004;
 
-export type JsonRpcId = number | string | null;
-
-export interface JsonRpcRequest<TParams = Record<string, unknown>> {
-  id: JsonRpcId;
-  method: string;
-  params?: TParams;
-}
-
-export interface JsonRpcNotification<TParams = Record<string, unknown>> {
-  method: string;
-  params?: TParams;
-}
-
 export type JsonRpcInboundMessage<TParams = Record<string, unknown>> =
   | JsonRpcRequest<TParams>
   | JsonRpcNotification<TParams>;
-
-export interface JsonRpcErrorObject {
-  code: number;
-  message: string;
-  data?: unknown;
-}
-
-export interface JsonRpcSuccess<TResult = unknown> {
-  id: JsonRpcId;
-  result: TResult;
-}
-
-export interface JsonRpcFailure {
-  id: JsonRpcId;
-  error: JsonRpcErrorObject;
-}
 
 export interface ClaudeBootstrapSignature {
   cwd: string;
