@@ -1,6 +1,6 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TerminalOutcome } from '../outcome.js';
-import type { JobStore } from '../job-store.js';
+import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded } from '../terminal/recording.js';
 
 /**

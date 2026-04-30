@@ -1,5 +1,5 @@
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
-import type { JobStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/store.js';
 import type { SessionManager } from '#src/sessions/shell/store.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 

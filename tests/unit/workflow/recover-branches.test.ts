@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';

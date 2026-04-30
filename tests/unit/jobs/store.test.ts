@@ -9,7 +9,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { isLivePhase } from '#src/jobs/phase.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';

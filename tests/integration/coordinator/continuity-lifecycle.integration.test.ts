@@ -8,7 +8,7 @@ import type * as NodeOs from 'node:os';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator, type SpawnProviderServerFn } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';

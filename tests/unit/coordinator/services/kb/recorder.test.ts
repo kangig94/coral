@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';

@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { markJobAsError } from '#src/jobs/reconcile/recovery-effects.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinator/services/kb/shell.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

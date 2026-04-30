@@ -28,10 +28,10 @@ import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { CoralIntent } from './services/execution-policies.js';
 import type { JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
-import { JobLaunchService } from './services/job-launch-service.js';
-import { WorkflowExecutionService } from './services/workflow-execution-service.js';
-import { JobAbortService } from './services/job-abort-service.js';
-import { JobWaitService } from './services/job-wait-service.js';
+import { JobLaunchService } from './services/job-launch.js';
+import { WorkflowExecutionService } from './services/workflow-execution.js';
+import { JobAbortService } from './services/job-abort.js';
+import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
 

@@ -21,7 +21,7 @@ import {
   listen as defaultListen,
   markJobsAsError,
 } from '../lifecycle.js';
-import type { JobStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';

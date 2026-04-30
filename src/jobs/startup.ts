@@ -1,4 +1,4 @@
-import type { JobStore } from './job-store.js';
+import type { JobStore } from './store.js';
 import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';

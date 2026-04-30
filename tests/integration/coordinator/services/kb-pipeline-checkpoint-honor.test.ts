@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KbReindexService } from '#src/coordinator/services/kb/reindex.js';
 import { KbSourceImportService } from '#src/coordinator/services/kb/source-import.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { AbortError } from '#src/runtime/abort.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import type { CurateHandle } from '#src/kb/curate/scheduler.js';

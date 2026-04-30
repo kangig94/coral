@@ -7,7 +7,7 @@ import { SYSTEM_TIME_PORT } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type { JobStore } from '../jobs/job-store.js';
+import type { JobStore } from '../jobs/store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';

@@ -1,5 +1,5 @@
 import type { AppendedEvent } from '#src/store/append.js';
-import type { JobStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/store.js';
 import type { JobTerminalInput } from '#src/jobs/terminal/result.js';
 import type { JobTerminalDiagnostics } from '#src/jobs/terminal/result.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';

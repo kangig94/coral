@@ -25,7 +25,7 @@ import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { commitJobInputs } from '#tests/helpers/job-commits.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';

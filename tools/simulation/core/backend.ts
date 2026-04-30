@@ -27,7 +27,7 @@ import { sendJson } from '../../../src/transport/http/handler.js';
 import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
-import { JobStore } from '../../../src/jobs/job-store.js';
+import { JobStore } from '../../../src/jobs/store.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';

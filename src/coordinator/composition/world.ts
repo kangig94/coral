@@ -18,7 +18,7 @@ import {
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
-import { JobStore } from '../../jobs/job-store.js';
+import { JobStore } from '../../jobs/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { composeReducers } from '../../store/reducers.js';

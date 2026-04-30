@@ -23,7 +23,7 @@ import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';

@@ -6,7 +6,7 @@ import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.j
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ProviderRecoveryContract } from '../../../providers/contract.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../../jobs/outcome.js';
-import type { JobStore } from '../../../jobs/job-store.js';
+import type { JobStore } from '../../../jobs/store.js';
 import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
 import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';

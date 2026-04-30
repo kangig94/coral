@@ -21,7 +21,7 @@ const FORBIDDEN_CONTRACT_IMPORTS = [
   './execution-service.js',
   '../transport/server-ports.js',
   './transport/server-ports.js',
-  '../jobs/job-store.js',
+  '../jobs/store.js',
   '../providers/registry.js',
 ];
 

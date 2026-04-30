@@ -1,6 +1,6 @@
 // Spec §6.1 line 813 + §13.1 worked example: workflow children carry
 // `refs.workflowId` on their `job.launch.requested` envelope. The producer is
-// `src/jobs/job-store.ts:appendLaunchRequested`. This test exercises the
+// `src/jobs/store.ts:appendLaunchRequested`. This test exercises the
 // producer with synthetic launches and asserts the field appears whenever the
 // launch belongs to a workflow.
 
@@ -12,7 +12,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {

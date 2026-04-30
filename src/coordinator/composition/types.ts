@@ -21,7 +21,7 @@ import type {
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
 } from '../lifecycle.js';
-import type { JobStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/store.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';

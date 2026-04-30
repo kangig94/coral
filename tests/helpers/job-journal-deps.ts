@@ -1,4 +1,4 @@
-import type { JobStore } from '#src/jobs/job-store.js';
+import type { JobStore } from '#src/jobs/store.js';
 import type { JobProgress } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { commit } from '#src/store/append.js';

@@ -7,7 +7,7 @@ import { renderEntries } from '#src/discuss/transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#src/discuss/session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';

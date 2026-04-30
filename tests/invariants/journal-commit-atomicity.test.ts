@@ -5,10 +5,10 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
-import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution-service.js';
+import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
-import { JobStore } from '#src/jobs/job-store.js';
+import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
@@ -37,7 +37,7 @@ const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/coordinator/services/kb/source-import
 const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb/reindex.ts';
 const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
 const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
-const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution-service.ts';
+const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution.ts';
 const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization.ts';
 const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-recovery-finalizer.ts';
 

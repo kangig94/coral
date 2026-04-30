@@ -3,7 +3,7 @@ import type { AbortResult, JobAbortRegistryPort } from '../../jobs/contracts/abo
 import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
-import type { JobStore } from '../../jobs/job-store.js';
+import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorWorld } from './world.js';
 import type { ScopeCheckResult } from '../../transport/rpc/ports.js';
 

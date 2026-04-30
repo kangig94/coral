@@ -1,7 +1,7 @@
 import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInput } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobStatus } from '../records.js';
-import type { JobStore } from '../job-store.js';
+import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';

@@ -284,7 +284,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
 Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
 `job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
-Raw `job.terminal.recorded` object construction is owned by `jobs/job-store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.
+Raw `job.terminal.recorded` object construction is owned by `jobs/store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.
 
 CLI wait output surfaces the outcome through five exhaustive headers:
 

@@ -51,7 +51,7 @@ async function loadModules() {
     sessionQueriesModule,
     providerRegistryModule,
   ] = await Promise.all([
-    import('#src/jobs/job-store.js'),
+    import('#src/jobs/store.js'),
     import('#src/coordinator/lifecycle.js'),
     import('#src/coordinator/startup-error.js'),
     import('#src/coordinator/live/admission.js'),

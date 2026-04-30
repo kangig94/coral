@@ -16,7 +16,7 @@ import { createReplacementBackendOwnershipChecker } from './ownership-checker.js
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
 import { StartupInterruptedError } from './startup-error.js';
-import type { JobStore } from '../jobs/job-store.js';
+import type { JobStore } from '../jobs/store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
