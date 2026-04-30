@@ -270,6 +270,13 @@ export interface ProviderRuntime {
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
+  /**
+   * Resolved KB markdown root from `runtime.paths.coral.corpus.kbRoot`.
+   * Providers use this when rendering `INJECT.md` placeholders without
+   * computing KB paths themselves (which would create a `providers → kb`
+   * domain leak and bypass the runtime-path ownership model).
+   */
+  kbRoot: string;
 }
 
 export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;

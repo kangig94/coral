@@ -1,7 +1,5 @@
 import { join } from 'node:path';
-import { kbRoot } from '../kb/paths.js';
 import { projectDataDir, resolveProjectSource } from '../infra/project-source.js';
-import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { StoragePort } from '../runtime/ports.js';
 
@@ -11,8 +9,8 @@ export interface ResolveInjectMdOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
   workingDirectory?: string;
   ownerSessionId?: string;
-  /** CORAL_* env snapshot. Source for CORAL_KB_PATH override. */
-  coralEnv: Record<string, string>;
+  /** Resolved KB markdown root — caller passes from `runtime.paths.coral.corpus.kbRoot`. */
+  kbRoot: string;
 }
 
 let injectMdCache: string | undefined;
@@ -48,12 +46,11 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const md = getInjectMd(opts.storage);
   if (!md) return '';
 
-  const { workingDirectory, ownerSessionId, coralEnv } = opts;
+  const { workingDirectory, ownerSessionId, kbRoot } = opts;
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
   const cliPath = `node "${join(pluginRoot(), 'bridge', 'coral-cli.cjs')}"`;
-  const flavor = resolveBuildFlavor(coralEnv);
   const rendered = md
-    .replaceAll('{{CORAL_KB}}', kbRoot(flavor, coralEnv?.CORAL_KB_PATH))
+    .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
     .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')

@@ -459,11 +459,16 @@ export function handleKbMemo(args: KbArgs, ctx: InvocationContext, runtime: KbTo
   }
 
   return runKbSyncAction(() =>
-    writeMemo({ storagePort: runtime.storage, ids: runtime.ids }, ctx.projectRoot, {
-      topic: parsed.data.topic,
-      content: parsed.data.content,
-      owner: parsed.data.owner,
-    }),
+    writeMemo(
+      { storagePort: runtime.storage, ids: runtime.ids },
+      ctx.projectRoot,
+      {
+        topic: parsed.data.topic,
+        content: parsed.data.content,
+        owner: parsed.data.owner,
+      },
+      runtime.time,
+    ),
   );
 }
 

@@ -74,7 +74,7 @@ export const claudeDispatchTargets = {
 };
 
 export const claude: Provider = (request, runtime) => {
-  const prepared = buildPreparedClaudeRequest(request, runtime.storage);
+  const prepared = buildPreparedClaudeRequest(request, runtime.storage, runtime.kbRoot);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
   if (request.action === 'fork') {

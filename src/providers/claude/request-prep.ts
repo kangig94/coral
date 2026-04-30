@@ -80,6 +80,7 @@ export function buildPreparedClaudeRequest(
     'prompt' | 'instruction' | 'systemPrompt' | 'cwd' | 'coralEnv' | 'model' | 'effort' | 'bypassPermissions'
   >,
   storage: Pick<StoragePort, 'readFileSync'>,
+  kbRoot: string,
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
@@ -88,7 +89,7 @@ export function buildPreparedClaudeRequest(
     storage,
     workingDirectory: request.cwd,
     ownerSessionId: request.coralEnv?.CORAL_OWNER,
-    coralEnv: request.coralEnv,
+    kbRoot,
   });
   if (injectMd) {
     systemParts.push(injectMd);

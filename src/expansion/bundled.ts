@@ -1,7 +1,5 @@
 import { needleInstaller } from '#src/engines/needle/install.js';
-import installOramaExpansion from '#src/engines/orama/expansion.js';
-import type { EngineManifest } from './contract.js';
-import type { ExpansionHost } from './contract.js';
+import type { EngineManifest, ExpansionHost } from './contract.js';
 
 const PACKAGE_VERSION = '0.5.2';
 
@@ -44,16 +42,6 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = [
 ];
 
 export async function loadBundledEngine(entry: EngineManifest, host: ExpansionHost): Promise<void> {
-  if (entry.tier !== 'bundled') {
-    const module = (await import(entry.specifier)) as { default: (h: ExpansionHost) => void | Promise<void> };
-    await module.default(host);
-    return;
-  }
-
-  if (entry.id === 'orama') {
-    await installOramaExpansion(host);
-    return;
-  }
-
-  throw new Error(`No bundled engine loader registered for ${entry.id}`);
+  const module = (await import(entry.specifier)) as { default: (h: ExpansionHost) => void | Promise<void> };
+  await module.default(host);
 }

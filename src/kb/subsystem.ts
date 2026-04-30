@@ -97,4 +97,5 @@ export type KbToolRuntime = {
     | 'unlinkSync'
   >;
   ids: Pick<Runtime['ids'], 'uuid'>;
+  time: Pick<TimePort, 'now'>;
 };

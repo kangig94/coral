@@ -1289,6 +1289,43 @@ describe('architecture boundary guard', () => {
     expect(lineCount).toBeLessThanOrEqual(900);
   });
 
+  it('claude-appserver/controller.ts stays under the appserver-controller cap', () => {
+    // The Claude appserver controller orchestrates appserver lifecycle,
+    // turn dispatch, continuity persistence, and recovery — concerns that
+    // share the appserver session invariant. The cap is a review gate.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/providers/claude-appserver/controller.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(950);
+  });
+
+  it('kb/runtime.ts stays under the kb-runtime cap', () => {
+    // KB runtime owns the corpus authority lifecycle (mutation lock,
+    // freshness sync, rebuild dispatch). The cap is a review gate; new
+    // content should land in a sibling kb/ module that consumes the
+    // runtime through a contract.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/kb/runtime.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(900);
+  });
+
+  it('runtime/real.ts stays under the runtime-composition cap', () => {
+    // The real runtime composes every port (storage/process/network/time/...)
+    // for production use. Growth signals an unwanted port; either
+    // narrow the new capability or split it into a domain-specific port.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/runtime/real.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(870);
+  });
+
+  it('providers/codex/thread-kernel.ts stays under the codex-kernel cap', () => {
+    // Codex thread kernel owns the codex MCP turn loop — submission,
+    // event dispatch, checkpointing, abort handling, and lease lifecycle
+    // share the same turn-state invariant. The cap is a review gate.
+    const source = readFileSync(resolve(REPO_ROOT, 'src/providers/codex/thread-kernel.ts'), 'utf8');
+    const lineCount = source.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(870);
+  });
+
   it('Backed<T>-shaped exported declarations do not reintroduce readiness methods beside consumer', () => {
     const violations: string[] = [];
 

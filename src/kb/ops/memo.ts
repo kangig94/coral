@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { resolveProjectSource } from '../../infra/project-source.js';
-import { SYSTEM_TIME_PORT, nowDate } from '../../infra/time.js';
+import { nowDate } from '../../infra/time.js';
 import type { IdPort, StoragePort, TimePort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
@@ -24,7 +24,7 @@ export type MemoHost = {
   readonly ids: Pick<IdPort, 'uuid'>;
 };
 
-function generateTimestamp(time: Pick<TimePort, 'now'> = SYSTEM_TIME_PORT): string {
+function generateTimestamp(time: Pick<TimePort, 'now'>): string {
   const now = nowDate(time);
   const pad = (n: number, len = 2): string => String(n).padStart(len, '0');
   return [
@@ -42,7 +42,7 @@ export function writeMemo(
   host: MemoHost,
   projectRoot: string,
   input: KbMemoInput,
-  time: Pick<TimePort, 'now'> = SYSTEM_TIME_PORT,
+  time: Pick<TimePort, 'now'>,
 ): { filename: string; path: string } {
   const source = resolveProjectSource(projectRoot);
   const dir = memoDir(projectRoot);
