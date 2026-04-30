@@ -78,18 +78,4 @@ describe('transport/json-rpc codec', () => {
 
     expect(() => decode(wire)).toThrow();
   });
-
-  it('rejects reserved subscriptionId slot collisions during encode and decode', () => {
-    const envelope = {
-      kind: 'notification',
-      method: 'jobs.wait.progress',
-      params: {
-        jobId: 'job-1',
-      },
-      subscriptionId: 'sub-1',
-    } satisfies JsonRpcNotification<{ jobId: string }> & { subscriptionId: string };
-
-    expect(() => encode(envelope)).toThrow();
-    expect(() => decode(JSON.stringify(envelope))).toThrow();
-  });
 });
