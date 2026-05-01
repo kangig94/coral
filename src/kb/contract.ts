@@ -49,11 +49,9 @@ export interface KbIndexState {
   textStaleReason?: string;
 }
 
-export type Consumer = ConsumerRegistration;
-
 export interface Backed<T> {
   read(): T;
-  consumer: Consumer;
+  consumer: ConsumerRegistration;
 }
 
 /**

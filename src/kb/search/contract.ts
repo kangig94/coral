@@ -18,8 +18,6 @@ export interface RetrievedDocument {
   readonly principles: readonly string[];
 }
 
-export type RetrievedDocumentFields = RetrievedDocument;
-
 export interface RetrievalEntry {
   entryId: KbEntryId;
   slug: string;
@@ -75,7 +73,7 @@ export interface FusedResult {
 export interface FtsHit {
   readonly documentId: string;
   readonly score: number;
-  readonly fields: RetrievedDocumentFields;
+  readonly fields: RetrievedDocument;
 }
 
 export interface FtsSearchResult {
