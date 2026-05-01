@@ -108,44 +108,20 @@ function validateOwner(
   }
 }
 
-function resolveSourcePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
+function requireKbSubsystem(kbSubsystem: KnowledgeBaseRuntime | undefined): KnowledgeBaseRuntime {
   if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required to resolve source paths.');
+    throw new Error('KB subsystem is required.');
   }
-  return kbSubsystem.kb.sourcePath(slug);
+  return kbSubsystem;
 }
 
-function resolveNotePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required to resolve note paths.');
-  }
-  return kbSubsystem.kb.notePath(slug);
-}
-
-function resolveCommunityPath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required to resolve community paths.');
-  }
-  return kbSubsystem.kb.communityPath(slug);
-}
-
-function resolvePrinciplePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime): string {
-  if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required to resolve principle paths.');
-  }
-  return kbSubsystem.kb.principlePath(slug);
-}
-
-function kbReadPaths(kbSubsystem?: KnowledgeBaseRuntime): KbReadPathResolver {
-  if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required to resolve read paths.');
-  }
-
+function kbReadPaths(kbSubsystem: KnowledgeBaseRuntime | undefined): KbReadPathResolver {
+  const required = requireKbSubsystem(kbSubsystem);
   return {
-    notePath: (slug) => kbSubsystem.kb.notePath(slug),
-    sourcePath: (slug) => kbSubsystem.kb.sourcePath(slug),
-    communityPath: (slug) => kbSubsystem.kb.communityPath(slug),
-    principlePath: (slug) => kbSubsystem.kb.principlePath(slug),
+    notePath: (slug) => required.kb.notePath(slug),
+    sourcePath: (slug) => required.kb.sourcePath(slug),
+    communityPath: (slug) => required.kb.communityPath(slug),
+    principlePath: (slug) => required.kb.principlePath(slug),
   };
 }
 
@@ -172,7 +148,7 @@ export function handleKbNoteRead(
   }
 
   try {
-    const notePath = resolveNotePath(normalized.slug, kbSubsystem);
+    const notePath = requireKbSubsystem(kbSubsystem).kb.notePath(normalized.slug);
     if (!runtime.storage.existsSync(notePath)) {
       return kbNotFoundResult('note', normalized.slug);
     }
@@ -206,7 +182,7 @@ export function handleKbSourceRead(
   }
 
   try {
-    const sourcePath = resolveSourcePath(normalized.slug, kbSubsystem);
+    const sourcePath = requireKbSubsystem(kbSubsystem).kb.sourcePath(normalized.slug);
     if (!runtime.storage.existsSync(sourcePath)) {
       return kbNotFoundResult('source', normalized.slug);
     }
@@ -239,7 +215,7 @@ export function handleKbCommunityRead(
   }
 
   try {
-    const communityPath = resolveCommunityPath(normalized.slug, kbSubsystem);
+    const communityPath = requireKbSubsystem(kbSubsystem).kb.communityPath(normalized.slug);
     if (!runtime.storage.existsSync(communityPath)) {
       return kbNotFoundResult('community', normalized.slug);
     }
@@ -306,7 +282,7 @@ export function handleKbPrincipleRead(
   }
 
   try {
-    const principlePath = resolvePrinciplePath(normalized.slug, kbSubsystem);
+    const principlePath = requireKbSubsystem(kbSubsystem).kb.principlePath(normalized.slug);
     if (!runtime.storage.existsSync(principlePath)) {
       return kbNotFoundResult('principle', normalized.slug);
     }
