@@ -32,8 +32,6 @@ export const PURPOSE_EPOCH_EVALUATION: DiscussAgentJobPurpose = 'epoch_evaluatio
 export const PURPOSE_FOLLOW_UP: DiscussAgentJobPurpose = 'follow_up';
 export const PURPOSE_SYNTHESIS: DiscussAgentJobPurpose = 'synthesis';
 
-export type DiscussPurpose = DiscussAgentJobPurpose;
-
 export type AttemptSuccess = {
   ok: true;
   attempt: number;
@@ -60,11 +58,10 @@ export type ExecuteAgentAttemptParams = {
   instruction: string;
   cwd: string;
   invocationCtx: InvocationContext;
-  purpose: DiscussPurpose;
+  purpose: DiscussAgentJobPurpose;
   timeoutMs?: number;
 };
 
-export type RunPlainTurnParams = ExecuteAgentAttemptParams;
 
 export type RunFacilitatorTurnParams = {
   sessionId: string;
@@ -72,13 +69,13 @@ export type RunFacilitatorTurnParams = {
   instruction: string;
   invocationCtx: InvocationContext;
   timeoutMs: number;
-  purpose: DiscussPurpose;
+  purpose: DiscussAgentJobPurpose;
 };
 
 export type RecordJobFinishedParams = {
   sessionId: string;
   agentName: string;
-  purpose: DiscussPurpose;
+  purpose: DiscussAgentJobPurpose;
   jobId: string;
   attempt: number;
   outcome: DiscussAgentJobOutcome;
@@ -127,7 +124,7 @@ export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string,
   ) as Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
-export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussPurpose): number {
+export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussAgentJobPurpose): number {
   if (!run) {
     return 1;
   }
@@ -435,7 +432,7 @@ export async function executeAgentAttempt(
 
 export async function runPlainTurn(
   ctx: DiscussContext,
-  params: RunPlainTurnParams,
+  params: ExecuteAgentAttemptParams,
 ): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
   const attempt = await executeAgentAttempt(ctx, params);
   if (!isAttemptSuccess(attempt)) {
