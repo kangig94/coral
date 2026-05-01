@@ -6,7 +6,7 @@ import type { StoragePort } from '../../runtime/ports.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
 import { getEvent } from '../../store/event-queries.js';
 import type { EventsRow } from '../../store/schema.js';
-import { causeRefSchema, type CauseRef } from '../../causality/cause-ref.js';
+import { extractCauseRef, type CauseRef } from '../../causality/cause-ref.js';
 import type { CoralEvent } from '../../store/envelope.js';
 import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
@@ -32,22 +32,6 @@ export function writeResultArtifact(
 
 function renderCauseRefFallback(ref: CauseRef): string {
   return `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
-}
-
-function parseCauseRef(value: unknown): CauseRef | null {
-  const parsed = causeRefSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
-function extractCauseRef(body: unknown): CauseRef | null {
-  if (!isRecord(body)) return null;
-  const direct = parseCauseRef(body.causeRef);
-  if (direct) return direct;
-  if (isRecord(body.reason) && body.reason.kind === 'failed') {
-    return parseCauseRef(body.reason.causeRef);
-  }
-  if (!isRecord(body.terminal) || !isRecord(body.terminal.outcome)) return null;
-  return body.terminal.outcome.kind === 'failed' ? parseCauseRef(body.terminal.outcome.causeRef) : null;
 }
 
 function describeKnownEvent(event: CoralEvent): string {

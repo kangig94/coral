@@ -7,8 +7,7 @@
 import type { z } from 'zod';
 
 import type { CoralEvent } from '../store/envelope.js';
-import { isRecord } from '../infra/json.js';
-import { causeRefSchema, type CauseRef } from './cause-ref.js';
+import { extractCauseRef, type CauseRef } from './cause-ref.js';
 
 export type EventDescriber = (event: CoralEvent) => string;
 
@@ -87,22 +86,6 @@ function markerForMissing(ref: CauseRef): string {
   return `<missing ${ref.stream.kind}/${ref.stream.id}/${ref.seq}>`;
 }
 
-function parseCauseRef(value: unknown): CauseRef | null {
-  const parsed = causeRefSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
-function extractCauseRef(event: CoralEvent): CauseRef | null {
-  if (!isRecord(event.body)) return null;
-  const direct = parseCauseRef(event.body.causeRef);
-  if (direct) return direct;
-  if (isRecord(event.body.reason) && event.body.reason.kind === 'failed') {
-    return parseCauseRef(event.body.reason.causeRef);
-  }
-  if (!isRecord(event.body.terminal) || !isRecord(event.body.terminal.outcome)) return null;
-  return event.body.terminal.outcome.kind === 'failed' ? parseCauseRef(event.body.terminal.outcome.causeRef) : null;
-}
-
 function renderCauseRef(
   ref: CauseRef,
   store: CauseRefEventStore,
@@ -141,7 +124,7 @@ function renderCauseRef(
 
   const dispatchKey = `${event.stream.kind}:${event.type}`;
   const baseDescription = describers.get(dispatchKey)?.(event) ?? event.type;
-  const nextRef = extractCauseRef(event);
+  const nextRef = extractCauseRef(event.body);
   if (!nextRef) {
     return { description: baseDescription, chain: [...path, baseDescription] };
   }
