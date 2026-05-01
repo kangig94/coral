@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import type { KbCurateSchedulerRow } from '../state/schema.js';
 import { type CurateCursor, cursorEntryKind, kbEntryIdSchema } from './state/model.js';
-import { prepareCached, type SqliteTarget } from './sqlite.js';
+import { prepareCached, type Database } from '../../store/db.js';
+import type { ReadonlyDatabase } from '../../store/read-port.js';
 
 export type CurateSchedulerState = {
   processedThrough: CurateCursor | null;
@@ -120,9 +121,9 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
   };
 }
 
-export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerState {
+export function readCurateSchedulerState(db: Database | ReadonlyDatabase): CurateSchedulerState {
   const row = prepareCached<[], KbCurateSchedulerRow | undefined>(
-    target,
+    db,
     `SELECT
        id,
        processed_through_seq,
@@ -148,7 +149,7 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
   return rowToCurateSchedulerState(row);
 }
 
-export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSchedulerState): void {
+export function writeCurateSchedulerState(db: Database, state: CurateSchedulerState): void {
   const processedThroughEntryKind =
     state.processedThrough === null ? null : cursorEntryKind(state.processedThrough, 'curate scheduler');
   const lastAttemptedThroughEntryKind =
@@ -175,7 +176,7 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
       0 | 1,
     ]
   >(
-    target,
+    db,
     `UPDATE kb_curate_scheduler
         SET processed_through_seq = ?,
             processed_through_entry_id = ?,

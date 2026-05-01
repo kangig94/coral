@@ -1,11 +1,9 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from './db.js';
 import { type z } from 'zod';
 
 import type { CoralEvent, CoralEventInput, StreamKind } from './envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
-
-type Database = BetterSqlite3.Database;
 
 export type Reducer<T = unknown> = (db: Database, event: CoralEvent<T>) => void;
 export interface DomainAppendValidationContext {

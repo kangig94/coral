@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../../../src/store/db.js';
 
 import { defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 

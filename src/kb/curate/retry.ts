@@ -3,7 +3,8 @@ import { z } from 'zod';
 import type { KbCurateRetryQueueRow } from '../state/schema.js';
 import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema, type PendingRepair } from './state/model.js';
-import { prepareCached, type SqliteTarget } from './sqlite.js';
+import { prepareCached, type Database } from '../../store/db.js';
+import type { ReadonlyDatabase } from '../../store/read-port.js';
 
 const DEFAULT_RETRY_REASON = 'pending-repair';
 
@@ -109,9 +110,9 @@ function samePendingRepairRow(left: KbCurateRetryQueueRow, right: KbCurateRetryQ
   );
 }
 
-export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
+export function readCurateRetryQueue(db: Database | ReadonlyDatabase): PendingRepair[] {
   const rows = prepareCached<[], KbCurateRetryQueueRow>(
-    target,
+    db,
     `SELECT
        entry_id,
        entry_seq,
@@ -130,9 +131,9 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
   return rows.map((row) => rowToPendingRepair(row));
 }
 
-export function readPendingRepairRows(target: SqliteTarget): PendingRepairRetryCandidate[] {
+export function readPendingRepairRows(db: Database | ReadonlyDatabase): PendingRepairRetryCandidate[] {
   const rows = prepareCached<[], PendingRepairRow>(
-    target,
+    db,
     `SELECT
        entry_id,
        observed_at,
@@ -144,7 +145,7 @@ export function readPendingRepairRows(target: SqliteTarget): PendingRepairRetryC
   return rows.map((row) => rowToPendingRepairRetryCandidate(row));
 }
 
-export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepair): void {
+export function upsertCurateRetryEntry(db: Database, entry: PendingRepair): void {
   const row = pendingRepairToRow(entry);
   prepareCached<
     [
@@ -161,7 +162,7 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
       number,
     ]
   >(
-    target,
+    db,
     `INSERT INTO kb_curate_retry_queue (
        entry_id,
        entry_seq,
@@ -201,12 +202,12 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
   );
 }
 
-export function deleteCurateRetryEntry(target: SqliteTarget, entryId: string): void {
-  prepareCached<[string]>(target, `DELETE FROM kb_curate_retry_queue WHERE entry_id = ?`).run(entryId);
+export function deleteCurateRetryEntry(db: Database, entryId: string): void {
+  prepareCached<[string]>(db, `DELETE FROM kb_curate_retry_queue WHERE entry_id = ?`).run(entryId);
 }
 
-export function syncCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArray<PendingRepair>): void {
-  const existingById = new Map(readCurateRetryQueue(target).map((entry) => [entry.entryId, entry] as const));
+export function syncCurateRetryQueue(db: Database, entries: ReadonlyArray<PendingRepair>): void {
+  const existingById = new Map(readCurateRetryQueue(db).map((entry) => [entry.entryId, entry] as const));
   const nextById = new Map<KbEntryId, PendingRepair>();
   for (const entry of entries) {
     nextById.set(entry.entryId, entry);
@@ -214,14 +215,14 @@ export function syncCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArra
 
   for (const entryId of existingById.keys()) {
     if (!nextById.has(entryId)) {
-      deleteCurateRetryEntry(target, entryId);
+      deleteCurateRetryEntry(db, entryId);
     }
   }
 
   for (const [entryId, entry] of nextById) {
     const existing = existingById.get(entryId);
     if (existing === undefined || !samePendingRepairRow(pendingRepairToRow(existing), pendingRepairToRow(entry))) {
-      upsertCurateRetryEntry(target, entry);
+      upsertCurateRetryEntry(db, entry);
     }
   }
 }

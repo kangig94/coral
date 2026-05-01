@@ -16,7 +16,8 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -139,11 +140,11 @@ function transactionLaunchAndStart(args: {
 }
 
 function setup(): {
-  db: InstanceType<typeof Database>;
+  db: Database;
   driver: ConsumerDriver;
   store: CoralStore;
 } {
-  const db = new Database(':memory:');
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
   // Cursor-only base consumers; commit-time reducer writes projections.
@@ -157,7 +158,7 @@ function setup(): {
   return { db, driver, store };
 }
 
-async function runChain(db: InstanceType<typeof Database>, driver: ConsumerDriver): Promise<number> {
+async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
   const append = (events: CoralEventInput[]): number => {
     const result = commitInputs(db, events, {
       now: () => NOW,

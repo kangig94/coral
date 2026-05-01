@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -21,7 +22,7 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-const openDbs = new Set<InstanceType<typeof Database>>();
+const openDbs = new Set<Database>();
 
 afterEach(() => {
   for (const db of openDbs) {
@@ -30,19 +31,19 @@ afterEach(() => {
   openDbs.clear();
 });
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   openDbs.add(db);
   return db;
 }
 
-function createTrackedDb(db: InstanceType<typeof Database>): {
-  db: InstanceType<typeof Database>;
+function createTrackedDb(db: Database): {
+  db: Database;
   preparedSql: string[];
 } {
   const preparedSql: string[] = [];
-  const trackedDb: InstanceType<typeof Database> = new Proxy(db, {
+  const trackedDb: Database = new Proxy(db, {
     get(target, prop, receiver) {
       if (prop === 'prepare') {
         return (sql: string) => {
@@ -59,7 +60,7 @@ function createTrackedDb(db: InstanceType<typeof Database>): {
   return { db: trackedDb, preparedSql };
 }
 
-function createStore(db: InstanceType<typeof Database> = createDb()): {
+function createStore(db: Database = createDb()): {
   runtime: SimulationRuntime;
   store: JobStore;
 } {

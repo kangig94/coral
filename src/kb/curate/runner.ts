@@ -31,6 +31,7 @@ import {
 } from './state/index.js';
 import type { ClaimCandidate, ClassificationAssignment, CurateClaim } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
+import { curateDb } from './db-access.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
@@ -107,7 +108,7 @@ function pendingExtendsBeyondCursor(pendingEntries: ClaimCandidate[], cursor: Cu
 
 export async function claimCurateRun(kb: KbRuntime, today: string): Promise<CurateClaim | null> {
   const lockResult = await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     const now = nowIsoString(kb.time);
 
     if (state.activeClaim !== null && !isClaimStale(state, now, resolveCurateTimings(kb.envPort).claimStaleMs)) {
@@ -119,7 +120,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
       return null;
     }
 
-    const repairFrontier = getCurateRepairFrontier(kb);
+    const repairFrontier = getCurateRepairFrontier(curateDb(kb));
     const pendingEntries = filterCandidatesBeforeRepairFrontier(
       collectClaimCandidates(index).filter(
         (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
@@ -149,7 +150,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     }
 
     const freshPendingSuffix = pendingExtendsBeyondCursor(pendingEntries, state.lastAttemptedThrough);
-    writeCurateState(kb, {
+    writeCurateState(curateDb(kb), {
       ...state,
       retryNotBefore: null,
       activeClaim: {
@@ -232,7 +233,7 @@ export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: Curat
       return false;
     }
 
-    const repairFrontier = getCurateRepairFrontier(kb);
+    const repairFrontier = getCurateRepairFrontier(curateDb(kb));
     return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
       (candidate) => compareCursor(candidate.cursor, cursor) > 0,
     );

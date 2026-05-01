@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
@@ -41,13 +42,13 @@ function buildSnapshot(overrides: Partial<CorpusSnapshot> = {}): CorpusSnapshot 
   };
 }
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 
-function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): CursorRow {
+function readCursorRow(db: Database, consumerId: string): CursorRow {
   return db
     .prepare(
       `

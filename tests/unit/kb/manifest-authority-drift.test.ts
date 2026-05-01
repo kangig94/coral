@@ -28,6 +28,7 @@ import {
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
@@ -144,8 +145,8 @@ async function createRuntimeFixture(
 }
 
 function setProcessedThrough(kb: KbRuntime, slug: string, entrySeq: number): void {
-  const state = readCurateState(kb);
-  writeCurateState(kb, {
+  const state = readCurateState(curateDb(kb));
+  writeCurateState(curateDb(kb), {
     ...state,
     initialized: true,
     processedThrough: {

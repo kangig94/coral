@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import type { Runtime } from '../runtime/ports.js';
 import { SessionManager } from './shell/store.js';

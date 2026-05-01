@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -53,9 +53,7 @@ export class KbQueryRegistry {
 
   getDb(flavor: BuildFlavor): ReadonlyDatabase {
     if (this.cachedDb?.flavor !== flavor) {
-      if (this.cachedDb?.db.open === true) {
-        this.cachedDb.db.close();
-      }
+      this.cachedDb?.db.close();
       this.cachedDb = { flavor, db: openReadOnlyStoreDatabase(this.getRuntime(flavor)) };
     }
     return this.cachedDb.db;

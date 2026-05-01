@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { SimulationRuntime } from '#tools/simulation/core/backend.js';
@@ -9,7 +9,7 @@ describe('applyStoreSchemas with Runtime.storage', () => {
   it('reads SQL schema files from a storage port and ignores non-sql entries', () => {
     const runtime = new SimulationRuntime();
     const schemasDir = '/tmp/sim/schemas';
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
 
     runtime.storage.mkdirSync(join(schemasDir, 'nested'), { recursive: true });
     runtime.storage.writeFileSync(

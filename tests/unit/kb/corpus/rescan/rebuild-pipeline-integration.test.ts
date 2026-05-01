@@ -20,6 +20,7 @@ import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import { curateDb } from '../../../../../src/kb/curate/db-access.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
@@ -73,7 +74,7 @@ describe('rebuild pipeline wires typed detectors into the retry queue', () => {
 
     await reindex(kb);
 
-    const queue = readCurateRetryQueue(kb);
+    const queue = readCurateRetryQueue(curateDb(kb));
     const queued = queue.find((entry) => entry.entryId === 'note:malformed-frontmatter');
     expect(queued).toBeDefined();
     expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR);
@@ -108,7 +109,7 @@ describe('rebuild pipeline wires typed detectors into the retry queue', () => {
 
     await reindex(kb);
 
-    const queue = readCurateRetryQueue(kb);
+    const queue = readCurateRetryQueue(curateDb(kb));
     const queued = queue.find((entry) => entry.entryId === 'note:conflict');
     expect(queued).toBeDefined();
     expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS);
@@ -138,7 +139,7 @@ describe('rebuild pipeline wires typed detectors into the retry queue', () => {
 
     await reindex(kb);
 
-    const queue = readCurateRetryQueue(kb);
+    const queue = readCurateRetryQueue(curateDb(kb));
     const collisions = queue.filter(
       (entry) => entry.canonicalIncident === REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
     );
@@ -169,7 +170,7 @@ describe('rebuild pipeline wires typed detectors into the retry queue', () => {
 
     await reindex(kb);
 
-    const queue = readCurateRetryQueue(kb);
+    const queue = readCurateRetryQueue(curateDb(kb));
     const queued = queue.find((entry) => entry.entryId === 'note:orphan-principle-ref');
     expect(queued).toBeDefined();
     expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS);
@@ -227,7 +228,7 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
     ]);
 
     expect(completed).toBe('done');
-    const queue = readCurateRetryQueue(kb);
+    const queue = readCurateRetryQueue(curateDb(kb));
     expect(queue.find((entry) => entry.entryId === 'note:reentry-target')).toBeDefined();
   });
 });
@@ -277,7 +278,7 @@ describe('performRescan failure semantics', () => {
       retryCount: 0,
     };
     syncCurateRetryQueue(writableDbByRuntime.get(kb)!, [syntheticPriorRow]);
-    const queueBefore = readCurateRetryQueue(kb);
+    const queueBefore = readCurateRetryQueue(curateDb(kb));
     expect(queueBefore).toHaveLength(1);
     expect(queueBefore[0].entryId).toBe('note:synthetic-prior');
 
@@ -299,7 +300,7 @@ describe('performRescan failure semantics', () => {
 
     expect(kb.readIndex()).toEqual(indexBefore);
     // Synthetic prior row still present; no new row from the malformed entry was added.
-    const queueAfter = readCurateRetryQueue(kb);
+    const queueAfter = readCurateRetryQueue(curateDb(kb));
     expect(queueAfter).toEqual(queueBefore);
     expect(queueAfter.find((entry) => entry.entryId === 'note:rescan-malformed')).toBeUndefined();
   });

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
@@ -21,13 +22,13 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 
-function readJournalCursor(db: InstanceType<typeof Database>, consumerId: string): number {
+function readJournalCursor(db: Database, consumerId: string): number {
   const row = db.prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?').get(consumerId) as
     | { cursor: number }
     | undefined;
@@ -35,7 +36,7 @@ function readJournalCursor(db: InstanceType<typeof Database>, consumerId: string
   return row?.cursor ?? 0;
 }
 
-function readCursorCount(db: InstanceType<typeof Database>, consumerId: string): number {
+function readCursorCount(db: Database, consumerId: string): number {
   return (
     db.prepare('SELECT COUNT(*) AS count FROM consumer_cursors WHERE consumer_id = ?').get(consumerId) as {
       count: number;

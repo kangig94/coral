@@ -5,6 +5,7 @@ import { readCurateState } from '../state/index.js';
 import type { KbMutationEffects, KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
 import { nowIsoString } from '../../../infra/time.js';
+import { curateDb } from '../db-access.js';
 
 export function normalizedCommunitySummaryFingerprints(
   fingerprints: Readonly<Record<string, string>> | undefined,
@@ -36,7 +37,7 @@ export function prepareCommunityTopologyRefresh(
   nextSummaryInputFingerprints: Record<string, string> | undefined;
   shouldPersistState: boolean;
 } {
-  const state = readCurateState(kb);
+  const state = readCurateState(curateDb(kb));
   const graph = buildEntityRelationshipGraph({
     entityMeta: index.entityMeta,
     relationships: index.relationships,

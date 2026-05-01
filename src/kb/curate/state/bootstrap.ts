@@ -31,7 +31,8 @@ import {
   type CurateState,
   type PendingRepair,
 } from './model.js';
-import { readCurateState, writeCurateState, type CurateStateTarget } from './store.js';
+import { readCurateState, writeCurateState } from './store.js';
+import { curateDb } from '../db-access.js';
 
 export type ScannedNote = {
   note: string;
@@ -356,12 +357,12 @@ export function reconcileSeqs(
 }
 
 export function persistState(
-  kb: CurateStateTarget,
+  kb: KbRuntime,
   state: CurateState,
   scannedNotes: ScannedNote[],
   scannedSources: ScannedSource[],
 ): void {
-  writeCurateState(kb, {
+  writeCurateState(curateDb(kb), {
     ...state,
     processedThrough: inferProcessedThrough(state, scannedNotes, scannedSources),
     initialized: true,
@@ -370,7 +371,7 @@ export function persistState(
 
 export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void> {
   await kb.withMutationLock(async (mutation) => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     if (state.initialized) {
       return;
     }
@@ -394,7 +395,7 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     });
     await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
 
-    const retryQueue = readCurateRetryQueue(kb);
+    const retryQueue = readCurateRetryQueue(curateDb(kb));
     const { highestAssignedEntrySeq, rewrittenNotes, rewrittenSources } = assignEntrySeqs(
       indexState,
       scannedNotes,
@@ -412,9 +413,9 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     // post-bootstrap corpus state.
     const postRewriteIncidents = projectIncidents(buildCorpusScanView(kb));
     const stillDetected = new Set(postRewriteIncidents.map((incident) => incident.entryId));
-    for (const queued of readCurateRetryQueue(kb)) {
+    for (const queued of readCurateRetryQueue(curateDb(kb))) {
       if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
-        deleteCurateRetryEntry(kb, queued.entryId);
+        deleteCurateRetryEntry(curateDb(kb), queued.entryId);
       }
     }
 

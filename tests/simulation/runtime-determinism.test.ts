@@ -2,7 +2,6 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
@@ -12,7 +11,7 @@ import type { StoragePort } from '#src/runtime/ports.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openStoreDatabase, type Database } from '#src/store/db.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
@@ -48,7 +47,7 @@ interface Snapshot {
 
 type SchemaStorage = Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'>;
 
-function openMemoryDatabase(storage: SchemaStorage, schemasDir: string): Database.Database {
+function openMemoryDatabase(storage: SchemaStorage, schemasDir: string): Database {
   return openStoreDatabase({
     path: ':memory:',
     storage: storage as StoragePort,
@@ -129,7 +128,7 @@ function buildPlannedEvent(
   };
 }
 
-function captureSnapshot(db: Database.Database): Snapshot {
+function captureSnapshot(db: Database): Snapshot {
   const counters = db.prepare('SELECT id, count, last_seq FROM projection_test_counter ORDER BY id').all();
   const events = db
     .prepare(

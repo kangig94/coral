@@ -5,7 +5,8 @@
 // launch belongs to a workflow.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
@@ -34,7 +35,7 @@ interface PersistedEvent {
   refs: PersistedRefs | undefined;
 }
 
-const openDbs = new Set<InstanceType<typeof Database>>();
+const openDbs = new Set<Database>();
 
 afterEach(() => {
   for (const db of openDbs) {
@@ -43,14 +44,14 @@ afterEach(() => {
   openDbs.clear();
 });
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   openDbs.add(db);
   return db;
 }
 
-function readPersistedLaunches(db: InstanceType<typeof Database>): PersistedEvent[] {
+function readPersistedLaunches(db: Database): PersistedEvent[] {
   const rows = db
     .prepare("SELECT type, refs FROM events WHERE type = 'job.launch.requested' ORDER BY seq ASC")
     .all() as Array<{ type: string; refs: string | null }>;

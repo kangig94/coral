@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import { withImmediate, type Database } from './db.js';
 
 import { isRecord } from '../infra/json.js';
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
@@ -13,7 +13,6 @@ import {
 import type { UpcasterRegistry } from './upcaster-registry.js';
 import { applyReducer, type ComposedReducers, type DomainAppendValidationContext } from './reducers.js';
 
-type Database = BetterSqlite3.Database;
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
 
 type RuntimeCauseRefToken = {
@@ -263,7 +262,7 @@ export function commit(
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
 ): AppendedEvent[] {
-  const txn = db.transaction((): AppendedEvent[] => {
+  return withImmediate(db, (): AppendedEvent[] => {
     const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
     const c: CommitContext<unknown> = {
       append(input) {
@@ -366,6 +365,4 @@ export function commit(
 
     return assigned;
   });
-
-  return txn.immediate();
 }

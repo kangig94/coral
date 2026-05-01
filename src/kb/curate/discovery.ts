@@ -11,9 +11,10 @@ import {
   normalizeCurateStateRepairFrontier,
   noteCursor,
   type CurateCursor,
-  type CurateStateTarget,
   type CurateState,
 } from './state/index.js';
+import type { Database } from '../../store/db.js';
+import type { ReadonlyDatabase } from '../../store/read-port.js';
 import type { DiscoveryCurateClaimedEntry, DiscoveryProposal, NoteClaimCandidate } from './pipeline-types.js';
 
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
@@ -120,12 +121,12 @@ function shouldRunDiscoveryBatch(
 }
 
 export function prepareDiscoveryBatch(
-  kb: CurateStateTarget,
+  db: Database | ReadonlyDatabase,
   index: KbIndex,
   state: CurateState,
   requestedProcessedThrough: CurateCursor,
 ): PreparedDiscoveryBatch | null {
-  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
+  const normalizedState = normalizeCurateStateRepairFrontier(db, state);
   const currentProcessedThrough = normalizedState.processedThrough;
   if (currentProcessedThrough === null) {
     return null;
@@ -135,7 +136,7 @@ export function prepareDiscoveryBatch(
       ? requestedProcessedThrough
       : currentProcessedThrough;
 
-  const repairFrontier = getCurateRepairFrontier(kb);
+  const repairFrontier = getCurateRepairFrontier(db);
   const allClassified = filterCandidatesBeforeRepairFrontier(
     collectDiscoveryCandidates(index).filter((candidate) => compareCursor(candidate.cursor, processedThrough) <= 0),
     repairFrontier,

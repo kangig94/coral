@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
@@ -181,8 +182,8 @@ const nodeStorage = {
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({
     db,
     storage: nodeStorage,
@@ -193,7 +194,7 @@ function createDb(): InstanceType<typeof Database> {
 function createRuntimeHarness(
   markdownRoot: string,
   runtimeDir: string,
-  db: InstanceType<typeof Database>,
+  db: Database,
 ): {
   kb: KbRuntime;
   equip(owner: VectorRetrieval, handle: ConsumerHandle): void;
@@ -287,7 +288,7 @@ ${body}
 }
 
 function readCursor(
-  db: InstanceType<typeof Database>,
+  db: Database,
   consumerId: string,
 ): {
   snapshotId: string;

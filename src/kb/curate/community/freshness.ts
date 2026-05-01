@@ -2,12 +2,13 @@ import type { KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
 import { computeCommunityTopologyFingerprint } from './detection.js';
 import { computeCommunitySummaryInputFingerprints } from './summary.js';
-import { readCurateState, type CurateState, type CurateStateTarget } from '../state/index.js';
+import { readCurateState, type CurateState } from '../state/index.js';
+import { curateDb } from '../db-access.js';
 
-type CommunityFreshnessRuntime = CurateStateTarget & Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
+type CommunityFreshnessRuntime = Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
 export function areCommunityDocumentsFresh(
-  kb: CommunityFreshnessRuntime,
+  kb: KbRuntime,
   index: KbIndex,
   state?: CurateState,
 ): boolean {
@@ -16,7 +17,7 @@ export function areCommunityDocumentsFresh(
   if (!hasCommunityEntries) {
     return true;
   }
-  return isCommunityStateFreshForIndex(state ?? readCurateState(kb), kb, index);
+  return isCommunityStateFreshForIndex(state ?? readCurateState(curateDb(kb)), kb, index);
 }
 
 function isCommunityStateFreshForIndex(

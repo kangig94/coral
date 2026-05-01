@@ -15,6 +15,7 @@ import { reindex } from '#src/kb/ops/reindex.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 vi.mock('#src/kb/curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
@@ -233,7 +234,7 @@ describe('curate related-resolution and budget guards', () => {
     expect(runtime.readIndex()?.entries[noteEntryId('coral-alpha')]).toMatchObject({
       related: ['source:sqlite-overview', 'note:coral-beta'],
     });
-    expect(readCurateState(runtime).processedThrough).toEqual({
+    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual({
       entryId: noteEntryId('coral-alpha'),
       entrySeq: 4,
     });
@@ -390,7 +391,7 @@ describe('curate related-resolution and budget guards', () => {
       contentSeq: 10,
       metadataSeq: 10,
     });
-    writeCurateState(runtime, {
+    writeCurateState(curateDb(runtime), {
       processedThrough: null,
       discoveryHighSeq: 0,
       discoveryOffset: 0,
@@ -435,7 +436,7 @@ describe('curate related-resolution and budget guards', () => {
 
     expect(nonRuntimeStatus).toEqual([]);
     expect(lastCommit).toContain('curate:');
-    expect(readCurateState(runtime).processedThrough).toEqual({
+    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual({
       entryId: sourceEntryId('sqlite-source-10'),
       entrySeq: 10,
     });

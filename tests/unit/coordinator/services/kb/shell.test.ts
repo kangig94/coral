@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinator/services/kb/shell.js';
@@ -24,7 +24,7 @@ function createShell(): {
   abortRegistry: AbortRegistry;
   progressStore: JobStore;
 } {
-  const db = new Database(':memory:');
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {

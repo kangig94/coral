@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
@@ -27,8 +28,8 @@ const storageAdapter = {
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return db;
 }
@@ -42,11 +43,11 @@ function ctx(): AppendContext {
   };
 }
 
-function countEvents(db: Database.Database): number {
+function countEvents(db: Database): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n;
 }
 
-function bodiesBySeq(db: Database.Database): Map<number, unknown> {
+function bodiesBySeq(db: Database): Map<number, unknown> {
   const rows = db.prepare('SELECT seq, body FROM events ORDER BY seq ASC').all() as Array<{
     seq: number;
     body: Buffer;

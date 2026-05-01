@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
@@ -22,7 +22,7 @@ const storageAdapter = {
 
 describe('rebuildProjections replay identity', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       applyTestCounterSchema(db);
@@ -71,7 +71,7 @@ describe('rebuildProjections replay identity', () => {
   });
 
   it('does NOT touch kb_corpus_state (Corpus control state)', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers();
@@ -134,7 +134,7 @@ describe('rebuildProjections replay identity', () => {
   });
 
   it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 

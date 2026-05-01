@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import Database from 'better-sqlite3';
+import { DatabaseSync } from './lib/sqlite.mjs';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +34,7 @@ await failOpen(async () => {
     return;
   }
 
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     let rows;
     try {

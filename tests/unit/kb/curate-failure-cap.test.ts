@@ -16,6 +16,7 @@ import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 // S2: per-lane consecutive failure counters cap at INVARIANT.MAX_CONSECUTIVE_FAILURES.
 // Once a lane crosses the cap the scheduler stops scheduling it and surfaces
@@ -71,8 +72,8 @@ describe('curate scheduler failure cap (S2)', () => {
     // Seed scheduler state at the cap so the next run is a permanent skip.
     const trippedAt = '2026-04-29T12:00:00.000Z';
     await runtime.withMutationLock(() => {
-      writeCurateState(runtime, {
-        ...readCurateState(runtime),
+      writeCurateState(curateDb(runtime), {
+        ...readCurateState(curateDb(runtime)),
         consecutiveClaimFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
         consecutiveCommunityBatchFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
         claimLaneDisabledAt: trippedAt,
@@ -88,7 +89,7 @@ describe('curate scheduler failure cap (S2)', () => {
       // Wait long enough for the debounced launch to fire.
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const state = readCurateState(runtime);
+      const state = readCurateState(curateDb(runtime));
       // Counters stayed at the cap — scheduler did not increment further or
       // mutate the lane. The warning surfaces the disabled state and the
       // disabledAt timestamps survive across the skip.
@@ -105,7 +106,7 @@ describe('curate scheduler failure cap (S2)', () => {
 
   it('applyClearCurateRetryState resets BOTH lane counters and the disabled-at stamps so an operator can re-enable scheduling', () => {
     const seeded = {
-      ...readCurateState(runtime),
+      ...readCurateState(curateDb(runtime)),
       consecutiveClaimFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
       consecutiveCommunityBatchFailures: INVARIANT.MAX_CONSECUTIVE_FAILURES,
       claimLaneDisabledAt: '2026-04-25T00:00:00.000Z',

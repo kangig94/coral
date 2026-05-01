@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -21,7 +21,7 @@ const storageAdapter = {
 
 describe('append/rebuild upcaster round-trip', () => {
   it('append stores raw v1 bytes; rebuild upcasts to v2 for reducer', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 

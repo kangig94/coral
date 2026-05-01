@@ -24,6 +24,7 @@ import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
+import { curateDb } from './db-access.js';
 
 export type CurateHandle = {
   start(): Promise<void>;
@@ -91,12 +92,12 @@ export function createCurateScheduler({
     let nextFailures = 0;
 
     await kb.withMutationLock(() => {
-      const state = readCurateState(kb);
+      const state = readCurateState(curateDb(kb));
       nextFailures = state.consecutiveCommunityBatchFailures + 1;
       // Stamp on the healthy → disabled transition; preserve any earlier stamp
       // so operators see the original trip time across subsequent retries.
       const tripped = nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
-      writeCurateState(kb, {
+      writeCurateState(curateDb(kb), {
         ...state,
         consecutiveCommunityBatchFailures: nextFailures,
         communityBatchLaneDisabledAt: tripped ? nowIsoString(kb.time) : state.communityBatchLaneDisabledAt,
@@ -111,7 +112,7 @@ export function createCurateScheduler({
       return false;
     }
 
-    if (readCurateState(kb).consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES) {
+    if (readCurateState(curateDb(kb)).consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES) {
       backendLog.warn(
         `kb_curate: community batch lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
       );
@@ -130,7 +131,7 @@ export function createCurateScheduler({
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,
       });
-      if (readCurateState(kb).consecutiveCommunityBatchFailures === 0) {
+      if (readCurateState(curateDb(kb)).consecutiveCommunityBatchFailures === 0) {
         pendingCommunitySkipTicks = 0;
       }
       return wroteCommunityFiles;
@@ -154,7 +155,7 @@ export function createCurateScheduler({
       return;
     }
 
-    const state = knownState ?? readCurateState(kb);
+    const state = knownState ?? readCurateState(curateDb(kb));
     if (state.retryNotBefore === null) {
       return;
     }
@@ -198,7 +199,7 @@ export function createCurateScheduler({
 
     if (lastCompletedThrough === null) {
       await kb.withMutationLock(() => {
-        const state = readCurateState(kb);
+        const state = readCurateState(curateDb(kb));
         if (
           state.activeClaim !== null &&
           !isClaimStale(state, nowIsoString(kb.time), resolveCurateTimings(kb.envPort).claimStaleMs)
@@ -210,7 +211,7 @@ export function createCurateScheduler({
       return null;
     }
 
-    const processedThrough = readCurateState(kb).processedThrough;
+    const processedThrough = readCurateState(curateDb(kb)).processedThrough;
     if (!stopped && !signal.aborted && processedThrough !== null) {
       try {
         await runPrincipleDiscovery(kb, spawnCli, processedThrough, { signal, schedule });
@@ -248,7 +249,7 @@ export function createCurateScheduler({
       return;
     }
     const claimLanePermanentlyDisabled =
-      readCurateState(kb).consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES;
+      readCurateState(curateDb(kb)).consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES;
     if (claimLanePermanentlyDisabled) {
       backendLog.warn(
         `kb_curate: claim lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
@@ -318,7 +319,7 @@ export function createCurateScheduler({
     // blocking variant — running against a stale snapshot would mis-route work.
     await kb.ensureCorpusFreshness({ wait: true });
     await initializeCurateStateIfNeeded(kb);
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     pendingCommunitySkipTicks =
       state.consecutiveCommunityBatchFailures > 0
         ? calculateCommunityBatchBackoffTicks(state.consecutiveCommunityBatchFailures)

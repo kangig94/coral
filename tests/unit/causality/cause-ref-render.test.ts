@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { StoreReadContext } from '#src/store/body-codec.js';
@@ -42,14 +43,14 @@ const PROVIDER_FAILURE_CASES = [
   ['request_failed', 'transport reset', 'codex turn failed: transport reset.'],
 ] as const satisfies ReadonlyArray<readonly [SessionProviderFailureReason, string, string]>;
 
-function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {
-  const db = new Database(':memory:');
+function createStore(): { db: Database; store: CoralStore } {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 
 function insertEvent(
-  db: InstanceType<typeof Database>,
+  db: Database,
   input: {
     seq: number;
     type: string;

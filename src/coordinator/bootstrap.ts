@@ -1,3 +1,5 @@
+import '../runtime/suppress-experimental-warnings.js';
+
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 

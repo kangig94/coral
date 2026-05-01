@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../src/store/db.js';
 
 import { commit, type AppendContext, type AppendedEvent } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';

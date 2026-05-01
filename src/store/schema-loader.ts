@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
 import type { StoragePort } from '../runtime/ports.js';
+import type { Database } from './db.js';
 
 declare const __PLUGIN_ROOT__: string | undefined;
 
@@ -47,14 +47,14 @@ type SchemaWriteStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeF
 type SchemaSeedStorage = SchemaReadStorage & SchemaWriteStorage;
 
 export interface ApplyStoreSchemasOptions {
-  readonly db: BetterSqlite3.Database;
+  readonly db: Database;
   readonly storage: SchemaStorage;
   readonly schemasDir?: string;
 }
 
 export const CURRENT_STORE_SCHEMA_VERSION = 1;
 
-function readCurrentVersion(db: BetterSqlite3.Database): number {
+function readCurrentVersion(db: Database): number {
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
       | { value: string }
@@ -65,7 +65,7 @@ function readCurrentVersion(db: BetterSqlite3.Database): number {
   }
 }
 
-export function assertSupportedStoreSchema(db: BetterSqlite3.Database): void {
+export function assertSupportedStoreSchema(db: Database): void {
   const currentVersion = readCurrentVersion(db);
   if (currentVersion === CURRENT_STORE_SCHEMA_VERSION) {
     return;
@@ -143,11 +143,17 @@ export function applyStoreSchemas({
 
   if (files.length === 0) return;
 
-  const applyTxn = db.transaction(() => {
+  // Inlined IMMEDIATE transaction to avoid an import cycle with `./db.js`
+  // (db.ts imports schema-loader for applyStoreSchemas).
+  db.exec('BEGIN IMMEDIATE');
+  try {
     for (const entry of files) {
       const sql = storage.readFileSync(join(schemasDir, entry.name), 'utf-8');
       db.exec(sql);
     }
-  });
-  applyTxn.immediate();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }

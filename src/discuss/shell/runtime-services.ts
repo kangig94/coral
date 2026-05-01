@@ -1,6 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { formatError } from '../../infra/error-format.js';
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobStatus } from '../../jobs/records.js';

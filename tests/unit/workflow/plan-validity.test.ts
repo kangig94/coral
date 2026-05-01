@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
@@ -23,8 +24,8 @@ const storageAdapter = {
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return db;
 }
@@ -104,7 +105,7 @@ function expectWorkflowPlanInvalid(run: () => unknown, reason: string): CoralApp
   throw new Error(`Expected workflow_plan_invalid ${reason}`);
 }
 
-function eventCount(db: Database.Database): number {
+function eventCount(db: Database): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n;
 }
 

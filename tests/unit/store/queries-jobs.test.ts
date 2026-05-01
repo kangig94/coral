@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -21,11 +22,11 @@ const storageAdapter = {
 };
 
 describe('jobs queries', () => {
-  let db: Database.Database;
+  let db: Database;
   let readCtx: StoreReadContext;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = newRawDatabase(':memory:');
     applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
     const reducers = composeReducers(jobsRegistry);

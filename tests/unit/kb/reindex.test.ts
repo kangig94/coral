@@ -8,6 +8,7 @@ import type { ReadonlyDatabase } from '#src/store/read-port.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -810,8 +811,8 @@ This note has malformed frontmatter.
 `,
       'utf-8',
     );
-    writeCurateState(kb, {
-      ...readCurateState(kb),
+    writeCurateState(curateDb(kb), {
+      ...readCurateState(curateDb(kb)),
       processedThrough: {
         entryId: noteEntryId('valid-note'),
         entrySeq: 12,
@@ -833,7 +834,7 @@ This note has malformed frontmatter.
         entrySeq: 7,
       },
     ]);
-    expect(readCurateState(kb)).toMatchObject({
+    expect(readCurateState(curateDb(kb))).toMatchObject({
       processedThrough: null,
       lastAttemptedThrough: null,
       discoveryHighSeq: 6,
@@ -870,7 +871,7 @@ This note is valid now.
     await kb.ensureCorpusFreshness({ wait: true });
 
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
-    expect(readCurateState(kb)).toMatchObject({
+    expect(readCurateState(curateDb(kb))).toMatchObject({
       discoveryHighSeq: 6,
       discoveryOffset: 0,
     });

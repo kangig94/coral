@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from './db.js';
 
 import type { KbProjectionInput } from '../kb/projection-input-contract.js';
 import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
@@ -64,7 +64,7 @@ export interface ConsumerHandle {
 export interface JournalApplyContext {
   readonly fromSeq: number;
   readonly upToSeq: number;
-  readonly db: BetterSqlite3.Database;
+  readonly db: Database;
   /**
    * Aborts when the consumer is stopping or the driver is shutting down.
    * Late-notify supersession does NOT abort the signal.

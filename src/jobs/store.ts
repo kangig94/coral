@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 import { join } from 'node:path';
 
 import type { CauseRefToken } from '../causality/cause-ref.js';

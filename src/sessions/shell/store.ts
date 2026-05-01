@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../../store/db.js';
 
 import { commit as commitJournalEvents, type CommitEventsFn } from '../../store/append.js';
 import { noProviderLookupPort } from '../../providers/catalog.js';
@@ -31,7 +31,6 @@ import { listProjectionSessionEntries, readProjectionSession } from '../projecti
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
-type Database = BetterSqlite3.Database;
 type SessionStoreEventBody =
   | SessionOpenedBody
   | SessionContinuityCheckpointedBody

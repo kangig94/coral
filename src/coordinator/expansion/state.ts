@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database, Statement } from '../../store/db.js';
 
 export type ExpansionStateRow = {
   id: string;
@@ -7,12 +7,12 @@ export type ExpansionStateRow = {
 };
 
 export class ExpansionStateStore {
-  private readonly insertStmt: BetterSqlite3.Statement<[string, string, string]>;
-  private readonly deleteStmt: BetterSqlite3.Statement<[string]>;
-  private readonly listStmt: BetterSqlite3.Statement<[], ExpansionStateRow>;
-  private readonly getStmt: BetterSqlite3.Statement<[string], ExpansionStateRow>;
+  private readonly insertStmt: Statement<[string, string, string]>;
+  private readonly deleteStmt: Statement<[string]>;
+  private readonly listStmt: Statement<[], ExpansionStateRow>;
+  private readonly getStmt: Statement<[string], ExpansionStateRow>;
 
-  constructor(db: BetterSqlite3.Database) {
+  constructor(db: Database) {
     this.insertStmt = db.prepare<[string, string, string]>(
       `
         INSERT INTO expansion_state (id, version, installed_at)

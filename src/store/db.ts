@@ -1,9 +1,44 @@
-import BetterSqlite3 from 'better-sqlite3';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { Runtime, StoragePort } from '../runtime/ports.js';
+import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
 import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
+
+/**
+ * Result of a `Statement.run(...)` invocation.
+ *
+ * `changes` and `lastInsertRowid` are widened to `number | bigint` because
+ * node:sqlite returns `bigint` when `setReadBigInts(true)` is in effect or when
+ * a value exceeds `Number.MAX_SAFE_INTEGER`. Coral never opts into bigints, so
+ * call sites can treat both fields as `number` in practice.
+ */
+export interface RunResult {
+  changes: number | bigint;
+  lastInsertRowid: number | bigint;
+}
+
+/**
+ * Typed prepared statement. Wraps `node:sqlite`'s `StatementSync` with bind-
+ * parameter and result generics so call sites can express their row shape
+ * once at `prepare(...)` instead of casting on every `.get/.all`.
+ */
+export interface Statement<TParams extends unknown[] = unknown[], TRow = unknown>
+  extends Omit<StatementSync, 'get' | 'all' | 'iterate' | 'run'> {
+  get(...params: TParams): TRow | undefined;
+  all(...params: TParams): TRow[];
+  iterate(...params: TParams): IterableIterator<TRow>;
+  run(...params: TParams): RunResult;
+}
+
+/**
+ * Typed SQLite database handle. Wraps `node:sqlite`'s `DatabaseSync` with a
+ * generic `prepare(...)` so call sites can carry bind-param + row types.
+ */
+export interface Database extends Omit<DatabaseSync, 'prepare'> {
+  prepare<TParams extends unknown[] = unknown[], TRow = unknown>(sql: string): Statement<TParams, TRow>;
+}
 
 type ReadonlyStoreOptions = {
   readonly path: string;
@@ -43,29 +78,29 @@ export type JournalPragmaMode =
  *
  * This is the single configuration site for `journal_mode`, `synchronous`,
  * `foreign_keys`, and `busy_timeout`. `openStoreDatabase` calls this helper;
- * no other site in `src/store/db.ts` issues these pragmas.
+ * no other site issues these pragmas.
  */
-export function applyJournalPragmas(db: BetterSqlite3.Database, mode: JournalPragmaMode): void {
+export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void {
   const busyTimeoutMs = mode.busyTimeoutMs ?? 5000;
-  db.pragma('foreign_keys = ON');
-  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   if (mode.kind === 'writable') {
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = FULL');
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = FULL');
   } else if (mode.kind === 'rebuild') {
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
   }
 }
 
-export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Database {
+export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
   if (options.path !== ':memory:') {
     options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
-  const db = new BetterSqlite3(options.path, { readonly });
+  const db = new DatabaseSync(options.path, { readOnly: readonly }) as unknown as Database;
 
   applyJournalPragmas(db, {
     kind: readonly ? 'readonly' : 'writable',
@@ -105,14 +140,14 @@ type OpenBackendStoreOptions = {
 export function openBackendStoreDb(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
   options: OpenBackendStoreOptions = {},
-): BetterSqlite3.Database {
+): Database {
   const storeDbPath = options.path ?? runtime.paths.coral.store.dbFile;
 
   if (storeDbPath !== ':memory:') {
     runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
   }
 
-  // existsSync intentionally queries the real fs: better-sqlite3 itself opens
+  // existsSync intentionally queries the real fs: node:sqlite itself opens
   // through ambient `node:fs`, so the directory's existence on disk is what
   // determines whether the disk path or the in-memory fallback is viable.
   // Tests with a virtual StoragePort rely on this real-fs check to fall back
@@ -124,26 +159,62 @@ export function openBackendStoreDb(
   });
 }
 
-export type Database = BetterSqlite3.Database;
+/**
+ * Per-database cache of prepared statements keyed by SQL source. Re-preparing
+ * the same statement is wasted work — node:sqlite plans on each `prepare`,
+ * and better-sqlite3's contract was the same. The cache keeps statement reuse
+ * cheap without requiring every call site to thread a class instance.
+ *
+ * The overloads narrow the return type by the handle's read/write capability:
+ * passing a `Database` returns a full `Statement` (run/get/all/iterate),
+ * passing a `ReadonlyDatabase` returns a `ReadonlyStatement` (get/all/iterate
+ * only) — preventing accidental writes through a read-only handle.
+ */
+type AnySqliteHandle = Database | ReadonlyDatabase;
+const statementCache = new WeakMap<AnySqliteHandle, Map<string, unknown>>();
 
-const statementCache = new WeakMap<BetterSqlite3.Database, Map<string, BetterSqlite3.Statement>>();
-
-export function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>(
-  db: BetterSqlite3.Database,
+export function prepareCached<TParams extends unknown[] = unknown[], TRow = unknown>(
+  db: Database,
   sql: string,
-): BetterSqlite3.Statement<TParams, TResult> {
+): Statement<TParams, TRow>;
+export function prepareCached<TParams extends unknown[] = unknown[], TRow = unknown>(
+  db: ReadonlyDatabase,
+  sql: string,
+): ReadonlyStatement<TParams, TRow>;
+export function prepareCached<TParams extends unknown[] = unknown[], TRow = unknown>(
+  db: AnySqliteHandle,
+  sql: string,
+): Statement<TParams, TRow> | ReadonlyStatement<TParams, TRow> {
   let cache = statementCache.get(db);
   if (!cache) {
     cache = new Map();
     statementCache.set(db, cache);
   }
-
   const cached = cache.get(sql);
   if (cached) {
-    return cached as BetterSqlite3.Statement<TParams, TResult>;
+    return cached as Statement<TParams, TRow>;
   }
-
-  const statement = db.prepare(sql);
+  const statement = db.prepare<TParams, TRow>(sql);
   cache.set(sql, statement);
-  return statement as BetterSqlite3.Statement<TParams, TResult>;
+  return statement as Statement<TParams, TRow>;
+}
+
+/**
+ * Run `fn` inside a `BEGIN IMMEDIATE` ... `COMMIT` transaction. On any thrown
+ * error the transaction is rolled back and the error re-thrown.
+ *
+ * IMMEDIATE is the only transaction mode coral uses: every commit path locks
+ * for write up front, so no read-then-upgrade race exists. If a future call
+ * site needs DEFERRED or savepoint nesting, add the helper at that moment.
+ */
+export function withImmediate<T>(db: Database, fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }

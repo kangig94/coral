@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../src/store/db.js';
 
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import type { KbRuntime } from '#src/kb/contract.js';

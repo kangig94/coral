@@ -48,6 +48,7 @@ import {
 } from './entity-consolidation.js';
 import { CURATE_STALE_REASON } from './operations.js';
 import type { MetadataTarget, NoteMetadataTarget } from './pipeline-types.js';
+import { curateDb } from './db-access.js';
 
 export type MetadataCommitPlan = {
   graphDelta?: EntityConsolidationDelta;
@@ -200,8 +201,8 @@ export async function commitMetadataTargetsLocked(
   state: CurateState,
   plan: MetadataCommitPlan = {},
 ): Promise<CurateState> {
-  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
-  const repairFrontier = getCurateRepairFrontier(kb);
+  const normalizedState = normalizeCurateStateRepairFrontier(curateDb(kb), state);
+  const repairFrontier = getCurateRepairFrontier(curateDb(kb));
   const currentIndex = kb.readIndexOrEmpty();
   const nextIndex = cloneKbIndex(currentIndex);
   const currentGraph = snapshotEntityGraph(currentIndex);
@@ -359,7 +360,7 @@ export async function commitMetadataTargetsLocked(
     processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
   }
 
-  const nextState = normalizeCurateStateRepairFrontier(kb, {
+  const nextState = normalizeCurateStateRepairFrontier(curateDb(kb), {
     ...normalizedState,
     processedThrough,
     activeClaim: null,
@@ -381,7 +382,7 @@ export async function commitMetadataTargetsLocked(
     throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
   }
 
-  writeCurateState(kb, nextState);
+  writeCurateState(curateDb(kb), nextState);
   return nextState;
 }
 
@@ -391,7 +392,7 @@ export async function commitMetadataTargets(
   plan: MetadataCommitPlan = {},
 ): Promise<void> {
   await kb.withMutationLock(async (mutation) => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     await commitMetadataTargetsLocked(kb, mutation, targets, state, plan);
   });
 }

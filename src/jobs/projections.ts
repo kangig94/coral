@@ -3,7 +3,7 @@
 // keeping `events.ts` (registry assembly) cleanly above this file with no
 // cycle in either direction.
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';

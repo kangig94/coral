@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KbReindexService } from '#src/coordinator/services/kb/reindex.js';
@@ -94,7 +94,7 @@ function makeWorld(): ServiceWorld {
   };
 
   // JobStore + AbortRegistry composed against the same DB.
-  const jobsDb = new Database(':memory:');
+  const jobsDb = newRawDatabase(':memory:');
   openDbs.push(jobsDb);
   const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
     existsSync,

@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database, Statement } from '../store/db.js';
 
 import type { KbCorpusSnapshot } from '../kb/contract.js';
 import type {
@@ -210,7 +210,7 @@ interface CorpusCursorRow {
 }
 
 export interface ConsumerDriverOptions {
-  readonly db: BetterSqlite3.Database;
+  readonly db: Database;
   readonly now: () => Date;
   readonly time: ConsumerDriverTimers;
   readonly corpusProjectionReader?: KbCorpusProjectionReader;
@@ -222,7 +222,7 @@ export interface UnregisterStoppedConsumerOptions {
 }
 
 export class ConsumerDriver {
-  private readonly db: BetterSqlite3.Database;
+  private readonly db: Database;
   private readonly now: () => Date;
   private readonly timers: ConsumerDriverTimers;
   private readonly corpusProjectionReader: KbCorpusProjectionReader;
@@ -231,25 +231,25 @@ export class ConsumerDriver {
   private readonly corpusStateReader: CorpusStateReadPort;
   private readonly consumers = new Map<string, ConsumerState>();
   private forceGeneration = 0;
-  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], CursorMetadataRow>;
-  private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<
+  private readonly selectCursorMetadataStmt: Statement<[string], CursorMetadataRow>;
+  private readonly insertJournalCursorRowStmt: Statement<
     [string, Authority, string, ConsumerRegistrationKind]
   >;
-  private readonly insertCorpusCursorRowStmt: BetterSqlite3.Statement<
+  private readonly insertCorpusCursorRowStmt: Statement<
     [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
   >;
-  private readonly updateRegistrationKindStmt: BetterSqlite3.Statement<[ConsumerRegistrationKind, string]>;
-  private readonly deleteCursorRowStmt: BetterSqlite3.Statement<[string]>;
-  private readonly readJournalCursorStmt: BetterSqlite3.Statement<[string], JournalCursorRow>;
-  private readonly readCorpusCursorStmt: BetterSqlite3.Statement<[string], CorpusCursorRow>;
-  private readonly advanceJournalCursorStmt: BetterSqlite3.Statement<[number, string, number]>;
-  private readonly advanceContentCursorStmt: BetterSqlite3.Statement<
+  private readonly updateRegistrationKindStmt: Statement<[ConsumerRegistrationKind, string]>;
+  private readonly deleteCursorRowStmt: Statement<[string]>;
+  private readonly readJournalCursorStmt: Statement<[string], JournalCursorRow>;
+  private readonly readCorpusCursorStmt: Statement<[string], CorpusCursorRow>;
+  private readonly advanceJournalCursorStmt: Statement<[number, string, number]>;
+  private readonly advanceContentCursorStmt: Statement<
     [string, number, number, string, string, string, number, number, string]
   >;
-  private readonly advanceMetadataCursorStmt: BetterSqlite3.Statement<
+  private readonly advanceMetadataCursorStmt: Statement<
     [string, number, number, string, string, string, number, number, string]
   >;
-  private readonly advanceBothCursorStmt: BetterSqlite3.Statement<
+  private readonly advanceBothCursorStmt: Statement<
     [string, number, number, string, string, string, number, number, string]
   >;
 

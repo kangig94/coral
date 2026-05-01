@@ -25,6 +25,7 @@ import type { CorpusEntityGraphScan, CorpusMarkdownFileScan, CorpusScanView } fr
 import type { DetectedIncident } from './incidents/catalog.js';
 import type { EngineArtifactDescriptor, EngineArtifactProjectedSnapshot } from '../artifact-port.js';
 import type { CorpusAuthorityBaselineMap, CorpusAuthorityBaselineRecord } from '../authority-baseline-contract.js';
+import { curateDb } from '../../curate/db-access.js';
 
 const INDEX_FILE = 'index.json';
 
@@ -371,7 +372,7 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
     const storedAuthorityHashes = baseline.rebuilt ? new Map() : baseline.baseline;
     const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
-    const retryQueue = readCurateRetryQueue(kb);
+    const retryQueue = readCurateRetryQueue(curateDb(kb));
     const pendingRepairIds = new Set(retryQueue.map((entry) => entry.entryId));
     let externalMutation: KbIndexMutationLane | null = null;
 

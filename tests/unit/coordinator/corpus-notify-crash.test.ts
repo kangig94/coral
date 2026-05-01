@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { type createKbRuntime } from '#src/kb/runtime.js';
@@ -87,7 +88,7 @@ async function seedIndexedNote(kb: ReturnType<typeof createKbRuntime>, vaultDir:
   await reindex(kb);
 }
 
-function readCursor(db: InstanceType<typeof Database>, consumerId: string): KbCorpusSnapshot {
+function readCursor(db: Database, consumerId: string): KbCorpusSnapshot {
   const row = db
     .prepare(
       `
@@ -115,7 +116,7 @@ function readCursor(db: InstanceType<typeof Database>, consumerId: string): KbCo
   };
 }
 
-function createProjectionTable(db: InstanceType<typeof Database>): void {
+function createProjectionTable(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS test_needle_projection (
       snapshot_id TEXT PRIMARY KEY,
@@ -128,7 +129,7 @@ function createProjectionTable(db: InstanceType<typeof Database>): void {
   `);
 }
 
-function listProjectionRows(db: InstanceType<typeof Database>): ProjectionRow[] {
+function listProjectionRows(db: Database): ProjectionRow[] {
   return db
     .prepare(
       `
@@ -147,7 +148,7 @@ function listProjectionRows(db: InstanceType<typeof Database>): ProjectionRow[] 
 }
 
 function createNeedleConsumer(options: {
-  db: InstanceType<typeof Database>;
+  db: Database;
   appliedBy: string;
   applyCalls: Array<{ appliedBy: string; snapshotId: string }>;
   started?: Deferred<void>;
@@ -210,7 +211,7 @@ describe('Corpus notify crash replay', () => {
     mkdirSync(vaultDir, { recursive: true });
     mkdirSync(runtimeDir, { recursive: true });
 
-    const primaryDb = new Database(dbPath);
+    const primaryDb = newRawDatabase(dbPath);
     createProjectionTable(primaryDb);
     applyStoreSchemas({
       db: primaryDb,
@@ -226,7 +227,7 @@ describe('Corpus notify crash replay', () => {
     const firstApplyStarted = createDeferred<void>();
     const firstApplyGate = createDeferred<void>();
     const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
-    let replayDb: InstanceType<typeof Database> | null = null;
+    let replayDb: Database | null = null;
     let replayDriver: ConsumerDriver | null = null;
 
     try {
@@ -286,7 +287,7 @@ describe('Corpus notify crash replay', () => {
         },
       ]);
 
-      replayDb = new Database(dbPath);
+      replayDb = newRawDatabase(dbPath);
       replayDriver = new ConsumerDriver({
         db: replayDb,
         time: REAL_CONSUMER_DRIVER_TIMERS,

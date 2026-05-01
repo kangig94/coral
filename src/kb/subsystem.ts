@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
