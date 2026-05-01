@@ -25,7 +25,7 @@ import type {
 } from '#src/providers/contract.js';
 import { providerTerminalEventBodySchema, providerJobTerminalSchema } from '#src/providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
-import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
+import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
 import {
   createDiscussContextRegistry,
@@ -208,7 +208,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const decision = await waitForRunningDecision(service, 'midstream');
     const once = await service.waitStreamOnce(decision.job, 5_000);
     const detail = loadJobProjectionDetail(progressStore.getDb(), decision.job, progressStore);
-    const terminalProgress = readJobProgress(progressStore.getDb(), decision.job, progressStore).find(
+    const terminalProgress = readJobEvents(progressStore.getDb(), decision.job, progressStore).find(
       (event) => event.type === 'terminal',
     );
     const { sessionManager } = getInternals(service);

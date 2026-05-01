@@ -1,5 +1,5 @@
 import type { JobStore } from '#src/jobs/store.js';
-import type { JobProgress } from '#src/jobs/records.js';
+import type { JobEvent } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { commit } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -35,7 +35,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }): AsyncIterable<JobProgress> {
+  }): AsyncIterable<JobEvent> {
     let observedSeq = afterSeq;
     const ids = new Set(jobIds);
     const waitForAbort = () =>
@@ -51,7 +51,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
 
     while (!abortSignal?.aborted) {
       const events = [...ids]
-        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .flatMap((jobId) => progressStore.readJobEvents(jobId).filter((event) => event.seq > observedSeq))
         .sort((left, right) => left.seq - right.seq);
       if (events.length > 0) {
         for (const event of events) {
@@ -72,7 +72,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
 
   return {
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
-    readJobProgress: (jobId: string) => progressStore.readJobProgress(jobId),
+    readJobEvents: (jobId: string) => progressStore.readJobEvents(jobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit,

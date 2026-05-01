@@ -7,7 +7,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
+import type { AppServerRuntime, JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -156,7 +156,7 @@ function createService(
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }): AsyncIterable<JobProgress> {
+  }): AsyncIterable<JobEvent> {
     let observedSeq = afterSeq;
     const ids = new Set(jobIds);
     const waitForAbort = () =>
@@ -171,7 +171,7 @@ function createService(
         : new Promise<void>(() => {});
     while (!abortSignal?.aborted) {
       const events = [...ids]
-        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .flatMap((jobId) => progressStore.readJobEvents(jobId).filter((event) => event.seq > observedSeq))
         .sort((left, right) => left.seq - right.seq);
       if (events.length > 0) {
         for (const event of events) {
@@ -203,7 +203,7 @@ function createService(
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     sessionLookup: createProjectionSessionLookup(progressStore.getDb()),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
-    readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
+    readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
@@ -629,7 +629,7 @@ function _makeTerminalReplay(
     ts?: string;
     result?: TestJobTerminal;
   } = {},
-): JobProgress {
+): JobEvent {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
@@ -742,7 +742,7 @@ describe('ExecutionService launch', () => {
       getInternals(service);
     const jobDir = join(JOBS_DIR, decision.job);
     const runtimeRecord = progressStore.readRuntimeProjection(decision.job) as _DurableCliRuntimeRecord | null;
-    const history = progressStore.readJobProgress(decision.job);
+    const history = progressStore.readJobEvents(decision.job);
 
     expect(terminal.result.content).toContain('final output');
     expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);

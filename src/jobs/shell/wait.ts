@@ -1,5 +1,5 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobProgress, JobStatus } from '../records.js';
+import type { JobEvent, JobStatus } from '../records.js';
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   type WaitRequest,
@@ -22,14 +22,14 @@ const TIMED_OUT = 'wait-timed-out' as const;
 const JOURNAL_POLL = 'wait-journal-poll' as const;
 const JOURNAL_POLL_INTERVAL_MS = 250;
 
-function compareProgressSeq(left: JobProgress, right: JobProgress): number {
+function compareProgressSeq(left: JobEvent, right: JobEvent): number {
   if (left.seq !== right.seq) {
     return left.seq - right.seq;
   }
   return left.jobId.localeCompare(right.jobId);
 }
 
-function toProgressWaitEvent(event: JobProgress): WaitStreamEvent {
+function toProgressWaitEvent(event: JobEvent): WaitStreamEvent {
   if (event.type !== 'progress') {
     throw new Error('Expected progress event.');
   }
@@ -42,7 +42,7 @@ function toProgressWaitEvent(event: JobProgress): WaitStreamEvent {
 }
 
 function toTerminalWaitEvent(
-  event: JobProgress,
+  event: JobEvent,
   pending: ReadonlySet<string>,
   resultPath: string,
   continuity: JobContinuitySnapshot | null,
@@ -165,12 +165,12 @@ export interface WaitCoordinatorDeps {
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobProgress: (jobId: string) => JobProgress[];
+  readJobEvents: (jobId: string) => JobEvent[];
   subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }) => AsyncIterable<JobProgress>;
+  }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   resultJobsRoot: string;
   ensureResultArtifact?: (jobId: string) => string;
@@ -200,14 +200,14 @@ export class WaitCoordinator {
     }
   }
 
-  private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobProgress[] {
-    const { readJobProgress } = this.deps;
+  private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {
+    const { readJobEvents } = this.deps;
     return [...pending]
-      .flatMap((jobId) => readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
+      .flatMap((jobId) => readJobEvents(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
       .sort(compareProgressSeq);
   }
 
-  private toWaitEvent(event: JobProgress, pending: ReadonlySet<string>): WaitStreamEvent {
+  private toWaitEvent(event: JobEvent, pending: ReadonlySet<string>): WaitStreamEvent {
     if (event.type === 'progress') {
       return toProgressWaitEvent(event);
     }
@@ -333,7 +333,7 @@ export class WaitCoordinator {
     })[Symbol.asyncIterator]();
     // Prime the live tail before reading the catch-up snapshot so terminal events
     // cannot land in the gap between the snapshot and subscriber registration.
-    let pendingNext: Promise<IteratorResult<JobProgress>> | null = iterator.next();
+    let pendingNext: Promise<IteratorResult<JobEvent>> | null = iterator.next();
     let timeoutWaiter: ReturnType<typeof createTimeoutWaiter> | null = null;
 
     try {

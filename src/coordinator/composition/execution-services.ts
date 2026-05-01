@@ -48,7 +48,7 @@ export function createExecutionServices({
       providerRegistry: world.providerRegistry,
       pluginRegistry: world.pluginRegistry,
       loadJobProjectionDetail: (jobId) => world.progressStore.loadJobProjectionDetail(jobId),
-      readJobProgress: (jobId) => world.progressStore.readJobProgress(jobId),
+      readJobEvents: (jobId) => world.progressStore.readJobEvents(jobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (

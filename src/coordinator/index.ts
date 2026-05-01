@@ -21,7 +21,7 @@ import { commit as commitJournalEvents, type CommitEventsFn } from '../store/app
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
-import { readJobProgress, loadJobProjectionDetail } from '../jobs/read-queries.js';
+import { readJobEvents, loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
@@ -386,7 +386,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ...deps,
         coordinatorCommit,
         loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, readCtx),
+        readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
         subscribeJobEvents,
         getCurrentJournalSeq,
         sessionLookup: getSessionLookup(),

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
+import type { AppServerRuntime, JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -162,7 +162,7 @@ function createService(
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }): AsyncIterable<JobProgress> {
+  }): AsyncIterable<JobEvent> {
     let observedSeq = afterSeq;
     const ids = new Set(jobIds);
     const waitForAbort = () =>
@@ -177,7 +177,7 @@ function createService(
         : new Promise<void>(() => {});
     while (!abortSignal?.aborted) {
       const events = [...ids]
-        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .flatMap((jobId) => progressStore.readJobEvents(jobId).filter((event) => event.seq > observedSeq))
         .sort((left, right) => left.seq - right.seq);
       if (events.length > 0) {
         for (const event of events) {
@@ -210,7 +210,7 @@ function createService(
     coordinatorCommit: (cb) => progressStore.commit(cb),
     sessionLookup: createProjectionSessionLookup(progressStore.getDb()),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
-    readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
+    readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
   });
@@ -1981,7 +1981,7 @@ describe('ExecutionService', () => {
 
         service.recoverQueuedJob(launchRecord);
 
-        expect(progressStore.readJobProgress(jobId).map((event) => event.seq)).toEqual([
+        expect(progressStore.readJobEvents(jobId).map((event) => event.seq)).toEqual([
           firstProgressSeq,
           secondProgressSeq,
         ]);

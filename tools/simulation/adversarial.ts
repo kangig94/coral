@@ -18,7 +18,7 @@ import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
 import type { LaunchStep, WaitUntil, WorldConfig } from './scenario-schema.js';
 import type { LaunchDecision } from '../../src/jobs/launch.js';
 import { isTerminalPhase } from '../../src/jobs/phase.js';
-import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
+import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { SessionEntry } from '../../src/sessions/entry.js';
 
@@ -281,7 +281,7 @@ export class SimulationWorld {
 
   getProgress(jobId: string): string[] {
     return this.replay(jobId)
-      .filter((event): event is JobProgress & { type: 'progress'; message: string } => event.type === 'progress')
+      .filter((event): event is JobEvent & { type: 'progress'; message: string } => event.type === 'progress')
       .map((event) => event.message);
   }
 
@@ -361,9 +361,9 @@ export class SimulationWorld {
     };
   }
 
-  replay(jobId: string, afterSeq = 0): JobProgress[] {
+  replay(jobId: string, afterSeq = 0): JobEvent[] {
     this.assertUsable();
-    return this.current.backend.progressStore.readJobProgress(jobId).filter((event) => event.seq > afterSeq);
+    return this.current.backend.progressStore.readJobEvents(jobId).filter((event) => event.seq > afterSeq);
   }
 
   readArtifact(
@@ -516,7 +516,7 @@ export class SimulationWorld {
         Boolean(status?.result) ||
         (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
       progress: replay
-        .filter((event): event is JobProgress & { type: 'progress'; message: string } => event.type === 'progress')
+        .filter((event): event is JobEvent & { type: 'progress'; message: string } => event.type === 'progress')
         .map((event) => event.message),
       result: status?.result ?? null,
     };
@@ -525,7 +525,7 @@ export class SimulationWorld {
   private observeJobIncremental(jobId: string, cursor: ProgressCursor, accumulatedProgress: string[]): WaitObservation {
     const status = this.current.backend.progressStore.readStatus(jobId);
     const newEvents = this.current.backend.progressStore
-      .readJobProgress(jobId)
+      .readJobEvents(jobId)
       .filter((event) => event.seq > cursor.afterSeq);
 
     for (const event of newEvents) {

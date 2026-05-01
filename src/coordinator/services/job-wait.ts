@@ -1,5 +1,5 @@
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobProgress } from '../../jobs/records.js';
+import type { JobEvent } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { LaunchReadiness } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contract.js';
@@ -13,7 +13,7 @@ export interface JobWaitServiceDeps {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }) => AsyncIterable<JobProgress>;
+  }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
 }
 

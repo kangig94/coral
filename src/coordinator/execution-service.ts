@@ -99,7 +99,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       jobPools: this.jobPools,
       time: this.runtime.time,
       loadJobProjectionDetail: deps.loadJobProjectionDetail,
-      readJobProgress: deps.readJobProgress,
+      readJobEvents: deps.readJobEvents,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,

@@ -241,7 +241,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         if (!status || !belongsToNamespace(status, world.namespace)) {
           return null;
         }
-        const events = world.progressStore.readJobProgress(jobId);
+        const events = world.progressStore.readJobEvents(jobId);
         return {
           status,
           events,

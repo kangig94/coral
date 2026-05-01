@@ -1354,7 +1354,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      const history = progressStore.readJobProgress('foreign-history');
+      const history = progressStore.readJobEvents('foreign-history');
       expect(history.at(-1)).toMatchObject({
         type: 'terminal',
         result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },

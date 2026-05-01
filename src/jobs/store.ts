@@ -14,7 +14,7 @@ import {
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { UpcasterRegistry } from '../store/upcaster-registry.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
-import { listJobProjections, loadJobProjectionDetail, readJobProgress } from './read-queries.js';
+import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
 import { ensureResultMarkdownArtifact } from './terminal/export.js';
@@ -205,8 +205,8 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobProgress(jobId: string) {
-    return readJobProgress(this.db, jobId, this);
+  readJobEvents(jobId: string) {
+    return readJobEvents(this.db, jobId, this);
   }
 
   ensureResultArtifact(jobId: string): string {

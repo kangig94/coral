@@ -3,7 +3,7 @@ import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contract.js';
-import type { JobProgress } from '../jobs/records.js';
+import type { JobEvent } from '../jobs/records.js';
 import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
@@ -78,12 +78,12 @@ export type ExecutionServiceDeps = {
   };
   coordinatorCommit?: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobProgress: (jobId: string) => JobProgress[];
+  readJobEvents: (jobId: string) => JobEvent[];
   subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }) => AsyncIterable<JobProgress>;
+  }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   sessionLookup?: SessionLookup;
 };

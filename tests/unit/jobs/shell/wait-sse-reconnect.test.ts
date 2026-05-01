@@ -9,7 +9,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { readJobProgress, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
+import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -168,7 +168,7 @@ describe('wait SSE reconnect', () => {
       jobPools: new Map(),
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
-      readJobProgress: (targetJobId) => readJobProgress(db, targetJobId, progressStore),
+      readJobEvents: (targetJobId) => readJobEvents(db, targetJobId, progressStore),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
@@ -351,8 +351,8 @@ describe('wait SSE reconnect', () => {
       jobPools: new Map(),
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
-      readJobProgress: (targetJobId) => {
-        const events = readJobProgress(db, targetJobId, progressStore);
+      readJobEvents: (targetJobId) => {
+        const events = readJobEvents(db, targetJobId, progressStore);
         if (!terminalInjected) {
           terminalInjected = true;
           commitTerminal();

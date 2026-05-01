@@ -14,7 +14,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import { createDeferred as _createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type { JobLaunch as _JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
+import type { JobLaunch as _JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -587,7 +587,7 @@ function _makeTerminalReplay(
     ts?: string;
     result?: TestJobTerminal;
   } = {},
-): JobProgress {
+): JobEvent {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,

@@ -11,7 +11,7 @@ import {
   loadJobDetail,
   loadJobProjectionDetail,
   listJobs,
-  readJobProgress,
+  readJobEvents,
   type JobDetail,
   type JobsListFilters,
 } from '../jobs/read-queries.js';
@@ -185,8 +185,8 @@ export class CoralStore implements StoreReadContext {
     return loadJobProjectionDetail(this.db, jobId, this);
   }
 
-  readJobProgress(jobId: string) {
-    return readJobProgress(this.db, jobId, this);
+  readJobEvents(jobId: string) {
+    return readJobEvents(this.db, jobId, this);
   }
 
   private requireProjectRoot(operation: string): string {

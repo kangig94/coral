@@ -134,7 +134,7 @@ export function isAppServerRuntime(record: JobRuntime | null | undefined): recor
   return record?.transport === 'app-server';
 }
 
-export interface JobProgress {
+export interface JobEvent {
   jobId: string;
   sessionId: string | null;
   seq: number;
@@ -164,7 +164,7 @@ export type JobsListResponse = {
  */
 export type JobDetailResponse = {
   status: JobStatus;
-  events: JobProgress[];
+  events: JobEvent[];
   readiness: LaunchReadiness;
   exit: JobExit | null;
 };

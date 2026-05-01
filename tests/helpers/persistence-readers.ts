@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
-import type { JobProgress, JobStatus } from '#src/jobs/records.js';
+import type { JobEvent, JobStatus } from '#src/jobs/records.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
-import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
+import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync'> = {
@@ -44,6 +44,6 @@ export function readStatusRecord(jobId: string): JobStatus | null {
 /**
  * Reads and parses all persisted progress records for a job.
  */
-export function readProgressLog(jobId: string): JobProgress[] {
-  return withReadonlyStore((db) => readJobProgress(db, jobId, createDefaultStoreReadContext()), []);
+export function readProgressLog(jobId: string): JobEvent[] {
+  return withReadonlyStore((db) => readJobEvents(db, jobId, createDefaultStoreReadContext()), []);
 }

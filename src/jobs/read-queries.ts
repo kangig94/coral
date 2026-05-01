@@ -8,7 +8,7 @@ import { type JobPhase } from './phase.js';
 import type { JobProjectionDetail } from './read-contract.js';
 import {
   type JobDiagnostics,
-  type JobProgress,
+  type JobEvent,
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
@@ -155,7 +155,7 @@ export type JobsListFilters = {
 
 export type JobDetail = {
   status: JobStatus;
-  events: JobProgress[];
+  events: JobEvent[];
 };
 
 function emptyJobProjectionDetail(): JobProjectionDetail {
@@ -670,11 +670,11 @@ export function loadJobDetail(
 
   return {
     status,
-    events: readJobProgress(db, jobId, ctx),
+    events: readJobEvents(db, jobId, ctx),
   };
 }
 
-export function readJobProgress(db: BetterSqlite3.Database, jobId: string, ctx: StoreReadContext): JobProgress[] {
+export function readJobEvents(db: BetterSqlite3.Database, jobId: string, ctx: StoreReadContext): JobEvent[] {
   const rows = prepareCached<
     [string],
     {

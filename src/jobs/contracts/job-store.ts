@@ -4,7 +4,7 @@ import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../st
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProjectionDetail } from '../read-contract.js';
 import type { JobEventBus } from '../event-bus.js';
-import type { JobTerminalDiagnostics, JobLaunch, JobProgress, JobRuntime, JobStatus } from '../records.js';
+import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus } from '../records.js';
 
 export type InitJobOptions = {
   jobId: string;
@@ -29,7 +29,7 @@ export interface JobProgressStore {
   getChangeSeq(): number;
   waitForChange(sinceSeq: number): Promise<void>;
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
-  readJobProgress(jobId: string): JobProgress[];
+  readJobEvents(jobId: string): JobEvent[];
   ensureResultArtifact(jobId: string): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   initJob(opts: InitJobOptions): void;
