@@ -397,25 +397,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       );
     },
     listJobs: async (options = {}) => {
-      if (commandClass === 'read') {
-        return {
-          jobs: await Promise.resolve(
-            readStore().jobs.list({
-              projectRoot: options.projectRoot ?? projectRoot,
-              ...(options.phase !== undefined ? { phase: options.phase } : {}),
-              ...(options.provider !== undefined ? { provider: options.provider } : {}),
-              ...(options.all === true ? { all: true } : {}),
-            }),
-          ),
-        };
-      }
-
-      return request<JobsListResponse>('jobs.list', {
-        projectRoot: options.projectRoot ?? defaultContext.projectRoot,
+      const filters = {
+        projectRoot: options.projectRoot ?? projectRoot,
         ...(options.phase !== undefined ? { phase: options.phase } : {}),
         ...(options.provider !== undefined ? { provider: options.provider } : {}),
         ...(options.all === true ? { all: true } : {}),
-      });
+      };
+      if (commandClass === 'read') {
+        return { jobs: readStore().jobs.list(filters) };
+      }
+      return request<JobsListResponse>('jobs.list', filters);
     },
     abortJobs: async (jobIds) =>
       await request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
