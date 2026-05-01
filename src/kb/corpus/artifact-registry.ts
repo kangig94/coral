@@ -70,7 +70,9 @@ export class EngineArtifactRegistry {
         // of the registry. Log the failure and continue with the remaining
         // entries' descriptors.
         const message = errorMessage(error);
-        backendLog.warn(`EngineArtifactRegistry: port for consumers [${entry.targetConsumerIds.join(', ')}] threw during describeArtifacts(): ${message}`);
+        backendLog.warn(
+          `EngineArtifactRegistry: port for consumers [${entry.targetConsumerIds.join(', ')}] threw during describeArtifacts(): ${message}`,
+        );
         continue;
       }
       for (const descriptor of described) {

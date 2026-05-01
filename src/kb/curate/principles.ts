@@ -37,7 +37,7 @@ import {
   type CurateState,
   type PendingDiscovery,
 } from './state/index.js';
-import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate} from './pipeline-types.js';
+import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 
 type EnsurePrincipleDocumentResult = {

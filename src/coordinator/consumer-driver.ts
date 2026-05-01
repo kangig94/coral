@@ -1,11 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { KbCorpusSnapshot } from '../kb/contract.js';
-import type {
-  CorpusConsumerRegistration,
-  CorpusInterest,
-  CorpusLaneHint,
-} from '../store/consumer-contract.js';
+import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../store/consumer-contract.js';
 import type { KbCorpusProjectionReader, KbProjectionInput } from '../kb/projection-input-contract.js';
 import type {
   ConsumerApplyError,

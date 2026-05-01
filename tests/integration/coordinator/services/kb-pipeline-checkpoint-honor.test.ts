@@ -93,7 +93,8 @@ function makeWorld(): ServiceWorld {
   openDbs.push(jobsDb);
   const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
     existsSync,
-    readFileSync: readFileSync as StoragePort['readFileSync'],    readdirSync: readdirSync as StoragePort['readdirSync'],
+    readFileSync: readFileSync as StoragePort['readFileSync'],
+    readdirSync: readdirSync as StoragePort['readdirSync'],
   };
   applyStoreSchemas({ db: jobsDb, storage: nodeStorage });
   const runtime = new SimulationRuntime();

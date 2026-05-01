@@ -17,11 +17,7 @@ import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/schedul
 import { buildClassificationPrompt, chunkEntriesByPromptBudget } from '#src/kb/curate/classification/prompt.js';
 import { buildMetadataTargets, validateAssignments } from '#src/kb/curate/classification/assignments.js';
 import { parseClassificationResponse } from '#src/kb/curate/classification/parse.js';
-import {
-  buildDiscoveryPrompt,
-  parseDiscoveryResponse,
-  validateDiscoveryProposals,
-} from '#src/kb/curate/discovery.js';
+import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from '#src/kb/curate/discovery.js';
 import type {
   ClassificationAssignment,
   CurateClaimedEntry,

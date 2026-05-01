@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { TimerHandle } from '../../runtime/ports.js';
 import type { KbRuntime } from '../contract.js';
 import { runCurateClaude } from './operations.js';
-import type { GitSyncRuntimePicks} from './pipeline-types.js';
+import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];

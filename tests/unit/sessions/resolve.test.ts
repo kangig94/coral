@@ -160,25 +160,34 @@ describe('sessions shell resolve', () => {
     const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
 
     expect(
-      resolveSession({
+      resolveSession(
+        {
           sessionId: sessionA.sessionId,
           provider: 'codex',
-        }, sessionLookup),
+        },
+        sessionLookup,
+      ),
     ).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
     });
     expect(
-      resolveSession({
+      resolveSession(
+        {
           sessionId: sessionA.sessionId,
           provider: 'claude',
-        }, sessionLookup),
+        },
+        sessionLookup,
+      ),
     ).toBeNull();
     expect(
-      resolveSession({
+      resolveSession(
+        {
           sessionId: sessionB.sessionId,
           provider: 'claude',
-        }, sessionLookup),
+        },
+        sessionLookup,
+      ),
     ).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',

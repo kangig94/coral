@@ -62,7 +62,6 @@ export type ExecuteAgentAttemptParams = {
   timeoutMs?: number;
 };
 
-
 export type RunFacilitatorTurnParams = {
   sessionId: string;
   prompt: string;
@@ -124,7 +123,10 @@ export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string,
   ) as Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
-export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussAgentJobPurpose): number {
+export function nextAttemptForPurpose(
+  run: PersistedDiscussAgentRun | undefined,
+  purpose: DiscussAgentJobPurpose,
+): number {
   if (!run) {
     return 1;
   }

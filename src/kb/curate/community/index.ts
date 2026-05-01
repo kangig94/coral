@@ -12,10 +12,7 @@ import {
   renderCommunityDocument,
 } from './documents.js';
 import { buildEntityRelationshipGraph } from './graph.js';
-import {
-  computeCommunitySummaryInputFingerprintForCommunity,
-  generateCommunitySummary,
-} from './summary.js';
+import { computeCommunitySummaryInputFingerprintForCommunity, generateCommunitySummary } from './summary.js';
 import type { CommunityDocument, ExistingGeneratedCommunity } from './contracts.js';
 import { CURATE_STALE_REASON, runCurateClaude } from '../operations.js';
 import { readCurateState, writeCurateState } from '../state/index.js';

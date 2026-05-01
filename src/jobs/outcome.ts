@@ -118,7 +118,6 @@ export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'co
   }
 }
 
-
 export function describeLaunchRejected(rejected: JobLaunchRejected): string {
   return `Launch rejected (${rejected.provider} busy: ${rejected.globalActive}/${rejected.globalLimit}).`;
 }

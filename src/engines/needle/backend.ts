@@ -4,12 +4,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { CoralSetupError } from '../../runtime/errors.js';
-import type {
-  Backed,
-  EmbeddingService,
-  KbEngineRuntime,
-  KbProjectionArtifactFilePort,
-} from '../../kb/contract.js';
+import type { Backed, EmbeddingService, KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext } from '../../store/consumer-contract.js';
 import type { VectorRetrieval as BoundVectorRetrieval } from '../../kb/search/contract.js';
 import type { KbProjectionInput } from '../../kb/projection-input-contract.js';

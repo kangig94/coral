@@ -6,11 +6,7 @@ import type {
   ProviderServerSpec,
 } from '../contract.js';
 import { bindAppServerLease, getAppServerNotificationHandler, type AppServerContract } from '../app-server/driver.js';
-import type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-  ProviderTransportClose,
-} from '../protocol.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase, ProviderTransportClose } from '../protocol.js';
 
 type DownstreamStep = IteratorResult<ProviderEventBody>;
 type ClosedResult = { kind: 'closed'; closed: Error | void };

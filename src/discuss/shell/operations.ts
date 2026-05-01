@@ -4,12 +4,7 @@ import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { buildAgentExecutionConfig } from './runtime-build.js';
 import * as discussLoop from './loop.js';
-import {
-  type AgentConfig,
-  type DiscussConfig,
-  type DiscussContext,
-  type LiveDiscussSession,
-} from './types.js';
+import { type AgentConfig, type DiscussConfig, type DiscussContext, type LiveDiscussSession } from './types.js';
 import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';
@@ -186,4 +181,3 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
   session.controller.abort();
   detachSession(ctx, sessionId);
 }
-

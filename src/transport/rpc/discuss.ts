@@ -68,4 +68,3 @@ export const discussSessionSpeechRequestSchema = discussSpeechSchema
     claudeModelCap: z.string().optional(),
   })
   .strict();
-

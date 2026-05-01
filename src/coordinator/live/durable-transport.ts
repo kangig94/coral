@@ -36,7 +36,6 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   onRuntimeRecord?: (record: JobRuntime) => void;
 };
 
-
 export function spawnCliTransport(params: {
   runtime: Runtime;
   options: SpawnCliOptions;
@@ -309,4 +308,3 @@ function readOutputFile(storage: StoragePort, path: string): string {
     return '';
   }
 }
-

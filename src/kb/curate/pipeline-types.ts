@@ -110,4 +110,3 @@ export type CurateClaim = {
   entries: CurateClaimedEntry[];
   through: CurateCursor;
 };
-

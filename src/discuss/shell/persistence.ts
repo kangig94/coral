@@ -3,7 +3,7 @@ import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js'
 import type { Result } from '../session-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
-import { type DiscussContext} from './types.js';
+import { type DiscussContext } from './types.js';
 import { ABORT_REASON, DiscussManagerError } from './errors.js';
 import { compactLiveWatchBuffer, getSubscriberCursorMap, watchBufferCursor } from './live-registry.js';
 

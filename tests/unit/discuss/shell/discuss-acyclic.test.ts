@@ -211,10 +211,7 @@ describe('discuss architecture guard', () => {
       productionFilePaths.map((filePath) => classifySubsystem(toCanonicalSrcPath(REPO_ROOT, filePath))),
     );
     const crossSubsystemEdges = parsedEdges.filter((edge) => edge.sourceSubsystem !== edge.targetSubsystem);
-    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(
-      subsystemNodes,
-      crossSubsystemEdges,
-    );
+    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(subsystemNodes, crossSubsystemEdges);
     const runtimeSubsystemSccs = findStronglyConnectedComponents(runtimeSubsystemGraph).filter((scc) => scc.length > 1);
 
     const discussRuntimeImports = crossSubsystemEdges.filter((edge) => {

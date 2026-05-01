@@ -32,10 +32,7 @@ import {
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type {
-  ProviderServerHandle,
-  SpawnProviderServerFn,
-} from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';

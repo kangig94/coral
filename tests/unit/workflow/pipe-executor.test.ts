@@ -5,7 +5,11 @@ import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
-import { WorkflowExecutionError, type LaunchedAtom, type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import {
+  WorkflowExecutionError,
+  type LaunchedAtom,
+  type WorkflowExecutionPort,
+} from '#src/workflow/execution-contract.js';
 import { formatStepOutput, toSessionHandles } from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/recover.js';
@@ -506,7 +510,10 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
+      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
+        ids: workflowIds,
+        time: workflowTime,
+      }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'architect' failed: Failed: session/session-1#1",
       aborted: false,
@@ -629,7 +636,10 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
+        ids: workflowIds,
+        time: workflowTime,
+      }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' launch failed: launch blocked",
       aborted: false,
@@ -673,7 +683,10 @@ describe('workflow pipe executor', () => {
     });
 
     await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, { ids: workflowIds, time: workflowTime }),
+      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
+        ids: workflowIds,
+        time: workflowTime,
+      }),
     ).rejects.toMatchObject({
       message: "Step 0, atom 'critic' failed: Failed: session/session-b#1",
       aborted: false,

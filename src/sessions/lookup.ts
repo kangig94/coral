@@ -36,4 +36,3 @@ export function createProjectionSessionLookup(db: ReadonlyDatabase): SessionLook
     },
   };
 }
-

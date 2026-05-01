@@ -545,9 +545,7 @@ function waitForDurableRuntime(options: {
     try {
       message = JSON.parse(line) as DurableControlMessage;
     } catch (error: unknown) {
-      const wrapped = buildError(
-        `Durable wrapper emitted invalid control JSON (${errorMessage(error)})`,
-      );
+      const wrapped = buildError(`Durable wrapper emitted invalid control JSON (${errorMessage(error)})`);
       runtimeDeferred.reject(wrapped);
       exitDeferred.reject(wrapped);
       return;

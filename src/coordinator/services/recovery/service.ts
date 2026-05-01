@@ -201,9 +201,7 @@ export class RecoveryService {
             }
           }
         } catch (error: unknown) {
-          backendLog.error(
-            `Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`,
-          );
+          backendLog.error(`Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`);
           probeOutcome = 'unavailable';
           mutation =
             recovery.finalizeInterrupted?.(

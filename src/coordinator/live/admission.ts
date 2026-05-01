@@ -282,4 +282,3 @@ export class LaunchCoordinator {
     return this.getActiveMap(permit.pool).get(permit.jobId) === provider;
   }
 }
-

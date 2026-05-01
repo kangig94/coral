@@ -13,14 +13,7 @@ import type {
   Result,
 } from '../session-types.js';
 import { createSeededRng, drawUInt32, shuffleInPlace, weightedSample } from './rng.js';
-import {
-  cartesianProduct,
-  hammingDistance,
-  buildKernel,
-  eigendecompose,
-  sampleKDpp,
-  MAX_POOL_SIZE,
-} from './dpp.js';
+import { cartesianProduct, hammingDistance, buildKernel, eigendecompose, sampleKDpp, MAX_POOL_SIZE } from './dpp.js';
 
 export const TONE_AXES = {
   formality: ['formal', 'conversational'] as const,

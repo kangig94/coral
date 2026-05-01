@@ -173,7 +173,11 @@ describe('drift signal split', () => {
 
   it('surfaces force-apply lifecycle edges through existing waitFreshUntil errors', async () => {
     const stoppedDb = createKbTestDb(tempRoot());
-    const stoppedDriver = new ConsumerDriver({ db: stoppedDb, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const stoppedDriver = new ConsumerDriver({
+      db: stoppedDb,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
+      now: realConsumerDriverNow,
+    });
     const stopped = stoppedDriver.register({
       id: 'stopped-corpus',
       authority: 'corpus',
@@ -199,7 +203,11 @@ describe('drift signal split', () => {
     }
 
     const unregisteredDb = createKbTestDb(tempRoot());
-    const unregisteredDriver = new ConsumerDriver({ db: unregisteredDb, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const unregisteredDriver = new ConsumerDriver({
+      db: unregisteredDb,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
+      now: realConsumerDriverNow,
+    });
     const unregistered = unregisteredDriver.register({
       id: 'unregistered-corpus',
       authority: 'corpus',

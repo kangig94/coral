@@ -229,15 +229,11 @@ describe('engine artifact port blindness', () => {
       'utf-8',
     );
 
-    const present = await createNeedleArtifactPort(
-      { runtimeDir: root },
-      filesPort(),
-      {
-        addonPath: resolve(root, 'addon.node'),
-        expectedProjectionIdentityHash: 'current-projection',
-        storeFactory: () => fakeNeedleStore('spec-a'),
-      },
-    ).describeArtifacts();
+    const present = await createNeedleArtifactPort({ runtimeDir: root }, filesPort(), {
+      addonPath: resolve(root, 'addon.node'),
+      expectedProjectionIdentityHash: 'current-projection',
+      storeFactory: () => fakeNeedleStore('spec-a'),
+    }).describeArtifacts();
     expect(present[0]?.freshness).toEqual({
       status: 'present',
       projected: expect.objectContaining({
@@ -247,15 +243,11 @@ describe('engine artifact port blindness', () => {
     });
     expect(present[0]?.expectedProjectionIdentityHash).toBe('current-projection');
 
-    const corrupt = await createNeedleArtifactPort(
-      { runtimeDir: root },
-      filesPort(),
-      {
-        addonPath: resolve(root, 'addon.node'),
-        expectedProjectionIdentityHash: 'current-projection',
-        storeFactory: () => fakeNeedleStore('other-spec'),
-      },
-    ).describeArtifacts();
+    const corrupt = await createNeedleArtifactPort({ runtimeDir: root }, filesPort(), {
+      addonPath: resolve(root, 'addon.node'),
+      expectedProjectionIdentityHash: 'current-projection',
+      storeFactory: () => fakeNeedleStore('other-spec'),
+    }).describeArtifacts();
     expect(corrupt[0]?.freshness).toMatchObject({
       status: 'corrupt',
       diagnostic: expect.stringContaining('specId'),
