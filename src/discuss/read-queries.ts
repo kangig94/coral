@@ -7,8 +7,6 @@ import { resolveProjectSource } from '../infra/project-source.js';
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 
-export type DiscussSnapshotRow = PersistedDiscussSnapshot;
-export type DiscussEventLogEntry = DiscussDomainEvent;
 export type DiscussReadRef =
   | string
   | {
@@ -73,11 +71,11 @@ function latestUpdatedAt(snapshots: PersistedDiscussSnapshot[]): string {
   );
 }
 
-export function readDiscussSnapshot(db: Database, ref: DiscussReadRef): DiscussSnapshotRow | null {
+export function readDiscussSnapshot(db: Database, ref: DiscussReadRef): PersistedDiscussSnapshot | null {
   return readProjectionDiscuss(db, discussIdFromRef(ref))?.state ?? null;
 }
 
-export function readDiscussEventLog(db: Database, ref: DiscussReadRef, ctx: StoreReadContext): DiscussEventLogEntry[] {
+export function readDiscussEventLog(db: Database, ref: DiscussReadRef, ctx: StoreReadContext): DiscussDomainEvent[] {
   const discussId = discussIdFromRef(ref);
   const snapshot = readProjectionDiscuss(db, discussId)?.state ?? null;
   const rows = db

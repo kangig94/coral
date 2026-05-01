@@ -30,10 +30,9 @@ import {
   readDiscussEventLog,
   readDiscussSnapshot,
   readDiscussSummaryIndex,
-  type DiscussEventLogEntry,
   type DiscussReadRef,
-  type DiscussSnapshotRow,
 } from '../discuss/read-queries.js';
+import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
 import { readSessionEntryById } from '../sessions/read-queries.js';
 import {
   listWorkflowProjections,
@@ -93,8 +92,8 @@ export class CoralStore implements StoreReadContext {
     listMemos: (args: KbMemoListInput) => KbMemoListResult;
   };
   public readonly discuss: {
-    snapshot: (ref: DiscussReadRef) => DiscussSnapshotRow | null;
-    eventLog: (ref: DiscussReadRef) => DiscussEventLogEntry[];
+    snapshot: (ref: DiscussReadRef) => PersistedDiscussSnapshot | null;
+    eventLog: (ref: DiscussReadRef) => DiscussDomainEvent[];
     watch: (sessionId: string, cursor?: number) => WatchState;
     discovery: (source: string) => DiscussDiscoveryData | null;
     summaryIndex: (source: string) => DiscussSummaryIndexData | null;
