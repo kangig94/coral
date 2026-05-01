@@ -18,7 +18,7 @@ export type InstallExpansionOptions = Partial<
 >;
 export type UninstallExpansionOptions = Partial<Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs'>>;
 
-function resolveRuntime(runtime?: Runtime): Runtime {
+export function resolveRuntime(runtime?: Runtime): Runtime {
   return runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
 }
 

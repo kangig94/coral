@@ -3,8 +3,6 @@ declare const __PLUGIN_ROOT__: string | undefined;
 import type { EngineManifest } from '../../expansion/contract.js';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
-import { resolveBuildFlavor } from '../../infra/build-flavor.js';
-import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
@@ -25,7 +23,7 @@ import {
   type ReadBindingResult,
 } from '../../expansion/rpc-contract.js';
 import { encodeInstallError } from './contract.js';
-import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from './install.js';
+import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';
 import { runExpansionOnboarding, type OnboardingContext } from './onboarding.js';
 
 function resolvePluginRoot(): string | undefined {
@@ -74,10 +72,6 @@ function withManifestSlot<T extends { name: string; status: string }>(view: T): 
     ...view,
     ...(slot === undefined ? {} : { slot }),
   };
-}
-
-function resolveRuntime(): Runtime {
-  return createRealRuntime(resolveBuildFlavor(process.env));
 }
 
 function resolveEngineManifest(name: string): EngineManifest | null {
