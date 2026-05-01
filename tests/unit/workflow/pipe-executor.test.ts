@@ -12,7 +12,7 @@ import {
 } from '#src/workflow/execution-contract.js';
 import { formatStepOutput, toSessionHandles } from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
-import { recoverStaleAtom } from '#src/workflow/recover.js';
+import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
 
 const ctx: InvocationContext = {
