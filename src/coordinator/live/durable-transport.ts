@@ -1,5 +1,6 @@
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { readAppendedLines } from '../../infra/file-tail.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
@@ -217,7 +218,7 @@ export async function spawnDurableJobTransport(params: {
       });
 
     const drainStdout = (): void => {
-      const { lines, newOffset } = readAppendedLines(runtime.storage, durable.stdoutPath, tailOffset);
+      const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset, runtime.storage);
       if (newOffset === tailOffset) {
         return;
       }
@@ -309,46 +310,3 @@ function readOutputFile(storage: StoragePort, path: string): string {
   }
 }
 
-function readAppendedLines(
-  storage: StoragePort,
-  path: string,
-  fromOffset: number,
-): { lines: string[]; newOffset: number } {
-  try {
-    const stats = storage.statSync(path);
-    if (stats.size <= fromOffset) {
-      return { lines: [], newOffset: fromOffset };
-    }
-
-    const byteLength = stats.size - fromOffset;
-    const fd = storage.openSync(path, 'r');
-    try {
-      const buffer = Buffer.alloc(byteLength);
-      const bytesRead = storage.readSync(fd, buffer, 0, byteLength, fromOffset);
-      if (bytesRead <= 0) {
-        return { lines: [], newOffset: fromOffset };
-      }
-
-      const chunk = buffer.subarray(0, bytesRead);
-      const lastNewlineIndex = chunk.lastIndexOf(0x0a);
-      if (lastNewlineIndex === -1) {
-        return { lines: [], newOffset: fromOffset };
-      }
-
-      const completeChunk = chunk.subarray(0, lastNewlineIndex + 1).toString('utf-8');
-      const lines = completeChunk
-        .split('\n')
-        .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
-        .filter((line) => line.trim().length > 0);
-
-      return {
-        lines,
-        newOffset: fromOffset + lastNewlineIndex + 1,
-      };
-    } finally {
-      storage.closeSync(fd);
-    }
-  } catch {
-    return { lines: [], newOffset: fromOffset };
-  }
-}
