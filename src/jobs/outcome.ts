@@ -2,7 +2,12 @@ import { z } from 'zod';
 
 import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
-import { causeRefSchema, type CauseRef, type ResolvableCauseRef } from '../causality/cause-ref.js';
+import {
+  causeRefSchema,
+  renderCauseRefFallback,
+  type CauseRef,
+  type ResolvableCauseRef,
+} from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
@@ -113,9 +118,6 @@ export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'co
   }
 }
 
-function renderCauseRefFallback(ref: CauseRef): string {
-  return `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
-}
 
 export function describeLaunchRejected(rejected: JobLaunchRejected): string {
   return `Launch rejected (${rejected.provider} busy: ${rejected.globalActive}/${rejected.globalLimit}).`;

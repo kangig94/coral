@@ -6,7 +6,7 @@ import type { StoragePort } from '../../runtime/ports.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
 import { getEvent } from '../../store/event-queries.js';
 import type { EventsRow } from '../../store/schema.js';
-import { extractCauseRef, type CauseRef } from '../../causality/cause-ref.js';
+import { extractCauseRef, renderCauseRefFallback, type CauseRef } from '../../causality/cause-ref.js';
 import type { CoralEvent } from '../../store/envelope.js';
 import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
@@ -28,10 +28,6 @@ export function writeResultArtifact(
     throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
-}
-
-function renderCauseRefFallback(ref: CauseRef): string {
-  return `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
 }
 
 function describeKnownEvent(event: CoralEvent): string {
