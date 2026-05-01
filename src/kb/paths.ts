@@ -64,10 +64,6 @@ export function memoPathFromContext(projectRoot: string, memo: string): string {
   return assertWithin(root, resolve(root, memo), 'Memo path');
 }
 
-export function notePathFromParts(domain: string, topic: string, root: string): string {
-  return notePathFromName(`${domain}-${topic}`, root);
-}
-
 export function notePathFromName(note: string, root: string): string {
   return markdownPath(notesDir(root), note, 'KB note path');
 }

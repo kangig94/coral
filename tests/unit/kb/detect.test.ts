@@ -168,7 +168,6 @@ describe('kb detection and paths', () => {
     expect(paths.notesDir(markdownRoot)).toBe(join(markdownRoot, 'notes'));
     expect(paths.principlesDir(markdownRoot)).toBe(join(markdownRoot, 'principles'));
     expect(paths.notePathFromName('coral-kb-runtime-root', markdownRoot)).toBe(notePath);
-    expect(paths.notePathFromParts('coral', 'kb-runtime-root', markdownRoot)).toBe(notePath);
     expect(paths.principlePathFromName('contract-first-design', markdownRoot)).toBe(principlePath);
     expect(kb.notesDir()).toBe(join(markdownRoot, 'notes'));
     expect(kb.principlesDir()).toBe(join(markdownRoot, 'principles'));
