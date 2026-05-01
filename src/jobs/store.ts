@@ -28,7 +28,7 @@ import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } fro
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
-  db?: Database;
+  db: Database;
   reducers?: ComposedReducers;
   /**
    * Required. JobStore composes `AppendContext.providers` from this port,
@@ -95,9 +95,6 @@ export class JobStore implements JobProgressStore {
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
-    if (db === undefined) {
-      throw new Error('JobStore requires a coordinator-injected store database.');
-    }
     this.db = db;
     this.commitEvents = (cb) =>
       commitJournalEvents(this.db, cb, {
