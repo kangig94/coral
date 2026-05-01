@@ -1,3 +1,4 @@
 bridge/coral-backend.cjs -diff linguist-generated=true
 bridge/coral-claude-appserver.cjs -diff linguist-generated=true
 bridge/coral-cli.cjs -diff linguist-generated=true
+bridge/store/schemas/*.sql -diff linguist-generated=true
