@@ -26,8 +26,8 @@ import {
   createCorpusEntityGraphScan,
   createCorpusMarkdownFileScan,
   createCorpusScanView,
-  type CorpusMarkdownKind,
 } from '#src/kb/corpus/rescan/scan.js';
+import type { CorpusMarkdownKind } from '#src/kb/corpus/rescan/storage.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 

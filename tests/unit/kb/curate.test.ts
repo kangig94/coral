@@ -18,12 +18,8 @@ import { buildClassificationPrompt, chunkEntriesByPromptBudget } from '#src/kb/c
 import { buildMetadataTargets, validateAssignments } from '#src/kb/curate/classification/assignments.js';
 import { parseClassificationResponse } from '#src/kb/curate/classification/parse.js';
 import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from '#src/kb/curate/discovery.js';
-import type {
-  ClassificationAssignment,
-  CurateClaimedEntry,
-  DiscoveryProposal,
-  SpawnCliFn,
-} from '#src/kb/curate/pipeline-types.js';
+import type { ClassificationAssignment, CurateClaimedEntry, DiscoveryProposal } from '#src/kb/curate/pipeline-types.js';
+import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';

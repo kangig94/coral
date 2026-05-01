@@ -26,7 +26,7 @@ import {
   repairIncidentLocus,
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
-import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
+import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];

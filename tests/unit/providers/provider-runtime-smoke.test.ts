@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '#src/providers/claude-appserver/protocol.js';
-import type { ProviderCliRunner } from '#src/providers/cli-runner.js';
+import type { ProviderCliRunner } from '#src/providers/protocol.js';
 import type {
   ProviderContinuityEventBody,
   ProviderEventBody,

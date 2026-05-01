@@ -6,8 +6,8 @@ import type {
   ProviderEventBody,
   ProviderRequest,
   ProviderRuntime,
-  ProviderTransportClose,
 } from '#src/providers/contract.js';
+import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
 
 type TestState = {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Backed, KbRuntime, VectorRetrieval } from '#src/kb/contract.js';
+import type { Backed, KbRuntime } from '#src/kb/contract.js';
+import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { createRouter } from '#src/kb/search/router.js';
 

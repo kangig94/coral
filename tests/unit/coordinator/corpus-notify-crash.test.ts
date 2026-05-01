@@ -35,7 +35,7 @@ function createNotifyCorpusMutation(driver: ConsumerDriver) {
     driver.notifyCorpus(publication.snapshot);
   };
 }
-import { createDeferred } from '#tools/testing/deferred.js';
+import { createDeferred, type Deferred } from '#tools/testing/deferred.js';
 
 const BASE_CREATED_AT = '2026-04-19T00:00:00.000Z';
 const BASE_UPDATED_AT = '2026-04-19T00:00:00.000Z';

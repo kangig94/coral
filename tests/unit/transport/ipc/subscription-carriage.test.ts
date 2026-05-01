@@ -7,7 +7,8 @@ import { parseSseBlock } from '#src/transport/http/sse.js';
 import { parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
 import { serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
 import { createHttpHandler } from '#src/transport/http/handler.js';
-import type { HttpHandlerPorts, WaitStreamRequest } from '#src/transport/server-ports.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import type { WaitStreamRequest } from '#src/jobs/wait.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 

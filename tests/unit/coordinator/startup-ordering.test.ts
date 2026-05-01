@@ -13,8 +13,8 @@ import type {
   EmbeddingService,
   FtsRetrieval,
   KbCorpusSnapshot as CorpusSnapshot,
-  VectorRetrieval,
 } from '#src/kb/contract.js';
+import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';

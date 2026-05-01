@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
-import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
+import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, Disposable } from '#src/runtime/ports.js';

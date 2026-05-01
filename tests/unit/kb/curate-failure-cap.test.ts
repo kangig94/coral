@@ -12,7 +12,7 @@ import {
   writeCurateState,
 } from '#src/kb/curate/state/index.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
+import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';

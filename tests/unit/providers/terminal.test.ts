@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { JobTerminal, ProviderTerminalOutcome } from '#src/providers/contract.js';
+import type { ProviderTerminalOutcome } from '#src/providers/contract.js';
+import type { JobTerminal } from '#src/jobs/records.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 
 describe('buildJobTerminal', () => {

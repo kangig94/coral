@@ -3,7 +3,6 @@ import type {
   PreflightRuntime,
   ProviderAppServerContract,
   ProviderArtifactCleanup,
-  ProviderContinuityBlob,
   ProviderEventBody,
   ProviderRecoveryContract,
   ProviderRequest,
@@ -13,6 +12,7 @@ import type {
   ProviderSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
+import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
 
 export type { PreflightRuntime } from '#src/providers/contract.js';
 

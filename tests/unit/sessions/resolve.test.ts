@@ -24,7 +24,6 @@ import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';

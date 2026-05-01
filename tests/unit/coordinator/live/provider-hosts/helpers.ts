@@ -3,7 +3,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/durable-transport.js';
+import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 
 export const runtime = createRealRuntime('prod');
 

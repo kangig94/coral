@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
+import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
