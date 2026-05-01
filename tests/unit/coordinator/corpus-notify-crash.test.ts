@@ -20,13 +20,14 @@ import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '#src/kb/state/corpus-state.js';
+import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
+import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
-  return async (publication: { snapshot: CorpusStateSnapshot; changedLanes: readonly ('content' | 'metadata')[] }) => {
+  return async (publication: { snapshot: KbCorpusSnapshot; changedLanes: readonly ('content' | 'metadata')[] }) => {
     if (publication.changedLanes.length === 1) {
       driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
       return;
@@ -96,7 +97,7 @@ async function seedIndexedNote(kb: ReturnType<typeof createKbRuntime>, vaultDir:
   await reindex(kb);
 }
 
-function readCursor(db: InstanceType<typeof Database>, consumerId: string): CorpusStateSnapshot {
+function readCursor(db: InstanceType<typeof Database>, consumerId: string): KbCorpusSnapshot {
   const row = db
     .prepare(
       `

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type AppendInput } from '#src/store/append.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -29,7 +29,7 @@ describe('events queries', () => {
     applyStoreSchemas({ db, storage: nodeStorage });
     applyTestCounterSchema(db);
 
-    const inputs: AppendInput[] = [
+    const inputs: CoralEventInput[] = [
       {
         type: 'test.counter.ticked',
         stream: { kind: 'session', id: 'session-1' },

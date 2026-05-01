@@ -4,7 +4,6 @@ import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult 
 import type { KbCorpusStateRow } from './schema.js';
 
 type Database = BetterSqlite3.Database;
-export type CorpusStateSnapshot = KbCorpusSnapshot;
 export interface CorpusSnapshotCursorRow {
   snapshot_id: string | null;
   content_seq: number | null;
@@ -13,7 +12,7 @@ export interface CorpusSnapshotCursorRow {
   metadata_manifest_hash: string | null;
 }
 
-const EMPTY_CORPUS_SNAPSHOT: CorpusStateSnapshot = {
+const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
   snapshotId: '',
   contentSeq: 0,
   metadataSeq: 0,
@@ -54,7 +53,7 @@ export function readCorpusStateRow(db: Database): KbCorpusStateRow {
     .get() as KbCorpusStateRow;
 }
 
-function toSnapshot(row: CorpusSnapshotCursorRow): CorpusStateSnapshot {
+function toSnapshot(row: CorpusSnapshotCursorRow): KbCorpusSnapshot {
   return {
     snapshotId: row.snapshot_id ?? '',
     contentSeq: row.content_seq ?? 0,
@@ -109,7 +108,7 @@ function snapshotToCursorRow(snapshot: KbCorpusSnapshot): CorpusSnapshotCursorRo
   };
 }
 
-export function normalizeCorpusCursor(row: CorpusSnapshotCursorRow | undefined): CorpusStateSnapshot {
+export function normalizeCorpusCursor(row: CorpusSnapshotCursorRow | undefined): KbCorpusSnapshot {
   if (row === undefined) {
     return { ...EMPTY_CORPUS_SNAPSHOT };
   }
@@ -130,7 +129,7 @@ export function isSnapshotFresherForInterest(
   return deriveChangedLanes(currentRow, next).includes(interest);
 }
 
-export function readCorpusState(db: Database): CorpusStateSnapshot {
+export function readCorpusState(db: Database): KbCorpusSnapshot {
   return normalizeCorpusCursor(readCorpusStateRow(db));
 }
 

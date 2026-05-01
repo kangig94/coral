@@ -104,7 +104,7 @@ function snapshotProjections(db: InstanceType<typeof Database>): Map<string, unk
 
 function loadDiscussFixtureEvents(): Array<ReturnType<typeof toJournalInput>> {
   // The fixture is a serialized DiscussEventEnvelope[]; reuse the production
-  // journaling adapter to convert each envelope into the AppendInput shape.
+  // journaling adapter to convert each envelope into the CoralEventInput shape.
   // The fixture uses a `<ts>` placeholder that fails datetime validation in
   // commit() — substitute the canonical NOW used by the rest of the suite so
   // the journal accepts the events. Reducer behaviour is timestamp-blind.

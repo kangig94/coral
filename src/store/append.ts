@@ -43,7 +43,6 @@ export interface AppendedEvent extends CoralEvent {
   readonly ts: string;
 }
 
-export type AppendInput = CoralEventInput;
 export type CommitClosureResult = undefined;
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -242,11 +241,11 @@ function prepareInput(
   input: CoralEventInput,
   ctx: AppendContext,
 ): {
-  input: AppendInput;
+  input: CoralEventInput;
   parsedBody: unknown;
   bodyBytes: Buffer;
 } {
-  const parsedInput = journalEventInputSchema.parse(input) as AppendInput;
+  const parsedInput = journalEventInputSchema.parse(input) as CoralEventInput;
   const schema = ctx.reducers.schemas.get(parsedInput.type);
   const parsedBody = schema
     ? ctx.upcasters.parseBody(parsedInput.type, parsedInput.bodyVersion, parsedInput.body, schema)
@@ -286,7 +285,7 @@ export function commit(
       resolveTokensInInput(input, slot, reservedSeqs, collectedInputs),
     );
     const prepared = resolvedInputs.map((input) => prepareInput(input, ctx));
-    const validationInputs: AppendInput[] = prepared.map(({ input, parsedBody }) => ({
+    const validationInputs: CoralEventInput[] = prepared.map(({ input, parsedBody }) => ({
       ...input,
       body: parsedBody,
     }));

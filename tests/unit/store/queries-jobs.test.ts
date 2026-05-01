@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { type AppendInput } from '#src/store/append.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -35,7 +35,7 @@ describe('jobs queries', () => {
       upcasters,
     };
 
-    const inputs: AppendInput[] = [
+    const inputs: CoralEventInput[] = [
       {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-completed' },

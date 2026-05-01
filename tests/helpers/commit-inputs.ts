@@ -1,10 +1,11 @@
 import type { Database } from 'better-sqlite3';
 
-import { commit, type AppendContext, type AppendInput, type AppendedEvent } from '#src/store/append.js';
+import { commit, type AppendContext, type AppendedEvent } from '#src/store/append.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 
 export type { AppendContext };
 
-export function commitInputs(db: Database, inputs: readonly AppendInput[], ctx: AppendContext): AppendedEvent[] {
+export function commitInputs(db: Database, inputs: readonly CoralEventInput[], ctx: AppendContext): AppendedEvent[] {
   return commit(
     db,
     (c) => {

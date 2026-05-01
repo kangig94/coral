@@ -9,7 +9,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/runtime/ports.js';
-import { type AppendInput } from '#src/store/append.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -30,7 +30,7 @@ const SIM_ROOTS = {
   coralRoot: '/tmp/sim/coral',
 } as const;
 
-interface PlannedEvent extends AppendInput {
+interface PlannedEvent extends CoralEventInput {
   readonly ts: string;
 }
 
