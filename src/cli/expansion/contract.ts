@@ -1,44 +1,10 @@
 import { CommanderError } from 'commander';
 import { z, ZodError } from 'zod';
 
-import {
-  catalogEntrySchema,
-  catalogEntryStatusSchema,
-  catalogResultSchema,
-  infoResultSchema,
-  installErrorSchema,
-  installResponseSchema,
-  installResultSchema,
-  onboardingSchema,
-  type CatalogEntry,
-  type CatalogEntryStatus,
-  type InstallError,
-  type InstallResponse,
-  type InstallResult,
-  type Onboarding,
-  type OnboardingChoice,
-} from '../../expansion/rpc-contract.js';
+import { installErrorSchema, type InstallError } from '../../expansion/rpc-contract.js';
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
-
-export {
-  catalogEntrySchema,
-  catalogEntryStatusSchema,
-  catalogResultSchema,
-  infoResultSchema,
-  installErrorSchema,
-  installResponseSchema,
-  installResultSchema,
-  onboardingSchema,
-  type CatalogEntry,
-  type CatalogEntryStatus,
-  type InstallError,
-  type InstallResponse,
-  type InstallResult,
-  type Onboarding,
-  type OnboardingChoice,
-};
 
 export const expansionArgsSchema = z
   .object({

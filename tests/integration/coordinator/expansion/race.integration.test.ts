@@ -16,7 +16,7 @@ import { gzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { installResponseSchema } from '#src/cli/expansion/contract.js';
+import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { spawnNodeScript } from '#tests/helpers/multi-process-driver.js';
 
 type WorkerProcessResult = Awaited<ReturnType<typeof spawnNodeScript<unknown>>>;

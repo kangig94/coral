@@ -1,16 +1,14 @@
 import { type Command, CommanderError } from 'commander';
 import { z } from 'zod';
 
+import { expansionArgsSchema, encodeInstallError, type ExpansionArgs } from '../expansion/contract.js';
 import {
-  expansionArgsSchema,
-  encodeInstallError,
   installErrorSchema,
   installResultSchema,
-  type ExpansionArgs,
   type InstallError,
   type InstallResponse,
   type InstallResult,
-} from '../expansion/contract.js';
+} from '../../expansion/rpc-contract.js';
 import { createCliExpansionActivation } from '../expansion/index.js';
 
 const EXPANSION_COMMAND_NAME = 'expansion';

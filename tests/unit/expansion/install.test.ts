@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as DownloadModule from '#src/engines/needle/download.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { installResponseSchema } from '#src/cli/expansion/contract.js';
+import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';

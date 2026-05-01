@@ -24,7 +24,7 @@ import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
 import { resumeAll } from '#src/workflow/recover.js';
-import type { WorkflowExecutionPort } from '#src/workflow/command.js';
+import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 

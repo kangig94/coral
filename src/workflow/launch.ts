@@ -8,7 +8,7 @@ import {
   type StepDetail,
   type WaitFailure,
   type WorkflowExecutionPort,
-} from './command.js';
+} from './execution-contract.js';
 import { describeTerminalFailure } from './command.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;

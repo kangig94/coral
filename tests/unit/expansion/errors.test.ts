@@ -4,7 +4,8 @@ import { z } from 'zod';
 
 import { UserInputError } from '#src/cli/commands/expansion.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { installErrorSchema, encodeInstallError } from '#src/cli/expansion/contract.js';
+import { installErrorSchema } from '#src/expansion/rpc-contract.js';
+import { encodeInstallError } from '#src/cli/expansion/contract.js';
 
 describe('encodeInstallError', () => {
   it('encodes CoralSetupError instances', () => {

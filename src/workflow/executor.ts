@@ -3,7 +3,6 @@ import { errorMessage } from '../infra/error-format.js';
 import type { IdPort, TimePort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
-  formatStepOutput,
   WorkflowExecutionError,
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
@@ -11,7 +10,8 @@ import {
   type PipelineResult,
   type StepDetail,
   type WorkflowExecutionPort,
-} from './command.js';
+} from './execution-contract.js';
+import { formatStepOutput } from './command.js';
 import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
 import { workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
 import {

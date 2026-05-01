@@ -9,7 +9,7 @@ import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
 import { executePipeline } from '#src/workflow/executor.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import type { WorkflowExecutionPort } from '#src/workflow/command.js';
+import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 
 const GOLDEN_PATH = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/pipe-executor-cascade.golden.json');
 

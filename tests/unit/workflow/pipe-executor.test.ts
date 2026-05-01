@@ -5,13 +5,8 @@ import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
-import {
-  WorkflowExecutionError,
-  formatStepOutput,
-  toSessionHandles,
-  type LaunchedAtom,
-  type WorkflowExecutionPort,
-} from '#src/workflow/command.js';
+import { WorkflowExecutionError, type LaunchedAtom, type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import { formatStepOutput, toSessionHandles } from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/recover.js';
 import { waitForAtoms } from '#src/workflow/wait.js';

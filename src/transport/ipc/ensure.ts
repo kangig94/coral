@@ -10,7 +10,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/path/compose.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
-import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
@@ -21,7 +21,6 @@ export const STARTUP_POLL_MS = 200;
 export const STARTUP_TIMEOUT_MS = 60_000;
 export const SICK_VERIFICATION_WINDOW_MS = 10_000;
 export const CORRUPT_LOCK_RETRY_LIMIT = 3;
-export const HEALTH_TIMEOUT_MS = SHARED_HEALTH_TIMEOUT_MS;
 
 type ReplacementLock = string;
 

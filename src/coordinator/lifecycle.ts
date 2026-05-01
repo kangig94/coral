@@ -28,13 +28,6 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 
-export {
-  HANDOFF_DRAIN_TIMEOUT_MS,
-  SHUTDOWN_DRAIN_TIMEOUT_MS,
-  SHUTDOWN_POLL_MS,
-  type ShutdownMode,
-} from './shutdown.js';
-
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
 export type CoordinatorServerInfo = {

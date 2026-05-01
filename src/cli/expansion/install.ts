@@ -6,7 +6,12 @@ import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { installErrorSchema, installResponseSchema, type InstallError, type InstallResponse } from './contract.js';
+import {
+  installErrorSchema,
+  installResponseSchema,
+  type InstallError,
+  type InstallResponse,
+} from '../../expansion/rpc-contract.js';
 
 export type InstallExpansionOptions = Partial<
   Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs' | 'update'>

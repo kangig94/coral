@@ -7,7 +7,7 @@ import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
 import type * as ErrorsMod from '#src/cli/errors.js';
 import type * as MainMod from '#src/cli/program.js';
-import { installErrorSchema, installResultSchema } from '#src/cli/expansion/contract.js';
+import { installErrorSchema, installResultSchema } from '#src/expansion/rpc-contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';

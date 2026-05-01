@@ -298,4 +298,4 @@ export function createBrokerSession(options: CreateBrokerSessionOptions): Claude
   return new BrokerSessionPool(options);
 }
 
-export type { ClaudeBrokerSession, CreateBrokerSessionOptions } from './controller.js';
+export type { ClaudeBrokerSession } from './controller.js';

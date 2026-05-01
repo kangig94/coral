@@ -6,7 +6,7 @@ import {
   type LaunchedAtom,
   type StepDetail,
   type WorkflowExecutionPort,
-} from './command.js';
+} from './execution-contract.js';
 import { BOOTSTRAP_TIMEOUT_MS, readLaunchFailureMessage } from './launch.js';
 import { formatAtomProgress, type AwaitStepState, type WaitStaleRecoveryHandler } from './wait.js';
 

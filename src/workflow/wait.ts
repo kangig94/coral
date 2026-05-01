@@ -10,7 +10,7 @@ import {
   type WaitFailure,
   type WaitInternalState,
   type WorkflowExecutionPort,
-} from './command.js';
+} from './execution-contract.js';
 import { describeTerminalFailure } from './command.js';
 
 // Atom-progress formatters live next to the wait loop that consumes them.

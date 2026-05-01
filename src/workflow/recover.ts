@@ -21,7 +21,7 @@ import {
   type StepDetail,
   type WaitInternalState,
   type WorkflowExecutionPort,
-} from './command.js';
+} from './execution-contract.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
 import { executePlannedSteps } from './executor.js';
