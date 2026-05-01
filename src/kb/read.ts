@@ -11,7 +11,6 @@ import {
   parseSummaryFromBody,
 } from './corpus/frontmatter.js';
 import {
-  type CommunityFrontmatter,
   type KbNoteFrontmatter,
   type KbReadInput,
   type KbReadResult,
