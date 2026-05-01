@@ -41,115 +41,9 @@ const SIMULATION_ROOT = ['src', 'simulation'].join('/');
 const RETIRED_PRIVATE_STATE_ROOT = ['src', ['_', 'le', 'gacy'].join('')].join('/');
 const ROOT_SCENARIOS_ROOT = 'scenarios';
 const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
-const RETIRED_RUNTIME_MODULE = ['src', 'execution', 'runtime.ts'].join('/');
-const RETIRED_RUNTIME_PORTS = ['src', 'shared', 'runtime-ports.ts'].join('/');
-const RETIRED_RUNTIME_FLAVOR = ['src', 'runtime', 'flavor.ts'].join('/');
-const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
-const RETIRED_SESSIONS_API = ['src', 'sessions', 'api.ts'].join('/');
-const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
-const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
-const RETIRED_HTTP_CLIENT = ['src', 'transport', 'http', 'http-client.ts'].join('/');
-const RETIRED_HTTP_CONTRACTS = ['src', 'transport', 'http', 'contracts.ts'].join('/');
-const RETIRED_HTTP_WAIT_STREAM = ['src', 'transport', 'http', 'wait-stream.ts'].join('/');
-const RETIRED_HTTP_TOOL_RESPONSE = ['src', 'transport', 'http', 'tool-response.ts'].join('/');
-const RETIRED_JOBS_INDEX = ['src', 'jobs', 'index.ts'].join('/');
-const RETIRED_SESSIONS_INDEX = ['src', 'sessions', 'index.ts'].join('/');
-const RETIRED_TRANSPORT_HTTP_INDEX = ['src', 'transport', 'http', 'index.ts'].join('/');
-const RETIRED_WORKFLOW_INDEX = ['src', 'workflow', 'index.ts'].join('/');
-const RETIRED_RUNTIME_INDEX = ['src', 'runtime', 'index.ts'].join('/');
-const RETIRED_DISCUSS_API = ['src', 'discuss', 'api.ts'].join('/');
-const RETIRED_DISCUSS_VIEWS = ['src', 'discuss', 'views.ts'].join('/');
-const RETIRED_DISCUSS_TIME_UTIL = ['src', 'discuss', 'util', 'time.ts'].join('/');
-const RETIRED_COORDINATOR_LOG = ['src', 'coordinator', 'log.ts'].join('/');
-const RETIRED_EXPORTS_PATHS = ['src', 'jobs', 'exports', 'paths.ts'].join('/');
-const RETIRED_CORPUS_PATHS = ['src', 'kb', 'corpus', 'paths.ts'].join('/');
-const RETIRED_INFRA_INDEX = ['src', 'infra', 'index.ts'].join('/');
-const RETIRED_SIMULATION_INDEX = ['src', 'simulation', 'index.ts'].join('/');
-const RETIRED_SIMULATION_CORE_INDEX = ['src', 'simulation', 'core', 'index.ts'].join('/');
-const RETIRED_INFRA_REQUEST_CONTEXT = ['src', 'infra', 'request-context.ts'].join('/');
-const RETIRED_TRANSPORT_REQUEST_CONTEXT = ['src', 'transport', 'request-context.ts'].join('/');
-const RETIRED_TRANSPORT_SHARED_CONTEXT = ['src', 'transport', 'shared-context.ts'].join('/');
-const RETIRED_COORDINATOR_CALLER_CONTEXT = ['src', 'coordinator', 'caller-context.ts'].join('/');
-const RETIRED_STORE_CORPUS_CONSUMER = ['src', 'store', 'corpus-consumer.ts'].join('/');
-const RETIRED_KB_CORPUS_REPAIR_TYPES = ['src', 'kb', 'corpus', 'repair', 'types.ts'].join('/');
-const RETIRED_TEXT_ARTIFACTS_DIR = ['src', 'kb', 'curate', 'text-artifacts'].join('/');
-const RETIRED_CORPUS_REPAIR_DIR = ['src', 'kb', 'corpus', 'repair'].join('/');
-const RETIRED_TEXT_ARTIFACTS_ENTRY_POINTS = [
-  'readMalformedEntryRepair',
-  'pendingRepairNeedsRetry',
-  'rebuildTextArtifactsAndPersistRepairState',
-  'TextSnapshotRebuildError',
-  'detectTextArtifactRebuildInfo',
-] as const;
-const RETIRED_SIMULATION_WORLD = ['src', 'simulation', 'world.ts'].join('/');
-const RETIRED_SIMULATION_SCHEMA = ['src', 'simulation', 'schema.ts'].join('/');
-const RETIRED_SIMULATION_NORMALIZE = ['src', 'simulation', 'normalize.ts'].join('/');
-const RETIRED_JOB_HELPERS = ['src', 'jobs', 'reconcile', 'job-helpers.ts'].join('/');
-const RETIRED_CURATE_SHARED = ['src', 'kb', 'curate', 'shared.ts'].join('/');
-const RETIRED_CURATE_STATE_SHARED = ['src', 'kb', 'curate', 'state-shared.ts'].join('/');
-const RETIRED_CLAUDE_SHARED_UTILS = ['src', 'providers', 'claude', 'shared-utils.ts'].join('/');
-const RETIRED_STRATEGY_SHARED = ['src', 'expansion', 'strategies', 'shared.ts'].join('/');
-const RETIRED_WORKFLOW_INTERNAL_SHARED = ['src', 'workflow', 'internal', 'shared.ts'].join('/');
-const RETIRED_DISCUSS_READ_HELPERS = ['src', 'discuss', 'shell', 'read-helpers.ts'].join('/');
-const RETIRED_DISCUSS_FLOW_SHARED = ['src', 'discuss', 'shell', 'flow-shared.ts'].join('/');
-const RETIRED_DISCUSS_STATE_HELPERS = ['src', 'discuss', 'state-helpers.ts'].join('/');
-const RETIRED_HTTP_BACKEND_HELPERS = ['src', 'transport', 'http', 'backend-helpers.ts'].join('/');
-const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts'].join('/');
-const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
-const RETIRED_COORDINATOR_EXECUTION_SHARED = ['src', 'coordinator', 'services', 'execution-shared.ts'].join('/');
-const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
-const RETIRED_STORE_JOB_QUERIES = ['src', 'store', 'queries', 'jobs.ts'].join('/');
-const RETIRED_STORE_DISCUSS_QUERIES = ['src', 'store', 'queries', 'discuss.ts'].join('/');
-const RETIRED_STORE_SESSION_QUERIES = ['src', 'store', 'queries', 'sessions.ts'].join('/');
-const RETIRED_STORE_WORKFLOW_QUERIES = ['src', 'store', 'queries', 'workflows.ts'].join('/');
-const RETIRED_STORE_CORAL_STORE = ['src', 'store', 'coral-store.ts'].join('/');
-const RETIRED_STORE_READ_CONTEXT = ['src', 'store', 'read-context.ts'].join('/');
-const RETIRED_STORE_PATHS = ['src', 'store', 'paths.ts'].join('/');
-const RETIRED_STORE_CAUSE_REF = ['src', 'store', 'cause-ref.ts'].join('/');
-const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
-const RETIRED_STORE_PROJECTION_CONSUMER = ['src', 'store', 'projection-consumer.ts'].join('/');
-const RETIRED_STORE_SCHEMA_SQL = ['src', 'store', 'schema.sql'].join('/');
-const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('/');
-const RETIRED_STORE_MIGRATIONS_DIR = ['src', 'store', 'migrations'].join('/');
-const RETIRED_STORE_SCHEMAS_MODULE = ['src', 'store', 'schemas.ts'].join('/');
-const RETIRED_SESSION_JSON_READER = ['src', 'sessions', 'shell', 'session-read.ts'].join('/');
-const RETIRED_JOBS_SHELL_FAULT_MATERIALIZER = ['src', 'jobs', 'shell', 'fault-materializer.ts'].join('/');
-const RETIRED_JOBS_SHELL_CONTRACTS = ['src', 'jobs', 'shell', 'contracts.ts'].join('/');
-const RETIRED_JOBS_SHELL_AGENT_RESOLUTION = ['src', 'jobs', 'shell', 'agent-resolution.ts'].join('/');
-const RETIRED_SESSIONS_SHELL_RESOLVE = ['src', 'sessions', 'shell', 'resolve.ts'].join('/');
-const RETIRED_DISCUSS_RECONCILE = ['src', 'discuss', 'reconcile.ts'].join('/');
-const RETIRED_BRIDGE_MANIFEST = ['src', 'infra', 'bridge-manifest.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
-const RETIRED_COORDINATOR_SHIMS = [
-  ['src', 'coordinator', 'discovery.ts'].join('/'),
-  ['src', 'coordinator', 'paths.ts'].join('/'),
-  ['src', 'coordinator', 'equipment', 'contract.ts'].join('/'),
-  ['src', 'coordinator', 'composition', 'recovery-registry.ts'].join('/'),
-] as const;
-const RETIRED_RUNTIME_ALIASES = ['RuntimeTime', 'RuntimeStorage', 'RuntimeProcess', 'RuntimeIds', 'RuntimeEnv'];
-const RETIRED_RECORD_IDENTIFIERS = new Set([
-  'Persisted' + 'StatusRecord',
-  'Persisted' + 'LaunchRecord',
-  'Persisted' + 'RuntimeRecord',
-  'Persisted' + 'ExitRecord',
-  'Persisted' + 'ProgressRecord',
-  'Workflow' + 'Checkpoint',
-  'Provider' + 'Result',
-  'Provider' + 'ProgressEvent',
-  'Terminal' + 'Result',
-  'Session' + 'ContinuityPatch',
-]);
-const RETIRED_IDENTIFIER_PREFIX = ['Le', 'gacy'].join('');
-const RETIRED_PREFIX_IDENTIFIER_RE = new RegExp(`^${RETIRED_IDENTIFIER_PREFIX}[A-Za-z0-9_]*$`);
-const RETIRED_BOUNDARY_HELPERS = new Set([
-  `describe${RETIRED_IDENTIFIER_PREFIX}CoralFault`,
-  `${RETIRED_IDENTIFIER_PREFIX.toLowerCase()}WrapperCrashedFault`,
-  `materialize${RETIRED_IDENTIFIER_PREFIX}TerminalOutcome`,
-  `plan${RETIRED_IDENTIFIER_PREFIX}TerminalOutcome`,
-  'Recovery' + 'FaultCompat',
-]);
 const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
@@ -328,49 +222,6 @@ function collectTestQuarantineResidue(): string[] {
 
     return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${violations.join(', ')}`;
   });
-}
-
-function scanRetiredIdentifierResidue(filePath: string): string[] {
-  const sourceText = readFileSync(filePath, 'utf-8');
-  const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const matches = new Set<string>();
-
-  function visit(node: ts.Node): void {
-    if (
-      ts.isIdentifier(node) &&
-      (RETIRED_RECORD_IDENTIFIERS.has(node.text) ||
-        RETIRED_PREFIX_IDENTIFIER_RE.test(node.text) ||
-        RETIRED_BOUNDARY_HELPERS.has(node.text) ||
-        node.text === 'KbSubsystem')
-    ) {
-      matches.add(node.text);
-    }
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-  return [...matches].sort();
-}
-
-function collectRetiredIdentifierResidue(): string[] {
-  return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
-    const matches = scanRetiredIdentifierResidue(filePath);
-    if (matches.length === 0) {
-      return [];
-    }
-
-    return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${matches.join(', ')}`;
-  });
-}
-
-function collectRetiredRuntimeAliasResidue(): string[] {
-  const portsPath = resolve(REPO_ROOT, 'src/runtime/ports.ts');
-  if (!existsSync(portsPath)) {
-    return [];
-  }
-
-  const source = readFileSync(portsPath, 'utf-8');
-  return RETIRED_RUNTIME_ALIASES.filter((alias) => new RegExp(`\\bexport\\s+type\\s+${alias}\\s*=`).test(source));
 }
 
 function collectProductionStringResidue(tokens: readonly string[]): string[] {
@@ -729,17 +580,28 @@ describe('architecture boundary guard', () => {
     expect(sharedFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, SHARED_ROOT))).toBe(false);
   });
-  it('the removed src/execution runtime boundary stays absent', () => {
+  it('the removed src execution tree must remain deleted', () => {
     const executionFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, EXECUTION_ROOT));
     expect(executionFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, EXECUTION_ROOT))).toBe(false);
+  });
+  it('the removed src _legacy private-state tree must remain deleted', () => {
+    const legacyFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, RETIRED_PRIVATE_STATE_ROOT));
+    expect(legacyFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_PRIVATE_STATE_ROOT))).toBe(false);
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_MODULE);
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_PORTS);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_MODULE))).toBe(false);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_PORTS))).toBe(false);
-    expect(collectRetiredRuntimeAliasResidue()).toEqual([]);
-    expect(collectRetiredIdentifierResidue()).toEqual([]);
+  });
+  it('content-blank filenames are forbidden anywhere under src/ (helpers/utils/shared magnets)', () => {
+    // Catches the *pattern* that LLMs and humans re-invent: dump-bucket files
+    // named for what they describe (nothing). These accumulate unrelated logic
+    // and are the magnet anti-pattern from design-philosophy.md §7. The
+    // `index.ts` and `types.ts` exceptions are documented there too.
+    const forbiddenBaseNames = /^(?:helpers|helper|utils|util|shared|shared-utils|misc|common)\.ts$/u;
+    const forbiddenSuffixes = /-(?:helpers|helper|utils|util|shared|shared-utils)\.ts$/u;
+    const violations = PRODUCTION_SOURCE_FILES.filter((file) => {
+      const base = file.split('/').pop() ?? '';
+      return forbiddenBaseNames.test(base) || forbiddenSuffixes.test(base);
+    });
+    expect(violations).toEqual([]);
   });
   it('the debug-only simulation tool must stay out of src', () => {
     const simulationFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, SIMULATION_ROOT));
@@ -785,188 +647,11 @@ describe('architecture boundary guard', () => {
   it('human prose docs must stay out of src', () => {
     expect(collectSrcMarkdownFiles()).toEqual([]);
   });
-  it('the retired kb api shim must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_KB_API);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_KB_API))).toBe(false);
-  });
-  it('the retired jobs views module must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_JOBS_VIEWS);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_JOBS_VIEWS))).toBe(false);
-  });
-  it('the retired providers api shim must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_PROVIDERS_API);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_PROVIDERS_API))).toBe(false);
-  });
-  it('the retired transport http-client module must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_HTTP_CLIENT);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_HTTP_CLIENT))).toBe(false);
-  });
-  it('the retired jobs barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_JOBS_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_JOBS_INDEX))).toBe(false);
-  });
-  it('the retired sessions barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SESSIONS_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SESSIONS_INDEX))).toBe(false);
-  });
-  it('the retired transport http barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_TRANSPORT_HTTP_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_TRANSPORT_HTTP_INDEX))).toBe(false);
-  });
-  it('the retired workflow barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_WORKFLOW_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_WORKFLOW_INDEX))).toBe(false);
-  });
-  it('the retired runtime barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_INDEX))).toBe(false);
-  });
-  it('the retired discuss api seam must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_DISCUSS_API);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_DISCUSS_API))).toBe(false);
-  });
-  it('the retired discuss views module must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_DISCUSS_VIEWS);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_DISCUSS_VIEWS))).toBe(false);
-  });
-  it('the retired discuss time alias must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_DISCUSS_TIME_UTIL);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_DISCUSS_TIME_UTIL))).toBe(false);
-  });
-  it('the retired coordinator log alias must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_COORDINATOR_LOG);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_COORDINATOR_LOG))).toBe(false);
-  });
-  it('the retired jobs exports path alias must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_EXPORTS_PATHS);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_EXPORTS_PATHS))).toBe(false);
-  });
-  it('the retired kb corpus path alias must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_CORPUS_PATHS);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_CORPUS_PATHS))).toBe(false);
-  });
-  it('the retired infra index barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_INFRA_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_INFRA_INDEX))).toBe(false);
-  });
-  it('the retired bridge-manifest helper must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_BRIDGE_MANIFEST);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_BRIDGE_MANIFEST))).toBe(false);
-  });
-  it('the retired simulation index barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_INDEX))).toBe(false);
-  });
-  it('the retired simulation core index barrel must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_CORE_INDEX);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_CORE_INDEX))).toBe(false);
-  });
-  it('the retired simulation world owner must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_WORLD);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_WORLD))).toBe(false);
-  });
-  it('the retired simulation schema filename must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_SCHEMA);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_SCHEMA))).toBe(false);
-  });
-  it('the retired simulation normalize filename must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_NORMALIZE);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_NORMALIZE))).toBe(false);
-  });
-  it('the retired request-context owners must remain deleted', () => {
-    for (const retiredPath of [RETIRED_INFRA_REQUEST_CONTEXT, RETIRED_TRANSPORT_REQUEST_CONTEXT]) {
-      expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
-      expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
-    }
-  });
-  it('the retired fallback helper filenames must remain deleted', () => {
-    for (const retiredPath of [
-      RETIRED_JOB_HELPERS,
-      RETIRED_CURATE_SHARED,
-      RETIRED_CURATE_STATE_SHARED,
-      RETIRED_CLAUDE_SHARED_UTILS,
-      RETIRED_STRATEGY_SHARED,
-      RETIRED_WORKFLOW_INTERNAL_SHARED,
-      RETIRED_DISCUSS_READ_HELPERS,
-      RETIRED_DISCUSS_FLOW_SHARED,
-      RETIRED_DISCUSS_STATE_HELPERS,
-      RETIRED_HTTP_BACKEND_HELPERS,
-      RETIRED_KB_MUTATION_HELPERS,
-      RETIRED_COMMAND_HELPERS,
-      RETIRED_COORDINATOR_EXECUTION_SHARED,
-      RETIRED_RUNTIME_FLAVOR,
-      RETIRED_SESSIONS_API,
-      RETIRED_HTTP_CONTRACTS,
-      RETIRED_HTTP_WAIT_STREAM,
-      RETIRED_HTTP_TOOL_RESPONSE,
-      RETIRED_STORE_KB_QUERIES,
-      RETIRED_STORE_JOB_QUERIES,
-      RETIRED_STORE_DISCUSS_QUERIES,
-      RETIRED_STORE_SESSION_QUERIES,
-      RETIRED_STORE_WORKFLOW_QUERIES,
-      RETIRED_STORE_CORAL_STORE,
-      RETIRED_STORE_READ_CONTEXT,
-      RETIRED_STORE_PATHS,
-      RETIRED_STORE_CAUSE_REF,
-      RETIRED_STORE_CORPUS_STATE,
-      RETIRED_STORE_PROJECTION_CONSUMER,
-      RETIRED_STORE_SCHEMA_SQL,
-      RETIRED_STORE_MIGRATIONS_MODULE,
-      RETIRED_STORE_MIGRATIONS_DIR,
-      RETIRED_STORE_SCHEMAS_MODULE,
-      RETIRED_SESSION_JSON_READER,
-      RETIRED_JOBS_SHELL_FAULT_MATERIALIZER,
-      RETIRED_JOBS_SHELL_CONTRACTS,
-      RETIRED_JOBS_SHELL_AGENT_RESOLUTION,
-      RETIRED_SESSIONS_SHELL_RESOLVE,
-      RETIRED_DISCUSS_RECONCILE,
-      RETIRED_TRANSPORT_SHARED_CONTEXT,
-      RETIRED_COORDINATOR_CALLER_CONTEXT,
-      RETIRED_STORE_CORPUS_CONSUMER,
-      RETIRED_KB_CORPUS_REPAIR_TYPES,
-    ]) {
-      expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
-      expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
-    }
-  });
-  it('the retired text-artifacts and corpus/repair directories must remain deleted', () => {
-    for (const retiredDir of [RETIRED_TEXT_ARTIFACTS_DIR, RETIRED_CORPUS_REPAIR_DIR]) {
-      expect(existsSync(resolve(REPO_ROOT, retiredDir))).toBe(false);
-      const filesUnderRetiredDir = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, retiredDir));
-      expect(filesUnderRetiredDir).toEqual([]);
-    }
-  });
-  it('the retired text-artifacts entry-point identifiers must not appear anywhere in src/', () => {
-    const violations: string[] = [];
-    for (const filePath of PRODUCTION_FILE_PATHS) {
-      const source = readFileSync(filePath, 'utf8');
-      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
-      for (const identifier of RETIRED_TEXT_ARTIFACTS_ENTRY_POINTS) {
-        if (new RegExp(`\\b${identifier}\\b`).test(source)) {
-          violations.push(`${canonical}: contains retired identifier ${identifier}`);
-        }
-      }
-    }
-    expect(violations).toEqual([]);
-  });
   it('production types.ts files remain declaration-only', () => {
     expect(collectRuntimeDeclarationsInTypesFiles()).toEqual([]);
   });
   it('unit and invariant tests do not carry quarantine residue', () => {
     expect(collectTestQuarantineResidue()).toEqual([]);
-  });
-  it('the retired projection-consumer module must remain deleted and absent from src/ imports', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_STORE_PROJECTION_CONSUMER);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_STORE_PROJECTION_CONSUMER))).toBe(false);
-
-    const offenders: string[] = [];
-    for (const filePath of PRODUCTION_FILE_PATHS) {
-      const source = readFileSync(filePath, 'utf8');
-      if (source.includes('registerJournalProjectionConsumer') || source.includes('applyProjectionRange')) {
-        offenders.push(toCanonicalSrcPath(REPO_ROOT, filePath));
-      }
-    }
-    expect(offenders).toEqual([]);
   });
   it('store schema baseline no longer contains projection_kb residue', () => {
     const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schemas/001_initial.sql'), 'utf8');
@@ -1092,12 +777,6 @@ describe('architecture boundary guard', () => {
       return forbiddenPatterns.flatMap(([pattern, label]) => (pattern.test(source) ? [`${filePath}: ${label}`] : []));
     });
     expect(violations).toEqual([]);
-  });
-  it('the removed coordinator shim files must remain deleted', () => {
-    for (const shimPath of RETIRED_COORDINATOR_SHIMS) {
-      expect(PRODUCTION_SOURCE_FILES).not.toContain(shimPath);
-      expect(existsSync(resolve(REPO_ROOT, shimPath))).toBe(false);
-    }
   });
   it('expansion implementation files keep the single-function contract shape', () => {
     const forbiddenMembers = new Set([
@@ -1334,109 +1013,6 @@ describe('architecture boundary guard', () => {
     }
 
     expect(violations).toEqual([]);
-  });
-  it('retired vocabulary stays purged from src and removed paths remain deleted', () => {
-    const removedPaths = [
-      'src/expansion/contracts.ts',
-      'src/expansion/equipment-contract.ts',
-      'src/expansion/catalog.ts',
-      'src/expansion/errors.ts',
-      'src/expansion/activate.ts',
-      'src/expansion/workflow.ts',
-      'src/expansion/install.ts',
-      'src/expansion/strategies',
-      'src/coordinator/equipment',
-    ];
-    const forbiddenPatterns: Array<[RegExp, string]> = [
-      [/\bEquipmentLifecycleService\b/u, 'EquipmentLifecycleService'],
-      [/\bEquipmentLifecycleOptions\b/u, 'EquipmentLifecycleOptions'],
-      [/\bEquipmentDescriptor\b/u, 'EquipmentDescriptor'],
-      [/\bEquipmentDeps\b/u, 'EquipmentDeps'],
-      [/\bEquipmentStatus\b/u, 'EquipmentStatus'],
-      [/\bEquipmentSlot\b/u, 'EquipmentSlot'],
-      [/\bSlotProvider\b/u, 'SlotProvider'],
-      [/\bSlotRegistry\b/u, 'SlotRegistry'],
-      [/\bExpansionContract\b/u, 'ExpansionContract'],
-      [/\bRegisterEquipmentRequest\b/u, 'RegisterEquipmentRequest'],
-      [/\bUnregisterEquipmentRequest\b/u, 'UnregisterEquipmentRequest'],
-      [/\bListEquipmentRequest\b/u, 'ListEquipmentRequest'],
-      [/\bRegisterEquipmentResult\b/u, 'RegisterEquipmentResult'],
-      [/\bUnregisterResult\b/u, 'UnregisterResult'],
-      [/\bListEquipmentResult\b/u, 'ListEquipmentResult'],
-      [/\bequipmentViewSchema\b/u, 'equipmentViewSchema'],
-      [/\bequipmentStatusSchema\b/u, 'equipmentStatusSchema'],
-      [/\bEQUIPMENT_ADDON_FILENAMES\b/u, 'EQUIPMENT_ADDON_FILENAMES'],
-      [/\bEquipmentPaths\b/u, 'EquipmentPaths'],
-      [/\bEquipmentRequestPort\b/u, 'EquipmentRequestPort'],
-      [/\bgetActiveVectorSurface\b/u, 'getActiveVectorSurface'],
-      [/\bgetBaseRetrievalSurface\b/u, 'getBaseRetrievalSurface'],
-      [/\bgetEquipmentView\b/u, 'getEquipmentView'],
-      [/\bdefaultOwner\b/u, 'defaultOwner'],
-      [/\bactiveKind\b/u, 'activeKind'],
-      [/\bresolveVectorRoute\b/u, 'resolveVectorRoute'],
-      [/\bcachedVectorRoute\b/u, 'cachedVectorRoute'],
-      [/\bPluginHost\b/u, 'PluginHost'],
-      [/\b(?:interface|class|function)\s+Plugin\b/u, 'Plugin declaration'],
-      [/\btype\s+Plugin\s*=/u, 'Plugin type alias'],
-      [/\bequipment_state\b/u, 'equipment_state'],
-      [/\bequipment_cursors\b/u, 'equipment_cursors'],
-      [/\bequipped_at\b/u, 'equipped_at'],
-      [/\bEquipmentStateRow\b/u, 'EquipmentStateRow'],
-      [/\bequipmentEntrySchema\b/u, 'equipmentEntrySchema'],
-      [/\bregister_equipment\b/u, 'register_equipment'],
-      [/activation:\s*['"]equipment['"]/u, "activation: 'equipment'"],
-      [/'Invalid equipment/u, "'Invalid equipment ...'"],
-      [/['"]coordinator\.registerEquipment['"]/u, 'coordinator.registerEquipment'],
-      [/['"]coordinator\.unregisterEquipment['"]/u, 'coordinator.unregisterEquipment'],
-      [/['"]coordinator\.listEquipment['"]/u, 'coordinator.listEquipment'],
-      [/registrationKind\s*[:=]\s*['"]equipment['"]/u, "registrationKind: 'equipment'"],
-      [/\bunknown_equipment\b/u, 'unknown_equipment'],
-      [/\bequipment_install_lock_contended\b/u, 'equipment_install_lock_contended'],
-      [/\bequipment_binary_corrupt\b/u, 'equipment_binary_corrupt'],
-      [/\bequipment_runtime_unavailable\b/u, 'equipment_runtime_unavailable'],
-      [/\bequipment_embedding_provider_missing\b/u, 'equipment_embedding_provider_missing'],
-      [/\bequipment_slot_not_declared\b/u, 'equipment_slot_not_declared'],
-      [/\bslot_already_equipped\b/u, 'slot_already_equipped'],
-      [/\bequipment_install_path_unwritable\b/u, 'equipment_install_path_unwritable'],
-      [/backend:\s*['"]orama['"]\s*\|\s*['"]needle['"]/u, "backend: 'orama' | 'needle'"],
-      [/paths\.coral\.equipment\b/u, 'paths.coral.equipment'],
-      // Coordinator-role identifiers must not regress to "Backend*". The
-      // role/coordinator distinction matters: things tied to the coordinator
-      // role (composition, identity, world, lifecycle, server controllers)
-      // stay coordinator-named. Things tied to the deployment unit (the
-      // running daemon) — BackendInfo, BackendStatus, the
-      // discovery file, the auth token, the user-facing CLI subcommand —
-      // legitimately use "Backend" and are NOT in this registry.
-      [/\bBackendCoreOptions\b/u, 'BackendCoreOptions'],
-      [/\bBackendCoreResult\b/u, 'BackendCoreResult'],
-      [/\bcreateBackendCore\b/u, 'createBackendCore'],
-      [/\bBackendIdentity\b/u, 'BackendIdentity'],
-      [/\bBackendIdentityWriter\b/u, 'BackendIdentityWriter'],
-      [/\bBackendWorld\b/u, 'BackendWorld'],
-      [/\bMutableBackendRuntimeState\b/u, 'MutableBackendRuntimeState'],
-      [/\bBackendServerOptions\b/u, 'BackendServerOptions'],
-      [/\bBackendServerController\b/u, 'BackendServerController'],
-      [/\bBackendServerInfo\b/u, 'BackendServerInfo'],
-      [/\bBackendBootSnapshot\b/u, 'BackendBootSnapshot'],
-      [/\bcreateBackendServer\b/u, 'createBackendServer'],
-      [/\bcreateBackendControl\b/u, 'createBackendControl'],
-      [/\bcreateBackendWorld\b/u, 'createBackendWorld'],
-      [/\bresolveBackendDefaults\b/u, 'resolveBackendDefaults'],
-    ];
-    const violations = PRODUCTION_FILE_PATHS.flatMap((filePath) => {
-      const source = readFileSync(filePath, 'utf8');
-      return forbiddenPatterns.flatMap(([pattern, label]) =>
-        pattern.test(source) ? [`${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${label}`] : [],
-      );
-    });
-
-    expect(removedPaths.filter((filePath) => existsSync(resolve(REPO_ROOT, filePath)))).toEqual([]);
-    expect(violations).toEqual([]);
-
-    const skillSource = readFileSync(resolve(REPO_ROOT, 'skills/equip/SKILL.md'), 'utf8');
-    expect(skillSource).toContain("activation: 'equip'");
-    expect(skillSource).toContain('~/.coral/data/engines/<engine>/');
-    expect(skillSource).not.toContain('~/.coral/data/engines/needle/coral-needle.node');
   });
 
   it('forbids Expansions from importing Journal/Corpus authority writers (§16 #32)', () => {
