@@ -2,7 +2,7 @@ import { nowIsoString } from '../../../infra/time.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../contract.js';
 import { recordMetadataMutation } from '../../corpus/index-mutations.js';
 import { compareLocale } from '../../validation.js';
-import { parseKbEntryId } from '../../entry-types.js';
+import { communitySlugFromReference } from './identity.js';
 import { computeCommunityTopologyFingerprint, detectCommunities } from './detection.js';
 import { normalizedCommunitySummaryFingerprints } from './topology-refresh.js';
 import {
@@ -34,15 +34,6 @@ type CommunityPreparedPayload = {
   summaryFingerprints: Record<string, string> | undefined;
   topologyHash: string;
 };
-
-function communitySlugFromReference(reference: string): string {
-  const parsed = parseKbEntryId(reference);
-  if (parsed !== null && parsed.startsWith('community:')) {
-    return parsed.slice('community:'.length);
-  }
-
-  return reference;
-}
 
 function communitySummaryChildren(
   community: { children?: string[] },
