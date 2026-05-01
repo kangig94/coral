@@ -1,4 +1,3 @@
-import type { StoragePort } from '#src/runtime/ports.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';

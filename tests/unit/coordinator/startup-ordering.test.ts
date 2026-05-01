@@ -154,6 +154,7 @@ describe('coordinator startup ordering', () => {
       pluginRoot,
       createKbSubsystemFn: async () => ({
         kb: createMockKb(),
+        readDb: {} as never,
         curateScheduler: {
           start: vi.fn(async () => {}),
           schedule: vi.fn(),
@@ -258,6 +259,7 @@ describe('coordinator startup ordering', () => {
       createKbSubsystemFn: async () => {
         const kbSubsystem = {
           kb: createMockKb(),
+          readDb: {} as never,
           curateScheduler: {
             start: vi.fn(async () => {}),
             schedule: vi.fn(),
@@ -358,6 +360,7 @@ describe('coordinator startup ordering', () => {
       pluginRoot,
       createKbSubsystemFn: async () => ({
         kb: createMockKb(order),
+        readDb: {} as never,
         curateScheduler: {
           start: vi.fn(async () => {
             order.push('curateScheduler.start');

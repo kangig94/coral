@@ -61,9 +61,10 @@ function readPersistedLaunches(db: InstanceType<typeof Database>): PersistedEven
 }
 
 function makeProviderLaunch(overrides: Partial<JobLaunch> & Pick<JobLaunch, 'jobId' | 'sessionId'>): JobLaunch {
+  const { jobId, sessionId, ...rest } = overrides;
   return {
-    jobId: overrides.jobId,
-    sessionId: overrides.sessionId,
+    jobId,
+    sessionId,
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: `/workspace/${overrides.jobId}`,
@@ -79,7 +80,7 @@ function makeProviderLaunch(overrides: Partial<JobLaunch> & Pick<JobLaunch, 'job
       coralEnv: {},
     },
     createdAt: '2026-04-29T00:00:00.000Z',
-    ...overrides,
+    ...rest,
   };
 }
 

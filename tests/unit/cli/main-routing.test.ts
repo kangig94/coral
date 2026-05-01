@@ -223,6 +223,7 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
         provider,
         projectRoot: process.cwd(),
         backendNamespace: 'default',
+        jobKind: 'provider' as const,
         phase,
         updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
       },

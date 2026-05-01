@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
-import type { CommitContext } from '#src/store/append.js';
+import type { AppendedEvent, CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
 import { adapterOutputUnparseable, providerRequestFailed, providerSessionUnavailable } from '#src/providers/fault.js';
 import type { ProviderTerminalEventBody } from '#src/providers/contract.js';
@@ -13,14 +13,14 @@ import {
 } from '#src/coordinator/services/terminal-materializer.js';
 
 type RecordedInput = {
-  input: ResolvableCoralEventInput<unknown>;
+  input: ResolvableCoralEventInput<unknown, unknown>;
   token: CauseRefToken<unknown>;
 };
 
 function createCommitRecorder(): {
   readonly appended: RecordedInput[];
   readonly progressStore: {
-    commit(cb: <Scope>(c: CommitContext<Scope>) => undefined): unknown[];
+    commit(cb: <Scope>(c: CommitContext<Scope>) => undefined): AppendedEvent[];
   };
 } {
   const appended: RecordedInput[] = [];
@@ -37,7 +37,7 @@ function createCommitRecorder(): {
           },
         };
         cb(c);
-        return [];
+        return [] as AppendedEvent[];
       },
     },
   };

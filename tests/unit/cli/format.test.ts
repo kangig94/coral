@@ -282,6 +282,7 @@ describe('cli format', () => {
           active: 2,
           activeJobs: 1,
           inflightRequests: 0,
+          subsystems: { kb: { kind: 'ok' as const }, kbCurate: 'ok' as const, discuss: 'ok' as const },
         },
       } satisfies BackendStatusFull;
 

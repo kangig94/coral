@@ -98,6 +98,7 @@ function createFakeProviderHostManager() {
 function createMockKbSubsystem() {
   return {
     kb: {} as never,
+    readDb: {} as never,
     curateScheduler: {
       start: vi.fn(async () => {}),
       schedule: vi.fn(),

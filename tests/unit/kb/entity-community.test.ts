@@ -178,6 +178,7 @@ describe('entity-community', () => {
       sourcePath(slug: string) {
         return `/tmp/${slug}.md`;
       },
+      storagePort: { readFileSync: () => '' } as never,
     };
     const communities = [
       {

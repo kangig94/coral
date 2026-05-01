@@ -45,7 +45,7 @@ export function createCorpusApplyContext(
                  WHERE consumer_id = ?
               `,
             )
-            .get(consumerId),
+            .get(consumerId) as Parameters<typeof normalizeCorpusCursor>[0],
         ),
       readCurrentSnapshot: () => readCorpusState(db),
     },
@@ -57,11 +57,13 @@ export function createCorpusApplyContext(
 export async function applyBoundCorpusConsumerForTest(kb: KbRuntime, db: Database): Promise<void> {
   const consumer = kb.fts.read().consumer;
   const controller = new AbortController();
-  await consumer.apply?.({
-    ...createCorpusApplyContext(kb, db),
-    projectionInput: await kb.corpusProjectionReader.prepareCurrentProjectionInput({ signal: controller.signal }),
-    signal: controller.signal,
-  });
+  if ('apply' in consumer && typeof consumer.apply === 'function') {
+    await consumer.apply({
+      ...createCorpusApplyContext(kb, db),
+      projectionInput: await kb.corpusProjectionReader.prepareCurrentProjectionInput({ signal: controller.signal }),
+      signal: controller.signal,
+    });
+  }
   if ('projectionSync' in consumer && consumer.projectionSync === 'text-index') {
     kb.recordIndexSyncSuccess();
   }

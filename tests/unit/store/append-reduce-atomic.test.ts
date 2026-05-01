@@ -73,6 +73,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
 
     try {
       const throwingReducers = composeReducers({
+        streamKind: 'job',
         entries: [
           defineDomainEvent({
             type: 'test.counter.ticked',
@@ -117,6 +118,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
     try {
       let reducerCalls = 0;
       const registry: DomainEventRegistry = {
+        streamKind: 'job',
         entries: [
           defineDomainEvent({
             type: 'test.counter.ticked',

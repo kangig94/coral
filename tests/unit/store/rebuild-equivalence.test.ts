@@ -114,9 +114,11 @@ describe('rebuildProjections replay identity', () => {
   it('throws CoralSetupError(reducer_duplicate) when the same event type is registered twice', () => {
     const schema = z.object({ id: z.string() });
     const first = {
+      streamKind: 'job' as const,
       entries: [defineDomainEvent({ type: 'dup.event', schema })],
     };
     const second = {
+      streamKind: 'job' as const,
       entries: [defineDomainEvent({ type: 'dup.event', schema })],
     };
 

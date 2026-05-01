@@ -60,11 +60,11 @@ describe('coordinator curate scheduler', () => {
   });
 
   it('routes corpus publish failures past the threshold to runtime curateHealth', () => {
-    let curateHealth: CurateHealth = { kind: 'ok' };
+    const curateHealthRef: { current: CurateHealth } = { current: { kind: 'ok' } };
     const stateStub: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'> = {
-      getCurateHealth: () => curateHealth,
+      getCurateHealth: () => curateHealthRef.current,
       setCurateHealth: (next) => {
-        curateHealth = next;
+        curateHealthRef.current = next;
       },
     };
     const bridge = createCurateSchedulerHealthBridge(3);
@@ -75,21 +75,21 @@ describe('coordinator curate scheduler', () => {
       error: new Error('boom'),
       consecutivePublishFailureCount: 2,
     } as never);
-    expect(curateHealth).toEqual({ kind: 'ok' });
+    expect(curateHealthRef.current).toEqual({ kind: 'ok' });
 
     bridge.onCorpusPublishFailure({
       stage: 'publish',
       error: new Error('boom'),
       consecutivePublishFailureCount: 3,
     } as never);
-    expect(curateHealth.kind).toBe('degraded');
-    if (curateHealth.kind === 'degraded') {
-      expect(curateHealth.reason).toContain('Corpus publication queue unhealthy');
-      expect(curateHealth.reason).toContain('boom');
+    expect(curateHealthRef.current.kind).toBe('degraded');
+    if (curateHealthRef.current.kind === 'degraded') {
+      expect(curateHealthRef.current.reason).toContain('Corpus publication queue unhealthy');
+      expect(curateHealthRef.current.reason).toContain('boom');
     }
 
     bridge.onCorpusPublishSuccess();
-    expect(curateHealth).toEqual({ kind: 'ok' });
+    expect(curateHealthRef.current).toEqual({ kind: 'ok' });
   });
 
   it('respects CORAL_CURATE_INTERVAL_MS overrides', async () => {

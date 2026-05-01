@@ -70,13 +70,13 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
 
       const cursorStatus = cursorHandle.status();
       expect('authority' in cursorStatus).toBe(true);
-      if (!('authority' in cursorStatus)) throw new Error('unreachable');
+      if (!('authority' in cursorStatus) || cursorStatus.authority !== 'journal') throw new Error('unreachable');
       expect(cursorStatus.authority).toBe('journal');
       expect(cursorStatus.cursor).toBe(0);
 
       const corpusStatus = corpusHandle.status();
       expect('authority' in corpusStatus).toBe(true);
-      if (!('authority' in corpusStatus)) throw new Error('unreachable');
+      if (!('authority' in corpusStatus) || corpusStatus.authority !== 'corpus') throw new Error('unreachable');
       expect(corpusStatus.authority).toBe('corpus');
       expect(corpusStatus.corpusInterest).toBe('content');
 

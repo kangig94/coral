@@ -570,6 +570,7 @@ function _makeStatusRecord(
     provider: 'codex',
     projectRoot: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
+    jobKind: 'provider',
     phase,
     updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),

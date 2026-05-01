@@ -61,7 +61,7 @@ function createRuntime(
     acquireServer: async () => {
       throw new Error('not used in session-continuity tests');
     },
-    storage: { existsSync: () => true } as ProviderRuntime['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     continuityBridge,
     kbRoot: '/mock/kb',
     ...overrides,

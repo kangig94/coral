@@ -313,7 +313,6 @@ function scopeAllowsVectorKind(
 
 function aggregateMockNeedleHits(
   kb: {
-    db: { prepare: (...args: any[]) => { get: (...params: any[]) => Record<string, unknown> | undefined } };
     readIndex: () => { entries: Record<string, any> } | null;
   },
   rawHits: MockNeedleChunkHit[],

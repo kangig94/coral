@@ -173,6 +173,7 @@ describe('server discuss API', () => {
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
         kb: {} as never,
+        readDb: {} as never,
         curateScheduler: {
           start: async () => {},
           schedule: () => {},
