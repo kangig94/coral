@@ -31,6 +31,14 @@ export function hashSortedEnv(env: Record<string, string>): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
 }
 
+export function readTurnConversationRef(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return readString(value.conversationRef) ?? readString(value.sessionId);
+}
+
 export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
   if (
     !isRecord(value) ||

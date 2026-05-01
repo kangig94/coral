@@ -16,7 +16,7 @@ import {
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from './request-mapping.js';
-import { readString } from './request-prep.js';
+import { readTurnConversationRef } from './request-prep.js';
 
 async function brokerRpc<R = unknown>(
   lease: ProviderServerLease,
@@ -156,10 +156,3 @@ export const claudeArtifactCleanup = {
   name: 'claude',
   cleanupSessions,
 } as const;
-
-function readTurnConversationRef(value: unknown): string | undefined {
-  return (
-    readString((value as { conversationRef?: unknown; sessionId?: unknown }).conversationRef) ??
-    readString((value as { conversationRef?: unknown; sessionId?: unknown }).sessionId)
-  );
-}

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sha256Hex } from '../../infra/hash.js';
 
 /** Stable corpus identity used to coordinate projection freshness across consumers. */
 export type CorpusSnapshot = {
@@ -213,10 +214,6 @@ function canonicalizeObject(record: { [key: string]: CanonicalFrontmatterValue }
     .sort(([leftKey], [rightKey]) => compareUtf8Lexicographically(leftKey, rightKey));
 
   return `{${entries.map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(',')}}`;
-}
-
-function sha256Hex(input: Uint8Array | string): string {
-  return createHash('sha256').update(input).digest('hex');
 }
 
 function toUtf8Bytes(input: Uint8Array | string): Uint8Array {

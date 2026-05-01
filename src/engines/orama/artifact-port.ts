@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
-
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { sha256Hex } from '../../infra/hash.js';
 import { isRecord } from '../../infra/json.js';
 import type {
   EngineArtifactDescriptor,
@@ -25,10 +24,6 @@ export type OramaProjectionMetadata = EngineArtifactProjectedSnapshot & {
 };
 
 type OramaArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
-
-function sha256Hex(input: string): string {
-  return createHash('sha256').update(input, 'utf8').digest('hex');
-}
 
 function isOramaProjectionMetadata(value: unknown): value is OramaProjectionMetadata {
   return (

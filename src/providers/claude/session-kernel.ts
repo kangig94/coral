@@ -22,6 +22,7 @@ import {
   buildPreparedClaudeRequest,
   readBootstrapSignature,
   readString,
+  readTurnConversationRef,
   type PreparedClaudeRequest,
 } from './request-prep.js';
 
@@ -351,14 +352,6 @@ function brokerRpc<R = unknown>(
   params: Record<string, unknown> | object,
 ): Promise<R> {
   return lease.rpc<R>(method, params as Record<string, unknown>);
-}
-
-function readTurnConversationRef(value: unknown): string | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  return readString(value.conversationRef) ?? readString(value.sessionId);
 }
 
 function readErrors(value: unknown): string[] {
