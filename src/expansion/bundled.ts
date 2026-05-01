@@ -1,5 +1,6 @@
+import oramaExpansion from '#src/engines/orama/expansion.js';
 import { needleInstaller } from '#src/engines/needle/install.js';
-import type { EngineManifest, ExpansionHost } from './contract.js';
+import type { EngineManifest, Expansion, ExpansionHost } from './contract.js';
 
 const PACKAGE_VERSION = '0.5.2';
 
@@ -41,7 +42,29 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = [
   },
 ];
 
-export async function loadBundledEngine(entry: EngineManifest, host: ExpansionHost): Promise<void> {
-  const module = (await import(entry.specifier)) as { default: (h: ExpansionHost) => void | Promise<void> };
+// `tier: 'bundled'` engines must be statically reachable so esbuild inlines
+// them into coral-backend.cjs. A marketplace install ships src/ alongside the
+// bundle, but a runtime `import(specifier)` of a TS module hits relative
+// `./xxx.js` imports inside that module which Node's package.json `imports`
+// map cannot rewrite (only the entry specifier matches `#src/*.js`). Listing
+// the loader statically here resolves the entire engine through esbuild.
+export const BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
+  orama: oramaExpansion,
+};
+
+export async function loadBundledEngine(
+  entry: EngineManifest,
+  host: ExpansionHost,
+  loaders: Readonly<Record<string, Expansion>> = BUNDLED_LOADERS,
+): Promise<void> {
+  if (entry.tier === 'bundled') {
+    const loader = loaders[entry.id];
+    if (!loader) {
+      throw new Error(`Bundled engine '${entry.id}' is missing a static loader`);
+    }
+    await loader(host);
+    return;
+  }
+  const module = (await import(entry.specifier)) as { default: Expansion };
   await module.default(host);
 }
