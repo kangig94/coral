@@ -1,5 +1,3 @@
-import { join } from 'node:path';
-
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import type {
@@ -9,14 +7,15 @@ import type {
 } from '../../kb/corpus/artifact-port.js';
 import type { KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import { NEEDLE_CONSUMER_ID, type NeedleBackendOptions } from './contract.js';
-import { needleIndexDir } from './paths.js';
+import {
+  needleActivePointerPath,
+  needleSnapshotDbPath,
+  needleSnapshotDir,
+  needleSnapshotManifestPath,
+} from './paths.js';
 import { createNeedleStore, isNeedleAddonCompatible, type NeedleStore } from './store.js';
 
 type NeedleArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
-
-const NEEDLE_STORE_FILE = 'store.db';
-const NEEDLE_MANIFEST_FILE = 'manifest.json';
-const NEEDLE_ACTIVE_POINTER_FILE = 'ACTIVE';
 
 type NeedleSnapshotManifest = {
   readonly snapshot: EngineArtifactProjectedSnapshot;
@@ -31,26 +30,6 @@ type NeedleArtifactPortOptions = {
   readonly pluginRoot?: string;
   readonly storeFactory?: NeedleBackendOptions['storeFactory'];
 };
-
-function needleSnapshotsDir(runtimeDir: string): string {
-  return join(needleIndexDir(runtimeDir), 'snapshots');
-}
-
-function needleSnapshotDir(runtimeDir: string, snapshotId: string): string {
-  return join(needleSnapshotsDir(runtimeDir), snapshotId);
-}
-
-function needleSnapshotDbPath(runtimeDir: string, snapshotId: string): string {
-  return join(needleSnapshotDir(runtimeDir, snapshotId), NEEDLE_STORE_FILE);
-}
-
-function needleSnapshotManifestPath(runtimeDir: string, snapshotId: string): string {
-  return join(needleSnapshotDir(runtimeDir, snapshotId), NEEDLE_MANIFEST_FILE);
-}
-
-function needleActivePointerPath(runtimeDir: string): string {
-  return join(needleIndexDir(runtimeDir), NEEDLE_ACTIVE_POINTER_FILE);
-}
 
 function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {
   return (
@@ -118,7 +97,7 @@ export class NeedleArtifactPort implements EngineArtifactPort {
     }
 
     const snapshotDir = needleSnapshotDir(this.runtime.runtimeDir, snapshotId);
-    const manifestPath = needleSnapshotManifestPath(this.runtime.runtimeDir, snapshotId);
+    const manifestPath = needleSnapshotManifestPath(needleSnapshotDir(this.runtime.runtimeDir, snapshotId));
     const storePath = needleSnapshotDbPath(this.runtime.runtimeDir, snapshotId);
     const artifactPaths = [activePointerPath, manifestPath, storePath];
     if (

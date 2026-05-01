@@ -22,7 +22,16 @@ import {
   type KbEntryId,
   type KbIndex,
 } from '../../kb/entry-types.js';
-import { needleAddonPath, needleIndexDir, needleStagingDir } from './paths.js';
+import {
+  NEEDLE_STORE_FILE,
+  needleActivePointerPath,
+  needleAddonPath,
+  needleIndexDir,
+  needleSnapshotDbPath,
+  needleSnapshotDir,
+  needleSnapshotManifestPath,
+  needleStagingDir,
+} from './paths.js';
 import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
 import { createNeedleStore, type NeedleStore } from './store.js';
 import { resolveBoundNeedleEmbedder, type ResolvedNeedleEmbedder } from './projection-identity.js';
@@ -34,9 +43,6 @@ import {
 import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../../kb/search/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 
-const NEEDLE_STORE_FILE = 'store.db';
-const NEEDLE_MANIFEST_FILE = 'manifest.json';
-const NEEDLE_ACTIVE_POINTER_FILE = 'ACTIVE';
 const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
 
 type NeedleBackendStagingHook = (ctx: {
@@ -115,26 +121,6 @@ function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManife
     typeof value.entryCount === 'number' &&
     typeof value.chunkCount === 'number'
   );
-}
-
-function needleSnapshotsDir(runtimeDir: string): string {
-  return join(needleIndexDir(runtimeDir), 'snapshots');
-}
-
-function needleSnapshotDir(runtimeDir: string, snapshotId: string): string {
-  return join(needleSnapshotsDir(runtimeDir), snapshotId);
-}
-
-function needleSnapshotDbPath(runtimeDir: string, snapshotId: string): string {
-  return join(needleSnapshotDir(runtimeDir, snapshotId), NEEDLE_STORE_FILE);
-}
-
-function needleSnapshotManifestPath(snapshotDir: string): string {
-  return join(snapshotDir, NEEDLE_MANIFEST_FILE);
-}
-
-function needleActivePointerPath(runtimeDir: string): string {
-  return join(needleIndexDir(runtimeDir), NEEDLE_ACTIVE_POINTER_FILE);
 }
 
 function needleHandleDir(runtimeDir: string, handleToken: string): string {
