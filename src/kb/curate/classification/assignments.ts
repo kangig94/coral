@@ -18,11 +18,7 @@ import type {
   CurateClaimedEntry,
   MetadataTarget,
 } from '../pipeline-types.js';
-import { isKnownEntityType, isKnownRelationshipType } from './schema.js';
-
-function classificationEntityNameSegments(value: string): string[] {
-  return value.split('-').filter((segment) => segment.length > 0);
-}
+import { classificationEntityNameSegments, isKnownEntityType, isKnownRelationshipType } from './schema.js';
 
 function isDescriptiveEntityName(value: string, minimumSegments = 2): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(value) && classificationEntityNameSegments(value).length >= minimumSegments;

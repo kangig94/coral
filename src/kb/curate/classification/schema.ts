@@ -7,3 +7,7 @@ export function isKnownEntityType(value: string): value is EntityType {
 export function isKnownRelationshipType(value: string): value is RelationshipType {
   return (RELATIONSHIP_TYPES as readonly string[]).includes(value);
 }
+
+export function classificationEntityNameSegments(value: string): string[] {
+  return value.split('-').filter((segment) => segment.length > 0);
+}

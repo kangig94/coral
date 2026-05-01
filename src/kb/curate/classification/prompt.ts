@@ -3,6 +3,7 @@ import { compareLocale } from '../../validation.js';
 import { getEntry, type EntityType, type KbIndex, type RelationshipType } from '../../entry-types.js';
 import { approximateTokenCount, uniqueTrimmedList } from '../content-normalize.js';
 import type { CurateClaimedEntry } from '../pipeline-types.js';
+import { classificationEntityNameSegments } from './schema.js';
 
 const CLASSIFICATION_BATCH_SIZE = 100;
 const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 16_000;
@@ -51,10 +52,6 @@ function buildFlatList(values: string[]): string {
 
 function tokenizeLowercaseText(value: string): string[] {
   return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-}
-
-function classificationEntityNameSegments(value: string): string[] {
-  return value.split('-').filter((segment) => segment.length > 0);
 }
 
 function buildEntitySupportMap(index: KbIndex): Map<string, number> {
