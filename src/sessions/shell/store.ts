@@ -39,7 +39,7 @@ type SessionStoreEventBody =
   | SessionClaimReleasedBody;
 
 export type SessionManagerOptions = {
-  db?: Database;
+  db: Database;
 };
 
 function toSessionNamespace(dir: string, ids: Pick<IdPort, 'sha256'>): string {
@@ -164,15 +164,12 @@ export class SessionManager {
   constructor(
     workingDirectory: string,
     runtime: SessionRuntime,
-    commitEvents?: CommitEventsFn,
+    commitEvents: CommitEventsFn | undefined,
     releaseEmitter: SessionReleasedEmitter = () => {},
-    db?: Database,
+    db: Database,
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
-    if (db === undefined) {
-      throw new Error('SessionManager requires a coordinator-injected store database.');
-    }
     this.db = db;
     this.commitEvents = commitEvents ?? createLocalSessionCommit(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
@@ -184,7 +181,7 @@ export class SessionManager {
     runtime: SessionRuntime,
     commitEvents: CommitEventsFn | undefined,
     releaseEmitter: SessionReleasedEmitter,
-    options: SessionManagerOptions = {},
+    options: SessionManagerOptions,
   ): SessionManager {
     return new SessionManager(workingDirectory, runtime, commitEvents, releaseEmitter, options.db);
   }
