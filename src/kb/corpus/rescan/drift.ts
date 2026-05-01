@@ -9,6 +9,7 @@ import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
 import type { KbCorpusSnapshot, KbIndexMutationLane, KbRuntime } from '../../contract.js';
+import { mergeMutationLane } from '../lanes.js';
 import type { CorpusInterest } from '../../../store/consumer-contract.js';
 import {
   isNoteEntry,
@@ -38,19 +39,6 @@ export type RescanInfo = {
   readonly externalMutation: KbIndexMutationLane | null;
   readonly projectionArtifactLag: readonly ProjectionArtifactLag[];
 };
-
-export function mergeMutationLane(
-  current: KbIndexMutationLane | null,
-  next: KbIndexMutationLane | null,
-): KbIndexMutationLane | null {
-  if (next === null || current === 'both') {
-    return current;
-  }
-  if (current === null || current === next) {
-    return next;
-  }
-  return 'both';
-}
 
 function modifiedAtNs(storagePort: StoragePort, path: string): bigint | null {
   try {
