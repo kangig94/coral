@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -47,7 +47,7 @@ type RecoveredWorkflowFinalization = {
 };
 
 type ResumeWorkflowDeps = {
-  db: BetterSqlite3.Database;
+  db: Database;
   progressStore: Pick<JobStore, 'readStatus'> & StoreReadContext;
   executionSvc: WorkflowExecutionPort;
   ctx: InvocationContext;
@@ -95,7 +95,7 @@ type WaitRecoveryPlan = {
   blockingFailure: RecoveryTerminalFailure | null;
 };
 
-function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
+function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
   const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
   const rows = db
     .prepare(
@@ -119,7 +119,7 @@ function readSlotJobIds(db: BetterSqlite3.Database, workflowId: string, plan: Wo
 }
 
 function compileSlotsForRecovery(
-  db: BetterSqlite3.Database,
+  db: Database,
   workflowId: string,
   plan: WorkflowPlan,
 ): CompiledPlanSlot[] {
@@ -515,7 +515,7 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
 }
 
 export async function resumeAll(options: {
-  db: BetterSqlite3.Database;
+  db: Database;
   progressStore: Pick<JobStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;

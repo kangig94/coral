@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
@@ -24,8 +25,8 @@ const storageAdapter: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFile
   readFileSync: (path, encoding) => fs.readFileSync(path, encoding),
 };
 
-function setupDb(): Database.Database {
-  const db = new Database(':memory:');
+function setupDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter, schemasDir: SCHEMAS_DIR });
   applyTestCounterSchema(db);
   return db;

@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import {
   commit as commitEvents,
@@ -21,7 +21,7 @@ export type WorkflowJournal = {
 };
 
 export function commitWorkflowEvents(
-  db: BetterSqlite3.Database,
+  db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   time: Pick<TimePort, 'now'>,
   providers: ProviderLookupPort,

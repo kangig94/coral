@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
@@ -15,14 +16,14 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
 
 function createDriver(apply: Extract<JournalConsumerRegistration, { kind: 'apply' }>['apply'] = async () => {}): {
-  db: InstanceType<typeof Database>;
+  db: Database;
   driver: ConsumerDriver;
   consumerId: string;
 } {

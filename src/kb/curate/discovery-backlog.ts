@@ -3,7 +3,8 @@ import { z } from 'zod';
 
 import type { KbCurateDiscoveryBacklogNoteRow, KbCurateDiscoveryBacklogRow } from '../state/schema.js';
 import type { PendingDiscovery } from './state/model.js';
-import { prepareCached, type SqliteTarget } from './sqlite.js';
+import { prepareCached, type Database } from '../../store/db.js';
+import type { ReadonlyDatabase } from '../../store/read-port.js';
 
 const backlogRowSchema = z.object({
   entry_id: z.string().min(1),
@@ -47,9 +48,9 @@ function rowToPendingDiscovery(row: KbCurateDiscoveryBacklogRow, notes: readonly
   };
 }
 
-export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscovery[] {
+export function readCurateDiscoveryBacklog(db: Database | ReadonlyDatabase): PendingDiscovery[] {
   const rows = prepareCached<[], KbCurateDiscoveryBacklogRow>(
-    target,
+    db,
     `SELECT
        entry_id,
        principle_slug,
@@ -60,7 +61,7 @@ export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscove
      ORDER BY queued_at ASC, principle_slug ASC, statement ASC`,
   ).all();
   const noteRows = prepareCached<[], KbCurateDiscoveryBacklogNoteRow>(
-    target,
+    db,
     `SELECT backlog_entry_id, note_id
        FROM kb_curate_discovery_backlog_notes
       ORDER BY backlog_entry_id ASC, note_id ASC`,
@@ -77,11 +78,11 @@ export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscove
   return rows.map((row) => rowToPendingDiscovery(row, notesByEntryId.get(row.entry_id) ?? []));
 }
 
-export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
+export function addCurateDiscoveryBacklogEntry(db: Database, entry: PendingDiscovery): void {
   const canonicalEntry = canonicalPendingDiscovery(entry);
   const entryId = backlogEntryId(canonicalEntry);
   const inserted = prepareCached<[string, string, string, string, string | null]>(
-    target,
+    db,
     `INSERT OR IGNORE INTO kb_curate_discovery_backlog (
        entry_id,
        principle_slug,
@@ -103,27 +104,27 @@ export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: Pend
 
   for (const noteId of canonicalEntry.notes) {
     prepareCached<[string, string]>(
-      target,
+      db,
       `INSERT OR IGNORE INTO kb_curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
     ).run(entryId, noteId);
   }
 }
 
 export function removeCurateDiscoveryBacklogEntry(
-  target: SqliteTarget,
+  db: Database,
   entry: Pick<PendingDiscovery, 'principle' | 'statement'>,
 ): void {
   prepareCached<[string, string]>(
-    target,
+    db,
     `DELETE FROM kb_curate_discovery_backlog
       WHERE principle_slug = ? AND statement = ?`,
   ).run(entry.principle, entry.statement);
 }
 
-function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
+function updateCurateDiscoveryBacklogEntry(db: Database, entry: PendingDiscovery): void {
   const canonicalEntry = canonicalPendingDiscovery(entry);
   prepareCached<[string, string | null, string]>(
-    target,
+    db,
     `UPDATE kb_curate_discovery_backlog
         SET queued_at = ?,
             reason = ?
@@ -131,24 +132,24 @@ function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingD
   ).run(canonicalEntry.createdAt, canonicalEntry.reason ?? null, backlogEntryId(canonicalEntry));
 }
 
-function addCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
+function addCurateDiscoveryBacklogNote(db: Database, backlogId: string, noteId: string): void {
   prepareCached<[string, string]>(
-    target,
+    db,
     `INSERT OR IGNORE INTO kb_curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
   ).run(backlogId, noteId);
 }
 
-function removeCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
+function removeCurateDiscoveryBacklogNote(db: Database, backlogId: string, noteId: string): void {
   prepareCached<[string, string]>(
-    target,
+    db,
     `DELETE FROM kb_curate_discovery_backlog_notes
       WHERE backlog_entry_id = ? AND note_id = ?`,
   ).run(backlogId, noteId);
 }
 
-export function syncCurateDiscoveryBacklog(target: SqliteTarget, entries: ReadonlyArray<PendingDiscovery>): void {
+export function syncCurateDiscoveryBacklog(db: Database, entries: ReadonlyArray<PendingDiscovery>): void {
   const existingById = new Map(
-    readCurateDiscoveryBacklog(target).map((entry) => {
+    readCurateDiscoveryBacklog(db).map((entry) => {
       const canonicalEntry = canonicalPendingDiscovery(entry);
       return [backlogEntryId(canonicalEntry), canonicalEntry] as const;
     }),
@@ -164,31 +165,31 @@ export function syncCurateDiscoveryBacklog(target: SqliteTarget, entries: Readon
 
   for (const [entryId, existing] of existingById) {
     if (!nextById.has(entryId)) {
-      removeCurateDiscoveryBacklogEntry(target, existing);
+      removeCurateDiscoveryBacklogEntry(db, existing);
     }
   }
 
   for (const [entryId, entry] of nextById) {
     const existing = existingById.get(entryId);
     if (existing === undefined) {
-      addCurateDiscoveryBacklogEntry(target, entry);
+      addCurateDiscoveryBacklogEntry(db, entry);
       continue;
     }
 
     if (existing.createdAt !== entry.createdAt || (existing.reason ?? undefined) !== (entry.reason ?? undefined)) {
-      updateCurateDiscoveryBacklogEntry(target, entry);
+      updateCurateDiscoveryBacklogEntry(db, entry);
     }
 
     const existingNotes = new Set(existing.notes);
     const nextNotes = new Set(entry.notes);
     for (const noteId of existing.notes) {
       if (!nextNotes.has(noteId)) {
-        removeCurateDiscoveryBacklogNote(target, entryId, noteId);
+        removeCurateDiscoveryBacklogNote(db, entryId, noteId);
       }
     }
     for (const noteId of entry.notes) {
       if (!existingNotes.has(noteId)) {
-        addCurateDiscoveryBacklogNote(target, entryId, noteId);
+        addCurateDiscoveryBacklogNote(db, entryId, noteId);
       }
     }
   }

@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 import { z } from 'zod';
 
 import type { CoralEvent, CoralEventInput, ResolvableCoralEventInput } from '../store/envelope.js';

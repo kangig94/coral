@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { markJobAsError } from '#src/jobs/reconcile/recovery-effects.js';
@@ -20,13 +21,13 @@ const storageAdapter = {
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return db;
 }
 
-function createProgressStore(db: Database.Database): JobStore {
+function createProgressStore(db: Database): JobStore {
   return new JobStore(
     'tests',
     {
@@ -50,7 +51,7 @@ function recoveryStatus(): JobStatus {
   };
 }
 
-function readEvents(db: Database.Database): Array<{ seq: number; type: string; body: unknown }> {
+function readEvents(db: Database): Array<{ seq: number; type: string; body: unknown }> {
   const rows = db.prepare('SELECT seq, type, body FROM events ORDER BY seq ASC').all() as Array<{
     seq: number;
     type: string;

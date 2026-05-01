@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
@@ -69,7 +69,7 @@ function createHarness(options: {
   projectionPhase: 'running' | 'queued' | null;
   projectionLastSeq?: number;
 }) {
-  const db = new Database(':memory:');
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
   const runtime = new SimulationRuntime();

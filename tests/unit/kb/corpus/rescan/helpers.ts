@@ -30,6 +30,7 @@ import {
 import type { CorpusMarkdownKind } from '#src/kb/corpus/rescan/storage.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { curateDb } from '../../../../../src/kb/curate/db-access.js';
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 const DETECTORS = [
@@ -148,7 +149,7 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     );
 
     if (testCase.classification === 'auto-fixable') {
-      expect(readCurateRetryQueue(harness.kb)).toEqual([]);
+      expect(readCurateRetryQueue(curateDb(harness.kb))).toEqual([]);
       expect(harness.detect()).toEqual([]);
       await testCase.assertResolved?.(harness);
       return;
@@ -157,7 +158,7 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     expect(harness.captureCorpusFiles()).toEqual(beforeFixCorpus);
     expectDetectedIncidents(harness.detect(), testCase.expectedIncidents);
 
-    const retryQueue = readCurateRetryQueue(harness.kb);
+    const retryQueue = readCurateRetryQueue(curateDb(harness.kb));
     expect(retryQueue).toHaveLength(detected.length);
 
     for (const incident of detected) {

@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../store/db.js';
 
 import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
 import type { JobContinuitySnapshot } from '../continuity.js';

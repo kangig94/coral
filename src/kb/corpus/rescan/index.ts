@@ -18,6 +18,7 @@ import { buildCorpusScanView } from './scan.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import type { ReindexResult } from '../../entry-types.js';
 import type { DetectedIncident } from './incidents/catalog.js';
+import { curateDb } from '../../curate/db-access.js';
 
 export type RescanCounts = Pick<
   ReindexResult,
@@ -67,8 +68,8 @@ export async function performRescan(
   kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
 
   if (topologyRefresh.shouldPersistState) {
-    const currentState = readCurateState(kb);
-    writeCurateState(kb, {
+    const currentState = readCurateState(curateDb(kb));
+    writeCurateState(curateDb(kb), {
       ...currentState,
       communityTopologyHash: topologyRefresh.topologyHash,
       communitySummaryTopologyHash: topologyRefresh.topologyHash,
@@ -95,7 +96,7 @@ export async function performRescan(
   // Re-persist CurateState so normalizeCurateStateRepairFrontier clamps scheduler progress
   // when the retry queue surfaces a known frontier — preserving the invariant that
   // discoveryHighSeq/discoveryOffset are clamped on disk, not just at read time.
-  writeCurateState(kb, readCurateState(kb));
+  writeCurateState(curateDb(kb), readCurateState(curateDb(kb)));
 
   return buildCounts(notes, sources, communities, principles, index);
 }
@@ -106,9 +107,9 @@ export async function performRescan(
  */
 function syncRetryQueueAgainstIncidents(kb: KbRuntime, incidents: readonly DetectedIncident[]): void {
   const stillDetected = new Set(incidents.map((incident) => incident.entryId));
-  for (const queued of readCurateRetryQueue(kb)) {
+  for (const queued of readCurateRetryQueue(curateDb(kb))) {
     if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
-      deleteCurateRetryEntry(kb, queued.entryId);
+      deleteCurateRetryEntry(curateDb(kb), queued.entryId);
     }
   }
 }

@@ -43,6 +43,7 @@ import {
   type IncidentClassification,
   type RepairIncidentId,
 } from './incidents/catalog.js';
+import { curateDb } from '../../curate/db-access.js';
 
 const ENTRYSEQ_QUOTED_DECIMAL_PATTERN = /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
 const ENTRYSEQ_LEADING_ZERO_PATTERN = /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?:#.*)?)(?=\r?\n|$)/;
@@ -389,7 +390,7 @@ function applyPreparedMarkdownFixLocked(
 
   const queueEntryId = parseKbEntryId(target.entryId);
   if (queueEntryId !== null) {
-    deleteCurateRetryEntry(kb, queueEntryId);
+    deleteCurateRetryEntry(curateDb(kb), queueEntryId);
   }
 
   if (mutationLane === 'metadata') {
@@ -425,7 +426,7 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
   const observedContentHash = content === null ? undefined : createHash('sha256').update(content, 'utf8').digest('hex');
 
   const now = nowIsoString(kb.time);
-  upsertCurateRetryEntry(kb, {
+  upsertCurateRetryEntry(curateDb(kb), {
     entryId,
     entrySeq: readLenientEntrySeq(content),
     detectedAt: now,

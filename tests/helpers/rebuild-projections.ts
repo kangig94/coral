@@ -1,12 +1,10 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import { withImmediate, type Database } from '../../src/store/db.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { type ComposedReducers, applyReducer } from '#src/store/reducers.js';
 import { rowToCoralEvent } from '#src/store/envelope.js';
 import type { UpcasterRegistry } from '#src/store/upcaster-registry.js';
 import type { EventsRow } from '#src/store/schema.js';
-
-type Database = BetterSqlite3.Database;
 
 export interface RebuildOptions {
   readonly db: Database;
@@ -28,7 +26,7 @@ export function rebuildProjections(opts: RebuildOptions): void {
   const tables = [...JOURNAL_PROJECTION_TABLES, ...(opts.extraProjectionTables ?? [])];
   const batchSize = opts.batchSize ?? 1000;
 
-  const txn = opts.db.transaction(() => {
+  withImmediate(opts.db, () => {
     for (const table of tables) {
       opts.db.exec(`DELETE FROM ${table}`);
     }
@@ -53,6 +51,4 @@ export function rebuildProjections(opts: RebuildOptions): void {
       afterSeq = rows[rows.length - 1].seq;
     }
   });
-
-  txn.immediate();
 }

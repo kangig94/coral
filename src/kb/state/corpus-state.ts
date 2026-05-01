@@ -1,9 +1,8 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import { withImmediate, type Database } from '../../store/db.js';
 
 import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../contract.js';
 import type { KbCorpusStateRow } from './schema.js';
 
-type Database = BetterSqlite3.Database;
 export interface CorpusSnapshotCursorRow {
   snapshot_id: string | null;
   content_seq: number | null;
@@ -139,16 +138,16 @@ export function persistCorpusState(
   options: PersistCorpusStateOptions,
 ): KbPersistCorpusStateResult {
   const now = options.now;
-  const persistTxn = db.transaction((nextSnapshot: KbCorpusSnapshot): KbPersistCorpusStateResult => {
+  return withImmediate(db, (): KbPersistCorpusStateResult => {
     const current = readCorpusStateRow(db);
-    if (!isSnapshotFresh(current, nextSnapshot)) {
+    if (!isSnapshotFresh(current, snapshot)) {
       return {
         snapshot: toSnapshot(current),
         changedLanes: [],
       };
     }
 
-    const changedLanes = deriveChangedLanes(current, nextSnapshot);
+    const changedLanes = deriveChangedLanes(current, snapshot);
     const update = db.prepare(
       `
         UPDATE kb_corpus_state
@@ -168,17 +167,17 @@ export function persistCorpusState(
     );
     const nowIso = now().toISOString();
     const result = update.run(
-      nextSnapshot.snapshotId,
-      nextSnapshot.contentSeq,
-      nextSnapshot.metadataSeq,
-      nextSnapshot.contentManifestHash,
-      nextSnapshot.metadataManifestHash,
+      snapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.contentManifestHash,
+      snapshot.metadataManifestHash,
       nowIso,
-      nextSnapshot.contentSeq,
-      nextSnapshot.metadataSeq,
-      nextSnapshot.contentSeq,
-      nextSnapshot.metadataSeq,
-      nextSnapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.snapshotId,
     );
 
     if (result.changes === 0) {
@@ -189,12 +188,10 @@ export function persistCorpusState(
     }
 
     return {
-      snapshot: { ...nextSnapshot },
+      snapshot: { ...snapshot },
       changedLanes,
     };
   });
-
-  return persistTxn.immediate(snapshot);
 }
 
 export interface CorpusStateMirror {

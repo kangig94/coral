@@ -12,6 +12,7 @@ import { createOramaBaseProjection } from '#src/engines/orama/backend.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { curateDb } from '../../../../src/kb/curate/db-access.js';
 
 const TOP_K = 10;
 const QUERY_PANEL = ['graph retrieval', 'sqlite planner', 'community summary', 'metadata tags'];
@@ -277,7 +278,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     entityMeta: graph.entityMeta,
     relationships: graph.relationships,
   });
-  writeCurateState(runtime, {
+  writeCurateState(curateDb(runtime), {
     processedThrough: null,
     discoveryHighSeq: 0,
     discoveryOffset: 0,

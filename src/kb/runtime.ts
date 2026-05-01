@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
@@ -102,7 +102,7 @@ type AuthorityBaselineRefreshTarget =
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
-  db: BetterSqlite3.Database;
+  db: Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   /**
    * Time port. `now()` drives the existing time fields; `setTimeout` /
@@ -123,7 +123,7 @@ export interface CreateKbRuntimeOptions {
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
-  readonly db: BetterSqlite3.Database;
+  readonly db: Database;
   readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly storagePort: StoragePort;

@@ -4,14 +4,14 @@
  * The runtime invariant walks the import graph and AST of `src/kb/read-port.ts`
  * to ensure no rebuild/persist symbols leak. This file binds the *structural*
  * claim: `KbReadPort.db` is a constrained `ReadonlyDatabase`, not assignable
- * to a writable `BetterSqlite3.Database`, and exposes no arbitrary-SQL surface.
+ * to a writable `Database`, and exposes no arbitrary-SQL surface.
  *
  * Typechecked by `tsc -p tests/types/tsconfig.json` (run from `npm test`).
  * Vitest does not typecheck, so `@ts-expect-error` directives outside this
  * directory are dead text — keep type-level assertions here.
  */
 
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../../src/store/db.js';
 
 import type { KbReadPort } from '#src/kb/read-port.js';
 import type { ReadonlyDatabase } from '#src/store/read-port.js';
@@ -19,9 +19,9 @@ import type { ReadonlyDatabase } from '#src/store/read-port.js';
 declare const _readPort: KbReadPort;
 
 // `readPort.db` is a `ReadonlyDatabase`, not a writable better-sqlite3 Database.
-// Assigning it to `BetterSqlite3.Database` must be a type error.
+// Assigning it to `Database` must be a type error.
 // @ts-expect-error KbReadPort.db is ReadonlyDatabase, not the full writable Database.
-const _writableAlias: BetterSqlite3.Database = _readPort.db;
+const _writableAlias: Database = _readPort.db;
 void _writableAlias;
 
 // `ReadonlyDatabase` exposes no arbitrary-SQL surface (no `exec`, `pragma`,

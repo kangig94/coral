@@ -18,6 +18,12 @@ function findProductionStronglyConnectedComponents(): string[][] {
   const graph = new Map(productionFiles.map((filePath) => [filePath, [] as string[]]));
 
   for (const edge of edges) {
+    // Type-only edges are erased by tsc and never form a runtime cycle, so
+    // they cannot drive a recursive-load deadlock. The architectural rule we
+    // care about here is acyclic *runtime* dependency.
+    if (!edge.runtime) {
+      continue;
+    }
     if (graph.has(edge.source) && graph.has(edge.target)) {
       graph.get(edge.source)?.push(edge.target);
     }

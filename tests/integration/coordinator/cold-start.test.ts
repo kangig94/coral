@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -74,7 +74,7 @@ describe('coordinator cold-start integration', () => {
 
     const dbPath = storeDbPathForHome(home, 'prod');
     await waitForCondition(() => existsSync(dbPath), 15_000);
-    const db = new Database(dbPath, { readonly: true });
+    const db = newRawDatabase(dbPath, { readonly: true });
 
     try {
       const tableNames = new Set(

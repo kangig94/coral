@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
@@ -21,7 +21,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 describe('jobs reducer equivalence', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);
@@ -170,7 +170,7 @@ describe('jobs reducer equivalence', () => {
   });
 
   it('job.launch.rejected byte-identical after rebuild', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);
@@ -272,7 +272,7 @@ describe('jobs reducer equivalence', () => {
   });
 
   it('job.aborted byte-identical after rebuild', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry);

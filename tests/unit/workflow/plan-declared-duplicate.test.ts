@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commit, type AppendContext } from '#src/store/append.js';
@@ -24,8 +25,8 @@ const storageAdapter = {
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
   return db;
 }

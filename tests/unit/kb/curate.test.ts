@@ -30,6 +30,7 @@ import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 vi.mock('#src/kb/curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
@@ -883,8 +884,7 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-beta', 2),
         }),
@@ -931,13 +931,12 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-24',
         }),
       );
-      syncCurateRetryQueue(runtime, [
+      syncCurateRetryQueue(curateDb(runtime), [
         {
           entryId: noteEntryId('coral-note-05'),
           entrySeq: 5,
@@ -946,7 +945,7 @@ describe('curate', () => {
       ]);
 
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         activeClaim: null,
         lastAttemptedThrough: null,
       });
@@ -982,8 +981,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-24',
         }),
@@ -1006,7 +1004,7 @@ describe('curate', () => {
         'coral-ten',
       ]);
       expect(claim?.through).toEqual(cursor('coral-ten', 10));
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastRunDay: '2026-03-25',
         lastAttemptedThrough: cursor('coral-ten', 10),
         activeClaim: {
@@ -1031,8 +1029,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-25',
         }),
@@ -1208,7 +1205,7 @@ describe('curate', () => {
         contentSeq: 0,
         metadataSeq: 1,
       });
-      expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-alpha', 4));
+      expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-alpha', 4));
     });
 
     it('skips stale notes, advances past missing notes, and only commits safe writes', async () => {
@@ -1288,7 +1285,7 @@ describe('curate', () => {
         contentSeq: 0,
         metadataSeq: 1,
       });
-      expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-missing', 1));
+      expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-missing', 1));
     });
 
     it('does not write or advance past the repair frontier during metadata commits', async () => {
@@ -1323,8 +1320,8 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(runtime, createCurateState());
-      syncCurateRetryQueue(runtime, [
+      writeCurateState(curateDb(runtime), createCurateState());
+      syncCurateRetryQueue(curateDb(runtime), [
         {
           entryId: noteEntryId('coral-frontier'),
           entrySeq: 5,
@@ -1358,10 +1355,10 @@ describe('curate', () => {
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-blocked.md'), 'utf-8')).tags).toEqual([
         'coral',
       ]);
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         processedThrough: cursor('coral-safe', 4),
       });
-      expect(readCurateRetryQueue(runtime)).toMatchObject([
+      expect(readCurateRetryQueue(curateDb(runtime))).toMatchObject([
         {
           entryId: noteEntryId('coral-frontier'),
           entrySeq: 5,
@@ -1485,22 +1482,21 @@ describe('curate', () => {
       };
 
       await internals.recordDiscoveryAttempt(52, 0);
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         discoveryHighSeq: 52,
         discoveryOffset: 0,
       });
 
       await internals.addPendingDiscovery(entry);
       await internals.addPendingDiscovery(entry);
-      expect(readCurateState(runtime).pendingDiscoveries).toEqual([entry]);
+      expect(readCurateState(curateDb(runtime)).pendingDiscoveries).toEqual([entry]);
 
       await internals.removePendingDiscovery(entry);
-      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+      expect(readCurateState(curateDb(runtime)).pendingDiscoveries).toEqual([]);
     });
 
     it('persists failure and retry clearing through the standalone wrappers', async () => {
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           lastAttemptedThrough: cursor('coral-retry', 9),
           activeClaim: {
@@ -1512,7 +1508,7 @@ describe('curate', () => {
       );
 
       await internals.recordCurateFailure(null, new Error('Failed to spawn claude: ENOENT'));
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastAttemptedThrough: cursor('coral-retry', 9),
         retryNotBefore: '2026-03-25T16:00:00.000Z',
         activeClaim: null,
@@ -1520,7 +1516,7 @@ describe('curate', () => {
       });
 
       await internals.clearCurateRetryState();
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         retryNotBefore: null,
         activeClaim: null,
         consecutiveClaimFailures: 0,
@@ -1558,8 +1554,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-54', 54),
           pendingDiscoveries,
@@ -1593,7 +1588,7 @@ describe('curate', () => {
       lockSpy.mockRestore();
       readSpy.mockRestore();
 
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         pendingDiscoveries: [],
       });
       expect(
@@ -1621,8 +1616,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-replay-10', 10),
           discoveryHighSeq: 4,
@@ -1645,7 +1639,7 @@ describe('curate', () => {
       await internals.runPrincipleDiscovery(cursor('coral-replay-10', 10));
 
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         discoveryHighSeq: 10,
       });
       expect(
@@ -1691,8 +1685,7 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
         }),
@@ -1722,7 +1715,7 @@ describe('curate', () => {
       expect(
         parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-05.md'), 'utf-8')).principles,
       ).toEqual(['single-source-of-truth']);
-      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+      expect(readCurateState(curateDb(runtime)).pendingDiscoveries).toEqual([]);
     });
 
     it('merges absorbed principles after proposal processing without recreating deleted rows', async () => {
@@ -1766,8 +1759,7 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
           pendingDiscoveries: [
@@ -1807,7 +1799,7 @@ describe('curate', () => {
       expect(
         parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-09.md'), 'utf-8')).principles,
       ).toEqual(['payload-attachment-to-owner']);
-      expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+      expect(readCurateState(curateDb(runtime)).pendingDiscoveries).toEqual([]);
     });
 
     it('re-reads and preserves fresh repair state when discovery resumes after the LLM await', async () => {
@@ -1827,8 +1819,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-stale-50', 50),
         }),
@@ -1862,15 +1853,14 @@ describe('curate', () => {
         notes: ['coral-stale-01'],
         createdAt: '2026-03-25T11:58:00.000Z',
       };
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-stale-10', 10),
           discoveryHighSeq: 9,
           pendingDiscoveries: [pendingDiscovery],
         }),
       );
-      syncCurateRetryQueue(runtime, [
+      syncCurateRetryQueue(curateDb(runtime), [
         {
           entryId: noteEntryId('coral-stale-11'),
           entrySeq: 11,
@@ -1885,13 +1875,13 @@ describe('curate', () => {
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-stale-05.md'), 'utf-8')).principles).toEqual(
         [],
       );
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         processedThrough: cursor('coral-stale-10', 10),
         discoveryHighSeq: 9,
         discoveryOffset: 0,
         pendingDiscoveries: [pendingDiscovery],
       });
-      expect(readCurateRetryQueue(runtime)).toMatchObject([
+      expect(readCurateRetryQueue(curateDb(runtime))).toMatchObject([
         {
           entryId: noteEntryId('coral-stale-11'),
           entrySeq: 11,
@@ -1975,8 +1965,8 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(runtime, {
-        ...readCurateState(runtime),
+      writeCurateState(curateDb(runtime), {
+        ...readCurateState(curateDb(runtime)),
         initialized: true,
       });
       useScheduler(spawn);
@@ -2003,7 +1993,7 @@ describe('curate', () => {
         'stable-parent',
         'stable-parent-child',
       ]);
-      expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-note-10', 10));
+      expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-note-10', 10));
     });
 
     it('aborts the active spawn on stop() without leaving retry state or an active claim', async () => {
@@ -2053,8 +2043,7 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           initialized: true,
         }),
@@ -2067,7 +2056,7 @@ describe('curate', () => {
       await Promise.resolve();
       await spawnStarted.promise;
 
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastAttemptedThrough: cursor('coral-stop-10', 10),
         activeClaim: {
           through: cursor('coral-stop-10', 10),
@@ -2079,7 +2068,7 @@ describe('curate', () => {
       await expect(stopPromise).resolves.toBeUndefined();
 
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastAttemptedThrough: cursor('coral-stop-10', 10),
         retryNotBefore: null,
         activeClaim: null,
@@ -2142,8 +2131,7 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
         }),
@@ -2182,8 +2170,7 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           initialized: true,
         }),
@@ -2200,18 +2187,18 @@ describe('curate', () => {
         vi.advanceTimersByTime(1);
         await Promise.resolve();
         await Promise.resolve();
-        if (readCurateState(runtime).consecutiveClaimFailures === 1) {
+        if (readCurateState(curateDb(runtime)).consecutiveClaimFailures === 1) {
           break;
         }
       }
 
       expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Curate classification returned invalid JSON.'));
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastAttemptedThrough: cursor('coral-failure-10', 10),
         activeClaim: null,
         consecutiveClaimFailures: 1,
       });
-      expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
+      expect(readCurateState(curateDb(runtime)).retryNotBefore).not.toBeNull();
     });
 
     it('rebuilds text artifacts for entity-graph communities and persists summary fingerprints', async () => {
@@ -2328,8 +2315,7 @@ describe('curate', () => {
         ],
       };
       await runtime.writeEntityGraph(graph);
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           initialized: true,
           consecutiveClaimFailures: 3,
@@ -2354,14 +2340,14 @@ describe('curate', () => {
       expect(indexSyncSuccessSpy.mock.calls.length).toBeGreaterThan(0);
       expect(spawn.mock.calls.length).toBeGreaterThan(0);
 
-      const state = readCurateState(runtime);
+      const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
         communityTopologyHash: expect.any(String),
         communitySummaryTopologyHash: expect.any(String),
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(readCurateRetryQueue(runtime).map((repair) => repair.entryId)).toContain('note:coral-malformed');
+      expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
       expect(state.communitySummaryInputFingerprints).toBeDefined();
       expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
 
@@ -2408,8 +2394,7 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(
-        runtime,
+      writeCurateState(curateDb(runtime),
         createCurateState({
           initialized: true,
           consecutiveClaimFailures: 2,
@@ -2423,7 +2408,7 @@ describe('curate', () => {
 
       await expect(internals.runCommunitySubphase()).rejects.toThrow('summary failed');
 
-      const stateAfterFailure = readCurateState(runtime);
+      const stateAfterFailure = readCurateState(curateDb(runtime));
       const filesAfterFailure = existsSync(runtime.communitiesDir())
         ? readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'))
         : [];
@@ -2449,11 +2434,11 @@ describe('curate', () => {
           readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
         ),
       ).toBe(true);
-      expect(readCurateState(runtime)).toMatchObject({
+      expect(readCurateState(curateDb(runtime))).toMatchObject({
         consecutiveClaimFailures: 2,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(Object.keys(readCurateState(runtime).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
+      expect(Object.keys(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
     });
 
     it('backs off community batch retries by scheduler tick and resets on success', async () => {
@@ -2490,7 +2475,7 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(runtime, createCurateState({ initialized: true }));
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
       let attempts = 0;
       const spawn = vi.fn<SpawnCliFn>(async () => {
@@ -2513,7 +2498,7 @@ describe('curate', () => {
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(readCurateState(runtime).consecutiveCommunityBatchFailures).toBe(1);
+      expect(readCurateState(curateDb(runtime)).consecutiveCommunityBatchFailures).toBe(1);
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(1);
@@ -2523,7 +2508,7 @@ describe('curate', () => {
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(2);
-      expect(readCurateState(runtime).consecutiveCommunityBatchFailures).toBe(0);
+      expect(readCurateState(curateDb(runtime)).consecutiveCommunityBatchFailures).toBe(0);
 
       await settleCurateRuntime(scheduler);
       expect(
@@ -2548,7 +2533,7 @@ describe('curate', () => {
       expect(runtime.readIndex()).not.toBeNull();
 
       // Curate state initialized
-      const state = readCurateState(runtime);
+      const state = readCurateState(curateDb(runtime));
       expect(state.initialized).toBe(true);
     });
   });

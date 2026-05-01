@@ -13,7 +13,8 @@ import * as fs from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
@@ -93,7 +94,7 @@ function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionE
   };
 }
 
-function snapshotProjections(db: InstanceType<typeof Database>): Map<string, unknown[]> {
+function snapshotProjections(db: Database): Map<string, unknown[]> {
   const result = new Map<string, unknown[]>();
   for (const table of PROJECTION_TABLES) {
     const rows = db.prepare(`${table.query} ORDER BY ${table.orderBy}`).all();
@@ -121,7 +122,7 @@ function loadDiscussFixtureEvents(): Array<ReturnType<typeof toJournalInput>> {
 
 describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', () => {
   it('commit-time reducer state == rebuildProjections state, row by row, for jobs/sessions/discuss/workflow', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);

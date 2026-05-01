@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
@@ -47,7 +47,7 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
 
 describe('sessions reducer equivalence', () => {
   it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(sessionsRegistry);
@@ -209,7 +209,7 @@ describe('sessions reducer equivalence', () => {
   });
 
   it('round-trips canonical session.opened rows without rewriting scope_key or body_version', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       const reducers = composeReducers(sessionsRegistry);

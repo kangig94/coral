@@ -17,6 +17,7 @@ import type { CommunityDocument, ExistingGeneratedCommunity } from './contracts.
 import { CURATE_STALE_REASON, runCurateClaude } from '../operations.js';
 import { readCurateState, writeCurateState } from '../state/index.js';
 import type { SpawnCliFn } from '../spawn-cli.js';
+import { curateDb } from '../db-access.js';
 
 export type RunCommunitySubphaseOptions = {
   signal?: AbortSignal;
@@ -134,7 +135,7 @@ async function prepareCommunityPayload(
 
   const today = nowIsoString(kb.time).slice(0, 10);
   const capturedBaselineSnapshot = kb.captureCorpusSnapshot();
-  const capturedBaselineState = readCurateState(kb);
+  const capturedBaselineState = readCurateState(curateDb(kb));
   const capturedFinalIndex = kb.readIndexOrEmpty();
   const graph = buildEntityRelationshipGraph({
     entityMeta: capturedFinalIndex.entityMeta,
@@ -279,7 +280,7 @@ export async function runCommunitySubphase(
       wroteCommunityFiles = true;
     }
     if (shouldWriteState) {
-      writeCurateState(kb, nextState);
+      writeCurateState(curateDb(kb), nextState);
     }
 
     if (wroteCommunityFiles || shouldWriteState) {

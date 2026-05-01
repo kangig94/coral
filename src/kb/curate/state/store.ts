@@ -1,6 +1,7 @@
-import type BetterSqlite3 from 'better-sqlite3';
 import type { KbCurateActiveClaimRow, KbCurateCommunitySummaryInputFingerprintRow } from '../../state/schema.js';
 import { parsePositiveInteger } from '../../validation.js';
+import { prepareCached, withImmediate, type Database } from '../../../store/db.js';
+import type { ReadonlyDatabase } from '../../../store/read-port.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
 import { readCurateRetryQueue } from '../retry.js';
 import {
@@ -13,10 +14,9 @@ import {
   type CurateState,
   type PendingRepair,
 } from './model.js';
-import { prepareCached, resolveSqliteDb, type SqliteTarget } from '../sqlite.js';
 import { readCurateSchedulerState, writeCurateSchedulerState } from '../state-scheduler.js';
 
-export type CurateStateTarget = SqliteTarget;
+type ReadHandle = Database | ReadonlyDatabase;
 
 function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
   if (left.entrySeq === null || right.entrySeq === null) {
@@ -39,8 +39,8 @@ function comparePendingRepair(left: PendingRepair, right: PendingRepair): number
   );
 }
 
-export function getCurateRepairFrontier(target: CurateStateTarget): CurateRepairFrontier {
-  const queue = readCurateRetryQueue(target);
+export function getCurateRepairFrontier(db: ReadHandle): CurateRepairFrontier {
+  const queue = readCurateRetryQueue(db);
   if (queue.length === 0) {
     return { kind: 'none' };
   }
@@ -75,8 +75,8 @@ function clampCursorToRepairFrontier(cursor: CurateCursor | null, frontier: Cura
   return compareCursor(cursor, frontier.cursor) >= 0 ? null : cursor;
 }
 
-export function normalizeCurateStateRepairFrontier(target: CurateStateTarget, state: CurateState): CurateState {
-  const frontier = getCurateRepairFrontier(target);
+export function normalizeCurateStateRepairFrontier(db: ReadHandle, state: CurateState): CurateState {
+  const frontier = getCurateRepairFrontier(db);
 
   if (frontier.kind === 'unknown') {
     return {
@@ -105,9 +105,9 @@ export function normalizeCurateStateRepairFrontier(target: CurateStateTarget, st
   };
 }
 
-function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
+function readActiveClaim(db: ReadHandle): CurateState['activeClaim'] {
   const row = prepareCached<[], KbCurateActiveClaimRow | undefined>(
-    target,
+    db,
     `SELECT id, through_seq, through_entry_id, through_entry_kind, started_at
        FROM kb_curate_active_claim
       WHERE id = 1`,
@@ -138,21 +138,21 @@ function sameActiveClaim(left: CurateState['activeClaim'], right: CurateState['a
   return compareCursor(left.through, right.through) === 0 && left.startedAt === right.startedAt;
 }
 
-function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['activeClaim']): void {
-  const existing = readActiveClaim(target);
+function writeActiveClaim(db: Database, activeClaim: CurateState['activeClaim']): void {
+  const existing = readActiveClaim(db);
   if (sameActiveClaim(existing, activeClaim)) {
     return;
   }
 
   if (activeClaim === null) {
-    prepareCached<[]>(target, `DELETE FROM kb_curate_active_claim WHERE id = 1`).run();
+    prepareCached<[]>(db, `DELETE FROM kb_curate_active_claim WHERE id = 1`).run();
     return;
   }
 
   const throughEntryKind = cursorEntryKind(activeClaim.through);
   if (existing === null) {
     prepareCached<[number, string, 'note' | 'source', string]>(
-      target,
+      db,
       `INSERT INTO kb_curate_active_claim (
          id,
          through_seq,
@@ -165,7 +165,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
   }
 
   prepareCached<[number, string, 'note' | 'source', string]>(
-    target,
+    db,
     `UPDATE kb_curate_active_claim
         SET through_seq = ?,
             through_entry_id = ?,
@@ -175,9 +175,9 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
   ).run(activeClaim.through.entrySeq, activeClaim.through.entryId, throughEntryKind, activeClaim.startedAt);
 }
 
-function readCommunitySummaryInputFingerprints(target: CurateStateTarget): Record<string, string> | undefined {
+function readCommunitySummaryInputFingerprints(db: ReadHandle): Record<string, string> | undefined {
   const rows = prepareCached<[], KbCurateCommunitySummaryInputFingerprintRow>(
-    target,
+    db,
     `SELECT community_slug, fingerprint
        FROM kb_curate_community_summary_input_fingerprints
       ORDER BY community_slug ASC`,
@@ -190,16 +190,16 @@ function readCommunitySummaryInputFingerprints(target: CurateStateTarget): Recor
 }
 
 function writeCommunitySummaryInputFingerprints(
-  target: CurateStateTarget,
+  db: Database,
   fingerprints: Record<string, string> | undefined,
 ): void {
-  const existing = readCommunitySummaryInputFingerprints(target) ?? {};
+  const existing = readCommunitySummaryInputFingerprints(db) ?? {};
   const next = fingerprints ?? {};
 
   for (const communitySlug of Object.keys(existing)) {
     if (!(communitySlug in next)) {
       prepareCached<[string]>(
-        target,
+        db,
         `DELETE FROM kb_curate_community_summary_input_fingerprints
           WHERE community_slug = ?`,
       ).run(communitySlug);
@@ -211,7 +211,7 @@ function writeCommunitySummaryInputFingerprints(
   )) {
     if (!(communitySlug in existing)) {
       prepareCached<[string, string]>(
-        target,
+        db,
         `INSERT INTO kb_curate_community_summary_input_fingerprints (
            community_slug,
            fingerprint
@@ -222,7 +222,7 @@ function writeCommunitySummaryInputFingerprints(
 
     if (existing[communitySlug] !== fingerprint) {
       prepareCached<[string, string]>(
-        target,
+        db,
         `UPDATE kb_curate_community_summary_input_fingerprints
             SET fingerprint = ?
           WHERE community_slug = ?`,
@@ -231,9 +231,9 @@ function writeCommunitySummaryInputFingerprints(
   }
 }
 
-export function readCurateState(target: CurateStateTarget): CurateState {
-  const scheduler = readCurateSchedulerState(target);
-  return normalizeCurateStateRepairFrontier(target, {
+export function readCurateState(db: ReadHandle): CurateState {
+  const scheduler = readCurateSchedulerState(db);
+  return normalizeCurateStateRepairFrontier(db, {
     ...defaultCurateState(),
     processedThrough: scheduler.processedThrough,
     discoveryHighSeq: scheduler.discoveryHighSeq,
@@ -241,11 +241,11 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     lastRunDay: scheduler.lastRunDay,
     lastAttemptedThrough: scheduler.lastAttemptedThrough,
     retryNotBefore: scheduler.retryNotBefore,
-    activeClaim: readActiveClaim(target),
-    pendingDiscoveries: readCurateDiscoveryBacklog(target),
+    activeClaim: readActiveClaim(db),
+    pendingDiscoveries: readCurateDiscoveryBacklog(db),
     communityTopologyHash: scheduler.communityTopologyHash,
     communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
-    communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(target),
+    communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(db),
     consecutiveClaimFailures: scheduler.consecutiveClaimFailures,
     consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
     claimLaneDisabledAt: scheduler.claimLaneDisabledAt,
@@ -254,13 +254,10 @@ export function readCurateState(target: CurateStateTarget): CurateState {
   });
 }
 
-export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
-  const normalized = normalizeCurateStateRepairFrontier(target, state);
-  const db = resolveSqliteDb(target) as ReturnType<typeof resolveSqliteDb> & {
-    transaction: BetterSqlite3.Database['transaction'];
-  };
-  db.transaction(() => {
-    writeCurateSchedulerState(target, {
+export function writeCurateState(db: Database, state: CurateState): void {
+  const normalized = normalizeCurateStateRepairFrontier(db, state);
+  withImmediate(db, () => {
+    writeCurateSchedulerState(db, {
       processedThrough: normalized.processedThrough,
       discoveryHighSeq: normalized.discoveryHighSeq,
       discoveryOffset: normalized.discoveryOffset,
@@ -275,8 +272,8 @@ export function writeCurateState(target: CurateStateTarget, state: CurateState):
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,
     });
-    syncCurateDiscoveryBacklog(target, normalized.pendingDiscoveries);
-    writeActiveClaim(target, normalized.activeClaim);
-    writeCommunitySummaryInputFingerprints(target, normalized.communitySummaryInputFingerprints);
-  })();
+    syncCurateDiscoveryBacklog(db, normalized.pendingDiscoveries);
+    writeActiveClaim(db, normalized.activeClaim);
+    writeCommunitySummaryInputFingerprints(db, normalized.communitySummaryInputFingerprints);
+  });
 }

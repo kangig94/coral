@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import type { JobContinuitySnapshot } from './continuity.js';
 import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
@@ -180,7 +180,7 @@ function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(', ');
 }
 
-function readProjectionRow(db: BetterSqlite3.Database, jobId: string): ProjectionRow | null {
+function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
   const row = prepareCached<[string], ProjectionRow | undefined>(
     db,
     `SELECT job_id, phase, terminal, diagnostics,
@@ -193,7 +193,7 @@ function readProjectionRow(db: BetterSqlite3.Database, jobId: string): Projectio
   return row ?? null;
 }
 
-function readProjectionRows(db: BetterSqlite3.Database, jobIds: string[]): Map<string, ProjectionRow> {
+function readProjectionRows(db: Database, jobIds: string[]): Map<string, ProjectionRow> {
   if (jobIds.length === 0) {
     return new Map();
   }
@@ -210,7 +210,7 @@ function readProjectionRows(db: BetterSqlite3.Database, jobIds: string[]): Map<s
   return new Map(rows.map((row) => [row.job_id, row]));
 }
 
-function readOrderedProjectionRows(db: BetterSqlite3.Database, filters?: JobsListFilters): ProjectionRow[] {
+function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
 
@@ -247,7 +247,7 @@ function readOrderedProjectionRows(db: BetterSqlite3.Database, filters?: JobsLis
   ).all(...params);
 }
 
-function readLatestEventsForJobs(db: BetterSqlite3.Database, jobIds: string[], type: string): Map<string, EventRow> {
+function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): Map<string, EventRow> {
   if (jobIds.length === 0) {
     return new Map();
   }
@@ -282,7 +282,7 @@ function readLatestEventsForJobs(db: BetterSqlite3.Database, jobIds: string[], t
 }
 
 function readLatestProjectionStatusEvents(
-  db: BetterSqlite3.Database,
+  db: Database,
   jobIds: string[],
 ): Map<string, JobStatusEventsByType> {
   const eventsByJob = new Map<string, JobStatusEventsByType>();
@@ -543,7 +543,7 @@ function hydrateJobProjectionDetail(
 }
 
 export function loadJobProjectionDetail(
-  db: BetterSqlite3.Database,
+  db: Database,
   jobId: string,
   ctx: StoreReadContext,
 ): JobProjectionDetail {
@@ -556,7 +556,7 @@ export function loadJobProjectionDetail(
 }
 
 export function loadJobProjectionDetails(
-  db: BetterSqlite3.Database,
+  db: Database,
   jobIds: string[],
   ctx: StoreReadContext,
 ): Map<string, JobProjectionDetail> {
@@ -597,7 +597,7 @@ export function loadJobProjectionDetails(
 }
 
 export function listJobProjections(
-  db: BetterSqlite3.Database,
+  db: Database,
   ctx: StoreReadContext,
   filters?: JobsListFilters,
 ): Array<{ jobId: string; status: JobStatus }> {
@@ -630,7 +630,7 @@ export function listJobProjections(
 }
 
 export function listJobs(
-  db: BetterSqlite3.Database,
+  db: Database,
   filters: JobsListFilters,
   ctx: StoreReadContext,
 ): Array<{ jobId: string; status: JobStatus }> {
@@ -638,7 +638,7 @@ export function listJobs(
 }
 
 export function loadJobDetail(
-  db: BetterSqlite3.Database,
+  db: Database,
   jobId: string,
   ctx: StoreReadContext,
   options: { namespace?: string } = {},
@@ -659,7 +659,7 @@ export function loadJobDetail(
   };
 }
 
-export function readJobEvents(db: BetterSqlite3.Database, jobId: string, ctx: StoreReadContext): JobEvent[] {
+export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext): JobEvent[] {
   const rows = prepareCached<
     [string],
     {

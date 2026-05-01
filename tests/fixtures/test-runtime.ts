@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../../src/store/db.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +30,7 @@ const TEST_SPAWN_CLI_NOOP: SpawnCliFn = async () => ({
 export interface CreateTestKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
-  db: BetterSqlite3.Database;
+  db: Database;
   /**
    * Source for the four port slots (`storage`/`spawnCli`/`processPort`/`envPort`).
    * Defaults to a fresh `SimulationRuntime`. Pass an explicit runtime when the

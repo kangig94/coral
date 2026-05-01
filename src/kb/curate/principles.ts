@@ -39,6 +39,7 @@ import {
 } from './state/index.js';
 import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
+import { curateDb } from './db-access.js';
 
 type EnsurePrincipleDocumentResult = {
   status: 'ready' | 'conflict';
@@ -118,7 +119,7 @@ export function recordDiscoveryAttemptLocked(
 
 export async function recordDiscoveryAttempt(kb: KbRuntime, highSeq: number, nextOffset: number): Promise<void> {
   await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     recordDiscoveryAttemptLocked(kb, state, highSeq, nextOffset);
   });
 }
@@ -129,7 +130,7 @@ export function addPendingDiscoveryLocked(kb: KbRuntime, state: CurateState, ent
 
 export async function addPendingDiscovery(kb: KbRuntime, entry: PendingDiscovery): Promise<void> {
   await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     addPendingDiscoveryLocked(kb, state, entry);
   });
 }
@@ -140,7 +141,7 @@ export function removePendingDiscoveryLocked(kb: KbRuntime, state: CurateState, 
 
 export async function removePendingDiscovery(kb: KbRuntime, entry: PendingDiscovery): Promise<void> {
   await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     removePendingDiscoveryLocked(kb, state, entry);
   });
 }
@@ -206,7 +207,7 @@ function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, proce
 
 async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCursor): Promise<void> {
   await kb.withMutationLock(async (mutation) => {
-    let state = readCurateState(kb);
+    let state = readCurateState(curateDb(kb));
     const pendingDiscoveries = state.pendingDiscoveries;
 
     for (const entry of pendingDiscoveries) {
@@ -245,7 +246,7 @@ export async function runPrincipleDiscovery(
   await drainPendingDiscoveries(kb, processedThrough);
 
   const currentIndex = kb.readIndexOrEmpty();
-  const preparedBatch = prepareDiscoveryBatch(kb, currentIndex, readCurateState(kb), processedThrough);
+  const preparedBatch = prepareDiscoveryBatch(curateDb(kb),currentIndex, readCurateState(curateDb(kb)), processedThrough);
   if (preparedBatch === null) {
     return;
   }
@@ -267,9 +268,9 @@ export async function runPrincipleDiscovery(
   const proposals = validateDiscoveryProposals(parsed.proposals, eligibleNotes, currentIndex.principles);
 
   await kb.withMutationLock(async (mutation) => {
-    const refreshedState = readCurateState(kb);
+    const refreshedState = readCurateState(curateDb(kb));
     const refreshedIndex = kb.readIndexOrEmpty();
-    const refreshedBatch = prepareDiscoveryBatch(kb, refreshedIndex, refreshedState, processedThrough);
+    const refreshedBatch = prepareDiscoveryBatch(curateDb(kb),refreshedIndex, refreshedState, processedThrough);
     if (
       refreshedBatch === null ||
       compareCursor(refreshedBatch.processedThrough, preparedBatch.processedThrough) !== 0 ||
@@ -281,7 +282,7 @@ export async function runPrincipleDiscovery(
 
     let state = refreshedBatch.state;
     let index = refreshedIndex;
-    const repairFrontier = getCurateRepairFrontier(kb);
+    const repairFrontier = getCurateRepairFrontier(curateDb(kb));
     const effectiveProcessedThrough = refreshedBatch.processedThrough;
 
     for (const proposal of proposals) {

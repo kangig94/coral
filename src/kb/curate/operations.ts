@@ -10,6 +10,7 @@ import {
   type CurateState,
 } from './state/index.js';
 import type { SpawnCliFn } from './spawn-cli.js';
+import { curateDb } from './db-access.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 
@@ -25,8 +26,8 @@ export function persistCurateState(kb: KbRuntime, state: CurateState, next: Cura
     return state;
   }
 
-  const normalizedNext = normalizeCurateStateRepairFrontier(kb, next);
-  writeCurateState(kb, normalizedNext);
+  const normalizedNext = normalizeCurateStateRepairFrontier(curateDb(kb), next);
+  writeCurateState(curateDb(kb), normalizedNext);
   return normalizedNext;
 }
 
@@ -45,7 +46,7 @@ export function recordCurateFailureLocked(
 
 export async function recordCurateFailure(kb: KbRuntime, through: CurateCursor | null, error: unknown): Promise<void> {
   await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     recordCurateFailureLocked(kb, state, through, error);
   });
 }
@@ -56,7 +57,7 @@ export function clearCurateRetryStateLocked(kb: KbRuntime, state: CurateState): 
 
 export async function clearCurateRetryState(kb: KbRuntime): Promise<void> {
   await kb.withMutationLock(() => {
-    const state = readCurateState(kb);
+    const state = readCurateState(curateDb(kb));
     clearCurateRetryStateLocked(kb, state);
   });
 }

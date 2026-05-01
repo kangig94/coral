@@ -1,13 +1,12 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase, pragmaSimple, totalChanges } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import type { StoragePort } from '#src/runtime/ports.js';
-
-type TrackedDatabase = InstanceType<typeof Database> & { totalChanges: number };
 
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
@@ -15,30 +14,30 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-function tableColumns(db: Database.Database, table: string): string[] {
+function tableColumns(db: Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info('${table}')`).all() as Array<{ name: string }>).map((row) => row.name);
 }
 
-function rowCount(db: Database.Database, table: string): { count: number } {
+function rowCount(db: Database, table: string): { count: number } {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
 }
 
 describe('store schema idempotency', () => {
   it('second run performs zero write activity', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'coral-store-schemas-'));
-    const db = new Database(join(tempDir, 'store.db')) as TrackedDatabase;
+    const db = newRawDatabase(join(tempDir, 'store.db'));
 
     try {
       applyStoreSchemas({ db, storage: nodeStorage });
-      const firstChanges = db.totalChanges;
-      const firstSchemaVersion = db.pragma('schema_version', { simple: true });
+      const firstChanges = totalChanges(db);
+      const firstSchemaVersion = pragmaSimple(db, 'schema_version');
       const firstMetaVersion = (
         db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }
       ).value;
 
       applyStoreSchemas({ db, storage: nodeStorage });
-      const secondChanges = db.totalChanges;
-      const secondSchemaVersion = db.pragma('schema_version', { simple: true });
+      const secondChanges = totalChanges(db);
+      const secondSchemaVersion = pragmaSimple(db, 'schema_version');
       const secondMetaVersion = (
         db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }
       ).value;
@@ -53,7 +52,7 @@ describe('store schema idempotency', () => {
   });
 
   it('001_initial.sql creates the expected baseline schema state', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
 
     try {
       applyStoreSchemas({ db, storage: nodeStorage });

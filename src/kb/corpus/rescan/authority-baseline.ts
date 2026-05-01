@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import type BetterSqlite3 from 'better-sqlite3';
 
+import { withImmediate, type Database } from '../../../store/db.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../snapshot.js';
@@ -22,7 +22,7 @@ function rawSha256(raw: string): string {
   return createHash('sha256').update(raw, 'utf8').digest('hex');
 }
 
-export function ensureCorpusAuthorityBaselineTable(db: BetterSqlite3.Database): void {
+export function ensureCorpusAuthorityBaselineTable(db: Database): void {
   db.prepare(
     `
         CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
@@ -34,7 +34,7 @@ export function ensureCorpusAuthorityBaselineTable(db: BetterSqlite3.Database): 
   ).run();
 }
 
-export function readCorpusAuthorityBaseline(db: BetterSqlite3.Database): CorpusAuthorityBaselineMap {
+export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaselineMap {
   ensureCorpusAuthorityBaselineTable(db);
   const rows = db
     .prepare<[], BaselineRow>(
@@ -58,11 +58,11 @@ export function readCorpusAuthorityBaseline(db: BetterSqlite3.Database): CorpusA
 }
 
 export function replaceCorpusAuthorityBaseline(
-  db: BetterSqlite3.Database,
+  db: Database,
   records: readonly CorpusAuthorityBaselineRecord[],
 ): void {
   ensureCorpusAuthorityBaselineTable(db);
-  const replace = db.transaction((nextRecords: readonly CorpusAuthorityBaselineRecord[]) => {
+  withImmediate(db, () => {
     db.prepare('DELETE FROM kb_corpus_authority_baseline').run();
     const insert = db.prepare<[string, string, string]>(
       `
@@ -70,11 +70,10 @@ export function replaceCorpusAuthorityBaseline(
         VALUES (?, ?, ?)
       `,
     );
-    for (const record of [...nextRecords].sort((left, right) => left.entryId.localeCompare(right.entryId))) {
+    for (const record of [...records].sort((left, right) => left.entryId.localeCompare(right.entryId))) {
       insert.run(record.entryId, record.contentHash, record.metadataHash);
     }
   });
-  replace.immediate(records);
 }
 
 export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuthorityBaselineRecord[] {
@@ -155,7 +154,7 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
 }
 
 export function rebuildCorpusAuthorityBaseline(
-  db: BetterSqlite3.Database,
+  db: Database,
   scan: CorpusScanView,
 ): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
@@ -164,7 +163,7 @@ export function rebuildCorpusAuthorityBaseline(
 }
 
 export function ensureCorpusAuthorityBaseline(
-  db: BetterSqlite3.Database,
+  db: Database,
   scan: CorpusScanView,
 ): { readonly baseline: CorpusAuthorityBaselineMap; readonly rebuilt: boolean } {
   const baseline = readCorpusAuthorityBaseline(db);
@@ -178,7 +177,7 @@ export function ensureCorpusAuthorityBaseline(
   };
 }
 
-export function createCorpusAuthorityBaselineStore(db: BetterSqlite3.Database): CorpusAuthorityBaselineStore {
+export function createCorpusAuthorityBaselineStore(db: Database): CorpusAuthorityBaselineStore {
   return {
     ensure(scan) {
       return ensureCorpusAuthorityBaseline(db, scan as CorpusScanView);

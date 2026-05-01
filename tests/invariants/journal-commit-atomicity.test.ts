@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
@@ -47,7 +48,7 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
   readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
-type Db = InstanceType<typeof Database>;
+type Db = Database;
 
 type OrphanKbFailureRow = {
   cause_seq: number;
@@ -135,7 +136,7 @@ const FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL = `
 `;
 
 function createDb(): Db {
-  const db = new Database(':memory:');
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }

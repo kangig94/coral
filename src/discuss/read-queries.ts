@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from './projections.js';

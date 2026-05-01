@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
@@ -24,8 +25,8 @@ interface CursorRow {
   registered_at: string;
 }
 
-function createDb(): InstanceType<typeof Database> {
-  const db = new Database(':memory:');
+function createDb(): Database {
+  const db = newRawDatabase(':memory:');
   applyStoreSchemas({ db, storage: nodeStorage });
   return db;
 }
@@ -43,7 +44,7 @@ function createRegistration(
   };
 }
 
-function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): CursorRow {
+function readCursorRow(db: Database, consumerId: string): CursorRow {
   return db
     .prepare('SELECT consumer_id, authority, lane, cursor, registered_at FROM consumer_cursors WHERE consumer_id = ?')
     .get(consumerId) as CursorRow;

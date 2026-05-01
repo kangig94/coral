@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../../src/store/db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { INDEX_FILE, INDEX_STATE_FILE } from '#src/kb/corpus/index-store.js';

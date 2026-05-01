@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../src/store/db.js';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 

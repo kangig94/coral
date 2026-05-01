@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import type { Database } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -20,12 +21,12 @@ const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSyn
 };
 
 describe('events queries', () => {
-  let db: Database.Database;
+  let db: Database;
   let appended: ReturnType<typeof commitInputs>;
   let readCtx: StoreReadContext;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = newRawDatabase(':memory:');
     applyStoreSchemas({ db, storage: nodeStorage });
     applyTestCounterSchema(db);
 

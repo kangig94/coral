@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from '../store/db.js';
 
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from '../jobs/phase.js';
@@ -51,7 +51,7 @@ type WorkflowChildJobRow = {
   last_seq: number;
 };
 
-export function readWorkflowProjection(db: BetterSqlite3.Database, workflowId: string): WorkflowProjectionRow | null {
+export function readWorkflowProjection(db: Database, workflowId: string): WorkflowProjectionRow | null {
   const row = db
     .prepare(
       `SELECT workflow_id, plan, last_seq
@@ -71,7 +71,7 @@ export function readWorkflowProjection(db: BetterSqlite3.Database, workflowId: s
   };
 }
 
-export function listWorkflowProjections(db: BetterSqlite3.Database): WorkflowProjectionRow[] {
+export function listWorkflowProjections(db: Database): WorkflowProjectionRow[] {
   const rows = db
     .prepare(`SELECT workflow_id, plan, last_seq FROM projection_workflows ORDER BY workflow_id`)
     .all() as Array<{ workflow_id: string; plan: string; last_seq: number }>;
@@ -84,7 +84,7 @@ export function listWorkflowProjections(db: BetterSqlite3.Database): WorkflowPro
 }
 
 export function readWorkflowView(
-  db: BetterSqlite3.Database,
+  db: Database,
   workflowId: string,
   ctx: StoreReadContext,
 ): WorkflowView | null {
@@ -132,7 +132,7 @@ export function readWorkflowView(
   };
 }
 
-export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): ProjectedJobState | null {
+export function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
   const row = db
     .prepare(
       `SELECT phase, last_seq
@@ -151,7 +151,7 @@ export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): Pr
   };
 }
 
-function readWorkflowCompletionRow(db: BetterSqlite3.Database, workflowId: string): WorkflowCompletionRow | null {
+function readWorkflowCompletionRow(db: Database, workflowId: string): WorkflowCompletionRow | null {
   const row = db
     .prepare(
       `SELECT seq, type, body_version, body
@@ -167,7 +167,7 @@ function readWorkflowCompletionRow(db: BetterSqlite3.Database, workflowId: strin
   return row ?? null;
 }
 
-function readWorkflowChildJobRows(db: BetterSqlite3.Database, workflowId: string): WorkflowChildJobRow[] {
+function readWorkflowChildJobRows(db: Database, workflowId: string): WorkflowChildJobRow[] {
   return db
     .prepare(
       `SELECT job_id, phase, terminal, workflow_slot, last_seq

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { CoralEvent } from '#src/store/envelope.js';
@@ -33,7 +33,7 @@ describe('discuss session-store golden master', () => {
   it('replays the normalized fixture through projection_discuss byte-identically', () => {
     const expectedState = fs.readFileSync(FIXTURE_JSON, 'utf8');
     const events = loadFixtureEvents();
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
 
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });

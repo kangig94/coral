@@ -1,4 +1,4 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import type { Database } from './db.js';
 
 import { decodeStoredBody, type StoreReadContext } from './body-codec.js';
 import { prepareCached } from './db.js';
@@ -17,7 +17,7 @@ export interface EventsPage {
 }
 
 export function getEvent(
-  db: BetterSqlite3.Database,
+  db: Database,
   stream: { kind: string; id: string },
   seq: number,
   ctx: StoreReadContext,
@@ -30,7 +30,7 @@ export function getEvent(
 }
 
 export function getEventsSince(
-  db: BetterSqlite3.Database,
+  db: Database,
   afterSeq: number,
   filter: EventsFilter = {},
   limit = 1000,
@@ -64,7 +64,7 @@ export function getEventsSince(
 }
 
 export function readLatestEvent(
-  db: BetterSqlite3.Database,
+  db: Database,
   streamKind: StreamKind,
   streamId: string,
   type: string,

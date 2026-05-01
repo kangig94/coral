@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -29,7 +29,7 @@ describe('events.seq schema (S3)', () => {
   });
 
   it('does not create a sqlite_sequence row for events on an initialized journal', () => {
-    const db = new Database(':memory:');
+    const db = newRawDatabase(':memory:');
     try {
       applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
       // SQLite only creates `sqlite_sequence` when at least one table uses

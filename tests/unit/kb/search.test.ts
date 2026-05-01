@@ -16,6 +16,7 @@ import {
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -265,8 +266,8 @@ async function markCommunityStateFresh(kb: { readIndex: () => any }) {
   const topologyHash = computeCommunityTopologyFingerprint(index);
   const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index);
 
-  writeCurateState(kb as any, {
-    ...readCurateState(kb as any),
+  writeCurateState(curateDb(kb as any), {
+    ...readCurateState(curateDb(kb as any)),
     communityTopologyHash: topologyHash,
     communitySummaryTopologyHash: topologyHash,
     communitySummaryInputFingerprints: fingerprints,
@@ -726,8 +727,8 @@ describe('kb search', () => {
 
     await reindex(kb);
     await applyOramaProjection(kb);
-    writeCurateState(kb, {
-      ...readCurateState(kb),
+    writeCurateState(curateDb(kb), {
+      ...readCurateState(curateDb(kb)),
       communityTopologyHash: 'stale-topology',
       communitySummaryTopologyHash: 'stale-topology',
       communitySummaryInputFingerprints: {

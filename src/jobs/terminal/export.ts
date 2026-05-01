@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from '../../store/db.js';
 
 import type { StoragePort } from '../../runtime/ports.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
