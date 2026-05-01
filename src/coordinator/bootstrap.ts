@@ -5,7 +5,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import { dirname, join, resolve } from 'node:path';
 
-import { BackendAlreadyRunningError } from './lock.js';
+import { BackendAlreadyRunningError } from './handoff.js';
 import { StartupInterruptedError } from './startup-error.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';

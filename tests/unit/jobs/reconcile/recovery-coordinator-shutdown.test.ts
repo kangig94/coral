@@ -312,14 +312,13 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     getDiscussContext: () => {
       throw new Error('Unexpected discuss context lookup');
     },
-    acquireLockFn: async () => {},
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn: () => {},
-    removeLockIfOwnerFn: () => {},
     cleanupStaleJobsFn: () => {},
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    handoffQuiescePorts: () => [],
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below

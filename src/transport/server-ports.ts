@@ -13,12 +13,29 @@ export interface AdminControlPort {
 }
 
 export type HealthSnapshot = {
+  /**
+   * Lifecycle visibility surface. `'starting'` while the daemon is binding /
+   * recovering, `'ok'` once running, `'draining'` after `requestDrain` fires.
+   * Handoff contenders read this to distinguish a same-bundle redundant
+   * peer from a mismatch they should replace.
+   */
   status: string;
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
   namespace: string;
   instanceId: string;
+  /**
+   * Serving process pid. Required for handoff to revalidate the signal
+   * target via `probeProcessStartedAtSeconds(pid)` before SIGTERM/SIGKILL.
+   */
+  pid: number;
+  /**
+   * Serving process start time in seconds since epoch (kernel-supplied via
+   * `probeProcessStartedAtSeconds`). Forms an immutable identity tuple with
+   * `pid`; a mismatch means the pid has wrapped to an unrelated process.
+   */
+  processStartedAt?: number;
   uptimeMs: number;
   active: number;
   activeJobs: number;

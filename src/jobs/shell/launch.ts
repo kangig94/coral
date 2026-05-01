@@ -88,7 +88,33 @@ export interface LaunchOrchestratorDeps {
 }
 
 export class LaunchOrchestrator {
+  // Tracks jobs whose runtime has called `acquireServer` (i.e. app-server
+  // transport). Quiesce-for-handoff acts on this set: any active CLI/durable
+  // jobs not in the set keep the existing handoff preservation behavior.
+  private readonly appServerJobs = new Set<string>();
+  // Set when shutdown is in handoff mode. Captured callbacks for matched job
+  // IDs short-circuit so the dying daemon does not write a terminal record,
+  // result artifact, release admission, remove abort registry entries,
+  // delete job-pool entries, or release session continuity/claim.
+  private readonly quiescedAppServerJobs = new Set<string>();
+
   constructor(private readonly deps: LaunchOrchestratorDeps) {}
+
+  /**
+   * Synchronously detach durable terminal/completion side effects for active
+   * app-server jobs so a subsequent provider-host drain cannot mutate state.
+   *
+   * No awaits-that-can-hang: the function flips an in-memory flag for matching
+   * job IDs and returns immediately. Continuity checkpoints up to this call
+   * have already committed; subsequent stream events on the orphaned consumer
+   * loop fall on no-op callbacks.
+   */
+  quiesceAppServerJobsForHandoff(_signal: AbortSignal): Promise<void> {
+    for (const jobId of this.appServerJobs) {
+      this.quiescedAppServerJobs.add(jobId);
+    }
+    return Promise.resolve();
+  }
 
   private resolveEventMetadata(
     jobId: string,
@@ -357,6 +383,9 @@ export class LaunchOrchestrator {
           backendLog.error(error.message, error.cause);
           return;
         }
+        if (this.quiescedAppServerJobs.has(jobId)) {
+          return;
+        }
         try {
           this.handleProviderJobError(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
@@ -367,7 +396,7 @@ export class LaunchOrchestrator {
           throw finalizeError;
         }
       } finally {
-        if (permitAcquired) {
+        if (permitAcquired && !this.quiescedAppServerJobs.has(jobId)) {
           launchAdmission.releaseLaunch(jobId, pool);
         }
       }
@@ -410,6 +439,9 @@ export class LaunchOrchestrator {
           backendLog.error(error.message, error.cause);
           return;
         }
+        if (this.quiescedAppServerJobs.has(jobId)) {
+          return;
+        }
         try {
           this.handleProviderJobError(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
@@ -420,7 +452,9 @@ export class LaunchOrchestrator {
           throw finalizeError;
         }
       } finally {
-        launchAdmission.releaseLaunch(jobId, pool);
+        if (!this.quiescedAppServerJobs.has(jobId)) {
+          launchAdmission.releaseLaunch(jobId, pool);
+        }
       }
     })();
   }
@@ -491,6 +525,12 @@ export class LaunchOrchestrator {
       stream: runProviderExecution(provider, request, runtime),
       sessionApi: {
         checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
+          if (this.quiescedAppServerJobs.has(jobId)) {
+            // After quiesce: short-circuit so the dying daemon does not mutate
+            // session continuity. The replacement daemon's startup recovery
+            // probes the latest checkpoint that committed before quiesce.
+            return { ok: false as const };
+          }
           const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
           if (result.ok) {
             latestContinuity = {
@@ -505,12 +545,15 @@ export class LaunchOrchestrator {
         },
       },
       appendProgress: (message) => {
+        if (this.quiescedAppServerJobs.has(jobId)) return;
         this.appendProgressEvent(jobId, sessionId, message);
       },
       recordTerminal: (event) => {
+        if (this.quiescedAppServerJobs.has(jobId)) return;
         this.appendProviderTerminal(jobId, sessionId, request.cwd, event, latestContinuity);
       },
     });
+    if (this.quiescedAppServerJobs.has(jobId)) return;
     await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
   }
 
@@ -605,7 +648,10 @@ export class LaunchOrchestrator {
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
       ids: this.deps.runtime.ids,
-      acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
+      acquireServer: (spec) => {
+        this.appServerJobs.add(jobId);
+        return this.deps.acquireServer(spec, { jobId, signal });
+      },
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,

@@ -33,6 +33,13 @@ export type IpcListener = {
   readonly server: NetServer;
   readonly sockets: Set<Socket>;
   socketPath: string | null;
+  /**
+   * Optional callback invoked alongside `transport.shutdown`'s `requestDrain`.
+   * Composition wires this to `coordinator.shutdown(reason)` so a contender
+   * can replace a still-`starting` incumbent (where idle-timer driven drain
+   * has not yet been installed). Setting/clearing is composition's job.
+   */
+  onShutdownRequest: ((reason: string) => void) | null;
 };
 
 export type IpcDispatchEntry = {
@@ -149,38 +156,71 @@ async function clearStaleSocket(socketPath: string): Promise<boolean> {
   }
 }
 
-async function bindSocket(server: NetServer, socketPath: string): Promise<void> {
+/**
+ * Bind result distinguishes "stale orphan socket file" (auto-cleared) from
+ * "live incumbent listening" so handoff callers can react instead of being
+ * killed by `EADDRINUSE`. The next binder is the only path-cleanup authority.
+ */
+export type BindSocketResult = { kind: 'bound' } | { kind: 'incumbent'; reason: 'live-listener' };
+
+export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
   mkdirSync(dirname(socketPath), { recursive: true });
+
+  const finalize = (): void => {
+    if (process.platform !== 'win32') {
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch {
+        // Best-effort.
+      }
+    }
+  };
 
   try {
     await listenSocket(server, socketPath);
+    finalize();
+    return { kind: 'bound' };
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
       throw error;
     }
+  }
 
-    const cleared = await clearStaleSocket(socketPath);
-    if (!cleared) {
-      throw error;
-    }
+  // EADDRINUSE — distinguish stale-orphan from live-listener.
+  const cleared = await clearStaleSocket(socketPath);
+  if (cleared) {
     await listenSocket(server, socketPath);
+    finalize();
+    return { kind: 'bound' };
   }
 
-  if (process.platform !== 'win32') {
-    try {
-      chmodSync(socketPath, 0o600);
-    } catch {
-      // Best-effort.
-    }
-  }
+  return { kind: 'incumbent', reason: 'live-listener' };
 }
 
+/**
+ * Phase-B-compatible signature: throws synthetic `EADDRINUSE` when an
+ * incumbent owns the socket. Phase C upgrades the public shape to a tagged
+ * `ListenIpcServerResult`; this thin wrapper keeps existing callers green.
+ */
 export async function listenIpcServer(listener: IpcListener, socketPath: string): Promise<{ socketPath: string }> {
-  await bindSocket(listener.server, socketPath);
+  const result = await bindSocket(listener.server, socketPath);
+  if (result.kind === 'incumbent') {
+    const error = new Error(`IPC socket already in use: ${socketPath}`) as NodeJS.ErrnoException;
+    error.code = 'EADDRINUSE';
+    throw error;
+  }
   listener.socketPath = socketPath;
   return { socketPath };
 }
 
+/**
+ * Ownership-safe close: destroy tracked sockets, close the server, and forget
+ * the listener's socket path. Path-based cleanup belongs to the next binder's
+ * `clearStaleSocket` (which probes for liveness before unlinking). This
+ * deliberately leaves a stale socket file after graceful shutdown until the
+ * next bind attempt clears it — preferable to deleting a path that may now
+ * belong to a replacement daemon.
+ */
 export async function closeIpcServer(listener: IpcListener): Promise<void> {
   for (const socket of listener.sockets) {
     socket.destroy();
@@ -198,16 +238,7 @@ export async function closeIpcServer(listener: IpcListener): Promise<void> {
     });
   });
 
-  if (listener.socketPath) {
-    try {
-      unlinkSync(listener.socketPath);
-    } catch (error: unknown) {
-      if (!isNoEntryError(error)) {
-        throw error;
-      }
-    }
-    listener.socketPath = null;
-  }
+  listener.socketPath = null;
 }
 
 async function streamSubscription(
@@ -261,6 +292,7 @@ async function dispatchFrame(
   socket: Socket,
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
+  onShutdownRequest: ((reason: string) => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
 ): Promise<void> {
@@ -288,6 +320,12 @@ async function dispatchFrame(
 
   if (request.method === 'transport.shutdown') {
     rpcPorts.admin.requestDrain('replaced');
+    // `requestDrain` only flips the drain flag and notifies the idle timer;
+    // the idle timer is not installed until lifecycle reaches 'running'.
+    // To unblock contenders during a still-`starting` incumbent, lifecycle
+    // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
+    // directly. No-op when lifecycle is already running (drain handles it).
+    onShutdownRequest?.('replaced');
     writeEnvelope(socket, {
       kind: 'response',
       id: request.id,
@@ -353,6 +391,10 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
   const dispatchTable = buildCoordinatorIpcDispatchTable(rpcPorts);
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
   const sockets = new Set<Socket>();
+  // Mutable holder so the per-connection `dispatchFrame` closure reads the
+  // current callback via `listener.onShutdownRequest`. Composition writes to
+  // it after wiring the lifecycle controller.
+  const listenerRef: { current: IpcListener | null } = { current: null };
 
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -411,6 +453,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
           socket,
           dispatchMap,
           rpcPorts,
+          listenerRef.current?.onShutdownRequest ?? null,
           () => {
             rpcPorts.admin.beginRequest();
             inflightRequest = true;
@@ -424,9 +467,12 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
     socket.on('data', onData);
   });
 
-  return {
+  const listener: IpcListener = {
     server,
     sockets,
     socketPath: null,
+    onShutdownRequest: null,
   };
+  listenerRef.current = listener;
+  return listener;
 }

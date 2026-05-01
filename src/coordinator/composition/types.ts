@@ -13,7 +13,6 @@ import type {
   RunStartupRecoveryFn,
 } from '../lifecycle.js';
 import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
-import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/types.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
@@ -45,7 +44,6 @@ export type CoordinatorBootSnapshot = {
 
 export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerResponse) => void) => Server;
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
-type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
 
 export type CoordinatorCoreOptions = {
   runtime: Runtime;
@@ -61,17 +59,8 @@ export type CoordinatorCoreOptions = {
   listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
-  verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
-  acquireLockFn?: (
-    pluginRoot: string,
-    instanceId: string,
-    version: string,
-    bundleHash: string,
-    flavor: 'prod' | 'dev',
-  ) => Promise<void>;
   writeBackendInfoFn?: (info: BackendInfo) => void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
-  removeLockIfOwnerFn?: RemoveLockIfOwnerFn;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;

@@ -7,6 +7,14 @@ import { createLineFramer } from '../line-framing.js';
 
 const IPC_RETRY_BACKOFF_MS = 100;
 
+/**
+ * Request-time budget. `timeoutMs` is converted to an absolute deadline at
+ * call entry; the same deadline covers connect, any ECONNREFUSED retry,
+ * request write, and response framing. A connect that succeeds just before
+ * the deadline does NOT receive a fresh full response timeout — the outer
+ * `transport.shutdown` callsite (handoff) relies on this so SIGTERM/SIGKILL
+ * scheduling is not stretched by the IPC helper.
+ */
 export type IpcRequestOptions = {
   timeoutMs?: number;
 };
@@ -47,7 +55,14 @@ function setupError(socketPath: string, error: unknown): CoralSetupError {
   });
 }
 
-async function connectSocket(socketPath: string, timeoutMs: number | undefined): Promise<Socket> {
+function remainingMs(deadlineMs: number | null): number | undefined {
+  if (deadlineMs === null) {
+    return undefined;
+  }
+  return Math.max(0, deadlineMs - Date.now());
+}
+
+async function connectSocket(socketPath: string, deadlineMs: number | null): Promise<Socket> {
   const attemptConnection = async (): Promise<Socket> =>
     await new Promise<Socket>((resolve, reject) => {
       const socket = createConnection(socketPath);
@@ -76,10 +91,16 @@ async function connectSocket(socketPath: string, timeoutMs: number | undefined):
       socket.once('connect', onConnect);
       socket.once('error', onError);
 
-      if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+      const stepBudget = remainingMs(deadlineMs);
+      if (typeof stepBudget === 'number' && stepBudget > 0) {
         timer = setTimeout(() => {
-          socket.destroy(new Error(`IPC connection timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+          socket.destroy(new Error(`IPC connection timed out after ${stepBudget}ms`));
+        }, stepBudget);
+      } else if (typeof stepBudget === 'number' && stepBudget === 0) {
+        // Deadline already exceeded — fail fast without waiting on the kernel.
+        queueMicrotask(() => {
+          socket.destroy(new Error('IPC connection deadline already exceeded'));
+        });
       }
     });
 
@@ -91,6 +112,10 @@ async function connectSocket(socketPath: string, timeoutMs: number | undefined):
     }
   }
 
+  if (deadlineMs !== null && Date.now() >= deadlineMs) {
+    // Deadline already exceeded — do not start a fresh retry attempt.
+    throw setupError(socketPath, new Error('IPC connection deadline exceeded before retry'));
+  }
   await delay(IPC_RETRY_BACKOFF_MS);
 
   try {
@@ -125,7 +150,9 @@ export async function requestIpcMethod<TResult>(
 ): Promise<TResult> {
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
-  const socket = await connectSocket(socketPath, timeoutMs);
+  // Convert to absolute deadline at call entry so connect+request share one budget.
+  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? Date.now() + timeoutMs : null;
+  const socket = await connectSocket(socketPath, deadlineMs);
 
   return await new Promise<TResult>((resolve, reject) => {
     let settled = false;
@@ -193,10 +220,16 @@ export async function requestIpcMethod<TResult>(
     socket.once('error', onError);
     socket.once('close', onClose);
 
-    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    const responseBudget = remainingMs(deadlineMs);
+    if (typeof responseBudget === 'number' && responseBudget > 0) {
       timer = setTimeout(() => {
-        socket.destroy(new Error(`IPC request timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+        socket.destroy(new Error(`IPC request timed out after ${responseBudget}ms`));
+      }, responseBudget);
+    } else if (typeof responseBudget === 'number' && responseBudget === 0) {
+      // Deadline already past — bail out before sending the request.
+      queueMicrotask(() => {
+        socket.destroy(new Error('IPC request deadline already exceeded'));
+      });
     }
 
     const envelope: JsonRpcRequest = {
@@ -217,7 +250,8 @@ export async function subscribeIpcMethod<TResult>(
 ): Promise<IpcSubscription<TResult>> {
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
-  const socket = await connectSocket(socketPath, timeoutMs);
+  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? Date.now() + timeoutMs : null;
+  const socket = await connectSocket(socketPath, deadlineMs);
 
   let done = false;
   let failure: Error | null = null;
@@ -375,12 +409,13 @@ export async function subscribeIpcMethod<TResult>(
     options?.signal?.addEventListener('abort', onAbort, { once: true });
   }
 
-  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+  const handshakeBudget = remainingMs(deadlineMs);
+  if (typeof handshakeBudget === 'number' && handshakeBudget > 0) {
     handshakeTimer = setTimeout(() => {
-      const error = new Error(`IPC subscription timed out after ${timeoutMs}ms`);
+      const error = new Error(`IPC subscription timed out after ${handshakeBudget}ms`);
       fail(error);
       socket.destroy(error);
-    }, timeoutMs);
+    }, handshakeBudget);
   }
 
   const envelope: JsonRpcRequest = {

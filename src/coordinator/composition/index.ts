@@ -49,6 +49,7 @@ import {
 } from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
+import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -384,6 +385,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         } else if (lifecycleState === 'running') {
           status = 'ok';
         }
+        const platform = runtime.env.platform() as NodeJS.Platform;
+        const processStartedAt = probeProcessStartedAtSeconds(world.backendPid, platform) ?? undefined;
 
         const kbStatus = runtimeState.getKbStatus();
         const curateHealth = runtimeState.getCurateHealth();
@@ -419,6 +422,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           flavor: identity.flavor,
           namespace: identity.namespace,
           instanceId: identity.instanceId,
+          pid: world.backendPid,
+          ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
           activeJobs: world.progressStore.liveJobCountByNamespace(identity.namespace),
@@ -503,14 +508,17 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,
-    acquireLockFn: defaults.acquireLockFn,
     writeBackendInfoFn: defaults.writeBackendInfoFn,
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
-    removeLockIfOwnerFn: defaults.removeLockIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
+    handoffQuiescePorts: () =>
+      services.listExecutionServices().filter(
+        (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
+          typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
+      ),
     expansionLifecycleService: options.expansionLifecycleService ?? null,
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
@@ -529,6 +537,15 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   lifecycleController = createLifecycle(lifecycleDeps);
   const resolvedLifecycleController = lifecycleController;
+  // Install the starting-incumbent shutdown callback. `transport.shutdown`
+  // invokes both `requestDrain('replaced')` (idle-timer driven) AND this
+  // callback so a still-`starting` incumbent quits immediately rather than
+  // waiting for `idleTimer.startWatching` to be installed at lifecycle
+  // 'running'. The callback fires once per request — `lifecycleController.shutdown`
+  // is itself idempotent (returns the existing `state.shutdownPromise`).
+  ipcServer.onShutdownRequest = (reason) => {
+    void resolvedLifecycleController.shutdown(reason).catch(() => {});
+  };
 
   return {
     identity,

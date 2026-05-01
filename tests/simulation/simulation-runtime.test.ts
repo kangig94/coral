@@ -448,7 +448,6 @@ describe('simulation runtime', () => {
 
     expect(startedA.port).toBe(4_201);
     expect(startedB.port).toBe(4_202);
-    expect(worldA.hooks.acquireLockCalls).toHaveLength(1);
     expect(worldA.hooks.listenCalls).toEqual([{ host: '127.0.0.1', port: 4_201 }]);
     expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);

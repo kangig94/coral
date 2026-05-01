@@ -4,10 +4,9 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
-import type { LockRecord } from '#src/infra/lock-record.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -24,20 +23,7 @@ vi.mock('node:os', async () => {
   };
 });
 
-type HarnessOptions = {
-  infoOverrides?: Partial<BackendInfo>;
-  recordOverrides?: Partial<LockRecord>;
-  skipPrime?: boolean;
-};
-
-function makeHealthResponse(body: Record<string, unknown>, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-function createHarness(options: HarnessOptions = {}) {
+function createHarness() {
   const home = mkdtempSync(join(mockState.tmpRoot, 'home-'));
   const pluginRoot = mkdtempSync(join(mockState.tmpRoot, 'plugin-'));
   mockState.tmpHome = home;
@@ -51,11 +37,9 @@ function createHarness(options: HarnessOptions = {}) {
   );
 
   const runtime = createRealRuntime('prod');
-  const fetchFn = vi.fn(async (_url: string, _init?: RequestInit) => new Response());
   const defaultsPlan = resolveCoordinatorDefaults(
     {
       runtime,
-      fetchFn,
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
@@ -75,34 +59,17 @@ function createHarness(options: HarnessOptions = {}) {
     namespace: expectedNamespace,
     instanceId: 'backend-defaults-instance',
     startedAt: 1,
-    ...options.infoOverrides,
   };
-  const record: LockRecord = {
-    instanceId: info.instanceId,
-    pid: info.pid,
-    version: info.version,
-    bundleHash: info.bundleHash,
-    flavor: info.flavor,
-    startedAt: info.startedAt,
-    ...options.recordOverrides,
-  };
-
-  if (!options.skipPrime) {
-    writeBackendInfo(info, { storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  }
 
   return {
     pluginRoot,
     runtime,
-    fetchFn,
     info,
-    record,
-    expectedNamespace,
-    verifyBackendOwnershipFn: defaultsPlan.eager.verifyBackendOwnershipFn,
+    defaults: defaultsPlan.eager,
   };
 }
 
-describe('resolveCoordinatorDefaults verifyBackendOwnershipFn', () => {
+describe('resolveCoordinatorDefaults eager defaults', () => {
   beforeEach(() => {
     mkdirSync(mockState.baseTmp, { recursive: true });
     mockState.tmpRoot = mkdtempSync(join(mockState.baseTmp, 'run-'));
@@ -119,146 +86,43 @@ describe('resolveCoordinatorDefaults verifyBackendOwnershipFn', () => {
     mockState.tmpRoot = '';
   });
 
-  it('1. healthy returns healthy for matching /health metadata via injected fetchFn', async () => {
+  it('does not expose lock-related defaults', () => {
+    const { defaults } = createHarness();
+    const surface = defaults as Record<string, unknown>;
+    expect(surface.acquireLockFn).toBeUndefined();
+    expect(surface.removeLockIfOwnerFn).toBeUndefined();
+    expect(surface.verifyBackendOwnershipFn).toBeUndefined();
+  });
+
+  it('writeBackendInfoFn persists discovery and removeBackendInfoIfOwnerFn clears it for the owner', () => {
     const harness = createHarness();
-    harness.fetchFn.mockResolvedValue(
-      makeHealthResponse({
-        status: 'ok',
-        bundleHash: harness.record.bundleHash,
-        flavor: harness.record.flavor,
-        instanceId: harness.record.instanceId,
-        namespace: harness.expectedNamespace,
-      }),
-    );
+    const discoveryRuntime = {
+      storage: harness.runtime.storage,
+      env: harness.runtime.env,
+      paths: harness.runtime.paths,
+    };
 
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('healthy');
-    expect(harness.fetchFn).toHaveBeenCalledWith(`http://${harness.info.host}:${harness.info.port}/health`, {
-      method: 'GET',
-      headers: { 'X-Coral-Backend-Token': harness.info.token },
-      signal: expect.any(AbortSignal),
-    });
-  });
-
-  it('2. contended-payload-mismatch returns contended when /health bundleHash mismatches', async () => {
-    const harness = createHarness();
-    harness.fetchFn.mockResolvedValue(
-      makeHealthResponse({
-        status: 'ok',
-        bundleHash: 'different-bundle',
-        flavor: harness.record.flavor,
-        instanceId: harness.record.instanceId,
-        namespace: harness.expectedNamespace,
-      }),
-    );
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('contended');
-  });
-
-  it('3. contended-non-ok returns contended when /health is not ok', async () => {
-    const harness = createHarness();
-    harness.fetchFn.mockResolvedValue(makeHealthResponse({ status: 'unavailable' }, 503));
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('contended');
-  });
-
-  it('4. stale-no-info returns stale and never calls fetchFn when backend info is absent', async () => {
-    const harness = createHarness({ skipPrime: true });
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('stale');
-    expect(harness.fetchFn).not.toHaveBeenCalled();
-  });
-
-  it('5. stale-record-mismatch returns stale and never calls fetchFn when discovery metadata disagrees with the lock record', async () => {
-    const harness = createHarness({
-      infoOverrides: {
-        namespace: 'foreign-namespace',
-      },
+    harness.defaults.writeBackendInfoFn(harness.info);
+    expect(readBackendInfo(discoveryRuntime)).toMatchObject({
+      instanceId: harness.info.instanceId,
+      bundleHash: harness.info.bundleHash,
+      flavor: harness.info.flavor,
     });
 
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('stale');
-    expect(harness.fetchFn).not.toHaveBeenCalled();
+    harness.defaults.removeBackendInfoIfOwnerFn(harness.info.instanceId);
+    expect(readBackendInfo(discoveryRuntime)).toBeNull();
   });
 
-  it('6. stale-pid-dead returns stale and never calls fetchFn when the recorded pid is no longer alive', async () => {
-    const harness = createHarness({
-      infoOverrides: {
-        pid: 999_999,
-      },
-    });
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('stale');
-    expect(harness.fetchFn).not.toHaveBeenCalled();
-  });
-
-  it('7. stale-bundle-mismatch returns stale when info bundleHash differs from the lock record', async () => {
-    const harness = createHarness({
-      recordOverrides: {
-        bundleHash: 'different-bundle-hash',
-      },
-    });
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('stale');
-    expect(harness.fetchFn).not.toHaveBeenCalled();
-  });
-
-  it('8. contended-non-object-body returns contended when /health response body is not an object', async () => {
+  it('removeBackendInfoIfOwnerFn does not clear discovery owned by a different instanceId', () => {
     const harness = createHarness();
-    harness.fetchFn.mockResolvedValue(makeHealthResponse(null as unknown as Record<string, unknown>));
+    const discoveryRuntime = {
+      storage: harness.runtime.storage,
+      env: harness.runtime.env,
+      paths: harness.runtime.paths,
+    };
 
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('contended');
-    expect(harness.fetchFn).toHaveBeenCalledTimes(1);
-  });
-
-  it('9. contended-fetch-throws returns contended when fetchFn rejects (timeout / abort / network)', async () => {
-    const harness = createHarness();
-    harness.fetchFn.mockRejectedValue(new DOMException('Aborted', 'AbortError'));
-
-    await expect(
-      harness.verifyBackendOwnershipFn({
-        pluginRoot: harness.pluginRoot,
-        record: harness.record,
-      }),
-    ).resolves.toBe('contended');
-    expect(harness.fetchFn).toHaveBeenCalledTimes(1);
+    harness.defaults.writeBackendInfoFn(harness.info);
+    harness.defaults.removeBackendInfoIfOwnerFn('some-other-instance');
+    expect(readBackendInfo(discoveryRuntime)).not.toBeNull();
   });
 });

@@ -21,7 +21,16 @@ import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsy
 import { kbRuntimeDir } from '../kb/paths.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
-import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode } from './shutdown.js';
+import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode, HANDOFF_DRAIN_TIMEOUT_MS } from './shutdown.js';
+import type { HandoffQuiescePort } from './execution-service.js';
+import type { InterruptedAppServerReason } from './services/execution-policies.js';
+import {
+  bindWithHandoff,
+  BackendAlreadyRunningError,
+  HandoffEscalationError,
+  IncumbentMatchesError,
+} from './handoff.js';
+import { probeCoordinator } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -272,6 +281,12 @@ export type StartupRecoveryDeps = {
   readonly assertStartupStillActive: () => void;
   readonly cleanupStaleJobs: (currentBundleHash: string) => void;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
+  /**
+   * Default `'restart'`. Phase C will set this to `'handoff'` when
+   * `bindWithHandoff` observed an incumbent and acquired the socket; in this
+   * landing the parameter exists but always defaults to `'restart'`.
+   */
+  readonly interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
 export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<RecoveredDiscussResume[]>;
@@ -295,20 +310,13 @@ export type LifecycleDeps = {
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
-  readonly acquireLockFn: (
-    pluginRoot: string,
-    instanceId: string,
-    version: string,
-    bundleHash: string,
-    flavor: 'prod' | 'dev',
-  ) => Promise<void>;
   readonly writeBackendInfoFn: (info: BackendInfo) => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
-  readonly removeLockIfOwnerFn: (pluginRoot: string, instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
+  readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly expansionLifecycleService?: ExpansionLifecycleService | null;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
@@ -367,10 +375,8 @@ async function runLifecycleStartup({
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
-    acquireLockFn,
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
-    removeLockIfOwnerFn,
     cleanupStaleJobsFn,
     createKbSubsystemFn,
     registerBuiltInProvidersFn,
@@ -383,7 +389,7 @@ async function runLifecycleStartup({
     closeIpcServerFn,
     listenIpcFn,
   } = deps;
-  const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now } = identity;
+  const { namespace, version, bundleHash, flavor, instanceId, now } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
@@ -396,8 +402,69 @@ async function runLifecycleStartup({
   };
 
   try {
-    await acquireLockFn(pluginRoot, instanceId, version, bundleHash, flavor);
+    // 1. Socket-as-lock: bind first, gracefully handing off any incumbent
+    //    via its own IPC. The lifecycle shutdown callback (composition wires
+    //    `ipcServer.onShutdownRequest`) is already installed before we reach
+    //    here, so a contender that arrives while we are still 'starting'
+    //    triggers immediate shutdown via that path.
+    const socketPath = runtime.paths.coral.coordinator.socketPath;
+    let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
+    if (ipcServer && listenIpcFn) {
+      const handoff = await bindWithHandoff({
+        socketPath,
+        desired: { bundleHash, flavor, namespace },
+        bindAttempt: async () => {
+          try {
+            await listenIpcFn(ipcServer);
+            return { kind: 'bound' as const };
+          } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+              return { kind: 'incumbent' as const, reason: 'live-listener' };
+            }
+            throw error;
+          }
+        },
+        runtime,
+        readVerifiedIncumbentFromDiscovery: ({ socketPath: probeSocket, desired, lastHealth }) => {
+          const info = probeCoordinator({
+            storage: runtime.storage,
+            env: runtime.env,
+            paths: runtime.paths,
+          });
+          if (!info || info.processStartedAt === undefined) {
+            return null;
+          }
+          if (
+            info.socketPath !== probeSocket ||
+            info.flavor !== desired.flavor ||
+            info.namespace !== desired.namespace
+          ) {
+            return null;
+          }
+          if (
+            lastHealth &&
+            (lastHealth.flavor !== info.flavor ||
+              lastHealth.namespace !== info.namespace ||
+              lastHealth.bundleHash !== info.bundleHash ||
+              (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
+              (lastHealth.processStartedAt !== undefined && lastHealth.processStartedAt !== info.processStartedAt))
+          ) {
+            return null;
+          }
+          return {
+            pid: info.pid,
+            processStartedAt: info.processStartedAt,
+            source: 'discovery',
+          };
+        },
+        totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
+      });
+      if (handoff.acquiredViaHandoff) {
+        interruptedAppServerReason = 'handoff';
+      }
+    }
     assertStartupStillActive();
+
     registerBuiltInProvidersFn(providerRegistry);
     try {
       const kbSub = await createKbSubsystemFn({
@@ -422,10 +489,6 @@ async function runLifecycleStartup({
     assertStartupStillActive();
 
     const { port, host } = await listenFn(server);
-    const { socketPath } =
-      ipcServer && listenIpcFn
-        ? await listenIpcFn(ipcServer)
-        : { socketPath: runtime.paths.coral.coordinator.socketPath };
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
@@ -444,6 +507,7 @@ async function runLifecycleStartup({
       assertStartupStillActive,
       cleanupStaleJobs: cleanupStaleJobsFn,
       recoverPersistedDiscussFn,
+      interruptedAppServerReason,
     });
 
     assertStartupStillActive();
@@ -500,6 +564,19 @@ async function runLifecycleStartup({
       startedAt,
     };
   } catch (error: unknown) {
+    if (error instanceof IncumbentMatchesError) {
+      // Translate to the existing bootstrap-recognized "redundant contender"
+      // signal (info log + exit 0). The socket has not been bound by us, so
+      // there is nothing to clean up.
+      runtimeState.setLifecycle('stopped');
+      throw new BackendAlreadyRunningError();
+    }
+    if (error instanceof StartupInterruptedError && state.shutdownPromise !== null) {
+      // Shutdown owns cleanup. Do not close IPC/backend-info here, because
+      // handoff finalizers may still hold socket authority until they
+      // complete or budget-skip.
+      throw error;
+    }
     runtimeState.setLifecycle('stopped');
     idleTimer.stopWatching();
     state.ownershipCheckerTeardown?.();
@@ -518,8 +595,10 @@ async function runLifecycleStartup({
       }
     }
     removeBackendInfoIfOwnerFn(instanceId);
-    removeLockIfOwnerFn(pluginRoot, instanceId);
 
+    if (error instanceof HandoffEscalationError) {
+      backendLog.error('Handoff escalation failed', error);
+    }
     throw error;
   }
 }
@@ -537,7 +616,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     server,
     getRecoveryService,
     removeBackendInfoIfOwnerFn,
-    removeLockIfOwnerFn,
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
@@ -603,9 +681,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         providerHostManager,
         expansionLifecycleService: deps.expansionLifecycleService,
         terminateAllFn,
-        progressStore,
-        pluginRoot,
-        getRecoveryService,
+        handoffQuiescePorts: deps.handoffQuiescePorts,
         hooks,
         discussStores,
         log,
@@ -618,7 +694,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       .finally(() => {
         runtimeState.setLifecycle('stopped');
         removeBackendInfoIfOwnerFn(instanceId);
-        removeLockIfOwnerFn(pluginRoot, instanceId);
         onStopped?.();
       });
 

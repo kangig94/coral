@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CONTENDER_BUDGET } from '#src/coordinator/lock.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import {
   buildArtifactsAvailable,
@@ -19,6 +18,9 @@ import {
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
+// Safety ceiling for the discovery handoff wait. Matches the historical
+// CONTENDER_BUDGET so the overall poll budget is unchanged after AC8.
+const HANDOFF_OBSERVATION_BUDGET_MS = 90_000;
 const EXPECTED_HANDOFF_MAX_MS = 30_000;
 
 afterEach(async () => {
@@ -74,13 +76,14 @@ describe('coordinator warm-start integration', () => {
     await waitForCondition(() => {
       const record = readDiscoveryRecordForHome(home, 'prod');
       return record !== null && record.bundleHash === secondFixture.bundleHash && record.pid !== initial.pid;
-    }, CONTENDER_BUDGET);
+    }, HANDOFF_OBSERVATION_BUDGET_MS);
 
     const replacement = await waitForDiscoveryRecord(home, 'prod', 5_000);
     const elapsedMs = Date.now() - handoffStartedAt;
     const firstExit = await waitForProcessExit(first, 10_000);
 
-    // CONTENDER_BUDGET is the lock-loop safety ceiling, not the expected steady-state handoff time.
+    // EXPECTED_HANDOFF_MAX_MS is the steady-state handoff bound; the polling
+    // budget above is just a safety ceiling.
     expect(elapsedMs).toBeLessThan(EXPECTED_HANDOFF_MAX_MS);
     expect(replacement.bundleHash).toBe('bundle-b');
     expect(replacement.pid).not.toBe(initial.pid);

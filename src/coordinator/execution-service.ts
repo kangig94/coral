@@ -34,7 +34,20 @@ import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
 
-export class ExecutionService implements RecoveryCapableService, ProjectRequestPort {
+/**
+ * Handoff quiesce port: the dying daemon calls this immediately before
+ * provider-host drain, so subsequent transport closure cannot record provider
+ * terminals or release admission/session claim for active app-server jobs.
+ *
+ * Implementations MUST NOT contain awaits-that-can-hang — the contract is
+ * synchronous-in-spirit so AC4's atomicity argument holds: detach must already
+ * have completed before the budget timer fires.
+ */
+export interface HandoffQuiescePort {
+  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void>;
+}
+
+export class ExecutionService implements RecoveryCapableService, ProjectRequestPort, HandoffQuiescePort {
   private readonly runtime: ExecutionServiceDeps['runtime'];
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
@@ -293,6 +306,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void> {
     return this.recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, context);
+  }
+
+  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void> {
+    return this.launchOrchestrator.quiesceAppServerJobsForHandoff(signal);
   }
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {

@@ -341,16 +341,8 @@ export function createFakeProvider(
 export type SimulationHookLog = {
   createServerCalls: Array<(req: IncomingMessage, res: ServerResponse) => void>;
   listenCalls: Array<{ host: string; port: number }>;
-  acquireLockCalls: Array<{
-    pluginRoot: string;
-    instanceId: string;
-    version: string;
-    bundleHash: string;
-    flavor: 'prod' | 'dev';
-  }>;
   writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
-  removeLockCalls: Array<{ pluginRoot: string; instanceId: string }>;
   createKbSubsystemCalls: Array<{
     markdownRoot: string;
     processPort: Pick<Runtime['process'], 'exec' | 'execSync'>;
@@ -423,10 +415,8 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const hooks: SimulationHookLog = {
     createServerCalls: [],
     listenCalls: [],
-    acquireLockCalls: [],
     writeBackendInfoCalls: [],
     removeBackendInfoCalls: [],
-    removeLockCalls: [],
     createKbSubsystemCalls: [],
     recoverPersistedDiscussCalls: 0,
   };
@@ -485,15 +475,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         baseDir: join(runtime.env.homedir(), '.coral'),
       }).socketPath,
     }),
-    acquireLockFn: async (bootPluginRoot, instanceId, version, bundleHash, flavor) => {
-      hooks.acquireLockCalls.push({
-        pluginRoot: bootPluginRoot,
-        instanceId,
-        version,
-        bundleHash,
-        flavor,
-      });
-    },
     writeBackendInfoFn: (info) => {
       hooks.writeBackendInfoCalls.push({ pluginRoot, info });
       runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
@@ -510,9 +491,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         env: runtime.env,
         paths: runtime.paths,
       });
-    },
-    removeLockIfOwnerFn: (bootPluginRoot, instanceId) => {
-      hooks.removeLockCalls.push({ pluginRoot: bootPluginRoot, instanceId });
     },
     createKbSubsystemFn: async ({ paths: kbPaths, processPort, storagePort, envPort }) => {
       hooks.createKbSubsystemCalls.push({

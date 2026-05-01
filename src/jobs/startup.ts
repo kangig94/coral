@@ -4,6 +4,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionLookup } from '../sessions/lookup.js';
+import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 
 export type JobsStartupContext = {
   namespace: string;
@@ -17,6 +18,16 @@ export type JobsStartupContext = {
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;
+  /**
+   * Why the recovery is finalizing app-server jobs:
+   * - `'restart'` (default): ordinary process restart recovery.
+   * - `'handoff'`: replacement daemon swap (set when `bindWithHandoff`
+   *   observed and acquired the socket from an incumbent).
+   *
+   * The reason is forwarded to `finalizeInterruptedAppServerJob`, which uses
+   * it for telemetry and the cross-version partial-state warn.
+   */
+  interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
 export interface JobsRecoveryCoordinator {
