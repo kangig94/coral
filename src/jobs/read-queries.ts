@@ -16,6 +16,7 @@ import {
 import { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { belongsToNamespace } from './records.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { prepareCached } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
 
@@ -143,7 +144,6 @@ type DecodedTerminalRow = {
 };
 
 const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const;
-const statementCache = new WeakMap<BetterSqlite3.Database, Map<string, BetterSqlite3.Statement>>();
 
 export type JobsListFilters = {
   projectRoot?: string;
@@ -169,26 +169,6 @@ function emptyJobProjectionDetail(): JobProjectionDetail {
 
 function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(', ');
-}
-
-function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>(
-  db: BetterSqlite3.Database,
-  sql: string,
-): BetterSqlite3.Statement<TParams, TResult> {
-  let cache = statementCache.get(db);
-  if (!cache) {
-    cache = new Map();
-    statementCache.set(db, cache);
-  }
-
-  const cached = cache.get(sql);
-  if (cached) {
-    return cached as BetterSqlite3.Statement<TParams, TResult>;
-  }
-
-  const statement = db.prepare(sql);
-  cache.set(sql, statement);
-  return statement as BetterSqlite3.Statement<TParams, TResult>;
 }
 
 function readProjectionRow(db: BetterSqlite3.Database, jobId: string): ProjectionRow | null {

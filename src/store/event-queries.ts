@@ -1,6 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { decodeStoredBody, type StoreReadContext } from './body-codec.js';
+import { prepareCached } from './db.js';
 import { rowToCoralEvent, type CoralEvent, type StreamKind } from './envelope.js';
 import type { EventsRow } from './schema.js';
 
@@ -13,28 +14,6 @@ export interface EventsFilter {
 export interface EventsPage {
   events: CoralEvent[];
   nextCursor: number;
-}
-
-const statementCache = new WeakMap<BetterSqlite3.Database, Map<string, BetterSqlite3.Statement>>();
-
-function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>(
-  db: BetterSqlite3.Database,
-  sql: string,
-): BetterSqlite3.Statement<TParams, TResult> {
-  let cache = statementCache.get(db);
-  if (!cache) {
-    cache = new Map();
-    statementCache.set(db, cache);
-  }
-
-  const cached = cache.get(sql);
-  if (cached) {
-    return cached as BetterSqlite3.Statement<TParams, TResult>;
-  }
-
-  const statement = db.prepare(sql);
-  cache.set(sql, statement);
-  return statement as BetterSqlite3.Statement<TParams, TResult>;
 }
 
 export function getEvent(
