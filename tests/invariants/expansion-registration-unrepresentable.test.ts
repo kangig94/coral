@@ -12,9 +12,8 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 // Type-level claims (cursor-expansion is structurally unrepresentable through
 // `ExpansionHost.registerConsumer`) live at
 // tests/types/expansion-registration-unrepresentable.test-d.ts and are
-// typechecked by `tsc -p tests/types/tsconfig.json` during `npm test`.
-// `@ts-expect-error` directives placed in this file would be dead text — vitest
-// does not typecheck and the main `tsc` invocation excludes `tests/`.
+// typechecked by `tsc -p tests/types/tsconfig.json` and
+// `tsc -p tsconfig.test.json` during `npm test`.
 
 const REPO_ROOT = process.cwd();
 

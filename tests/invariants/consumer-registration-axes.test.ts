@@ -1,31 +1,29 @@
 // Phase 7 of apply-contract-reform plan.
 //
-// AC3 declared per-arm `kind` and `registrationKind` literals on all four
-// arms of `ConsumerRegistration` so the two-axis rule
+// AC3 declared per-arm `kind` and `registrationKind` literals on all four arms
+// of `ConsumerRegistration` so the two-axis rule
 //   `kind: 'stateless' ⟺ registrationKind: 'stateless'`
 //   `kind: 'cursor' | 'apply' ⟹ registrationKind: 'base' | 'expansion'`
-// is enforced compile-time on every arm. This invariant pins that contract
-// with `// @ts-expect-error` blocks the TypeScript compiler must reject,
-// plus a runtime constructor probe asserting valid two-axis combinations
-// are accepted by `ConsumerDriver.register()`.
+// is enforced compile-time on every arm.
+//
+// The compile-time half lives in
+// `tests/types/consumer-registration-axes.test-d.ts`, typechecked by
+// `tsc -p tests/types/tsconfig.json` (and now also by
+// `tsc -p tsconfig.test.json` as the broader gate).
+//
+// This file holds the *runtime* half: `ConsumerDriver.register()` must accept
+// every type-valid two-axis combination.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import type { ExpansionHost } from '#src/expansion/contract.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
-import type {
-  ConsumerRegistration,
-  CorpusConsumerRegistration,
-  JournalApplyRegistration,
-  JournalCursorRegistration,
-  StatelessProviderLifecycleRegistration,
-} from '#src/store/consumer-contract.js';
+import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
@@ -40,96 +38,6 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 describe('Two-axis kind/registrationKind invariant', () => {
-  it('compile-time: type system rejects every mixed two-axis combination', () => {
-    // Each block below MUST be flagged by `tsc`. If the compiler stops
-    // rejecting any of these, the structural invariant is broken and
-    // future drift can pair (e.g.) `kind: 'stateless'` with
-    // `registrationKind: 'base'` without a build error. Removing any
-    // `@ts-expect-error` here documents that the compiler started
-    // accepting an illegal combination — a regression.
-
-    // Stateless kind paired with non-stateless registrationKind:
-    const _statelessAsBase: StatelessProviderLifecycleRegistration = {
-      id: 's-1',
-      kind: 'stateless',
-      // @ts-expect-error stateless kind requires registrationKind: 'stateless'
-      registrationKind: 'base',
-    };
-    const _statelessAsExpansion: StatelessProviderLifecycleRegistration = {
-      id: 's-2',
-      kind: 'stateless',
-      // @ts-expect-error stateless kind requires registrationKind: 'stateless'
-      registrationKind: 'expansion',
-    };
-
-    // Non-stateless kind paired with registrationKind: 'stateless':
-    const _cursorAsStateless: JournalCursorRegistration = {
-      id: 'c-1',
-      authority: 'journal',
-      kind: 'cursor',
-      // @ts-expect-error journal-cursor cannot pair with registrationKind: 'stateless'
-      registrationKind: 'stateless',
-    };
-    const _applyAsStateless: JournalApplyRegistration = {
-      id: 'a-1',
-      authority: 'journal',
-      kind: 'apply',
-      // @ts-expect-error journal-apply cannot pair with registrationKind: 'stateless'
-      registrationKind: 'stateless',
-      apply: async () => {},
-    };
-    const _corpusAsStateless: CorpusConsumerRegistration = {
-      id: 'co-1',
-      authority: 'corpus',
-      kind: 'apply',
-      // @ts-expect-error corpus-apply cannot pair with registrationKind: 'stateless'
-      registrationKind: 'stateless',
-      corpusInterest: 'content',
-      apply: async () => {},
-    };
-
-    // Stateless arm must not declare `authority` (the type pins it to
-    // `never` for that arm). Adding the field is a compile error.
-    const _statelessWithAuthority: StatelessProviderLifecycleRegistration = {
-      id: 's-3',
-      kind: 'stateless',
-      registrationKind: 'stateless',
-      // @ts-expect-error stateless arm has authority?: never
-      authority: 'journal',
-    };
-
-    // The narrow union inhibits assignment of a stateless registration to
-    // `JournalCursorRegistration` (and vice-versa) — the kind discriminator
-    // splits the union irreversibly.
-    const _crossAssign: JournalCursorRegistration = {
-      id: 'x-1',
-      // @ts-expect-error stateless registration is not a journal-cursor registration
-      kind: 'stateless',
-      // @ts-expect-error stateless registrationKind cannot pair with kind: 'cursor'
-      registrationKind: 'stateless',
-    };
-
-    const typecheckOnly = false as boolean;
-    if (typecheckOnly) {
-      const host = null as unknown as ExpansionHost;
-      const scope = host.scope;
-      // @ts-expect-error cursor consumers are coordinator-startup-owned and unreachable through ExpansionHost
-      host.registerConsumer({ id: 'cursor-expansion', authority: 'journal', kind: 'cursor' }, scope);
-    }
-
-    expect(
-      [
-        _statelessAsBase,
-        _statelessAsExpansion,
-        _cursorAsStateless,
-        _applyAsStateless,
-        _corpusAsStateless,
-        _statelessWithAuthority,
-        _crossAssign,
-      ].length,
-    ).toBe(7);
-  });
-
   it('runtime: ConsumerDriver.register() accepts every type-valid two-axis combination', () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
