@@ -2,7 +2,6 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync }
 import { dirname, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import type {
@@ -40,6 +39,7 @@ import {
   type NeedleBackend as NeedleBackendContract,
   type NeedleBackendOptions,
 } from './contract.js';
+import { isNeedleSnapshotManifest, type NeedleSnapshotManifest } from './artifact-port.js';
 import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../../kb/search/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 
@@ -59,15 +59,6 @@ type NeedleCursorView = {
   metadataSeq: number;
   contentManifestHash: string;
   metadataManifestHash: string;
-};
-
-type NeedleSnapshotManifest = {
-  snapshot: NeedleCursorView & {
-    projectionIdentityHash: string;
-  };
-  specId: string;
-  entryCount: number;
-  chunkCount: number;
 };
 
 type OpenedNeedleStore = {
@@ -105,22 +96,6 @@ async function resolveRuntimeNeedleEmbedder(runtime: KbEngineRuntime): Promise<R
     }
     throw error;
   }
-}
-
-function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {
-  return (
-    isRecord(value) &&
-    isRecord(value.snapshot) &&
-    typeof value.snapshot.snapshotId === 'string' &&
-    typeof value.snapshot.contentSeq === 'number' &&
-    typeof value.snapshot.metadataSeq === 'number' &&
-    typeof value.snapshot.contentManifestHash === 'string' &&
-    typeof value.snapshot.metadataManifestHash === 'string' &&
-    typeof value.snapshot.projectionIdentityHash === 'string' &&
-    typeof value.specId === 'string' &&
-    typeof value.entryCount === 'number' &&
-    typeof value.chunkCount === 'number'
-  );
 }
 
 function needleHandleDir(runtimeDir: string, handleToken: string): string {

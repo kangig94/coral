@@ -17,7 +17,7 @@ import { createNeedleStore, isNeedleAddonCompatible, type NeedleStore } from './
 
 type NeedleArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
 
-type NeedleSnapshotManifest = {
+export type NeedleSnapshotManifest = {
   readonly snapshot: EngineArtifactProjectedSnapshot;
   readonly specId: string;
   readonly entryCount: number;
@@ -31,7 +31,7 @@ type NeedleArtifactPortOptions = {
   readonly storeFactory?: NeedleBackendOptions['storeFactory'];
 };
 
-function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {
+export function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManifest {
   return (
     isRecord(value) &&
     isRecord(value.snapshot) &&
