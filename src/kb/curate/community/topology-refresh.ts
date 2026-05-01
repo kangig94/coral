@@ -6,7 +6,7 @@ import type { KbMutationEffects, KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
 import { nowIsoString } from '../../../infra/time.js';
 
-function normalizedCommunitySummaryFingerprints(
+export function normalizedCommunitySummaryFingerprints(
   fingerprints: Readonly<Record<string, string>> | undefined,
   communities: ReadonlyArray<{ slug: string }>,
 ): Record<string, string> | undefined {

@@ -4,6 +4,7 @@ import { recordMetadataMutation } from '../../corpus/index-mutations.js';
 import { compareLocale } from '../../validation.js';
 import { parseKbEntryId } from '../../entry-types.js';
 import { computeCommunityTopologyFingerprint, detectCommunities } from './detection.js';
+import { normalizedCommunitySummaryFingerprints } from './topology-refresh.js';
 import {
   buildCommunityDocuments,
   generateCommunityFiles,
@@ -44,22 +45,6 @@ function communitySlugFromReference(reference: string): string {
   }
 
   return reference;
-}
-
-function normalizedCommunitySummaryFingerprints(
-  fingerprints: Readonly<Record<string, string>> | undefined,
-  communities: ReadonlyArray<{ slug: string }>,
-): Record<string, string> | undefined {
-  if (fingerprints === undefined) {
-    return undefined;
-  }
-
-  const allowedSlugs = new Set(communities.map((community) => community.slug));
-  const entries = Object.entries(fingerprints)
-    .filter(([slug]) => allowedSlugs.has(slug))
-    .sort(([left], [right]) => compareLocale(left, right));
-
-  return entries.length === 0 ? undefined : Object.fromEntries(entries);
 }
 
 function communitySummaryChildren(
