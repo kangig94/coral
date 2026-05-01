@@ -81,7 +81,7 @@ describe('claude exec-kernel', () => {
       effort: 'high',
       bypassPermissions: true,
     });
-    const prepared = buildPreparedClaudeRequest(request);
+    const prepared = buildPreparedClaudeRequest(request, { readFileSync: () => '' }, '/mock/kb');
     const runtime = makeRuntime(async () => ({
       stdout: JSON.stringify({
         type: 'result',

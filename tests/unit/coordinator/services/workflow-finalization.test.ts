@@ -7,7 +7,7 @@ import { selectFinalCauseRef } from '#src/coordinator/services/workflow-finaliza
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 
 type RecordedInput = {
-  readonly input: ResolvableCoralEventInput<unknown>;
+  readonly input: ResolvableCoralEventInput<unknown, unknown>;
   readonly token: CauseRefToken<unknown>;
 };
 

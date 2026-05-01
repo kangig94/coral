@@ -57,6 +57,8 @@ function createHarness(options: HarnessOptions = {}) {
       runtime,
       fetchFn,
       runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+      getMutationBlocked: () => ({ blocked: false }),
     },
     runtime,
   );

@@ -77,7 +77,7 @@ function makeRuntime(
       },
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as ProviderRuntime['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => lease),
     persistedContinuity,

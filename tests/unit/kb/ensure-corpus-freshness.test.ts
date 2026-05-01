@@ -54,7 +54,7 @@ function emptyCounts(): rescanModule.RescanCounts {
     tags: 0,
     entities: 0,
     relationships: 0,
-    entityCoverage: { withTags: 0, total: 0 },
+    entityCoverage: 0,
   };
 }
 

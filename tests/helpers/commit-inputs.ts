@@ -10,7 +10,7 @@ export function commitInputs(db: Database, inputs: readonly CoralEventInput[], c
     db,
     (c) => {
       for (const input of inputs) {
-        c.append(input);
+        c.append(input as Parameters<typeof c.append>[0]);
       }
       return undefined;
     },

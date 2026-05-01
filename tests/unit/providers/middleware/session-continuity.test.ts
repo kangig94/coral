@@ -409,6 +409,8 @@ describe('sessionContinuity', () => {
         createRuntime(undefined, {
           env: {
             get: (key) => (key === DEV_ASSERTIONS ? '1' : undefined),
+            homedir: () => '/mock/home',
+            fullSnapshot: () => ({}),
           },
         }),
       ),

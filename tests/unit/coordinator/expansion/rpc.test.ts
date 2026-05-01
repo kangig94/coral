@@ -28,7 +28,7 @@ describe('createExpansionRpc', () => {
               id: name,
               version: '0.2.0',
               tier: 'installed' as const,
-              status: (active ? 'active' : 'inactive') as const,
+              status: active ? ('active' as const) : ('inactive' as const),
             },
       ),
       list: vi.fn(() => [

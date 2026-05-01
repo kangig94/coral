@@ -24,10 +24,12 @@ const BASE_RUNTIME: ProviderRuntime = {
   acquireServer: async () => {
     throw new Error('not used in adapter-parse-guard tests');
   },
+  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
+  kbRoot: '/mock/kb',
 };
 
 async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<ProviderEventBody[]> {

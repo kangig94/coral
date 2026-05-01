@@ -26,7 +26,7 @@ function createLockDeps(now: () => number): {
         removed.push(path);
         directories.delete(path);
       },
-      statSync: (path) => {
+      statSync: ((path: string) => {
         const mtimeMs = directories.get(path);
         if (mtimeMs === undefined) {
           throw errno('ENOENT');
@@ -37,7 +37,7 @@ function createLockDeps(now: () => number): {
           isDirectory: () => true,
           isFile: () => false,
         };
-      },
+      }) as DirectoryLockDeps['storage']['statSync'],
     },
     time: {
       now,

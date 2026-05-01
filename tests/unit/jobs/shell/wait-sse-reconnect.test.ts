@@ -343,9 +343,8 @@ describe('wait SSE reconnect', () => {
 
     let terminalInjected = false;
     const coordinator = new WaitCoordinator({
-      progressStore,
       sessionManager: {} as never,
-      launchCoordinator,
+      launchQueue: launchCoordinator,
       eventBus,
       jobPools: new Map(),
       time: runtime.time,

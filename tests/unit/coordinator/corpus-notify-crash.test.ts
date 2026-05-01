@@ -1,13 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-  type Dirent,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -18,6 +9,7 @@ import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
+import type { StoragePort } from '#src/runtime/ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
@@ -47,9 +39,7 @@ const nodeStorage = {
   readFileSync(path: string, encoding: BufferEncoding): string {
     return readFileSync(path, encoding);
   },
-  readdirSync(path: string, options: { withFileTypes: true }): Dirent[] {
-    return readdirSync(path, options);
-  },
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 type ProjectionRow = {

@@ -42,11 +42,13 @@ function makeRuntime(
     acquireServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');
     }),
+    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     persistedContinuity,
     continuityBridge: {
       checkpoint: () => {},
       transportClosed: () => {},
     },
+    kbRoot: '/mock/kb',
   };
 }
 

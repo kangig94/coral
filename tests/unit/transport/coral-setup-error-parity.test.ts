@@ -158,7 +158,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
         throw failWith();
       }),
       unequipExpansion: vi.fn(),
-      listExpansion: vi.fn(async () => ({ equipment: [] })),
+      listExpansion: vi.fn(async () => ({ expansions: [] })),
       readBinding: vi.fn(async () => ({ bound: false })),
     },
   };

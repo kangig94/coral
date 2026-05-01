@@ -46,7 +46,7 @@ function rebind<T>(map: WeakMap<KbRuntime, T>, runtime: KbRuntime, next: T, disp
 function createCorpusConsumer(
   id: string,
   registrationKind: ConsumerRegistrationKind,
-  apply: (() => Promise<void>) | (() => void) = async () => {},
+  apply: () => Promise<void> = async () => {},
 ) {
   return {
     id,
@@ -54,7 +54,9 @@ function createCorpusConsumer(
     kind: 'apply' as const,
     registrationKind: registrationKind === 'stateless' ? 'expansion' : registrationKind,
     corpusInterest: 'content' as const,
-    apply,
+    apply: async () => {
+      await apply();
+    },
   };
 }
 

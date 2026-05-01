@@ -58,11 +58,12 @@ export async function applyBoundCorpusConsumerForTest(kb: KbRuntime, db: Databas
   const consumer = kb.fts.read().consumer;
   const controller = new AbortController();
   if ('apply' in consumer && typeof consumer.apply === 'function') {
-    await consumer.apply({
+    const ctx = {
       ...createCorpusApplyContext(kb, db),
       projectionInput: await kb.corpusProjectionReader.prepareCurrentProjectionInput({ signal: controller.signal }),
       signal: controller.signal,
-    });
+    };
+    await (consumer.apply as (c: typeof ctx) => Promise<void>)(ctx);
   }
   if ('projectionSync' in consumer && consumer.projectionSync === 'text-index') {
     kb.recordIndexSyncSuccess();

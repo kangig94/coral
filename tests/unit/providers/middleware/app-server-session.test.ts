@@ -92,7 +92,7 @@ function makeRuntime(
       clearTimeout: () => {},
     } as ProviderRuntime['time'],
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as ProviderRuntime['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     acquireServer: vi.fn(async () => lease),
     persistedContinuity: undefined,
     continuityBridge: bridge as ProviderRuntime['continuityBridge'] & MockBridge,

@@ -10,7 +10,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync'> = {
   readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
-  readdirSync: (dirPath, options) => readdirSync(dirPath, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
   existsSync: (filePath) => existsSync(filePath),
   mkdirSync: (dirPath, options) => mkdirSync(dirPath, options),
 };

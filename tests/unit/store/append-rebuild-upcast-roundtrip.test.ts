@@ -31,6 +31,7 @@ describe('append/rebuild upcaster round-trip', () => {
       const receivedBodies: { count: number }[] = [];
 
       const reducers = composeReducers({
+        streamKind: 'job',
         entries: [
           defineDomainEvent({
             type: 'test.upcasted',

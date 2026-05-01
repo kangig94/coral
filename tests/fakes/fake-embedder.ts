@@ -36,7 +36,7 @@ const fakeEmbedder: Expansion = (host) => {
     },
   };
 
-  host.registerConsumer(provider.consumer, host.scope);
+  host.registerConsumer(provider.consumer as unknown as Parameters<typeof host.registerConsumer>[0], host.scope);
   host.bind(host.kb.embedding, provider);
 };
 

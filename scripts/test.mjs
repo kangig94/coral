@@ -47,6 +47,7 @@ async function runVitestStrict(cmd) {
 
 try {
   await runAsync('npx tsc -p tests/types/tsconfig.json');
+  await runAsync('npx tsc -p tsconfig.test.json --noEmit');
   await runVitestStrict('npx vitest run --config vitest/default.ts');
   await runVitestStrict('npx vitest run --config vitest/simulation.ts');
 } catch {

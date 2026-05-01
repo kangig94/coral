@@ -48,10 +48,12 @@ const BASE_RUNTIME: ProviderRuntime = {
   acquireServer: async () => {
     throw new Error('not used in contract tests');
   },
+  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
+  kbRoot: '/mock/kb',
 };
 
 function terminal(content: string): ProviderEventBody {

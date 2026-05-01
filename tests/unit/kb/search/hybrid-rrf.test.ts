@@ -243,7 +243,6 @@ function textResult(entryId: `note:${string}`, rank: number): TextRetrievalResul
     score: 1,
     rank,
     document: {
-      id: entryId,
       entryId,
       slug,
       kind: 'note',
@@ -252,9 +251,6 @@ function textResult(entryId: `note:${string}`, rank: number): TextRetrievalResul
       body: `${slug} body`,
       tags: [],
       principles: [],
-      contentHash: `content:${slug}`,
-      metadataHash: `metadata:${slug}`,
-      vector: [],
     },
   };
 }

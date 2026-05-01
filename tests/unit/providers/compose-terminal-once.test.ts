@@ -29,10 +29,12 @@ const BASE_RUNTIME: ProviderRuntime = {
   acquireServer: async () => {
     throw new Error('not used in compose tests');
   },
+  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
+  kbRoot: '/mock/kb',
 };
 
 const COMPLETED_TERMINAL: ProviderEventBody = {

@@ -72,6 +72,7 @@ describe('commitInputs bulk', () => {
     try {
       let callCount = 0;
       const throwingRegistry: DomainEventRegistry = {
+        streamKind: 'job',
         entries: [
           defineDomainEvent({
             type: 'test.counter.ticked',

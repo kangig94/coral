@@ -499,6 +499,10 @@ function createActualRecoveryService(
       pluginRegistry: {
         discoverPluginRoot: () => null,
       },
+      loadJobProjectionDetail: (() => ({}) as never) as never,
+      readJobEvents: (() => []) as never,
+      subscribeJobEvents: async function* () {} as never,
+      getCurrentJournalSeq: () => 0,
     },
   );
 }

@@ -45,6 +45,7 @@ function terminal(jobId: string, content: string): WaitStreamEvent {
   return {
     type: 'terminal',
     jobId,
+    seq: 0,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result,

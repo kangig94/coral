@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { waitForCorpusReadiness } from '#src/coordinator/index.js';
-import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
+import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import type { RuntimeBinding } from '#src/runtime/binding.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
