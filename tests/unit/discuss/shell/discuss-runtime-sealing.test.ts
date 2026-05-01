@@ -19,9 +19,9 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import type { AgentConfig, DiscussContext } from '#src/discuss/shell/types.js';
 import { runPlainTurn } from '#src/discuss/shell/runtime-build.js';
-import { getWatchState, startDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
+import { startDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
-import { detachSession } from '#src/discuss/shell/registry.js';
+import { detachSession, getWatchState } from '#src/discuss/shell/registry.js';
 import { knownDiscussSources } from '#src/discuss/shell/session-read-service.js';
 import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';

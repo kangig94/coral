@@ -28,6 +28,3 @@ export async function fetchWithTransientRetry(input: string, init?: RequestInit)
   throw lastError ?? new Error('fetch failed');
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}

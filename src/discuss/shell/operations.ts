@@ -10,9 +10,8 @@ import {
   type DiscussContext,
   type LiveDiscussSession,
 } from './types.js';
-import type { WatchState } from '../watch.js';
 import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
-import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
+import { attachSession, detachSession, getSession } from './registry.js';
 import { afterCommit, commitDecision } from './persistence.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { collectBids } from './flow/bid.js';
@@ -188,6 +187,3 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
   detachSession(ctx, sessionId);
 }
 
-export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {
-  return getRegistryWatchState(ctx, sessionId, cursor);
-}

@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { isRecord } from '../infra/json.js';
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import { encodeEventBody } from './body-codec.js';
@@ -115,10 +116,6 @@ function causeRefTokenSlot(token: CauseRefToken<unknown> & RuntimeCauseRefToken)
 // one writer reserves at a time, so MAX(seq) is consistent for the closure.
 function readCurrentMaxSeq(db: Database): number {
   return (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function tokenPath(path: readonly string[]): string {

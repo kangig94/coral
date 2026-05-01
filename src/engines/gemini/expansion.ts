@@ -1,7 +1,8 @@
 import type { Expansion } from '#src/expansion/contract.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '#src/kb/embedding-vector.js';
-import { fetchWithTransientRetry, isRecord } from '#src/infra/http-retry.js';
+import { fetchWithTransientRetry } from '#src/infra/http-retry.js';
+import { isRecord } from '#src/infra/json.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 
 export const GEMINI_API_KEY_ENV = 'GEMINI_API_KEY';

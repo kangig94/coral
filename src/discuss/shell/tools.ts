@@ -5,6 +5,7 @@ import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartS
 import { type DiscussContext } from './types.js';
 import { DiscussManagerError } from './errors.js';
 import * as discussOperations from './operations.js';
+import { getWatchState } from './registry.js';
 import { seedPersonas } from '../persona/seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 
@@ -115,9 +116,7 @@ function executeDiscussWatch(
   helpers: DiscussToolHelpers,
 ): ToolDomainResult {
   try {
-    return domainSuccess(
-      discussOperations.getWatchState(helpers.getDiscussContext(context), args.session, args.cursor),
-    );
+    return domainSuccess(getWatchState(helpers.getDiscussContext(context), args.session, args.cursor));
   } catch (error: unknown) {
     return handleDiscussOperationError(error);
   }

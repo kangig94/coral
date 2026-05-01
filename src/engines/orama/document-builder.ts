@@ -13,6 +13,7 @@ import {
   type KbReindexSourceRecord,
 } from '../../kb/entry-types.js';
 import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
+import { normalizeWhitespace } from '../../kb/text-normalization.js';
 
 const ORAMA_LANGUAGE = 'english';
 
@@ -29,10 +30,6 @@ export type KbOramaDocument = {
   contentHash: string;
   metadataHash: string;
 };
-
-export function normalizeWhitespace(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
-}
 
 function uniqueTokens(tokens: string[]): string[] {
   return [...new Set(tokens)];
