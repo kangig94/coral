@@ -91,6 +91,24 @@ function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: nu
   return domainResultToHttp(domainError('backend_recovering', BACKEND_RECOVERING_MESSAGE));
 }
 
+type CommonSessionInput = {
+  model?: string;
+  cwd?: string;
+  effort?: string;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+};
+
+function commonSessionInputFields(parsed: Record<string, unknown>): CommonSessionInput {
+  const result: CommonSessionInput = {};
+  if (typeof parsed.model === 'string') result.model = parsed.model;
+  if (typeof parsed.workDir === 'string') result.cwd = parsed.workDir;
+  if (typeof parsed.effort === 'string') result.effort = parsed.effort;
+  if (typeof parsed.bypassPermissions === 'boolean') result.bypassPermissions = parsed.bypassPermissions;
+  if (typeof parsed.systemPrompt === 'string') result.systemPrompt = parsed.systemPrompt;
+  return result;
+}
+
 function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal): T {
   if (!abortSignal) {
     return request;
@@ -123,11 +141,7 @@ export async function executeCatalogRequest(
         {
           prompt: parsed.prompt,
           ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+          ...commonSessionInputFields(parsed),
         },
         ctx,
       );
@@ -146,11 +160,7 @@ export async function executeCatalogRequest(
           sessionId: parsed.sessionId,
           prompt: parsed.prompt,
           ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+          ...commonSessionInputFields(parsed),
         },
         ctx,
       );
@@ -169,11 +179,7 @@ export async function executeCatalogRequest(
           sessionId: parsed.sessionId,
           ...(typeof parsed.prompt === 'string' ? { prompt: parsed.prompt } : {}),
           ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+          ...commonSessionInputFields(parsed),
         },
         ctx,
       );
