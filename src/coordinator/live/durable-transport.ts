@@ -35,8 +35,6 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   onRuntimeRecord?: (record: JobRuntime) => void;
 };
 
-export type SpawnCliFn = (options: SpawnCliOptions) => Promise<CliExecResult>;
-export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<CliExecResult>;
 
 export function spawnCliTransport(params: {
   runtime: Runtime;

@@ -56,7 +56,6 @@ const onboardingChoiceSchema = z
     dims: z.number().int().positive().nullable(),
   })
   .strict();
-export type OnboardingChoice = z.infer<typeof onboardingChoiceSchema>;
 
 const postInstallSchema = z.array(z.enum(postInstallActionLiterals)).min(1);
 
@@ -72,7 +71,6 @@ export const onboardingSchema = z
     choices: z.array(onboardingChoiceSchema).min(1),
   })
   .strict();
-export type Onboarding = z.infer<typeof onboardingSchema>;
 
 const expansionEntrySchema = z
   .object({
@@ -106,7 +104,6 @@ export const catalogEntryStatusSchema = z.union([
   z.literal('not_installed'),
   z.literal('installed'),
 ]);
-export type CatalogEntryStatus = z.infer<typeof catalogEntryStatusSchema>;
 
 export const catalogEntrySchema = z.discriminatedUnion('activation', [expansionEntrySchema, installOnlyEntrySchema]);
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>;
