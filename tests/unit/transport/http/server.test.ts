@@ -72,6 +72,8 @@ import {
   createProviderHostManager,
   type MutableCoordinatorRuntimeState,
 } from '#tests/unit/coordinator/server-test-deps.js';
+import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
+import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
@@ -107,7 +109,7 @@ function jobResultPath(jobId: string): string {
 
 function createProgressStore(
   namespace = 'test-ns',
-  runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time'> = runtime,
+  runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'> = runtime,
 ): JobStore {
   return new JobStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
     db: openTestStoreDb(runtimeArg),
@@ -589,6 +591,7 @@ describe('execution backend server', () => {
           metadataManifestHash: '',
         })),
       } as never,
+      readDb: asReadonlyDatabase({} as never),
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
@@ -596,7 +599,7 @@ describe('execution backend server', () => {
         isRunning: () => false,
         stop: vi.fn(async () => {}),
       },
-    };
+    } satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime;
   }
 
   function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
@@ -610,7 +613,7 @@ describe('execution backend server', () => {
   } {
     let lifecycle: LifecycleState = 'starting';
     let startedAt = 0;
-    let kbSubsystem: ReturnType<typeof createMockKbSubsystem> | null = null;
+    let kbSubsystem: KnowledgeBaseRuntime | null = null;
     let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
     let launchFenceActive = false;
 
@@ -630,11 +633,7 @@ describe('execution backend server', () => {
         startedAt = ts;
       }),
       setKbStatus: vi.fn(
-        (
-          status:
-            | { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> }
-            | { kind: 'unavailable'; reason: string },
-        ) => {
+        (status: { kind: 'ok'; subsystem: KnowledgeBaseRuntime } | { kind: 'unavailable'; reason: string }) => {
           kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
         },
       ),
@@ -1030,6 +1029,7 @@ describe('execution backend server', () => {
       receivedKbOptions = options;
       return {
         kb: {} as never,
+        readDb: asReadonlyDatabase({} as never),
         curateScheduler: {
           start: vi.fn(async () => {}),
           schedule: vi.fn(),
@@ -1037,7 +1037,7 @@ describe('execution backend server', () => {
           isRunning: () => false,
           stop: vi.fn(async () => {}),
         },
-      };
+      } satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime;
     });
 
     await startBackendServer({
@@ -1068,8 +1068,9 @@ describe('execution backend server', () => {
       'utf-8',
     );
 
-    const createKbSubsystemFn = vi.fn(async (ctx: { flavor: string }) => {
-      expect(ctx.flavor).toBe('dev');
+    let observedRuntimeDir = '';
+    const createKbSubsystemFn = vi.fn(async (ctx) => {
+      observedRuntimeDir = ctx.paths.runtimeDir;
       return createMockKbSubsystem();
     });
 
@@ -1090,6 +1091,8 @@ describe('execution backend server', () => {
 
     expect(started.flavor).toBe('dev');
     expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    // Flavor settles before KB init: dev runtimeDir lives under data-dev/.
+    expect(observedRuntimeDir).toMatch(/data-dev\b/);
   });
 
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
@@ -1196,45 +1199,47 @@ describe('execution backend server', () => {
       relationships: [],
     }));
     const backend = await startBackendServer({
-      createKbSubsystemFn: async () => ({
-        kb: {
-          ...(kbSubsystem.kb as Record<string, unknown>),
-          projectionArtifacts: {
-            ...(kbSubsystem.kb as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts,
-            files: {
-              ...(kbSubsystem.kb as { projectionArtifacts: { files: Record<string, unknown> } }).projectionArtifacts
-                .files,
-              existsSync: vi.fn(() => true),
-            },
-          },
-          ensureCorpusFreshness,
-          readIndex: vi.fn(() => {
-            throw new Error('mock KB runtime unavailable');
-          }),
-          ensureOramaIndex: vi.fn(async () => ({
-            db: {} as never,
-            tokenizer: {} as never,
-            index: {
-              entries: {
-                'note:broken-entry': {
-                  kind: 'note',
-                  slug: 'broken-entry',
-                  title: 'Broken Entry',
-                  tags: [],
-                  principles: [],
-                  source: ['kangig94/coral'],
-                  createdAt: '2026-03-20T00:00:00.000Z',
-                  updatedAt: '2026-03-20T00:00:00.000Z',
-                  related: [],
-                  entrySeq: 1,
-                },
+      createKbSubsystemFn: async () =>
+        ({
+          kb: {
+            ...(kbSubsystem.kb as unknown as Record<string, unknown>),
+            projectionArtifacts: {
+              ...(kbSubsystem.kb as unknown as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts,
+              files: {
+                ...(kbSubsystem.kb as unknown as { projectionArtifacts: { files: Record<string, unknown> } })
+                  .projectionArtifacts.files,
+                existsSync: vi.fn(() => true),
               },
-              principles: {},
             },
-          })),
-        } as never,
-        curateScheduler: kbSubsystem.curateScheduler,
-      }),
+            ensureCorpusFreshness,
+            readIndex: vi.fn(() => {
+              throw new Error('mock KB runtime unavailable');
+            }),
+            ensureOramaIndex: vi.fn(async () => ({
+              db: {} as never,
+              tokenizer: {} as never,
+              index: {
+                entries: {
+                  'note:broken-entry': {
+                    kind: 'note',
+                    slug: 'broken-entry',
+                    title: 'Broken Entry',
+                    tags: [],
+                    principles: [],
+                    source: ['kangig94/coral'],
+                    createdAt: '2026-03-20T00:00:00.000Z',
+                    updatedAt: '2026-03-20T00:00:00.000Z',
+                    related: [],
+                    entrySeq: 1,
+                  },
+                },
+                principles: {},
+              },
+            })),
+          } as never,
+          readDb: kbSubsystem.readDb,
+          curateScheduler: kbSubsystem.curateScheduler,
+        }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime,
     });
     ensureCorpusFreshness.mockRejectedValue(new Error('mock KB runtime unavailable'));
 
@@ -1598,7 +1603,7 @@ describe('execution backend server', () => {
             withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, deps.runtime)),
           listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
           listMemos: (args: Record<string, unknown>, ctx: unknown) =>
-            withKb(() => handleKbMemoList(args, ctx as never)),
+            withKb(() => handleKbMemoList(args, ctx as never, deps.runtime)),
           listPrinciples: (args: Record<string, unknown>) =>
             withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
           createNote: (args: Record<string, unknown>, ctx: unknown) =>
@@ -1612,9 +1617,10 @@ describe('execution backend server', () => {
               'KB source import must run through the coordinator source-import job service.',
             ),
           deleteSource: (slug: string) => withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
-          createMemo: (args: Record<string, unknown>, ctx: unknown) => withKb(() => handleKbMemo(args, ctx as never)),
+          createMemo: (args: Record<string, unknown>, ctx: unknown) =>
+            withKb(() => handleKbMemo(args, ctx as never, deps.runtime)),
           deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
-            withKb(() => handleKbMemoDeleteConsolidated(args, ctx as never)),
+            withKb(() => handleKbMemoDeleteConsolidated(args, ctx as never, deps.runtime)),
           reindex: async () =>
             domainError('reindex_requires_coordinator_service', 'KB reindex must run through the coordinator service.'),
         },

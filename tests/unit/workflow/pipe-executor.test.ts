@@ -45,6 +45,7 @@ function terminal(
   return {
     type: 'terminal',
     jobId,
+    seq: 0,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result: terminalResult,
@@ -935,6 +936,7 @@ describe('waitForAtoms', () => {
     const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
       staleTimeoutMs: 0,
       staleCheckIntervalMs: 500,
+      staleAbortTimeoutMs: 30_000,
       drainDeadlineMs: 15_000,
       onProgress: progress,
       time: workflowTime,
@@ -976,7 +978,6 @@ describe('waitForAtoms', () => {
             sessionId: 'session-2',
             agent: 'critic',
             tagName: 'critic',
-            coralOp: 'coral:critic',
             atomIndex: 1,
             atomKey: '0:1',
           }),
@@ -986,6 +987,7 @@ describe('waitForAtoms', () => {
         {
           staleTimeoutMs: 0,
           staleCheckIntervalMs: 500,
+          staleAbortTimeoutMs: 30_000,
           drainDeadlineMs: 15_000,
           onProgress: vi.fn(),
           time: workflowTime,
@@ -1016,6 +1018,7 @@ describe('waitForAtoms', () => {
       waitForAtoms([launchedAtom()], executionSvc, ctx, {
         staleTimeoutMs: 0,
         staleCheckIntervalMs: 500,
+        staleAbortTimeoutMs: 30_000,
         drainDeadlineMs: 15_000,
         onProgress: vi.fn(),
         time: workflowTime,

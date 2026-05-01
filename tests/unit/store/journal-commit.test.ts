@@ -8,6 +8,7 @@ import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
+import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -98,7 +99,7 @@ function sessionEntry(sessionId: string): SessionEntry {
   };
 }
 
-function workflowPlanInput(workflowId: string): CoralEventInput {
+function workflowPlanInput(workflowId: string): CoralEventInput<WorkflowPlan> {
   return {
     type: 'workflow.plan.declared',
     stream: { kind: 'workflow', id: workflowId },

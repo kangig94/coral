@@ -11,20 +11,14 @@
       "target": "anchor",
       "type": "implements",
       "description": "anchor evidence",
-      "evidence": [
-        "note:graph-anchor",
-        "note:missing-note",
-        "note:graph-anchor"
-      ]
+      "evidence": ["note:graph-anchor", "note:missing-note", "note:graph-anchor"]
     },
     {
       "source": "anchor",
       "target": "anchor",
       "type": "requires",
       "description": "orphan-only relationship",
-      "evidence": [
-        "source:missing-source"
-      ]
+      "evidence": ["source:missing-source"]
     }
   ]
 }

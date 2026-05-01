@@ -30,10 +30,10 @@ function createSpyRunner(): KbMutationLockRunner<Index, Publication, Lane> & {
   return {
     cloneStartIndex: () => ({ tag: 'start' }),
     getCurrentLock: () => currentLock,
-    setCurrentLock: (lock) => {
+    setCurrentLock: (lock: Promise<void>) => {
       currentLock = lock;
     },
-    setActiveContext: (context) => {
+    setActiveContext: (context: KbMutationLockContext<Index, Publication, Lane> | null) => {
       contextSnapshots.push(context);
     },
     finalizePendingMutation: () => {
@@ -82,10 +82,10 @@ describe('createKbMutationLock', () => {
     const hang = new Promise<void>((resolve) => {
       releaseHang = resolve;
     });
-    let observedSignal: AbortSignal | null = null;
+    const observedSignalRef: { current: AbortSignal | null } = { current: null };
 
     const stuckPromise = controller.withMutationLock(async (lockCtx, { signal }) => {
-      observedSignal = signal;
+      observedSignalRef.current = signal;
       lockCtx.pendingMutationReason = 'reindex';
       await hang;
       return 'done' as const;
@@ -99,9 +99,9 @@ describe('createKbMutationLock', () => {
     // but the returned promise stays pending — fn has not settled.
     time.tick(1050);
     await flushMicrotasks();
-    expect(observedSignal?.aborted).toBe(true);
-    expect((observedSignal?.reason as KbMutationDeadlineReason).kind).toBe('mutation_deadline');
-    expect((observedSignal?.reason as KbMutationDeadlineReason).timeoutMs).toBe(1000);
+    expect(observedSignalRef.current?.aborted).toBe(true);
+    expect((observedSignalRef.current?.reason as KbMutationDeadlineReason).kind).toBe('mutation_deadline');
+    expect((observedSignalRef.current?.reason as KbMutationDeadlineReason).timeoutMs).toBe(1000);
 
     // Cooperative grace window has not elapsed yet.
     expect(controller.diagnostics()).toEqual({ blocked: false });

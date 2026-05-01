@@ -51,7 +51,7 @@ import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/hel
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
-import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { appendJobTerminalRecorded, failedTerminalOutcome } from '#src/jobs/terminal/recording.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -463,6 +463,7 @@ function _expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
     process: runtime.process,
     storage: runtime.storage,
     env: runtime.env,
+    time: runtime.time,
   } satisfies PreflightRuntime);
 }
 
@@ -624,6 +625,7 @@ function makeStatusRecord(
     provider: 'codex',
     projectRoot: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
+    jobKind: 'provider',
     phase,
     updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
@@ -833,6 +835,7 @@ describe('ExecutionService wait', () => {
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
       phase: 'running',
       updatedAt: '2026-03-06T00:00:00.000Z',
     };
@@ -940,7 +943,7 @@ describe('ExecutionService wait', () => {
         project: status?.projectRoot,
         terminal: {
           content: '',
-          outcome: { kind: 'failed', causeRef: completed },
+          outcome: failedTerminalOutcome(completed),
         },
       });
       return undefined;
@@ -1034,6 +1037,7 @@ describe('ExecutionService wait', () => {
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
       phase: 'completed',
       updatedAt: '2026-03-06T00:00:00.000Z',
       result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1442,6 +1446,7 @@ describe('ExecutionService wait', () => {
             provider: 'codex',
             projectRoot: ctx.projectRoot,
             backendNamespace: TEST_BACKEND_NAMESPACE,
+            jobKind: 'provider',
             phase: 'running',
             updatedAt: '',
           };
@@ -1453,6 +1458,7 @@ describe('ExecutionService wait', () => {
             provider: 'codex',
             projectRoot: ctx.projectRoot,
             backendNamespace: TEST_BACKEND_NAMESPACE,
+            jobKind: 'provider',
             phase: 'running',
             updatedAt: '',
           };
@@ -1548,6 +1554,7 @@ describe('ExecutionService wait', () => {
           provider: 'codex',
           projectRoot: ctx.projectRoot,
           backendNamespace: TEST_BACKEND_NAMESPACE,
+          jobKind: 'provider',
           phase: 'running',
           updatedAt: '',
         };

@@ -1142,7 +1142,7 @@ describe('architecture boundary guard', () => {
 
       if (ts.isVariableStatement(node)) {
         return node.declarationList.declarations.flatMap((declaration) => {
-          if (!ts.isObjectLiteralExpression(declaration.initializer)) {
+          if (!declaration.initializer || !ts.isObjectLiteralExpression(declaration.initializer)) {
             return [];
           }
           return declaration.initializer.properties.flatMap((property) => {
@@ -1197,7 +1197,7 @@ describe('architecture boundary guard', () => {
       }
 
       for (const statement of sourceFile.statements) {
-        const modifiers = 'modifiers' in statement ? statement.modifiers : undefined;
+        const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
         if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
           continue;
         }
@@ -1471,7 +1471,7 @@ describe('architecture boundary guard', () => {
 
       if (ts.isVariableStatement(node)) {
         return node.declarationList.declarations.flatMap((declaration) => {
-          if (!ts.isObjectLiteralExpression(declaration.initializer)) {
+          if (!declaration.initializer || !ts.isObjectLiteralExpression(declaration.initializer)) {
             return [];
           }
           return declaration.initializer.properties.flatMap((property) => {
@@ -1490,7 +1490,7 @@ describe('architecture boundary guard', () => {
       const sourceText = readFileSync(filePath, 'utf8');
       const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       for (const statement of sourceFile.statements) {
-        const modifiers = 'modifiers' in statement ? statement.modifiers : undefined;
+        const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
         if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
           continue;
         }

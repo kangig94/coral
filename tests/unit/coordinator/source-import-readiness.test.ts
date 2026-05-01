@@ -6,9 +6,7 @@ import type { RuntimeBinding } from '#src/runtime/binding.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 
-type Backed = ReturnType<KbRuntime['fts']['read']>;
-
-function makeBoundBinding(name: string, consumerId: string): RuntimeBinding<Backed> {
+function makeBoundBinding<T>(name: string, consumerId: string): RuntimeBinding<T> {
   return {
     name,
     heldBy: 'test-holder',
@@ -26,14 +24,14 @@ function makeBoundBinding(name: string, consumerId: string): RuntimeBinding<Back
           corpusInterest: 'content',
           apply: async () => {},
         },
-      }) as unknown as Backed,
+      }) as unknown as T,
     bind: () => {
       throw new Error('unused in tests');
     },
   };
 }
 
-function makeUnboundBinding(name: string): RuntimeBinding<Backed> {
+function makeUnboundBinding<T>(name: string): RuntimeBinding<T> {
   return {
     name,
     heldBy: undefined,

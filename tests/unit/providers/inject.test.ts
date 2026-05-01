@@ -48,7 +48,7 @@ describe('resolveInjectMd', () => {
       storage: mockStorage,
       workingDirectory: '/wd',
       ownerSessionId: 'valid-session-123',
-      coralEnv: {},
+      kbRoot: '/mock/kb',
     });
     expect(result).toContain('base');
     expect(result).not.toContain('owner only');
@@ -63,7 +63,7 @@ describe('resolveInjectMd', () => {
       storage: mockStorage,
       workingDirectory: '/wd',
       ownerSessionId: 'valid-session-123',
-      coralEnv: {},
+      kbRoot: '/mock/kb',
     });
     expect(result).toContain('session content');
   });
@@ -72,7 +72,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', kbRoot: '/mock/kb' });
     expect(result).toContain('base');
     expect(result).not.toContain('session content');
     expect(result).toContain('rest');
@@ -92,7 +92,7 @@ describe('resolveInjectMd', () => {
     ].join('\n');
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', coralEnv: {} });
+    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', kbRoot: '/mock/kb' });
     expect(result).toContain('top');
     expect(result).not.toContain('owner stuff');
     expect(result).toContain('middle');
@@ -108,7 +108,7 @@ describe('resolveInjectMd', () => {
       storage: mockStorage,
       workingDirectory: '/wd',
       ownerSessionId: 'my-session',
-      coralEnv: {},
+      kbRoot: '/mock/kb',
     });
     expect(result).toContain('owner: my-session');
   });
@@ -121,7 +121,7 @@ describe('resolveInjectMd', () => {
       storage: mockStorage,
       workingDirectory: '/wd',
       ownerSessionId: 'sess',
-      coralEnv: {},
+      kbRoot: '/mock/kb',
     });
     expect(result).toBe('');
   });

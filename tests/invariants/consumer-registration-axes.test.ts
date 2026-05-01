@@ -30,7 +30,7 @@ import type {
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 function createDb(): InstanceType<typeof Database> {
@@ -49,40 +49,40 @@ describe('Two-axis kind/registrationKind invariant', () => {
     // accepting an illegal combination — a regression.
 
     // Stateless kind paired with non-stateless registrationKind:
-    // @ts-expect-error stateless kind requires registrationKind: 'stateless'
     const _statelessAsBase: StatelessProviderLifecycleRegistration = {
       id: 's-1',
       kind: 'stateless',
+      // @ts-expect-error stateless kind requires registrationKind: 'stateless'
       registrationKind: 'base',
     };
-    // @ts-expect-error stateless kind requires registrationKind: 'stateless'
     const _statelessAsExpansion: StatelessProviderLifecycleRegistration = {
       id: 's-2',
       kind: 'stateless',
+      // @ts-expect-error stateless kind requires registrationKind: 'stateless'
       registrationKind: 'expansion',
     };
 
     // Non-stateless kind paired with registrationKind: 'stateless':
-    // @ts-expect-error journal-cursor cannot pair with registrationKind: 'stateless'
     const _cursorAsStateless: JournalCursorRegistration = {
       id: 'c-1',
       authority: 'journal',
       kind: 'cursor',
+      // @ts-expect-error journal-cursor cannot pair with registrationKind: 'stateless'
       registrationKind: 'stateless',
     };
-    // @ts-expect-error journal-apply cannot pair with registrationKind: 'stateless'
     const _applyAsStateless: JournalApplyRegistration = {
       id: 'a-1',
       authority: 'journal',
       kind: 'apply',
+      // @ts-expect-error journal-apply cannot pair with registrationKind: 'stateless'
       registrationKind: 'stateless',
       apply: async () => {},
     };
-    // @ts-expect-error corpus-apply cannot pair with registrationKind: 'stateless'
     const _corpusAsStateless: CorpusConsumerRegistration = {
       id: 'co-1',
       authority: 'corpus',
       kind: 'apply',
+      // @ts-expect-error corpus-apply cannot pair with registrationKind: 'stateless'
       registrationKind: 'stateless',
       corpusInterest: 'content',
       apply: async () => {},
@@ -90,21 +90,22 @@ describe('Two-axis kind/registrationKind invariant', () => {
 
     // Stateless arm must not declare `authority` (the type pins it to
     // `never` for that arm). Adding the field is a compile error.
-    // @ts-expect-error stateless arm has authority?: never
     const _statelessWithAuthority: StatelessProviderLifecycleRegistration = {
       id: 's-3',
       kind: 'stateless',
       registrationKind: 'stateless',
+      // @ts-expect-error stateless arm has authority?: never
       authority: 'journal',
     };
 
     // The narrow union inhibits assignment of a stateless registration to
     // `JournalCursorRegistration` (and vice-versa) — the kind discriminator
     // splits the union irreversibly.
-    // @ts-expect-error stateless registration is not a journal-cursor registration
     const _crossAssign: JournalCursorRegistration = {
       id: 'x-1',
+      // @ts-expect-error stateless registration is not a journal-cursor registration
       kind: 'stateless',
+      // @ts-expect-error stateless registrationKind cannot pair with kind: 'cursor'
       registrationKind: 'stateless',
     };
 

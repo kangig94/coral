@@ -14,7 +14,7 @@ const tempHomes: string[] = [];
 type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['readFileSync']>;
 type TierStatSync = NonNullable<NonNullable<ProviderRuntime['storage']>['statSync']>;
 const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
-const defaultStatSync: TierStatSync = (path) => statSync(path);
+const defaultStatSync: TierStatSync = statSync as TierStatSync;
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -45,16 +45,9 @@ function makeTierRuntime(
   home: string,
   readFileSyncImpl: TierReadFileSync = defaultReadFileSync,
   statSyncImpl: TierStatSync = defaultStatSync,
-): {
-  env: { homedir(): string };
-  storage: {
-    readFileSync: TierReadFileSync;
-    statSync: TierStatSync;
-    existsSync: (path: string) => boolean;
-  };
-} {
+): Pick<ProviderRuntime, 'env' | 'storage'> {
   return {
-    env: { homedir: () => home },
+    env: { homedir: () => home, get: () => undefined, fullSnapshot: () => ({}) },
     storage: {
       readFileSync: readFileSyncImpl,
       statSync: statSyncImpl,
@@ -341,7 +334,7 @@ describe('TOML fallback', () => {
     const request = makeRequest();
     const configPath = join(home, '.codex', 'config.toml');
     const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
 
     expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
     expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
@@ -355,7 +348,7 @@ describe('TOML fallback', () => {
     const request = makeRequest();
     const configPath = join(home, '.codex', 'config.toml');
     const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
 
     expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
 
@@ -372,7 +365,7 @@ describe('TOML fallback', () => {
     const home = useTempCodexConfig('[profiles.dev]\nservice_tier = "fast"');
     const request = makeRequest();
     const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
 
     expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
     expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
