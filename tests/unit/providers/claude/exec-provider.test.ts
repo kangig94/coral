@@ -83,7 +83,9 @@ function makeRuntime(
     time: {
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+      clearTimeout: (handle) => {
+        if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
+      },
     },
     runCli: vi.fn(async () => ({
       stdout: '',
@@ -92,7 +94,7 @@ function makeRuntime(
       aborted: false,
     })),
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as ProviderRuntime['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     acquireServer: vi.fn(async () => lease),
     continuityBridge: {
       checkpoint: vi.fn(),
@@ -390,6 +392,8 @@ describe('claude exec-provider dispatcher', () => {
       persistedContinuity,
       env: {
         get: (key) => (key === 'CORAL_DEV_ASSERTIONS' ? '1' : undefined),
+        homedir: () => '/mock/home',
+        fullSnapshot: () => ({}),
       },
     });
 

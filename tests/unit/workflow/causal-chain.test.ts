@@ -51,7 +51,7 @@ const SLOT_C = `${WORKFLOW_ID}:1:1`;
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 function workflowPlan(): {

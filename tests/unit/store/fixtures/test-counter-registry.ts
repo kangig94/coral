@@ -9,6 +9,7 @@ export const TEST_COUNTER_SCHEMA = z.object({
 });
 
 export const testCounterRegistry: DomainEventRegistry = {
+  streamKind: 'job',
   entries: [
     defineDomainEvent({
       type: 'test.counter.ticked',

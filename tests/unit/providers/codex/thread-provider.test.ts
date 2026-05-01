@@ -72,7 +72,9 @@ function makeRuntime(
     time: {
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+      clearTimeout: (handle) => {
+        if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
+      },
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     storage: { existsSync: () => true } as ProviderRuntime['storage'],
@@ -83,6 +85,7 @@ function makeRuntime(
       checkpoint: () => {},
       transportClosed: () => {},
     },
+    kbRoot: '/mock/kb',
   };
 }
 

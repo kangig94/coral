@@ -52,14 +52,18 @@ function createRuntime(
     time: {
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+      clearTimeout: (handle) => {
+        if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
+      },
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
     acquireServer: async () => {
       throw new Error('not used in session-continuity tests');
     },
+    storage: { existsSync: () => true } as ProviderRuntime['storage'],
     continuityBridge,
+    kbRoot: '/mock/kb',
     ...overrides,
   };
 }

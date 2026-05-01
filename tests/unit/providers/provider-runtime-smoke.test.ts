@@ -96,7 +96,9 @@ function makeRuntime(
     time: {
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | null),
+      clearTimeout: (handle) => {
+        if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
+      },
     },
     runCli,
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
@@ -107,6 +109,7 @@ function makeRuntime(
       checkpoint: vi.fn(),
       transportClosed: vi.fn(),
     },
+    kbRoot: '/mock/kb',
   };
 }
 

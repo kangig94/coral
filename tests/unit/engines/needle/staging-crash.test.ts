@@ -21,6 +21,7 @@ import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
 import type { VectorRetrieval as BoundVectorRetrieval } from '#src/kb/search/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
+import type { StoragePort } from '#src/runtime/ports.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
@@ -186,9 +187,7 @@ const nodeStorage = {
   readFileSync(path: string, encoding: BufferEncoding): string {
     return readFileSync(path, encoding);
   },
-  readdirSync(path: string, options: { withFileTypes: true }): Dirent[] {
-    return readdirSync(path, options);
-  },
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 function createDb(): InstanceType<typeof Database> {
@@ -225,7 +224,7 @@ function createRuntimeHarness(
         [Symbol.dispose]() {},
       };
       const retrieval: BoundVectorRetrieval = {
-        read(embedding, topK, scope) {
+        search(embedding, topK, scope) {
           return owner.search(embedding, topK, scope);
         },
       };

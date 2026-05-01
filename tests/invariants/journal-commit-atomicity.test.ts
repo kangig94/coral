@@ -44,7 +44,7 @@ const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-reco
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 type Db = InstanceType<typeof Database>;

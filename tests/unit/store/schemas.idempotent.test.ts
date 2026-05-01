@@ -12,7 +12,7 @@ type TrackedDatabase = InstanceType<typeof Database> & { totalChanges: number };
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 function tableColumns(db: Database.Database, table: string): string[] {

@@ -96,6 +96,7 @@ function makeRuntime(
     acquireServer: vi.fn(async () => lease),
     persistedContinuity: undefined,
     continuityBridge: bridge as ProviderRuntime['continuityBridge'] & MockBridge,
+    kbRoot: '/mock/kb',
   };
 }
 

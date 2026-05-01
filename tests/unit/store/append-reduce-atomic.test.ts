@@ -18,8 +18,9 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 
-const storageAdapter: Pick<StoragePort, 'readdirSync' | 'readFileSync'> = {
-  readdirSync: (path, options) => fs.readdirSync(path, options),
+const storageAdapter: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'> = {
+  existsSync: fs.existsSync,
+  readdirSync: fs.readdirSync as StoragePort['readdirSync'],
   readFileSync: (path, encoding) => fs.readFileSync(path, encoding),
 };
 

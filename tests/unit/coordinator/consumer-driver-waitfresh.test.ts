@@ -1,3 +1,4 @@
+import type { StoragePort } from '#src/runtime/ports.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,7 +13,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 function createDb(): InstanceType<typeof Database> {

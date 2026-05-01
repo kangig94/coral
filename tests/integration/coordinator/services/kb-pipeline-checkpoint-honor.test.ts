@@ -32,6 +32,7 @@ import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import type { CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import type { JobAbortRegistryPort } from '#src/jobs/contracts/abort-registry.js';
+import { asReadonlyDatabase } from '#src/store/read-port.js';
 import type { TerminalOutcome } from '#src/jobs/outcome.js';
 import type { StoragePort } from '#src/runtime/ports.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
@@ -86,7 +87,11 @@ function makeWorld(): ServiceWorld {
     scheduleDeferredCommit: () => {},
   } as unknown as CurateHandle;
 
-  const kbSubsystem: KnowledgeBaseRuntime = { kb, curateScheduler };
+  const kbSubsystem: KnowledgeBaseRuntime = {
+    kb,
+    readDb: asReadonlyDatabase(storeDb),
+    curateScheduler,
+  };
 
   // JobStore + AbortRegistry composed against the same DB.
   const jobsDb = new Database(':memory:');
@@ -284,6 +289,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
     const fakeKb = withDeadlineThrowingMutationLock(world.kb);
     const fakeSubsystem: KnowledgeBaseRuntime = {
       kb: fakeKb,
+      readDb: world.kbSubsystem.readDb,
       curateScheduler: world.kbSubsystem.curateScheduler,
     };
 

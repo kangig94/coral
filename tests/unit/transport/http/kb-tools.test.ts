@@ -81,6 +81,7 @@ function createKbSubsystem(): KnowledgeBaseRuntime {
       communityPath: (slug: string) => `${KB_ROOT}/communities/${slug}.md`,
       principlePath: (slug: string) => `${KB_ROOT}/principles/${slug}.md`,
     } as KnowledgeBaseRuntime['kb'],
+    readDb: {} as KnowledgeBaseRuntime['readDb'],
     curateScheduler: {
       start: vi.fn(async () => {}),
       schedule: vi.fn(),

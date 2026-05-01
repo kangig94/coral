@@ -25,7 +25,7 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx);
+    await runExpansionOnboarding('needle', ctx as never);
     await ctx.equip('needle');
 
     expect(choose).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx);
+    await runExpansionOnboarding('needle', ctx as never);
     await ctx.equip('needle');
 
     expect(choose).toHaveBeenCalledWith("Expansion 'needle' needs 'kb.embedding':", [GEMINI_ENTRY, ONNX_ENTRY]);
@@ -68,7 +68,7 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await expect(runExpansionOnboarding('needle', ctx)).rejects.toMatchObject({
+    await expect(runExpansionOnboarding('needle', ctx as never)).rejects.toMatchObject({
       code: 'user_cancelled',
       context: { during: 'needle-onboarding' },
     });
@@ -85,7 +85,7 @@ describe('expansion onboarding', () => {
       equip: vi.fn(async () => {}),
     };
 
-    await expect(runExpansionOnboarding('needle', ctx)).rejects.toMatchObject({
+    await expect(runExpansionOnboarding('needle', ctx as never)).rejects.toMatchObject({
       code: 'binding_required',
       context: {
         binding: 'kb.embedding',
@@ -124,7 +124,7 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx);
+    await runExpansionOnboarding('needle', ctx as never);
 
     expect(equipped).toEqual(['gemini']);
     expect(equipped).not.toContain('needle');

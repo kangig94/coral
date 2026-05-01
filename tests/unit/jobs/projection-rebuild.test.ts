@@ -16,7 +16,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,
   readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: (path, options) => readdirSync(path, options),
+  readdirSync: readdirSync as StoragePort['readdirSync'],
 };
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
