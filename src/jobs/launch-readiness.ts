@@ -1,5 +1,5 @@
 import type { LaunchReadiness } from './records.js';
-import type { JobProjectionDetail } from './read-contract.js';
+import type { JobProjectionDetail } from './read-queries.js';
 
 export function deriveLaunchReadiness(detail: JobProjectionDetail): LaunchReadiness {
   const status = detail.status;

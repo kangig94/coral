@@ -7,10 +7,9 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStore } from '../jobs/store.js';
-import type { JobProjectionDetail } from '../jobs/read-contract.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';
-import { loadJobProjectionDetails } from '../jobs/read-queries.js';
+import { loadJobProjectionDetails, type JobProjectionDetail } from '../jobs/read-queries.js';
 import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
   WorkflowExecutionError,

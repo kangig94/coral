@@ -5,16 +5,25 @@ import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTermin
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
-import type { JobProjectionDetail } from './read-contract.js';
 import {
   belongsToNamespace,
   emptyJobDiagnostics,
   type JobDiagnostics,
   type JobEvent,
+  type JobExit,
+  type JobLaunch,
+  type JobRuntime,
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
+
+export type JobProjectionDetail = {
+  status: JobStatus | null;
+  launch: JobLaunch | null;
+  runtime: JobRuntime | null;
+  exit: JobExit | null;
+};
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { prepareCached } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';

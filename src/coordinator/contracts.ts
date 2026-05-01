@@ -2,7 +2,7 @@ import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision
 import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
-import type { JobProjectionDetail } from '../jobs/read-contract.js';
+import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';

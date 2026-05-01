@@ -11,7 +11,7 @@ import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { TimePort } from '../../runtime/ports.js';
 import type { SessionJobReadPort } from '../../sessions/contracts.js';
-import type { JobProjectionDetail } from '../read-contract.js';
+import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
