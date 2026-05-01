@@ -3,6 +3,7 @@ import type { ProviderRequest, ProviderRuntime, ProviderServerSpec } from '../co
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { resolveModelTier, resolveProviderEffort} from '../request-policy.js';
 import type { EffortLevel } from '../contract.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderContinuityUpdate } from '../contract.js';
 import type { ProviderTransportClose } from '../protocol.js';
@@ -281,8 +282,8 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT' && code !== 'EACCES') {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `[coral] Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.\n`,
+      backendLog.warn(
+        `Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.`,
       );
     }
     return undefined;
