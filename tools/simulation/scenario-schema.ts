@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { terminalOutcomeSchema } from '../../src/providers/contract.js';
+import { providerTerminalOutcomeSchema } from '../../src/providers/contract.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),
@@ -98,7 +98,7 @@ const fakeProviderTerminalResultSchema = z.object({
   exitCode: z.number().nullable().optional(),
   warnings: z.array(z.string()).optional(),
   usage: usageSummarySchema.optional(),
-  outcome: terminalOutcomeSchema,
+  outcome: providerTerminalOutcomeSchema,
 });
 
 const fakeProviderSchema = z.object({
@@ -190,7 +190,7 @@ const shutdownStepSchema = z.object({
 
 const resultExpectationSchema = z.object({
   content: z.string().optional(),
-  outcome: terminalOutcomeSchema,
+  outcome: providerTerminalOutcomeSchema,
 });
 
 const sessionCountExpectationSchema = z.object({

@@ -23,7 +23,7 @@ import type {
   ProviderContinuityUpdate,
   ProviderTransportClose,
 } from '#src/providers/contract.js';
-import { providerTerminalEventBodySchema, jobTerminalSchema } from '#src/providers/contract.js';
+import { providerTerminalEventBodySchema, providerJobTerminalSchema } from '#src/providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { loadJobProjectionDetail, readJobProgress } from '#src/jobs/read-queries.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
@@ -245,7 +245,7 @@ describe('coordinator continuity lifecycle integration', () => {
       },
       diagnostics: {},
     });
-    const jobTerminal = jobTerminalSchema.safeParse({
+    const jobTerminal = providerJobTerminalSchema.safeParse({
       content: 'bad',
       outcome: { kind: 'completed' },
       conversationRef: 'thread-extra',

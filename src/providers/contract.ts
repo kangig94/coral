@@ -170,7 +170,12 @@ export const providerFailureCauseSchema = z.discriminatedUnion('type', [
     .strict(),
 ]);
 
-export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
+// Provider-side terminal-outcome subset: `failed` carries no causeRef
+// and `job_fault` is restricted to `wrapper_lost`. The post-projection
+// shape lives in `jobs/outcome.ts` and folds in causeRef + the full
+// fault registry. Distinct names per the magnet-hazard convention
+// documented just below.
+export const providerTerminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: z.enum(abortReasons) }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
@@ -183,11 +188,14 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-export const jobTerminalSchema = z
+// Provider-side job terminal record. The post-projection equivalent
+// lives in `jobs/terminal/result.ts:jobTerminalSchema`; same magnet-
+// hazard naming convention as `providerTerminalDiagnosticsSchema`.
+export const providerJobTerminalSchema = z
   .object({
     content: z.string(),
     model: z.string().optional(),
-    outcome: terminalOutcomeSchema,
+    outcome: providerTerminalOutcomeSchema,
     durationMs: z.number().optional(),
     exitCode: z.number().nullable().optional(),
     usage: usageSummarySchema.optional(),
@@ -224,7 +232,7 @@ export const providerContinuityEventBodySchema = z
 export const providerTerminalEventBodySchema = z
   .object({
     kind: z.literal('terminal'),
-    terminal: jobTerminalSchema,
+    terminal: providerJobTerminalSchema,
     diagnostics: providerTerminalDiagnosticsSchema,
     failureCause: providerFailureCauseSchema.optional(),
   })
