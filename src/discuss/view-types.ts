@@ -14,14 +14,12 @@ export type DiscussControlBidsTranscriptEntryDto = Omit<
 
 export type DiscussControlTranscriptEntryDto = DiscussControlBidsTranscriptEntryDto | DiscussNonBidTranscriptEntry;
 
-export type DiscussAuditTranscriptEntryDto = TranscriptEntry;
-
 export type DiscussControlView = {
   transcript: DiscussControlTranscriptEntryDto[];
   lastSeq: number;
 };
 
 export type DiscussAuditView = {
-  transcript: DiscussAuditTranscriptEntryDto[];
+  transcript: TranscriptEntry[];
   lastSeq: number;
 };

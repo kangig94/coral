@@ -1,7 +1,8 @@
 import { buildAuditView, buildControlView } from './projections.js';
 import type { PersistedDiscussSnapshot } from './events.js';
 import type { DiscussState } from './session-types.js';
-import type { DiscussAuditTranscriptEntryDto, DiscussControlTranscriptEntryDto } from './view-types.js';
+import type { DiscussControlTranscriptEntryDto } from './view-types.js';
+import type { TranscriptEntry } from './session-types.js';
 
 export type DiscussAuthority = 'live' | 'persisted';
 export type DiscussView = 'control' | 'audit';
@@ -14,7 +15,7 @@ type DiscussAgentDto = {
   banned: boolean;
 };
 
-type DiscussSessionDto = {
+export type DiscussSessionDto = {
   sessionId: string;
   projectRoot: string;
   topic: string;
@@ -37,9 +38,6 @@ type DiscussSessionDto = {
   agents: DiscussAgentDto[];
 };
 
-export type DiscussControlSessionDto = DiscussSessionDto;
-export type DiscussAuditSessionDto = DiscussSessionDto;
-
 export type DiscussSummaryDto = {
   sessionId: string;
   projectRoot: string;
@@ -53,7 +51,7 @@ export type DiscussSummaryDto = {
 export type DiscussControlDetailResponse = {
   authority: DiscussAuthority;
   view: 'control';
-  session: DiscussControlSessionDto;
+  session: DiscussSessionDto;
   transcript: DiscussControlTranscriptEntryDto[];
   lastSeq: number;
 };
@@ -61,8 +59,8 @@ export type DiscussControlDetailResponse = {
 export type DiscussAuditDetailResponse = {
   authority: DiscussAuthority;
   view: 'audit';
-  session: DiscussAuditSessionDto;
-  transcript: DiscussAuditTranscriptEntryDto[];
+  session: DiscussSessionDto;
+  transcript: TranscriptEntry[];
   lastSeq: number;
 };
 
