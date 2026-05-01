@@ -210,7 +210,7 @@ function scanFrontmatter(kind: CorpusMarkdownKind, content: string): CorpusFront
 
   try {
     const parsed = yaml.parse(rawBlock) as unknown;
-    if (!isPlainRecord(parsed)) {
+    if (!isRecord(parsed)) {
       throw new Error('Frontmatter must be a mapping');
     }
 
@@ -308,6 +308,3 @@ function buildActiveEntryId(kind: CorpusMarkdownKind, slug: string): CorpusActiv
   }
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return isRecord(value) && !Array.isArray(value);
-}

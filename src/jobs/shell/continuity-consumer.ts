@@ -2,6 +2,7 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 import type { ProviderEventBody, ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { isRecord } from '../../infra/json.js';
 
 export async function consumeJobStream(options: {
   jobId: string;
@@ -68,10 +69,6 @@ function toJobContinuitySnapshot(
   return {
     conversationRef,
     resumable,
-    ...(isProviderContinuityBlob(providerContinuity) ? { providerContinuity } : {}),
+    ...(isRecord(providerContinuity) ? { providerContinuity } : {}),
   };
-}
-
-function isProviderContinuityBlob(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
