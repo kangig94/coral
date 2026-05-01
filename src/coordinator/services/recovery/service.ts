@@ -2,6 +2,7 @@ import type { ProviderServerLease, ProviderServerSpec } from '../../../providers
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
 import {
   isAppServerRuntime,
@@ -201,7 +202,7 @@ export class RecoveryService {
           }
         } catch (error: unknown) {
           backendLog.error(
-            `Probe failed for ${launchRecord.jobId}: ${error instanceof Error ? error.message : String(error)}`,
+            `Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`,
           );
           probeOutcome = 'unavailable';
           mutation =

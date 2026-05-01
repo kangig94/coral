@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
+import { errorMessage } from '../../infra/error-format.js';
 import { identPattern } from '../../infra/identifiers.js';
 import { isRecord, isStringArray } from '../../infra/json.js';
 import {
@@ -51,7 +52,7 @@ function parseFrontmatterRecord(content: string): Record<string, unknown> {
   try {
     parsed = yaml.parse(extractFrontmatterBlock(content)) as unknown;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     throw new Error(`YAML parse error: ${message}`, {
       ...(error instanceof Error ? { cause: error } : {}),
     });

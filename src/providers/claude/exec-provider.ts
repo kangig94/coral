@@ -12,6 +12,7 @@ import {
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerRequestFailed } from '../fault.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { streamProviderTerminal } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { claudeExecKernel, isClaudeExecParseError } from './exec-kernel.js';
@@ -190,8 +191,7 @@ function inferBrokerResumable(continuity: ClaudePersistedContinuity): boolean {
 }
 
 function isClaudeBrokerSessionUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /session unavailable/i.test(message);
+  return /session unavailable/i.test(errorMessage(error));
 }
 
 function buildDispatchRejectedTerminal(model: string | undefined, reason: string): ProviderTerminalEventBody {

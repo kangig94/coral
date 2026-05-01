@@ -1,5 +1,6 @@
 import { createConnection, type Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
+import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest } from '../json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
@@ -41,7 +42,7 @@ function setupError(socketPath: string, error: unknown): CoralSetupError {
       'Check whether the coordinator is still starting, or remove a stale socket/discovery record and retry.',
     context: {
       socketPath,
-      cause: error instanceof Error ? error.message : String(error),
+      cause: errorMessage(error),
     },
   });
 }

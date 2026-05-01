@@ -7,6 +7,7 @@ import { BackendAlreadyRunningError } from './lock.js';
 import { StartupInterruptedError } from './startup-error.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';
+import { errorMessage } from '../infra/error-format.js';
 import { nowDate } from '../infra/time.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -91,7 +92,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
       db.close();
     }
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     backendLog.error('smoke open-store failed', message);
     return 1;
   }

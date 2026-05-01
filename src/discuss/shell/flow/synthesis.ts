@@ -1,6 +1,7 @@
 import { decideSynthesis } from '../../state-machine.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from '../runtime-build.js';
 import { type DiscussContext } from '../types.js';
 import { DiscussManagerError } from '../errors.js';
@@ -69,7 +70,7 @@ export async function handleSynthesis(
     detachSession(ctx, sessionId);
     return { shouldResume: false };
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = errorMessage(error);
     backendLog.warn(`Discuss synthesis failed for ${sessionId}: ${detail}`);
     return { shouldResume: false };
   }

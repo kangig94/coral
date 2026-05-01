@@ -39,6 +39,7 @@ import type {
   StoragePort,
   TimePort,
 } from './ports.js';
+import { errorMessage } from '../infra/error-format.js';
 import { MAX_BUFFER } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime } from './durable-runtime.js';
@@ -545,7 +546,7 @@ function waitForDurableRuntime(options: {
       message = JSON.parse(line) as DurableControlMessage;
     } catch (error: unknown) {
       const wrapped = buildError(
-        `Durable wrapper emitted invalid control JSON (${error instanceof Error ? error.message : String(error)})`,
+        `Durable wrapper emitted invalid control JSON (${errorMessage(error)})`,
       );
       runtimeDeferred.reject(wrapped);
       exitDeferred.reject(wrapped);

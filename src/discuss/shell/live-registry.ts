@@ -1,5 +1,6 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type {
   DiscussContext,
   DiscussJobStatusReader,
@@ -150,7 +151,7 @@ export async function clearAllDiscuss(
         try {
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {
-          const detail = error instanceof Error ? error.message : String(error);
+          const detail = errorMessage(error);
           backendLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
         }
       }

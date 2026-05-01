@@ -1,5 +1,6 @@
 import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import type { ChildProcessLike, Runtime } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
@@ -282,7 +283,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
   } catch (error) {
     const parseError = createProviderServerError(entry.provider, 'emitted invalid JSONL', {
       stderr: entry.stderr,
-      data: { line, message: error instanceof Error ? error.message : String(error) },
+      data: { line, message: errorMessage(error) },
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);

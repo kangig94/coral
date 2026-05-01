@@ -2,6 +2,7 @@ import { ZodError } from 'zod';
 
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { LaunchDecision } from '../jobs/launch.js';
+import { errorMessage } from '../infra/error-format.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
 import type { WorkflowCommand } from './input.js';
@@ -58,7 +59,7 @@ export const workflowCompiler = {
         owner: isOwnerId(command.owner) ? command.owner : undefined,
       };
     } catch (error: unknown) {
-      throw new WorkflowInputError(error instanceof Error ? error.message : String(error));
+      throw new WorkflowInputError(errorMessage(error));
     }
   },
   readPlan: readWorkflowProjection,

@@ -1,4 +1,5 @@
 import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type { Disposable } from '../../runtime/ports.js';
 import type { ConsumerHandle } from '../../store/consumer-contract.js';
 import type { EngineArtifactDescriptor, EngineArtifactPort } from './artifact-port.js';
@@ -68,7 +69,7 @@ export class EngineArtifactRegistry {
         // abort boot artifact repair or rescan info collection for the rest
         // of the registry. Log the failure and continue with the remaining
         // entries' descriptors.
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         backendLog.warn(`EngineArtifactRegistry: port for consumers [${entry.targetConsumerIds.join(', ')}] threw during describeArtifacts(): ${message}`);
         continue;
       }
