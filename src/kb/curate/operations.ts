@@ -1,9 +1,11 @@
 import type { KbRuntime } from '../contract.js';
-import { normalizeCurateStateRepairFrontier, readCurateState, writeCurateState } from './state/index.js';
 import {
   applyClearCurateRetryState,
   applyRecordCurateFailure,
+  normalizeCurateStateRepairFrontier,
+  readCurateState,
   resolveCurateTimings,
+  writeCurateState,
   type CurateCursor,
   type CurateState,
 } from './state/index.js';

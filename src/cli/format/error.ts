@@ -18,4 +18,3 @@ export function formatErrorEnvelope(envelope: CliErrorEnvelope, statusCode?: num
   }
   return lines.join('\n');
 }
-

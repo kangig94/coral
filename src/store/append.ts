@@ -11,8 +11,7 @@ import {
   type ResolvableCoralEventInput,
 } from './envelope.js';
 import type { UpcasterRegistry } from './upcaster-registry.js';
-import type { ComposedReducers, DomainAppendValidationContext } from './reducers.js';
-import { applyReducer } from './reducers.js';
+import { applyReducer, type ComposedReducers, type DomainAppendValidationContext } from './reducers.js';
 
 type Database = BetterSqlite3.Database;
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
