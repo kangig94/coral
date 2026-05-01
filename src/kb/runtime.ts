@@ -122,8 +122,6 @@ export interface CreateKbRuntimeOptions {
   engineArtifactRegistry?: EngineArtifactRegistry;
 }
 
-export type KbRuntimeStoreAccess = KbRuntime & { readonly db: BetterSqlite3.Database };
-
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;

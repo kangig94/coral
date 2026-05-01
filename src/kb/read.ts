@@ -50,12 +50,6 @@ export type KbLoadedSource = {
   body: string;
 };
 
-export type KbLoadedCommunity = CommunityFrontmatter & {
-  raw: string;
-  title: string;
-  body: string;
-};
-
 const MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
 function resolveReadPaths(paths?: KbReadPathResolver): KbReadPathResolver {
@@ -82,17 +76,6 @@ export function loadKbSource(storage: Pick<StoragePort, 'readFileSync'>, sourceP
     raw,
     frontmatter,
     title: frontmatter.title,
-    body: extractBody(raw),
-  };
-}
-
-export function loadKbCommunity(storage: Pick<StoragePort, 'readFileSync'>, communityPath: string): KbLoadedCommunity {
-  const raw = storage.readFileSync(communityPath, 'utf-8');
-  const frontmatter = parseCommunityFrontmatter(raw);
-  return {
-    ...frontmatter,
-    raw,
-    title: extractTitle(raw),
     body: extractBody(raw),
   };
 }

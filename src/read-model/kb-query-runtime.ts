@@ -80,13 +80,6 @@ function resolveQueryRuntime(context: KbQueryContext): KbQueryRuntime {
   return context.runtime ?? defaultRegistry.getRuntime(resolveQueryFlavor(context));
 }
 
-export function resolveQueryProjectRoot(context: KbQueryContext): string {
-  if (!context.projectRoot) {
-    throw new Error('KB query requires explicit projectRoot in context');
-  }
-  return context.projectRoot;
-}
-
 export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
   return resolveQueryRuntime(context).paths.coral.corpus.kbRoot;
 }
