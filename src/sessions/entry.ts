@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ProviderInstruction } from '../providers/contract.js';
+import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import type { ProviderContinuityBlob } from './continuity.js';
 
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
@@ -25,13 +25,6 @@ export const sessionControllerProfileSchema = z
   .strict();
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
-
-export const providerInstructionSchema = z
-  .object({
-    content: z.string(),
-    channel: z.enum(['prompt', 'system']),
-  })
-  .strict();
 
 export interface SessionEntry {
   sessionId: string;

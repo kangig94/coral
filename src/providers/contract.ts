@@ -19,10 +19,13 @@ import type {
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ProviderAction = 'exec' | 'resume' | 'fork';
 
-export interface ProviderInstruction {
-  content: string;
-  channel: 'prompt' | 'system';
-}
+export const providerInstructionSchema = z
+  .object({
+    content: z.string(),
+    channel: z.enum(['prompt', 'system']),
+  })
+  .strict();
+export type ProviderInstruction = z.infer<typeof providerInstructionSchema>;
 
 export interface UsageSummary {
   inputTokens?: number;

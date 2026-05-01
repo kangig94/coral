@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import type { EffortLevel, ProviderAction, ProviderInstruction } from '../providers/contract.js';
+import {
+  providerInstructionSchema,
+  type EffortLevel,
+  type ProviderAction,
+  type ProviderInstruction,
+} from '../providers/contract.js';
 import type { LaunchPool } from './contracts/admission.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
@@ -125,13 +130,6 @@ export type JobLaunchRequestBody =
   | ProviderJobLaunchRequestBody
   | KbSourceImportJobLaunchRequestBody
   | KbReindexJobLaunchRequestBody;
-
-export const providerInstructionSchema = z
-  .object({
-    content: z.string(),
-    channel: z.enum(['prompt', 'system']),
-  })
-  .strict();
 
 export const providerJobLaunchRequestBodySchema = z
   .object({
