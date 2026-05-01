@@ -1,6 +1,4 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -16,16 +14,23 @@ afterEach(cleanupFixtures);
 
 const WARM_START_TIMEOUT_MS = 15_000;
 
+/**
+ * The warm-start hook unconditionally spawns the bundled coral-backend.
+ * Staleness/incumbent detection is the daemon's job (`acquireLock` ->
+ * `inspectIncumbent`): a healthy same-bundle peer makes the new daemon
+ * throw `BackendAlreadyRunningError` and exit, while a mismatching peer
+ * triggers `requestHandoff`. The hook stays free of bundle/flavor
+ * comparison so the contention contract has one canonical home.
+ */
 describe('backend-warm-start.mjs', () => {
-  async function setupWarmStartFixture(expectedFlavor: 'prod' | 'dev', liveFlavor: 'prod' | 'dev') {
+  function setupWarmStartFixture() {
     const fixture = createFixture();
     const markerPath = join(fixture.pluginRoot, 'spawned.txt');
-    const token = `${expectedFlavor}-${liveFlavor}-token`;
 
     mkdirSync(join(fixture.pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(fixture.pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'test-hash', flavor: expectedFlavor }),
+      JSON.stringify({ bundleHash: 'test-hash', flavor: 'prod' }),
       'utf-8',
     );
     writeFileSync(
@@ -34,152 +39,76 @@ describe('backend-warm-start.mjs', () => {
       'utf-8',
     );
 
-    const namespace = createHash('sha256').update(realpathSync(fixture.pluginRoot)).digest('hex').slice(0, 12);
-    const installDir = join(fixture.root, '.claude', 'coral', 'installations', namespace);
-    mkdirSync(installDir, { recursive: true });
-
-    let shutdownCount = 0;
-    const server = createServer((req, res) => {
-      if (req.headers['x-coral-backend-token'] !== token) {
-        res.statusCode = 401;
-        res.end();
-        return;
-      }
-
-      if (req.method === 'GET' && req.url === '/health') {
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            status: 'ok',
-            version: '0.0.0',
-            bundleHash: 'test-hash',
-            flavor: liveFlavor,
-            instanceId: `${liveFlavor}-instance`,
-            namespace,
-            uptimeMs: 1,
-            active: 0,
-            activeJobs: 0,
-            inflightRequests: 0,
-            queueDepth: 0,
-          }),
-        );
-        return;
-      }
-
-      if (req.method === 'POST' && req.url === '/admin/shutdown') {
-        shutdownCount += 1;
-        res.statusCode = 200;
-        res.end(JSON.stringify({ status: 'draining' }));
-        return;
-      }
-
-      res.statusCode = 404;
-      res.end();
-    });
-
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-    const address = server.address();
-    if (!address || typeof address === 'string') {
-      throw new Error('Expected TCP address for backend-warm-start test');
-    }
-
-    writeFileSync(
-      join(installDir, 'backend.json'),
-      JSON.stringify({
-        pid: process.pid,
-        port: address.port,
-        host: '127.0.0.1',
-        token,
-        version: '0.0.0',
-        bundleHash: 'test-hash',
-        flavor: liveFlavor,
-        instanceId: `${liveFlavor}-instance`,
-        namespace,
-        startedAt: Date.now(),
-      }),
-      'utf-8',
-    );
-
-    return {
-      fixture,
-      markerPath,
-      shutdownCount: () => shutdownCount,
-      closeServer: async () =>
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        }),
-    };
+    return { fixture, markerPath };
   }
 
   it(
-    'exits early without spawning when the live backend already matches the manifest flavor',
+    'spawns the bundled backend on every invocation',
     async () => {
-      const setup = await setupWarmStartFixture('prod', 'prod');
-      try {
-        const result = await runHookAsync(
-          BACKEND_WARM_START_HOOK,
-          {},
-          {
-            HOME: setup.fixture.root,
-            CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
-          },
-        );
-
-        expect(result.status).toBe(0);
-        expect(await waitForFile(setup.markerPath)).toBe(false);
-        expect(setup.shutdownCount()).toBe(0);
-      } finally {
-        await setup.closeServer();
-      }
-    },
-    WARM_START_TIMEOUT_MS,
-  );
-
-  it(
-    'requests shutdown and spawns a replacement when the live backend flavor differs from the manifest flavor',
-    async () => {
-      const setup = await setupWarmStartFixture('dev', 'prod');
-      try {
-        const result = await runHookAsync(
-          BACKEND_WARM_START_HOOK,
-          {},
-          {
-            HOME: setup.fixture.root,
-            CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
-          },
-        );
-
-        expect(result.status).toBe(0);
-        expect(await waitForFile(setup.markerPath)).toBe(true);
-        expect(setup.shutdownCount()).toBe(1);
-      } finally {
-        await setup.closeServer();
-      }
-    },
-    WARM_START_TIMEOUT_MS,
-  );
-
-  it(
-    'spawns a replacement when the backend pid is live but the health check fails',
-    async () => {
-      const setup = await setupWarmStartFixture('prod', 'prod');
-      await setup.closeServer();
+      const { fixture, markerPath } = setupWarmStartFixture();
 
       const result = await runHookAsync(
         BACKEND_WARM_START_HOOK,
         {},
         {
-          HOME: setup.fixture.root,
-          CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+          HOME: fixture.root,
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
         },
       );
 
       expect(result.status).toBe(0);
-      expect(await waitForFile(setup.markerPath)).toBe(true);
-      expect(setup.shutdownCount()).toBe(0);
+      expect(await waitForFile(markerPath)).toBe(true);
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it(
+    'does not consult backend.json or call /admin/shutdown',
+    async () => {
+      const { fixture, markerPath } = setupWarmStartFixture();
+      const installDir = join(fixture.root, '.claude', 'coral', 'installations');
+      mkdirSync(installDir, { recursive: true });
+
+      // Stale backend.json with a live PID would have made the old hook
+      // probe /health and request shutdown. The new hook ignores it.
+      writeFileSync(
+        join(fixture.pluginRoot, 'sentinel.txt'),
+        'no shutdown server is running; if the hook called /admin/shutdown it would error out',
+        'utf-8',
+      );
+
+      const result = await runHookAsync(
+        BACKEND_WARM_START_HOOK,
+        {},
+        {
+          HOME: fixture.root,
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(await waitForFile(markerPath)).toBe(true);
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it(
+    'is a no-op when CORAL_CHILD=1 (recursive guard)',
+    async () => {
+      const { fixture, markerPath } = setupWarmStartFixture();
+
+      const result = await runHookAsync(
+        BACKEND_WARM_START_HOOK,
+        {},
+        {
+          HOME: fixture.root,
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CORAL_CHILD: '1',
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(await waitForFile(markerPath, 500)).toBe(false);
     },
     WARM_START_TIMEOUT_MS,
   );
