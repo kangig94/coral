@@ -33,6 +33,7 @@ function defaultSchemasDirCandidates(): string[] {
     return [
       join(__PLUGIN_ROOT__, 'dist', 'store', 'schemas'),
       join(__PLUGIN_ROOT__, 'build', 'store', 'schemas'),
+      join(__PLUGIN_ROOT__, 'bridge', 'store', 'schemas'),
       moduleSchemasDir,
     ];
   }

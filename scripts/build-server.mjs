@@ -127,5 +127,6 @@ if (release) {
     copyFileSync(`build/${file}`, `bridge/${file}`);
   }
   chmodSync('bridge/coral-cli.cjs', 0o755);
+  copyStoreSchemaAssets('bridge');
   console.log('Copied build/ -> bridge/');
 }
