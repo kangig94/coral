@@ -58,6 +58,10 @@ export interface JobDiagnostics extends JobTerminalDiagnostics {
   progressFaults: JobProgressFault[];
 }
 
+export function emptyJobDiagnostics(): JobDiagnostics {
+  return { progressFaults: [] };
+}
+
 export interface JobExit extends JobTerminal {
   diagnostics: JobDiagnostics;
   continuity?: JobContinuitySnapshot | null;

@@ -18,7 +18,7 @@ import {
   normalizeJobTerminal,
   type JobTerminaledBody,
 } from './terminal/result.js';
-import type { JobDiagnostics, JobTerminal, JobTerminalDiagnostics } from './records.js';
+import { emptyJobDiagnostics, type JobDiagnostics, type JobTerminal, type JobTerminalDiagnostics } from './records.js';
 import type {
   JobProgressBody,
   JobQueueAdmittedBody,
@@ -40,10 +40,6 @@ type ProjectedJobState = {
   workflowSlot: string | null;
   createdAt: string;
 };
-
-function emptyDiagnostics(): JobDiagnostics {
-  return { progressFaults: [] };
-}
 
 function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagnostics {
   return body.diagnostics ?? {};
@@ -149,7 +145,7 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
   return {
     phase: patch.phase ?? 'launching',
     terminal: patch.terminal ?? null,
-    diagnostics: patch.diagnostics ?? emptyDiagnostics(),
+    diagnostics: patch.diagnostics ?? emptyJobDiagnostics(),
     sessionId: patch.sessionId ?? null,
     provider: patch.provider ?? null,
     projectRoot: patch.projectRoot,
@@ -196,7 +192,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
     phase: row.phase as JobPhase,
     terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
     diagnostics:
-      row.diagnostics === null ? emptyDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
+      row.diagnostics === null ? emptyJobDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,

@@ -7,6 +7,8 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
 import type { JobProjectionDetail } from './read-contract.js';
 import {
+  belongsToNamespace,
+  emptyJobDiagnostics,
   type JobDiagnostics,
   type JobEvent,
   type JobStatus,
@@ -14,7 +16,6 @@ import {
   type JobTerminalDiagnostics,
 } from './records.js';
 import { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
-import { belongsToNamespace } from './records.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { prepareCached } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
@@ -431,10 +432,6 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
   };
 }
 
-function emptyDiagnostics(): JobDiagnostics {
-  return { progressFaults: [] };
-}
-
 function mergeDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
   const warnings = patch.warnings ?? base.warnings;
   const usage = patch.usage ?? base.usage;
@@ -449,7 +446,7 @@ function mergeDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): 
 
 function decodeProjectionDiagnostics(projection: ProjectionRow | null): JobDiagnostics {
   if (projection?.diagnostics === null || projection?.diagnostics === undefined) {
-    return emptyDiagnostics();
+    return emptyJobDiagnostics();
   }
   return jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics));
 }
