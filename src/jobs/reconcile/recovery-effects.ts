@@ -48,7 +48,7 @@ export function markJobAsError(
       c.append(syntheticLaunchRequestedEvent(status));
     }
 
-    const outcome = materializeJobRecoveryFaultInCommit(c, status, fault);
+    const outcome = recoveryFaultOutcome(c, status, fault);
     appendJobTerminalRecorded(c, {
       jobId: status.jobId,
       sessionId: status.sessionId,
@@ -61,7 +61,7 @@ export function markJobAsError(
   });
 }
 
-function materializeJobRecoveryFaultInCommit<Scope>(
+function recoveryFaultOutcome<Scope>(
   c: CommitContext<Scope>,
   status: JobStatus,
   fault: JobRecoveryError,
