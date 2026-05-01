@@ -57,7 +57,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => this.progressStore.commit(cb));
+    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => deps.progressStore.commit(cb));
     this.sessionManager = SessionManager.forProduction(
       ctx.projectRoot,
       deps.runtime,
