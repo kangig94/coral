@@ -3,7 +3,7 @@ import type { Runtime, StoragePort } from '../runtime/ports.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
-import type { LockRecord } from '../infra/lock-record.js';
+import { isLockRecord, type LockRecord } from '../infra/lock-record.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 
 const RETRY_DELAY_MS = 200;
@@ -49,29 +49,6 @@ function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: 
 
 function lockFilePath(runtime: Pick<Runtime, 'paths'>): string {
   return runtime.paths.coral.coordinator.lockFile;
-}
-
-function isLockRecord(value: unknown): value is LockRecord {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.instanceId === 'string' &&
-    record.instanceId.length > 0 &&
-    Number.isInteger(record.pid) &&
-    (record.pid as number) > 0 &&
-    typeof record.version === 'string' &&
-    record.version.length > 0 &&
-    typeof record.bundleHash === 'string' &&
-    record.bundleHash.length > 0 &&
-    (record.flavor === 'prod' || record.flavor === 'dev') &&
-    Number.isFinite(record.startedAt) &&
-    (record.startedAt as number) > 0 &&
-    (record.processStartedAt === undefined ||
-      (Number.isInteger(record.processStartedAt) && (record.processStartedAt as number) > 0))
-  );
 }
 
 function parseLockRecord(raw: string): LockRecord | null {

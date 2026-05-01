@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/path/compose.js';
-import { type LockRecord } from '../../infra/lock-record.js';
+import { isLockRecord, type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
@@ -186,26 +186,6 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
     value.instanceId.length > 0 &&
     typeof value.namespace === 'string' &&
     value.namespace.length > 0
-  );
-}
-
-function isLockRecord(value: unknown): value is LockRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.instanceId === 'string' &&
-    record.instanceId.length > 0 &&
-    Number.isInteger(record.pid) &&
-    (record.pid as number) > 0 &&
-    typeof record.version === 'string' &&
-    record.version.length > 0 &&
-    typeof record.bundleHash === 'string' &&
-    record.bundleHash.length > 0 &&
-    (record.flavor === 'prod' || record.flavor === 'dev') &&
-    Number.isFinite(record.startedAt) &&
-    (record.startedAt as number) > 0 &&
-    (record.processStartedAt === undefined ||
-      (Number.isInteger(record.processStartedAt) && (record.processStartedAt as number) > 0))
   );
 }
 
