@@ -19,7 +19,7 @@ import {
   formatDiscussWatch,
   formatPersonaSeed,
 } from '#src/cli/format/discuss.js';
-import { formatError, formatErrorEnvelope } from '#src/cli/format/error.js';
+import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import { formatAbortResult, formatLaunch } from '#src/cli/format/jobs.js';
 import {
   formatKbDelete,
@@ -503,32 +503,6 @@ describe('cli format', () => {
     });
   });
 
-  describe('formatError', () => {
-    it('formats a BackendToolHttpError-shaped value', () => {
-      expect(
-        formatError({
-          statusCode: 403,
-          body: { code: 'scope_mismatch', message: 'Scope mismatch' },
-          message: 'Backend request failed: 403 Forbidden',
-        }),
-      ).toBe('HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}');
-    });
-
-    it('formats an Error instance', () => {
-      expect(formatError(new Error('boom'))).toBe('boom');
-    });
-
-    it('formats plain objects with message property', () => {
-      expect(formatError({ message: 'KB note already exists: /path/to/note.md' })).toBe(
-        'KB note already exists: /path/to/note.md',
-      );
-    });
-
-    it('formats unknown string values', () => {
-      expect(formatError('plain failure')).toBe('plain failure');
-    });
-  });
-
   describe('formatErrorEnvelope', () => {
     it('formats UsageError envelopes on a single line', () => {
       const { envelope } = buildErrorEnvelope(new UsageError('input is required (-i, --input)'));
@@ -631,23 +605,20 @@ describe('cli format', () => {
           body: { code: 'scope_mismatch', message: 'Scope mismatch' },
           message: 'Backend request failed: 403 Forbidden',
         },
-        expectedText: 'HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}',
         expectedEnvelope: 'Scope mismatch [code=scope_mismatch, http=403]',
       },
       {
         label: 'plain Error instance',
         error: new Error('boom'),
-        expectedText: 'boom',
         expectedEnvelope: 'boom [code=internal]',
       },
-    ])('documents formatError/formatErrorEnvelope parity for $label', ({ error, expectedText, expectedEnvelope }) => {
+    ])('builds the rendered envelope for $label', ({ error, expectedEnvelope }) => {
       const { envelope } =
         error instanceof Error
           ? buildErrorEnvelope(error)
           : buildErrorEnvelope(new BackendToolHttpError(error.message, error.statusCode, error.body));
       const statusCode = error instanceof Error ? undefined : error.statusCode;
 
-      expect(formatError(error)).toBe(expectedText);
       expect(formatErrorEnvelope(envelope, statusCode)).toBe(expectedEnvelope);
     });
   });
