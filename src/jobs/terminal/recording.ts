@@ -3,12 +3,8 @@ import type { CommitContext } from '../../store/append.js';
 import type { ResolvableCoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { TerminalOutcomeInput } from '../outcome.js';
-import {
-  normalizeJobTerminal,
-  type JobTerminalDiagnostics,
-  type JobTerminalInput,
-  type JobTerminalRecordedInputBody,
-} from './result.js';
+import { normalizeJobTerminal, type JobTerminalRecordedInputBody } from './result.js';
+import type { JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
 export function failedTerminalOutcome<Scope>(causeRef: CauseRefToken<Scope>): TerminalOutcomeInput<Scope> {
   return { kind: 'failed', causeRef } as TerminalOutcomeInput<Scope>;

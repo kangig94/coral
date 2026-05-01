@@ -1,17 +1,5 @@
 import type { LaunchDecision } from '../jobs/launch.js';
-import {
-  deriveErrorMessage,
-  domainError,
-  domainSuccess,
-  toolValidationError,
-  type ToolDomainResult,
-} from './tool-result.js';
-
-// Bundled HTTP-aware response surface: tool-result vocabulary
-// (`ToolDomainResult`, builders) plus the HTTP coercion helpers below.
-// Tests and HTTP-side handlers read both through this entry point.
-export { deriveErrorMessage, domainError, domainSuccess, toolValidationError };
-export type { ToolDomainResult };
+import type { ToolDomainResult } from './tool-result.js';
 
 export function launchToHttp(
   decision: LaunchDecision,

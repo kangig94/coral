@@ -10,24 +10,7 @@ import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { FtsSearchResult, VectorRetrieval } from './search/contract.js';
-export type { VectorRetrieval };
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
-export type {
-  ConsumerApplyError,
-  CorpusConsumerApplyContext,
-  CorpusConsumerRegistration,
-  CorpusInterest,
-  CorpusLaneHint,
-  CorpusStateReadPort,
-  JournalConsumerReadPort,
-} from '../store/consumer-contract.js';
-
-// Projection types live in `projection-input-contract.ts` (split for cycle
-// avoidance), but the KB contract re-exports them so coordinator and engine
-// consumers can stay on the contract seam — see
-// `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS which
-// allows `src/kb/contract.ts` only.
-export type { KbCorpusProjectionReader, KbProjectionInput, KbProjectionRecord } from './projection-input-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 

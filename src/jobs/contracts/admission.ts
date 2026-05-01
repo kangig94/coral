@@ -1,9 +1,9 @@
-import type { LaunchPool } from '../launch.js';
-
-// LaunchPool's canonical home is `jobs/launch.ts`, but the admission contract
-// re-exports it so coordinator-side consumers can stay on the contract seam
-// (see `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS).
-export type { LaunchPool };
+/**
+ * Pool selector for admission. Lives here because admission is the
+ * contract that makes pool selection meaningful — launch records
+ * propagate the selection but do not define it.
+ */
+export type LaunchPool = 'default' | 'discuss' | 'curate';
 
 export type QueuedHandle = {
   type: 'queued';

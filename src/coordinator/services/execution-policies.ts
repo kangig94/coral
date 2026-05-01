@@ -1,10 +1,5 @@
-import type {
-  EffortLevel,
-  PreflightRuntime,
-  ProviderContinuityBlob,
-  ProviderInstruction,
-  ProviderSpec,
-} from '../../providers/contract.js';
+import type { EffortLevel, PreflightRuntime, ProviderInstruction, ProviderSpec } from '../../providers/contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
 import type { LaunchDecision } from '../../jobs/launch.js';

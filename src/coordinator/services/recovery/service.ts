@@ -1,4 +1,5 @@
-import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
+import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';

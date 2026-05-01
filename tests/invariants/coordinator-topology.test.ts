@@ -74,13 +74,24 @@ const EXPECTED_COORDINATOR_FILES = new Set([
 ]);
 
 const DOMAIN_API_TARGETS = new Set<string>();
+// Domain files coordinator may reach into. The set is intentionally small —
+// each entry names a *contract-shaped* file the domain exposes to outside
+// callers (ports, schemas, config types, projection inputs, etc.). It is
+// NOT an artificial seam: types live at their conceptual home, and this
+// list just enumerates which domain files are public surface.
 const CONTRACT_TARGETS = new Set([
   'src/jobs/contracts/admission.ts',
+  'src/jobs/launch.ts',
+  'src/jobs/outcome.ts',
   'src/kb/contract.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',
+  'src/kb/projection-input-contract.ts',
   'src/providers/contract.ts',
+  'src/providers/protocol.ts',
   'src/providers/registry.ts',
+  'src/sessions/continuity.ts',
+  'src/store/consumer-contract.ts',
 ]);
 const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts']);
 const COORDINATOR_GLUE_SOURCES = new Set([

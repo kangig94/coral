@@ -2,12 +2,6 @@ import { z } from 'zod';
 
 import type { IdPort, Runtime, StoragePort } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
-
-// `ProviderContinuityBlob` lives in `sessions/continuity.js` (sessions own
-// continuity persistence), but the providers contract re-exports it so
-// coordinator-side consumers can stay on the contract seam — see
-// `tests/invariants/coordinator-topology.test.ts` CONTRACT_TARGETS.
-export type { ProviderContinuityBlob };
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
   SESSION_PROVIDER_FAILED_EVENT,
@@ -16,19 +10,6 @@ import {
 import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-  ProviderCliRunner,
-  ProviderTransportClose,
-} from './protocol.js';
-
-// Re-export the protocol/outcome types coordinator-side consumers reach
-// through this contract seam. `AbortReason` lives in `jobs/outcome.js`;
-// the appserver/protocol notification types live in `./protocol.js`. The
-// providers contract aggregates them so coordinator imports stay on a
-// single canonical seam (see `coordinator-topology.test.ts`).
-export type { AbortReason };
-export type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
   ProviderCliRunner,

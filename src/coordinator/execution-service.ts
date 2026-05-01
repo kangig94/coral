@@ -1,7 +1,7 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
-import type { LaunchPool } from '../jobs/launch.js';
+import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';

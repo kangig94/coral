@@ -111,10 +111,3 @@ export type CurateClaim = {
   through: CurateCursor;
 };
 
-export type CurateHandle = {
-  start(): Promise<void>;
-  schedule(): void;
-  scheduleDeferredCommit(): void;
-  stop(): Promise<void>;
-  isRunning(): boolean;
-};

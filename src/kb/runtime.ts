@@ -17,8 +17,8 @@ import type {
   KbMutationEffects,
   KbProjectionArtifactPort,
   KbRuntime,
-  VectorRetrieval,
 } from './contract.js';
+import type { VectorRetrieval } from './search/contract.js';
 import {
   createKbMutationLock,
   DEFAULT_MUTATION_LOCK_TIMEOUT_MS,

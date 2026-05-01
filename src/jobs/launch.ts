@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 import type { EffortLevel, ProviderAction, ProviderInstruction } from '../providers/contract.js';
+import type { LaunchPool } from './contracts/admission.js';
 
-export type LaunchPool = 'default' | 'discuss' | 'curate';
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 export const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;

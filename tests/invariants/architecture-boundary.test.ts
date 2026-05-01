@@ -549,7 +549,10 @@ describe('architecture boundary guard', () => {
     expect(collectProductionTestHelperImports()).toEqual([]);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
-    expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/launch.ts']);
+    // `LaunchPool` is conceptually owned by the admission contract — it
+    // selects an admission pool. `jobs/launch.ts` propagates the choice
+    // through launch records but does not define the type.
+    expect(collectLaunchPoolDefinitions()).toEqual(['src/jobs/contracts/admission.ts']);
 
     const coordinatorContracts = readFileSync(resolve(REPO_ROOT, 'src/coordinator/contracts.ts'), 'utf8');
     expect(coordinatorContracts).not.toMatch(/ExecutionLaunch|ExecutionAdmission|ExecutionQueuedHandle/u);

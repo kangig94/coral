@@ -7,8 +7,8 @@ import type {
   ProviderMiddleware,
   ProviderRequest,
   ProviderRuntime,
-  ProviderTransportClose,
 } from '../contract.js';
+import type { ProviderTransportClose } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

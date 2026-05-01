@@ -21,7 +21,7 @@ import {
 import { getSession } from '#src/discuss/shell/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
-import type { ToolDomainResult } from '#src/transport/response.js';
+import type { ToolDomainResult } from '#src/transport/tool-result.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,

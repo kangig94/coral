@@ -1,4 +1,4 @@
-import type { ConsumerApplyError, CorpusConsumerRegistration } from '../../kb/contract.js';
+import type { ConsumerApplyError, CorpusConsumerRegistration } from '../../store/consumer-contract.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import type { NeedleStore } from './store.js';
 

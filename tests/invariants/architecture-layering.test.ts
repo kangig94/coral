@@ -65,10 +65,17 @@ const COORDINATOR_EXEMPT_PREFIXES = [
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
+  'src/jobs/launch.ts',
+  'src/jobs/outcome.ts',
   'src/kb/contract.ts',
+  'src/kb/projection-input-contract.ts',
   'src/kb/state/corpus-state.ts',
+  'src/kb/search/contract.ts',
   'src/providers/contract.ts',
+  'src/providers/protocol.ts',
   'src/providers/registry.ts',
+  'src/sessions/continuity.ts',
+  'src/store/consumer-contract.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [

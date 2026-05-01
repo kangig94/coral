@@ -1,5 +1,6 @@
 import type { JobContinuitySnapshot } from './continuity.js';
-import type { JobDiagnostics, JobTerminal } from './terminal/result.js';
+import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
+import type { UsageSummary } from '../providers/contract.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
@@ -24,6 +25,38 @@ export function belongsToNamespace(status: JobStatus, namespace: string): boolea
 }
 
 export type JobKind = 'provider' | 'workflow' | 'kb';
+
+export interface JobTerminal {
+  content: string;
+  outcome: TerminalOutcome;
+  durationMs?: number;
+}
+
+export interface JobTerminalInput<Scope = never> {
+  content: string;
+  outcome: TerminalOutcomeInput<Scope>;
+  durationMs?: number;
+}
+
+export interface JobTerminalDiagnostics {
+  warnings?: string[];
+  usage?: UsageSummary;
+  processExit?: {
+    exitCode: number | null;
+    signal: string | null;
+  };
+  /** Output byte counts captured by the provider, propagated by the
+   * coordinator's terminal materializer. Surfaces in `coral-cli wait` /
+   * `jobs detail` so operators can see job output size. */
+  byteCounts?: {
+    stdout: number;
+    stderr: number;
+  };
+}
+
+export interface JobDiagnostics extends JobTerminalDiagnostics {
+  progressFaults: JobProgressFault[];
+}
 
 export interface JobExit extends JobTerminal {
   diagnostics: JobDiagnostics;
@@ -135,5 +168,3 @@ export type JobDetailResponse = {
   readiness: LaunchReadiness;
   exit: JobExit | null;
 };
-
-export type { JobDiagnostics, JobTerminal, JobTerminalDiagnostics, JobTerminalInput } from './terminal/result.js';

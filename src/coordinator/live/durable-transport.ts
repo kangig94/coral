@@ -1,7 +1,7 @@
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { JobRuntime } from '../../jobs/records.js';
-import type { LaunchPool } from '../../jobs/launch.js';
+import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-supervision.js';

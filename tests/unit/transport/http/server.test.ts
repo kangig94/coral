@@ -43,7 +43,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Backed, EmbeddingService, FtsRetrieval, VectorRetrieval } from '#src/kb/contract.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
-import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/response.js';
+import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/tool-result.js';
 import {
   handleKbCommunityRead,
   handleKbDelete,

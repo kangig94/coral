@@ -11,7 +11,8 @@ import { rejectLaunch } from '../../jobs/launch.js';
 import type { AcceptedAdmission } from '../../jobs/contracts/admission.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type { LaunchDecision, LaunchPool } from '../../jobs/launch.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
+import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { ListResult } from '../contracts.js';
 import {

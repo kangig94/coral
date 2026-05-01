@@ -20,12 +20,18 @@ import {
   type CurateState,
 } from './state/index.js';
 import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
-import type { CurateHandle, GitSyncRuntimePicks} from './pipeline-types.js';
+import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 
-export type { CurateHandle } from './pipeline-types.js';
-
 import { isUsageBudgetExhausted } from './usage-budget.js';
+
+export type CurateHandle = {
+  start(): Promise<void>;
+  schedule(): void;
+  scheduleDeferredCommit(): void;
+  stop(): Promise<void>;
+  isRunning(): boolean;
+};
 
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;

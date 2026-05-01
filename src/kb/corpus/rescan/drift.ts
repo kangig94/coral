@@ -8,7 +8,8 @@ import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
-import type { CorpusInterest, KbCorpusSnapshot, KbIndexMutationLane, KbRuntime } from '../../contract.js';
+import type { KbCorpusSnapshot, KbIndexMutationLane, KbRuntime } from '../../contract.js';
+import type { CorpusInterest } from '../../../store/consumer-contract.js';
 import {
   isNoteEntry,
   isSourceEntry,

@@ -1,13 +1,11 @@
 import { insertMultiple, search as oramaSearch } from '@orama/orama';
 
+import type { FtsRetrieval, KbEngineRuntimeBase, KbCorpusSnapshot } from '../../kb/contract.js';
 import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
-  FtsRetrieval,
-  KbEngineRuntimeBase,
-  KbCorpusSnapshot,
-} from '../../kb/contract.js';
+} from '../../store/consumer-contract.js';
 import type { KbProjectionInput, KbProjectionRecord } from '../../kb/projection-input-contract.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../../kb/corpus/snapshot.js';
 import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';

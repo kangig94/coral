@@ -16,11 +16,9 @@ import {
   jobDiagnosticsSchema,
   jobTerminalSchema,
   normalizeJobTerminal,
-  type JobDiagnostics,
-  type JobTerminal,
-  type JobTerminalDiagnostics,
   type JobTerminaledBody,
 } from './terminal/result.js';
+import type { JobDiagnostics, JobTerminal, JobTerminalDiagnostics } from './records.js';
 import type {
   JobProgressBody,
   JobQueueAdmittedBody,

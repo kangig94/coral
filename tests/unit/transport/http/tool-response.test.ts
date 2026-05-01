@@ -2,13 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import type { LaunchDecision } from '#src/jobs/launch.js';
-import {
-  deriveErrorMessage,
-  domainError,
-  domainResultToHttp,
-  domainSuccess,
-  launchToHttp,
-} from '#src/transport/response.js';
+import { deriveErrorMessage, domainError, domainSuccess } from '#src/transport/tool-result.js';
+import { domainResultToHttp, launchToHttp } from '#src/transport/response.js';
 import { formatZodError } from '#src/transport/validation.js';
 
 describe('tool response domain helpers', () => {
