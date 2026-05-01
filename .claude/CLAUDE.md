@@ -11,6 +11,7 @@ Claude Code plugin providing structured agents, Codex and Claude CLI integration
 
 **Key Documentation**:
 - `docs/architecture.md` - System structure, data flow, module dependency graph
+- `docs/design-rationale.md` - WHY behind the structure: authority duality, causal-graph faults, naming/subdivision policy with rejected anti-patterns
 - `docs/core-modules.md` - TypeScript module details
 - `docs/agents.md` - Agent definitions and routing
 - `docs/methodology.md` - HOW methodology system, agent/skill connections

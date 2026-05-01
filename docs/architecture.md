@@ -267,6 +267,10 @@ Foundation layer
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 
+## Design Rationale
+
+For the **why** behind these structures — the duality of authorities, causal-graph fault model, provider stream composition, the Zelda Expansion philosophy, naming/subdivision policy with rejected anti-patterns — see [`docs/design-rationale.md`](design-rationale.md).
+
 ## Rewrite Policy
 
 The rewrite branch is clean-slate. Legacy module paths, compatibility shims, and fallback aliases are not kept for convenience. If an old path no longer represents the owner, it is deleted and guarded by invariants. When implementation reveals a better owner than the document predicted, update the document and code together rather than preserving a transitional layer.
