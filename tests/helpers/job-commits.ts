@@ -1,7 +1,6 @@
 import type { AppendedEvent } from '#src/store/append.js';
 import type { JobStore } from '#src/jobs/store.js';
-import type { JobTerminalInput } from '#src/jobs/terminal/result.js';
-import type { JobTerminalDiagnostics } from '#src/jobs/terminal/result.js';
+import type { JobTerminalInput, JobTerminalDiagnostics } from '#src/jobs/terminal/result.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { CoralEventInput } from '#src/store/envelope.js';

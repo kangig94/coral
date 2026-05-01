@@ -1,16 +1,16 @@
 import { basename, join } from 'node:path';
-import type {
-  Disposable,
-  EnvPort,
-  IdPort,
-  RuntimeObserver,
-  RuntimePaths,
-  SpawnEvent,
-  SpawnListener,
+import {
+  type Disposable,
+  type EnvPort,
+  type IdPort,
+  type RuntimeObserver,
+  type RuntimePaths,
+  type SpawnEvent,
+  type SpawnListener,
+  cloneSpawnEvent,
 } from '../../../src/runtime/ports.js';
 import { composeCoralPaths, type CoralPaths } from '../../../src/infra/path/compose.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
-import { cloneSpawnEvent } from '../../../src/runtime/ports.js';
 import { hashToken } from '../../../src/infra/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';

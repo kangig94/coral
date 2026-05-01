@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { Option } from 'commander';
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 
 import type { KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug } from '../../kb/validation.js';

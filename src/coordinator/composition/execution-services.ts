@@ -1,8 +1,7 @@
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { ProjectRequestPort } from '../contracts.js';
+import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
-import type { ExecutionServiceDeps } from '../contracts.js';
 import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 

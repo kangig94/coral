@@ -10,9 +10,8 @@ import type {
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { backendLog } from '../../infra/backend-log.js';
-import type { LaunchDecision } from '../launch.js';
-import { isTerminalPhase } from '../phase.js';
-import type { JobPhase } from '../phase.js';
+import { type LaunchDecision, rejectLaunch } from '../launch.js';
+import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
@@ -30,7 +29,6 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
-import { rejectLaunch } from '../launch.js';
 import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 

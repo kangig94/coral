@@ -17,13 +17,14 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type {
-  ProviderSpec,
-  Provider,
-  ProviderContinuityUpdate,
-  ProviderTransportClose,
+import {
+  type ProviderSpec,
+  type Provider,
+  type ProviderContinuityUpdate,
+  type ProviderTransportClose,
+  providerTerminalEventBodySchema,
+  providerJobTerminalSchema,
 } from '#src/providers/contract.js';
-import { providerTerminalEventBodySchema, providerJobTerminalSchema } from '#src/providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';

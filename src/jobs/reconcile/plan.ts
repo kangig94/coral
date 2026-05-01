@@ -1,6 +1,5 @@
 import { isLivePhase, isTerminalPhase } from '../phase.js';
-import { belongsToNamespace } from '../records.js';
-import type { JobLaunch, JobRuntime, JobStatus } from '../records.js';
+import { belongsToNamespace, type JobLaunch, type JobRuntime, type JobStatus } from '../records.js';
 import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
 
 /**

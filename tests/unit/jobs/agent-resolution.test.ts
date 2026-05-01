@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { AgentResolutionContext } from '#src/jobs/agent-resolution.js';
 import {
+  type AgentResolutionContext,
   AgentNamespaceNotFoundError,
   AgentNotFoundError,
   InvalidAgentRefError,

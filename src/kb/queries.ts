@@ -10,13 +10,12 @@ import type {
   KbSearchResponse,
   KbSourceListResult,
 } from './entry-types.js';
-import type { MemoStorage } from './ops/memo.js';
+import { type MemoStorage, listMemos } from './ops/memo.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import type { KbRuntime } from './contract.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { readEntry, type KbReadPathResolver, type KbReadStorage } from './read.js';
 import { readCurateRetryQueue } from './curate/retry.js';
-import { listMemos } from './ops/memo.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { listSources } from './ops/source-store.js';

@@ -1,7 +1,6 @@
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobEvent } from '../../jobs/records.js';
+import type { JobEvent, LaunchReadiness } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
-import type { LaunchReadiness } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contract.js';
 import type { JobWaitPort, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
 

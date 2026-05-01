@@ -11,8 +11,7 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import { attachSession } from '#src/discuss/shell/registry.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
-import type { CoordinatorServerController } from '#src/coordinator/index.js';
-import { createCoordinatorServer } from '#src/coordinator/index.js';
+import { type CoordinatorServerController, createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
 import {

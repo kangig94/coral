@@ -21,8 +21,8 @@ import {
   parseHookOutput,
   runHook,
   writeInjectMd,
+  type HookOutput,
 } from '#tests/unit/hooks/_helpers.js';
-import type { HookOutput } from '#tests/unit/hooks/_helpers.js';
 
 afterEach(cleanupFixtures);
 

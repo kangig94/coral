@@ -1,9 +1,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { KbCorpusSnapshot } from '../kb/contract.js';
-import type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint } from '../store/consumer-contract.js';
-import type { KbCorpusProjectionReader, KbProjectionInput } from '../kb/projection-input-contract.js';
 import type {
+  CorpusConsumerRegistration,
+  CorpusInterest,
+  CorpusLaneHint,
   ConsumerApplyError,
   ConsumerHandle,
   ConsumerHandleStatus,
@@ -14,6 +15,7 @@ import type {
   JournalApplyRegistration,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
+import type { KbCorpusProjectionReader, KbProjectionInput } from '../kb/projection-input-contract.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import type { TimerHandle, TimePort } from '../runtime/ports.js';
 import { backendLog } from '../infra/backend-log.js';

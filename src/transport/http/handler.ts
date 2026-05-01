@@ -1,12 +1,15 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ZodError } from 'zod';
-import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
+import {
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+  type WaitStreamEvent,
+  type WaitStreamRequest,
+} from '../../jobs/wait.js';
 import { isRecord } from '../../infra/json.js';
 import { executeCatalogRequest } from '../dispatch.js';
-import { rpcCatalog, transportOperationalCarveouts } from '../rpc/catalog.js';
-import type { RpcMethodSpec } from '../rpc/catalog.js';
-import type { WaitStreamRequest } from '../../jobs/wait.js';
+import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';

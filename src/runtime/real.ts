@@ -42,8 +42,7 @@ import type {
 import { errorMessage } from '../infra/error-format.js';
 import { MAX_BUFFER } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
-import { isDurableCliRuntime } from './durable-runtime.js';
-import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
+import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;

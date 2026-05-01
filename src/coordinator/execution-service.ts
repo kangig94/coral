@@ -3,7 +3,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
-import type { LaunchDecision } from '../jobs/launch.js';
+import type { LaunchDecision, JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type {
@@ -12,8 +12,8 @@ import type {
   JobRuntime,
   JobTerminalDiagnostics,
   JobTerminalInput,
+  LaunchReadiness,
 } from '../jobs/records.js';
-import type { LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -27,7 +27,6 @@ import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { CoralIntent } from './services/execution-policies.js';
-import type { JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
 import { JobLaunchService } from './services/job-launch.js';
 import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';

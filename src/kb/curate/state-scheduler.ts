@@ -1,8 +1,7 @@
 import { z } from 'zod';
 
 import type { KbCurateSchedulerRow } from '../state/schema.js';
-import type { CurateCursor } from './state/model.js';
-import { cursorEntryKind, kbEntryIdSchema } from './state/model.js';
+import { type CurateCursor, cursorEntryKind, kbEntryIdSchema } from './state/model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
 export type CurateSchedulerState = {

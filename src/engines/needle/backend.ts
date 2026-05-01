@@ -6,7 +6,6 @@ import { nowIsoString } from '../../infra/time.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import type { Backed, EmbeddingService, KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext } from '../../store/consumer-contract.js';
-import type { VectorRetrieval as BoundVectorRetrieval } from '../../kb/search/contract.js';
 import type { KbProjectionInput } from '../../kb/projection-input-contract.js';
 import {
   getEntry,
@@ -35,7 +34,12 @@ import {
   type NeedleBackendOptions,
 } from './contract.js';
 import { isNeedleSnapshotManifest, type NeedleSnapshotManifest } from './artifact-port.js';
-import type { RetrievalScope, VectorRetrievalHit, VectorRetrievalResult } from '../../kb/search/contract.js';
+import type {
+  RetrievalScope,
+  VectorRetrievalHit,
+  VectorRetrievalResult,
+  VectorRetrieval as BoundVectorRetrieval,
+} from '../../kb/search/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 
 const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;

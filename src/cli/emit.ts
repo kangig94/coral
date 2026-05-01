@@ -8,8 +8,7 @@ import { formatLaunch } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
-import type { AbortCapableClient } from './dispatch.js';
-import { getPluginRoot } from './dispatch.js';
+import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 

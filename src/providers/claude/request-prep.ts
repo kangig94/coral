@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
 
 import { resolveInjectMd } from '../inject.js';
-import type { ProviderRequest } from '../contract.js';
+import type { ProviderRequest, EffortLevel } from '../contract.js';
 import type { StoragePort } from '../../runtime/ports.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
-import type { EffortLevel } from '../contract.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';

@@ -1,9 +1,8 @@
 import type { JobContinuitySnapshot } from './continuity.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
-import type { UsageSummary } from '../providers/contract.js';
+import type { UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
-import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
 

@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { JobContinuitySnapshot } from './continuity.js';
-import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { type JobPhase } from './phase.js';
@@ -15,7 +15,6 @@ import {
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
-import { jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { prepareCached } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';

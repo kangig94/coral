@@ -9,11 +9,10 @@ import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
 import type { SpawnCliFn } from '#src/kb/curate/pipeline-types.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { Runtime } from '#src/runtime/ports.js';
+import type { Runtime, Disposable } from '#src/runtime/ports.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '#src/store/consumer-contract.js';
-import type { Disposable } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '../../tools/simulation/runtime.js';
 
 /**

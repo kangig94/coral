@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { createServer, type Server as NetServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdirSync } from 'node:fs';
 import { decode, encode, type JsonRpcRequest, type JsonRpcResponse } from '#src/transport/json-rpc.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { CoralSetupError } from '#src/runtime/errors.js';

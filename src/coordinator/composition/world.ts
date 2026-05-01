@@ -1,7 +1,6 @@
 declare const __VERSION__: string;
 
-import type { PluginRegistry } from '../../infra/plugin-registry.js';
-import { createPluginRegistry } from '../../infra/plugin-registry.js';
+import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { providerLookupPortFromCatalog } from '../../providers/catalog.js';

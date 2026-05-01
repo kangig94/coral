@@ -1,8 +1,7 @@
 import { buildAuditView, buildControlView } from './projections.js';
 import type { PersistedDiscussSnapshot } from './events.js';
-import type { DiscussState } from './session-types.js';
+import type { DiscussState, TranscriptEntry } from './session-types.js';
 import type { DiscussControlTranscriptEntryDto } from './view-types.js';
-import type { TranscriptEntry } from './session-types.js';
 
 export type DiscussAuthority = 'live' | 'persisted';
 export type DiscussView = 'control' | 'audit';

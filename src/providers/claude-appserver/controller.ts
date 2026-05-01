@@ -5,6 +5,7 @@ import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,
   parseClaudeStdoutLine,
+  type PermissionMode,
   type SDKAssistantMessage,
   type SDKControlInitializeRequest,
   type SDKControlInterruptRequest,
@@ -16,7 +17,6 @@ import {
   type SDKSystemMessage,
 } from '../claude/control-protocol.js';
 import { extractClaudeProgressMessage, formatToolProgress } from '../claude/progress.js';
-import type { PermissionMode } from '../claude/control-protocol.js';
 import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/request-prep.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,

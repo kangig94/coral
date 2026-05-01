@@ -5,8 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';

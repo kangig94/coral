@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
-import type { RecoveryProjectionSnapshot, RecoveryAction, RecoveryJobFacts } from '#src/jobs/reconcile/plan.js';
-import { planRecovery } from '#src/jobs/reconcile/plan.js';
+import {
+  type RecoveryProjectionSnapshot,
+  type RecoveryAction,
+  type RecoveryJobFacts,
+  planRecovery,
+} from '#src/jobs/reconcile/plan.js';
 
 const NOW = '2026-04-12T00:00:00.000Z';
 const CURRENT_NAMESPACE = 'namespace-current';

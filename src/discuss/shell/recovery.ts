@@ -4,13 +4,17 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { DiscussContext, LiveDiscussSession } from './types.js';
 import { ABORT_REASON } from './errors.js';
 import type { DiscussSessionStore } from './session-store.js';
-import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
+import {
+  makeEvent,
+  type DiscussDomainEvent,
+  type PersistedDiscussSnapshot,
+  isWithinLiveSessionBoundary,
+} from '../events.js';
 import { buildWatchEvents } from '../watch.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isManualParticipant } from './runtime-build.js';
 import { attachSession } from './registry.js';
 import { appendRuntimeEvents, isAbortEnded, readSessionEvents } from './persistence.js';
-import { isWithinLiveSessionBoundary } from '../events.js';
 
 export type RecoveredDiscussResume = {
   ctx: DiscussContext;

@@ -1,7 +1,6 @@
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import { isAppServerRuntime } from '../../../jobs/records.js';
-import type { JobLaunch, JobRuntime } from '../../../jobs/records.js';
+import { isAppServerRuntime, type JobLaunch, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ProviderRecoveryContract } from '../../../providers/contract.js';

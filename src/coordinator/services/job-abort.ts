@@ -2,11 +2,10 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isAppServerRuntime, type AppServerRuntime, type JobLaunch } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
-import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
+import type { JobAbortRegistryPort, AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { JobAdmissionPort, LaunchPool } from '../../jobs/contracts/admission.js';
 import type { QueuedJobAbortPort } from '../../jobs/contracts/job-runner.js';
-import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: JobAbortRegistryPort;

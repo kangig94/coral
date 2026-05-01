@@ -1,5 +1,4 @@
-import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
-import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
+import { type DurableCliRuntimeRecord, isDurableCliRuntime } from '../runtime/durable-runtime.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderCliRunner } from './protocol.js';
 

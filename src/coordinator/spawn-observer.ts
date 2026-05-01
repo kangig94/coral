@@ -1,6 +1,12 @@
 import { join } from 'node:path';
-import { cloneSpawnEvent } from '../runtime/ports.js';
-import type { Disposable, Runtime, RuntimeObserver, SpawnEvent, SpawnListener } from '../runtime/ports.js';
+import {
+  cloneSpawnEvent,
+  type Disposable,
+  type Runtime,
+  type RuntimeObserver,
+  type SpawnEvent,
+  type SpawnListener,
+} from '../runtime/ports.js';
 import {
   attachSpawnRecordingMetadata,
   buildRecordingFilePath,

@@ -2,8 +2,17 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { CoordinatorIdentity, MutableRuntimeState as MutableCoordinatorRuntimeState } from '../lifecycle.js';
-import type { ProjectRequestPort } from '../contracts.js';
+import type {
+  CoordinatorIdentity,
+  MutableRuntimeState as MutableCoordinatorRuntimeState,
+  CreateKbSubsystemFn,
+  LifecycleController,
+  LifecycleHooks,
+  RecoverPersistedDiscussFn,
+  RegisterBuiltInProvidersFn,
+  RunStartupRecoveryFn,
+} from '../lifecycle.js';
+import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/types.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
@@ -13,19 +22,10 @@ import type { TypedEventBus } from '../event-bus.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
-import type {
-  CreateKbSubsystemFn,
-  LifecycleController,
-  LifecycleHooks,
-  RecoverPersistedDiscussFn,
-  RegisterBuiltInProvidersFn,
-  RunStartupRecoveryFn,
-} from '../lifecycle.js';
 import type { JobStore } from '../../jobs/store.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
-import type { ExecutionServiceDeps } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';

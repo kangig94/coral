@@ -4,8 +4,8 @@ import {
   type DiscussAgentJobPurpose,
   type PersistedDiscussAgentRun,
   type SessionCreatedAgentExecutionConfig,
+  type PersistedDiscussSnapshot,
 } from '../events.js';
-import type { PersistedDiscussSnapshot } from '../events.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { errorMessage } from '../../infra/error-format.js';

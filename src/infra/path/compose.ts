@@ -7,13 +7,10 @@
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
-import type { CoordinatorPaths } from './coordinator.js';
-import { coordinatorPaths } from './coordinator.js';
+import { type CoordinatorPaths, coordinatorPaths } from './coordinator.js';
 import { coralRoot, kbVaultRoot } from './root.js';
-import type { EnginePaths } from './engine.js';
-import { enginePaths } from './engine.js';
-import type { StorePaths } from './store.js';
-import { storePaths } from './store.js';
+import { type EnginePaths, enginePaths } from './engine.js';
+import { type StorePaths, storePaths } from './store.js';
 
 export interface CorpusPaths {
   kbRoot: string;

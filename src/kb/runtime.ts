@@ -31,7 +31,7 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import { cloneKbIndex } from './corpus/index-records.js';
 import { detectRescanInfo } from './corpus/rescan/drift.js';
 import { performRescan } from './corpus/rescan/index.js';
-import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
+import { createCorpusStorage, type CorpusStorage, type CorpusMarkdownKind } from './corpus/rescan/storage.js';
 import { type EntityGraph, type KbIndex } from './entry-types.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
 import {
@@ -45,8 +45,7 @@ import {
   withoutTextStaleReason,
   type KbIndexStateSnapshot,
 } from './corpus/lanes.js';
-import { emptyIndex, isFreshTextSnapshot, KbIndexStore } from './corpus/index-store.js';
-import { writeJsonAtomic } from './corpus/index-store.js';
+import { emptyIndex, isFreshTextSnapshot, KbIndexStore, writeJsonAtomic } from './corpus/index-store.js';
 import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
 import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
@@ -67,7 +66,6 @@ import {
   createCorpusScanView,
   ENTITY_GRAPH_SCAN_ENTRY_ID,
 } from './corpus/rescan/scan.js';
-import type { CorpusMarkdownKind } from './corpus/rescan/storage.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
 import { createKbProjectionInput } from './projection-input.js';
 import { EngineArtifactRegistry } from './corpus/artifact-registry.js';

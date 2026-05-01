@@ -1,8 +1,7 @@
 import type { EffortLevel, PreflightRuntime, ProviderInstruction, ProviderSpec } from '../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
-import type { JobLaunchRequest } from '../../jobs/launch.js';
-import type { LaunchDecision } from '../../jobs/launch.js';
+import { type JobLaunchRequest, type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -13,12 +12,10 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
-import type { SessionAllocateOptions } from '../../sessions/contracts.js';
-import type { SessionClaimAtomicPort } from '../../sessions/contracts.js';
+import type { SessionAllocateOptions, SessionClaimAtomicPort } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
-import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';

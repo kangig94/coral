@@ -17,22 +17,21 @@ import {
   type PipelineResult,
   type StepDetail,
   type WorkflowSessionHandle,
+  type WorkflowExecutionPort,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
 import type { JobPhase } from '../../jobs/phase.js';
-import type { LaunchDecision } from '../../jobs/launch.js';
+import { type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
 import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
-import { rejectLaunch } from '../../jobs/launch.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
 import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
-import type { WorkflowExecutionPort } from '../../workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 
 export interface WorkflowExecutionServiceDeps {

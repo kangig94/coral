@@ -1,13 +1,15 @@
-import type {
-  EntityMeta,
-  EntityRelationship,
-  CommunityEntry,
-  EntryRecord,
-  KbIndex,
-  NoteEntry,
-  SourceEntry,
+import {
+  type EntityMeta,
+  type EntityRelationship,
+  type CommunityEntry,
+  type EntryRecord,
+  type KbIndex,
+  type NoteEntry,
+  type SourceEntry,
+  isCommunityEntry,
+  isNoteEntry,
+  isSourceEntry,
 } from '../entry-types.js';
-import { isCommunityEntry, isNoteEntry, isSourceEntry } from '../entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;

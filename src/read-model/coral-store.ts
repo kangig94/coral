@@ -2,11 +2,18 @@ import type { Database } from 'better-sqlite3';
 
 import type { Runtime } from '../runtime/ports.js';
 import { createKbQueryHost, type KbQueryContext } from './kb-query-runtime.js';
-import type { KbQueryHost } from '../kb/queries.js';
+import {
+  type KbQueryHost,
+  diagnoseKnowledgeBase,
+  listKnowledgeBaseMemos,
+  listKnowledgeBasePrinciples,
+  listKnowledgeBaseSources,
+  readKnowledgeBaseEntry,
+  searchKnowledgeBase,
+} from '../kb/queries.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
-import type { EventsFilter, EventsPage } from '../store/event-queries.js';
-import { getEvent, getEventsSince } from '../store/event-queries.js';
+import { type EventsFilter, type EventsPage, getEvent, getEventsSince } from '../store/event-queries.js';
 import {
   loadJobDetail,
   loadJobProjectionDetail,
@@ -15,16 +22,7 @@ import {
   type JobDetail,
   type JobsListFilters,
 } from '../jobs/read-queries.js';
-import {
-  diagnoseKnowledgeBase,
-  listKnowledgeBaseMemos,
-  listKnowledgeBasePrinciples,
-  listKnowledgeBaseSources,
-  readKnowledgeBaseEntry,
-  searchKnowledgeBase,
-} from '../kb/queries.js';
-import { buildDiscussWatchState } from '../discuss/watch.js';
-import type { WatchState } from '../discuss/watch.js';
+import { buildDiscussWatchState, type WatchState } from '../discuss/watch.js';
 import {
   readDiscussDiscovery,
   readDiscussEventLog,
