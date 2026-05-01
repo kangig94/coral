@@ -209,7 +209,7 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 메모로 포착하고, 검토 후 `~/.coral/kb/`에 영구 지식으로 승격합니다. 다음 세션은 처음부터 디버깅하기 전에 KB를 확인합니다. 같은 실수를 반복하지 않습니다.
 
-- **시맨틱 검색**: `/coral:equip kb`로 벡터 검색 활성화 — BM25 + 임베딩 하이브리드 검색 (Gemini, OpenAI, 로컬 ONNX 모델)
+- **시맨틱 검색**: `/coral:equip needle`로 대규모 벡터 검색 강화 — BM25 + 임베딩 하이브리드 검색 (Gemini, OpenAI, 로컬 ONNX 모델)
 
 ## 설정
 
@@ -222,6 +222,7 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`) |
 | `CORAL_EFFORT` | _(없음)_ | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용 |
+| `CORAL_DEV_ASSERTIONS` | _(없음)_ | 기여자 전용 개발 어서션. 로컬 개발이나 `npm test` 실행 시 `1`로 두면 이미 비활성화된 continuity bridge 호출과 dispatcher 손상 상태를 조용히 넘기지 않고 예외로 드러냅니다. 미설정이 기본 프로덕션 동작이며, 배포 환경에서는 절대 켜지 마세요 |
 | `CORAL_MAX_WORKERS` | `10` | 최대 동시 워커 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (0 = 비활성화) |

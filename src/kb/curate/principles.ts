@@ -1,15 +1,13 @@
-import { readFileSync } from 'node:fs';
-import { isNoEntryError, nowIsoString, unlinkIfExists } from '../../shared/utils.js';
-import type { KbRuntime } from '../contracts.js';
-import { extractPrincipleStatement } from '../frontmatter.js';
-import {
-  cloneKbIndex,
-  markTextIndexStale,
-  recordMetadataMutation,
-  writeFileAtomic,
-} from '../mutation-helpers.js';
+import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
+import { nowIsoString } from '../../infra/time.js';
+import type { KbMutationEffects, KbRuntime } from '../contract.js';
+import { capturePrincipleManifestDelta, captureRemovedPrincipleManifestDelta } from '../corpus/manifest-authority.js';
+import { extractPrincipleStatement } from '../corpus/frontmatter.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { markTextIndexStale, recordMetadataMutation } from '../corpus/index-mutations.js';
+import { cloneKbIndex } from '../corpus/index-records.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
-import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,
@@ -38,8 +36,9 @@ import {
   type CurateCursor,
   type CurateState,
   type PendingDiscovery,
-} from './state.js';
-import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate, SpawnCliFn } from './types.js';
+} from './state/index.js';
+import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate } from './pipeline-types.js';
+import type { SpawnCliFn } from './spawn-cli.js';
 
 type EnsurePrincipleDocumentResult = {
   status: 'ready' | 'conflict';
@@ -148,6 +147,7 @@ export async function removePendingDiscovery(kb: KbRuntime, entry: PendingDiscov
 
 function ensurePrincipleDocumentLocked(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   entry: PendingDiscovery,
   state: CurateState,
 ): EnsurePrincipleDocumentResult {
@@ -155,7 +155,7 @@ function ensurePrincipleDocumentLocked(
   const nextIndex = cloneKbIndex(kb.readIndex());
 
   try {
-    const liveStatement = extractPrincipleStatement(readFileSync(principlePath, 'utf-8'));
+    const liveStatement = extractPrincipleStatement(kb.storagePort.readFileSync(principlePath, 'utf-8'));
     if (liveStatement !== entry.statement) {
       return { status: 'conflict', state };
     }
@@ -174,7 +174,9 @@ function ensurePrincipleDocumentLocked(
   }
 
   recordMetadataMutation(kb, CURATE_STALE_REASON);
-  writeFileAtomic(principlePath, serializePrincipleDocument(entry.statement, entry.createdAt));
+  const principleDocument = serializePrincipleDocument(entry.statement, entry.createdAt);
+  writeFileAtomic(kb, principlePath, principleDocument);
+  mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, principleDocument));
   nextIndex.principles[entry.principle] = entry.statement;
   kb.writeIndex(nextIndex);
   return {
@@ -203,12 +205,12 @@ function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, proce
 }
 
 async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCursor): Promise<void> {
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     let state = readCurateState(kb);
     const pendingDiscoveries = state.pendingDiscoveries;
 
     for (const entry of pendingDiscoveries) {
-      const principleDocument = ensurePrincipleDocumentLocked(kb, entry, state);
+      const principleDocument = ensurePrincipleDocumentLocked(kb, mutation, entry, state);
       state = principleDocument.state;
 
       if (principleDocument.status === 'conflict') {
@@ -223,7 +225,7 @@ async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCu
         processedThrough,
       );
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
       }
 
       if (pendingDiscoverySatisfied(kb, entry, processedThrough)) {
@@ -243,7 +245,7 @@ export async function runPrincipleDiscovery(
   await drainPendingDiscoveries(kb, processedThrough);
 
   const currentIndex = kb.readIndexOrEmpty();
-  const preparedBatch = prepareDiscoveryBatch(currentIndex, readCurateState(kb), processedThrough);
+  const preparedBatch = prepareDiscoveryBatch(kb, currentIndex, readCurateState(kb), processedThrough);
   if (preparedBatch === null) {
     return;
   }
@@ -251,7 +253,7 @@ export async function runPrincipleDiscovery(
   const batch = preparedBatch.batch;
   const eligibleNotes = loadEligibleDiscoveryNotes(kb, batch.selected);
 
-  const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
+  const { prompt, corpusPath } = buildDiscoveryPrompt(kb, eligibleNotes, currentIndex.principles);
   let raw: string;
   try {
     raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
@@ -264,10 +266,10 @@ export async function runPrincipleDiscovery(
   }
   const proposals = validateDiscoveryProposals(parsed.proposals, eligibleNotes, currentIndex.principles);
 
-  await kb.withMutationLock(async () => {
+  await kb.withMutationLock(async (mutation) => {
     const refreshedState = readCurateState(kb);
     const refreshedIndex = kb.readIndexOrEmpty();
-    const refreshedBatch = prepareDiscoveryBatch(refreshedIndex, refreshedState, processedThrough);
+    const refreshedBatch = prepareDiscoveryBatch(kb, refreshedIndex, refreshedState, processedThrough);
     if (
       refreshedBatch === null ||
       compareCursor(refreshedBatch.processedThrough, preparedBatch.processedThrough) !== 0 ||
@@ -279,7 +281,7 @@ export async function runPrincipleDiscovery(
 
     let state = refreshedBatch.state;
     let index = refreshedIndex;
-    const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+    const repairFrontier = getCurateRepairFrontier(kb);
     const effectiveProcessedThrough = refreshedBatch.processedThrough;
 
     for (const proposal of proposals) {
@@ -287,12 +289,12 @@ export async function runPrincipleDiscovery(
         principle: proposal.slug,
         statement: proposal.statement,
         notes: [...proposal.notes],
-        createdAt: nowIsoString(),
+        createdAt: nowIsoString(kb.time),
       };
 
       state = addPendingDiscoveryLocked(kb, state, entry);
       const isRefineProposal = index.principles[proposal.slug] !== undefined && (proposal.absorbs?.length ?? 0) === 0;
-      const principleDocument = ensurePrincipleDocumentLocked(kb, entry, state);
+      const principleDocument = ensurePrincipleDocumentLocked(kb, mutation, entry, state);
       state = principleDocument.state;
       index = kb.readIndexOrEmpty();
 
@@ -305,7 +307,7 @@ export async function runPrincipleDiscovery(
         const principlePath = kb.principlePath(assertNoteSlug(entry.principle, 'principle'));
         let rawPrinciple: string;
         try {
-          rawPrinciple = readFileSync(principlePath, 'utf-8');
+          rawPrinciple = kb.storagePort.readFileSync(principlePath, 'utf-8');
         } catch {
           state = removePendingDiscoveryLocked(kb, state, entry);
           continue;
@@ -316,19 +318,18 @@ export async function runPrincipleDiscovery(
           continue;
         }
 
-        const updatedAt = nowIsoString();
-        writeFileAtomic(
-          principlePath,
-          [
-            '---',
-            `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,
-            `updatedAt: ${updatedAt}`,
-            '---',
-            '',
-            entry.statement,
-            '',
-          ].join('\n'),
-        );
+        const updatedAt = nowIsoString(kb.time);
+        const nextRaw = [
+          '---',
+          `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,
+          `updatedAt: ${updatedAt}`,
+          '---',
+          '',
+          entry.statement,
+          '',
+        ].join('\n');
+        writeFileAtomic(kb, principlePath, nextRaw);
+        mutation.queueManifestAuthorityDelta(capturePrincipleManifestDelta(entry.principle, nextRaw));
         recordMetadataMutation(kb, CURATE_STALE_REASON);
         const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());
         nextIndex.principles[entry.principle] = entry.statement;
@@ -346,7 +347,7 @@ export async function runPrincipleDiscovery(
         repairFrontier,
       ).map(({ target }) => target);
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
         index = kb.readIndexOrEmpty();
       }
 
@@ -369,6 +370,7 @@ export async function runPrincipleDiscovery(
         }
 
         unlinkIfExists(kb.principlePath(absorbSlug));
+        mutation.queueManifestAuthorityDelta(captureRemovedPrincipleManifestDelta(absorbSlug));
         delete nextIndex.principles[absorbSlug];
       }
       recordMetadataMutation(kb, CURATE_STALE_REASON);
@@ -404,7 +406,7 @@ export async function runPrincipleDiscovery(
       }
 
       if (targets.length > 0) {
-        state = await commitMetadataTargetsLocked(kb, targets, state);
+        state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
         index = kb.readIndexOrEmpty();
       }
     }

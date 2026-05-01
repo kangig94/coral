@@ -57,7 +57,7 @@ coral-cli wait --jobs "<job-id list>" --embed
 Behavior:
 
 1. `ExecutionService.coralDispatch()` resolves `agents/<name>.md`.
-2. `src/execution/instruction.ts` builds the provider instruction.
+2. `src/jobs/shell/instruction.ts` builds the provider instruction.
 3. The provider adapter injects that instruction into the provider launch.
 4. Detached launches print `Job <job> <launchState> (session <session>)`, and `wait --embed` always prints `Result path: <path>` for durable artifact recovery.
 5. The job is persisted like any other provider execution.
@@ -66,7 +66,7 @@ Unknown agent names fail through the normal provider/domain error path.
 
 ## Discuss Agents
 
-Discuss participants are backend-managed provider sessions, not Agent Teams and not protocol clients. The normal entrypoints are:
+Discuss participants are coordinator-managed provider sessions, not Agent Teams and not protocol clients. The normal entrypoints are:
 
 - `coral-cli discuss seed`
 - `coral-cli discuss start`

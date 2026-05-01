@@ -1,65 +1,134 @@
 ---
 name: equip
-description: "One-touch install of Coral companion tooling and KB runtime"
-argument-hint: "[--list | [--update] cgc[@version] | kb[@version]]"
+description: One-touch install of Coral companion tooling and KB runtime
+argument-hint: "[--list | [--update] <package> | uninstall <equipment-name>]"
 ---
 
 # Equip
 
 Install and configure Coral companion tooling for Claude Code.
 
+## Verb Mapping
+
+- `/equip <pkg>` -> `coral-cli expansion equip <pkg>`
+- `/equip --list` -> `coral-cli expansion list`
+- `/equip --update <pkg>` -> `coral-cli expansion update <pkg>`
+- `/equip uninstall <pkg>` -> `coral-cli expansion unequip <pkg>`
+- If this surface exposes it, `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
+
+## Runtime Model
+
+`coral-cli expansion` manages engines through the Expansion lifecycle. Engine identity is package-local; commands should route by declared metadata (`id`, `tier`, `fills`, `status`) instead of hard-coding package semantics.
+
+- `fills` declares the runtime binding(s) an engine can provide, such as `kb.fts`, `kb.vector`, or `kb.embedding`.
+- If an engine fills `kb.vector`, vector search can use it for vector queries. If no vector engine is equipped, vector queries fail with `binding_empty` until a vector engine is equipped.
+- If an engine fills `kb.embedding`, engines that require embeddings can use that binding after the embedder is equipped.
+- If an engine fills `kb.fts`, text search can use it for full-text queries.
+
+## Tier Semantics
+
+`coral-cli expansion list` and `coral-cli expansion info <pkg>` expose `tier` on engine entries.
+
+| tier        | Status source                                                                                  | User verbs |
+|-------------|------------------------------------------------------------------------------------------------|------------|
+| `bundled`   | Coordinator bundled fallback pass; list/info show `tier: 'bundled'`, `status: 'equipped'`      | `equip` and `unequip` return `expansion_bundled_immutable` |
+| `installed` | Installed-tier state row; list/info show `tier: 'installed'` plus state-row-derived `status`   | `equip`, `unequip`, and `update` manage install and activation |
+
+Bundled engines auto-equip at coordinator boot via the bundled fallback pass. They do not appear in `expansion_state` (that table tracks installed-tier engines only). See `coral-cli expansion list` for status.
+
 ## Execution
 
 ### No argument or `--list`
 
-1. Bash(`node equip/install.mjs --list`)
-2. Present catalog as a table (id, name, description)
-3. Ask the user which package to install
+1. Bash(`coral-cli expansion list`)
+2. Parse the single-line JSON result.
+3. Route read responses by top-level `status`:
 
-### `<package>` (e.g., `cgc` or `kb`)
+| status    | Action |
+|-----------|--------|
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, translated `activation`, `status`, and `statusDescription` when present |
+| `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, and the translated `activation` label |
+| `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-1. Bash(`node equip/install.mjs <package>`)
-2. Parse JSON output (single line from stdout)
+4. For each catalog entry, route inner `status` as follows:
+
+| status                       | Meaning                                                         |
+|------------------------------|-----------------------------------------------------------------|
+| `equipped`                   | Active in the coordinator                                       |
+| `catching_up`                | Registered and replaying the corpus                             |
+| `installed-not-active`       | Installed, but boot recovery failed. Check the last error and satisfy missing dependencies before retrying `/equip <name>` |
+| `inactive`                   | Installed but not registered. Run `/equip <name>` to reactivate |
+| `unavailable`                | Required local artifact missing or coordinator unreachable. Run `/equip <name>` to repair or reactivate |
+| `disabled_pending_reinstall` | Load failed. Run `/equip <name>` to reinstall                   |
+| `installing`                 | Another `/equip` is currently holding `install.lock`            |
+| `not_equipped`               | Installed-tier engine is not installed/equipped locally         |
+| `not_installed`              | Install-only package is not installed locally                   |
+| `installed`                  | Install-only package is installed locally and ready to use      |
+
+5. When rendering `activation`, translate internally:
+   - `activation: 'equip'` -> `Active in Coordinator`
+   - `activation: 'none'` -> `Install-only (use directly via the installed path)`
+6. For bundled engines, do not suggest `/equip <name>` or `/equip uninstall <name>` as a repair action. These verbs return `expansion_bundled_immutable`; use `expansion list` to inspect status.
+7. Ask the user which package to install.
+
+### `<package>`
+
+1. Bash(`coral-cli expansion equip <package>`)
+2. Parse the single-line JSON result.
 3. Route by `status`:
 
-| status | Action |
-|--------|--------|
-| `already_installed` | Inform user, continue to Post-Install Routing |
-| `already_up_to_date` | Inform user (version shown). If `onboarding` or `postInstall` is present, continue to Post-Install Routing; otherwise done |
-| `installed` | Show method used, continue to Post-Install Routing |
-| `updated` | Show method and version, continue to Post-Install Routing |
-| `error` | Show `message` and `suggestions`, stop |
+| status               | Action                                                                                                           |
+|----------------------|------------------------------------------------------------------------------------------------------------------|
+| `already_installed`  | Inform user; `expansion equip` continues activation when applicable                                              |
+| `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable                                 |
+| `installed`          | Show method used. For install-only packages, show `command` when present                                         |
+| `updated`            | Show method and version. For install-only packages, show `command` when present                                  |
+| `equipped`           | Expansion is installed and active in the coordinator (equipment-backed packages only)                            |
+| `catching_up`        | Expansion is activating; tell the user to poll `/equip --list` until it reaches `equipped`                       |
+| `already_equipped`   | Inform the user the expansion is already active                                                                  |
+| `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-### Post-Install Routing
+4. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
+   - `engine_env_var_missing`: show the missing `envVar` and remediation exactly. Do not suggest restart/retry loops.
+   - `binding_required`: show `suggestions` when present; otherwise show candidate ids from `context.candidates` when present. The user should equip one engine that fills the missing binding, then retry the original package.
+   - `user_cancelled`: stop without retrying automatically.
+5. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
 
-1. If `onboarding` field present, finish onboarding before any `postInstall` action runs:
-   - Read `process.env`, then read `~/.coral/.env` if present. Treat `CORAL_EMBEDDING_PROVIDER` and `CORAL_EMBEDDING_API_KEY` as satisfied if either source provides them.
-   - If both values are already present, skip onboarding.
-   - If either value is missing, offer exactly these choices:
-     - Local: `nomic-embed-text` (768d)
-     - Local: `bge-m3` (1024d)
-     - Manual setup
-   - If the user chooses a local model:
-     - Ensure `onboarding.localRuntime.targetDir` exists.
-     - If `package.json` is absent there, create a minimal npm root such as `{"name":"kb-runtime","private":true}`.
-     - Run `npm install onnxruntime-node` in `onboarding.localRuntime.targetDir` before any reindex step.
-     - Write `CORAL_EMBEDDING_PROVIDER=local-onnx` and `CORAL_EMBEDDING_MODEL=<chosen model>` to `~/.coral/.env`. Do not write an API key.
-     - Show the security notice: "API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에."
-   - If the user chooses manual setup:
-     - Tell them to edit `~/.coral/.env` directly and add the embedding settings there.
-     - Show the security notice: "API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에."
-     - Do not run `postInstall` until the user confirms the manual setup is complete.
-2. If `postInstall` field present → execute each action in order:
-   - `backend_shutdown`: run `coral-cli backend shutdown`. Continue on success or not-running / connection-refused.
-   - `kb_reindex`: run `coral-cli kb reindex --output-format json`.
-   - Inform user: "Enhanced KB mode activated."
-3. If neither → inform user "Installed.", done
+### `--update <package>`
 
-No settings registration step exists here. The installer returns executable paths and runtime metadata only.
+1. Bash(`coral-cli expansion update <package>`)
+2. Parse the single-line JSON result.
+3. Route by `status`:
+
+| status               | Action |
+|----------------------|--------|
+| `already_up_to_date` | Inform user with version. If `command` is present for an install-only expansion, show the installed path; no further action |
+| `updated`            | Show method and version. If `command` is present for an install-only expansion, show the installed path |
+| `equipped`           | Expansion is updated and active in the coordinator |
+| `catching_up`        | Expansion is updated and activating; tell the user to poll `/equip --list` until it reaches `equipped` |
+| `already_equipped`   | Inform the user the updated expansion is already active |
+| `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
+
+4. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
+
+### `uninstall <equipment-name>`
+
+1. Bash(`coral-cli expansion unequip <equipment-name>`)
+2. Parse the single-line JSON result.
+3. Route by `status`:
+
+| status         | Action                                                                                                           |
+|----------------|------------------------------------------------------------------------------------------------------------------|
+| `uninstalled`  | Confirm the installed-tier engine was removed. Any bundled fallback refill happens through the coordinator        |
+| `not_equipped` | Inform user the engine was already not equipped; treat as success                                                |
+| `error`        | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
+
+4. `unequip` for installed-tier engines drains the live consumer, unregisters it, deletes the installed-tier state row and local artifacts, then allows bundled fallback to refill any now-empty binding when available. For install-only packages, it removes the local binary.
 
 ## Notes
 
 - Binary installs go to `~/.claude/tools/`
-- `kb` installs the native addon to `~/.coral/data/kb/vec/coral-vec.node`
-- If a KB prebuild is unavailable, the installer falls back to `cmake` and may install it via `uv tool install cmake`
-- To force reinstall, delete the installed artifact and run again. For `kb`, remove `~/.coral/data/kb/vec/coral-vec.node`
+- Engine-local artifacts live under `~/.coral/data/engines/<engine>/` (production flavor) or `~/.coral/data-dev/engines/<engine>/` (dev flavor, when `CORAL_FLAVOR=dev` is set)
+- Corpus indexes stay under `~/.coral/data/kb/`
+- Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
+- On Windows, `unequip` after activation may require a Coral restart when a loaded native addon remains mapped for the coordinator process lifetime.

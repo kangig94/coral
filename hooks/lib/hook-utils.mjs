@@ -62,6 +62,20 @@ export function readStdin() {
   });
 }
 
+export function logHookLine(hookName, message, extra = {}) {
+  process.stderr.write(`${JSON.stringify({ hook: hookName, message, ...extra })}\n`);
+}
+
+export async function failOpen(work, hookName = 'hook') {
+  try {
+    await work();
+  } catch (error) {
+    logHookLine(hookName, 'fail-open', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export function readUserMessage(input) {
   return input?.user_message || input?.message || input?.prompt || '';
 }

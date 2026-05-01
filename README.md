@@ -4,7 +4,7 @@
 
 Claude Code already knows how to code. Coral teaches it how *you* work.
 
-Coral is a CLI-first plugin backed by a persistent HTTP daemon for orchestration, sessions, discussion, and knowledge-base workflows.
+Coral is a CLI-first plugin backed by a persistent local coordinator for orchestration, sessions, discussion, and knowledge-base workflows.
 
 ## Install
 
@@ -213,7 +213,7 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 Coral learns from every session. Root causes, gotchas, and patterns stay searchable so the next session can check prior work before debugging from scratch.
 
-- **Semantic search**: `/coral:equip kb` activates vector search with hybrid BM25 + embedding retrieval (Gemini, OpenAI, or local ONNX models)
+- **Semantic search**: `/coral:equip needle` upgrades vector search with hybrid BM25 + embedding retrieval (Gemini, OpenAI, or local ONNX models)
 
 ## Configuration
 
@@ -226,6 +226,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh`; the adapter collapses `xhigh` to the provider ceiling (`max`) |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
 | `CORAL_EFFORT` | _(none)_ | Global effort override used when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset |
+| `CORAL_DEV_ASSERTIONS` | _(none)_ | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls and dispatcher corrupt-state cases throw; leave unset for production behavior and never enable in production deploys |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed sessions are auto-pruned (0 = disabled) |

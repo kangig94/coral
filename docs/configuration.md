@@ -12,6 +12,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh` level — the adapter collapses `xhigh` to the provider ceiling (`max`) on those tiers |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
 | `CORAL_EFFORT` | _(none)_ | Global effort fallback used only when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset. Explicit request-body effort wins over all env vars |
+| `CORAL_DEV_ASSERTIONS` | _(none)_ | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls throw instead of silently no-oping, and to throw on dispatcher corrupt-state cases. Leave unset for production behavior; never enable in production deploys |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
@@ -19,9 +20,14 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Auto-prune window for completed discuss sessions |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
+| `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Override to expose the backend on another interface (e.g. `0.0.0.0` for container deploys) |
+| `CORAL_BACKEND_ADVERTISE_HOST` | _(bind value)_ | Hostname clients use to reach the backend. Distinct from `CORAL_BACKEND_BIND` when the bind interface differs from the externally reachable name (NAT, container host) |
+| `CORAL_BROKER_IDLE_MS` | `300000` | Provider host (broker) idle eviction window in ms |
+| `CORAL_BOOT_FRESHNESS_TIMEOUT_MS` | `90000` | Coordinator boot freshness wait (ms, the same `CONTENDER_BUDGET` used by lock acquisition). Lower for tighter integration test loops; rarely tuned in production |
+| `CORAL_DISCOVERY_PROBE_CLK_TCK` | _(unset)_ | Linux-only debug gate. Set `1` to invoke `getconf CLK_TCK` instead of assuming the standard value of 100. Leave unset on every modern Linux |
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
-| `CORAL_FLAVOR` | `prod` when unset | Session-level hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity |
-| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` |
+| `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
+| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
 | `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
@@ -32,14 +38,13 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 ### Shell Usage
 
 ```bash
-export CORAL_FLAVOR=dev
 export CORAL_CODEX_MODEL=gpt-5.4
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CORAL_KB_PATH=/path/to/my-kb
 ```
 
-Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`.
+Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`. For local dev hooks, prefer the project `.claude/settings.local.json` `env` block over shell exports so Claude Code launches hooks with the intended flavor consistently.
 
 ### `.claude/settings.json`
 
@@ -109,46 +114,46 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/coral/backend.json` | Backend connection info (host, port, token, namespace, bundle hash, flavor) |
-| `~/.claude/coral/backend.lock` | Install-scoped singleton lock record; flavor participates in reuse/replacement decisions |
+| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record |
+| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 
 ### Session state
 
-`~/.claude/coral/sessions/<project-hash>/<session-uuid>.json`
-
-- Created by `SessionManager`
-- Scoped by normalized project root hash
-- Stores provider-aware `SessionEntry` records
-- Updated atomically on create, use, or delete
+Sessions are Journal events projected into `projection_sessions`. `SessionManager` scopes lookups with `scope_key`, derived from the project root namespace; it no longer owns JSON session files.
 
 ### Discuss state
 
-`~/.coral/projects/<source-slug>/discuss/<session-dir>/`
-
-- `event-log.jsonl`: authoritative event stream
-- `state.json`: derived snapshot
-- `discovery.json` / `summary-index.json`: source-scoped indexes
+Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files.
 
 ### KB state
 
 - Markdown root defaults: `~/.coral/kb/` for prod, `~/.coral/kb-dev/` for dev
-- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data/kb-dev/` for dev
+- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
+- `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
+- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle expansion artifacts, created only when the Needle expansion is equipped
+- Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
 
 ### Job state
 
+Durable result exports:
+
+- prod: `~/.coral/exports/jobs/<jobId>/result.md`
+- dev: `~/.coral/exports-dev/jobs/<jobId>/result.md`
+
+Live scratch artifacts:
+
 `<os-tmpdir>/coral-jobs/<jobId>/`
 
-- `status.json`
-- `progress.jsonl`
-- `result.md`
+- provider runtime scratch files such as stdout/stderr/env artifacts, owned by the runtime transport
+- KB source imports and explicit reindex runs are internal jobs in the Journal/store, not provider/session jobs; CLI display may label them as KB work even though `session_id` and `provider` are null in the projection
 
 ## Runtime Dependencies
 
 | Package | Purpose |
 | --- | --- |
 | `zod` | Schema validation |
-| `@orama/orama` | Full-text search |
+| `@orama/orama` | Base KB retrieval projection and fallback vector search |
 | `graphology` | Graph data structures for KB community analysis |
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
@@ -174,14 +179,16 @@ bridge/coral-cli.cjs                           -> CLI bundle
 bridge/coral-claude-appserver.cjs              -> Claude appserver helper bundle
 bridge/manifest.json                           -> backend bundle hash + build flavor
 
-~/.claude/coral/backend.json                   -> live backend connection info including flavor
-~/.claude/coral/backend.lock                   -> backend singleton lock including flavor checks
-~/.claude/coral/sessions/<project-hash>/*.json -> persisted provider sessions
-<os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
-~/.coral/projects/<source-slug>/discuss/       -> discuss storage
+~/.coral/run*/coordinator.json                 -> active coordinator discovery record
+~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock
+projection_sessions in store.db                -> projected provider session continuity and scope
+projection_discuss in store.db                 -> projected discuss snapshots and source indexes
+~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
+~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
+<os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
 ~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data/kb-dev/     -> KB runtime storage by flavor
+~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

@@ -1,7 +1,7 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 
 mkdirSync('build', { recursive: true });
 
@@ -24,9 +24,28 @@ function parseArgs(argv) {
   return { flavor, release };
 }
 
+function copyStoreSchemaAssets(outRoot) {
+  rmSync(`${outRoot}/store/schema.sql`, { force: true });
+  rmSync(`${outRoot}/store/migrations`, { recursive: true, force: true });
+  rmSync(`${outRoot}/store/__tests__`, { recursive: true, force: true });
+  for (const extension of ['.d.ts', '.d.ts.map', '.js', '.js.map']) {
+    rmSync(`${outRoot}/store/migrations${extension}`, { force: true });
+    rmSync(`${outRoot}/store/schemas${extension}`, { force: true });
+  }
+  rmSync(`${outRoot}/store/schemas`, { recursive: true, force: true });
+  mkdirSync(`${outRoot}/store/schemas`, { recursive: true });
+
+  for (const file of readdirSync('src/store/schemas')) {
+    if (!file.endsWith('.sql')) continue;
+    copyFileSync(`src/store/schemas/${file}`, `${outRoot}/store/schemas/${file}`);
+  }
+}
+
 const { flavor, release } = parseArgs(process.argv.slice(2));
-// Verify simulation sealing before bundling
-execFileSync('node', ['scripts/verify-simulation-sealing.mjs'], { stdio: 'inherit' });
+// Debug-only simulation must keep compiling against production source and must
+// stay sealed from concrete provider/bootstrap implementations.
+execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
+copyStoreSchemaAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
@@ -56,7 +75,7 @@ const sharedOpts = {
   platform: 'node',
   target: 'node18',
   format: 'cjs',
-  external: ['node:*'],
+  external: ['node:*', 'better-sqlite3'],
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
   define: {
@@ -66,10 +85,11 @@ const sharedOpts = {
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/execution/server.ts'],
+  entryPoints: ['src/coordinator/bootstrap.ts'],
   outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
+copyStoreSchemaAssets('build');
 console.log('Built build/coral-backend.cjs');
 
 await esbuild.build({

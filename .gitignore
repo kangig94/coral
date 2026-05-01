@@ -7,3 +7,7 @@ tmp/
 .claude/coral
 .claude/settings.local.json
 build/
+.claude/scheduled_tasks.lock
+
+# Test runs sometimes write a real ~/.coral fallback into the repo root
+.coral/

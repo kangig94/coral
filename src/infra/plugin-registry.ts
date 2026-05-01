@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { RuntimeEnvPort, RuntimeStoragePort } from '../shared/runtime-ports.js';
-import { isNoEntryError } from '../shared/utils.js';
+import type { EnvPort, StoragePort } from './port-types.js';
+import { isNoEntryError } from './fs-errors.js';
 
 const installedPluginEntrySchema = z
   .object({
@@ -19,7 +19,6 @@ const installedPluginsFileSchema = z
   })
   .passthrough();
 
-export type InstalledPluginEntry = z.infer<typeof installedPluginEntrySchema>;
 export type InstalledPluginsFile = z.infer<typeof installedPluginsFileSchema>;
 
 export type PluginRegistry = {
@@ -27,23 +26,23 @@ export type PluginRegistry = {
 };
 
 export type PluginRegistryDeps = {
-  storage?: Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'>;
-  env?: Pick<RuntimeEnvPort, 'get'>;
+  storage?: Pick<StoragePort, 'existsSync' | 'readFileSync'>;
+  env?: Pick<EnvPort, 'get'>;
   registryPath?: string;
   homeDir?: string;
 };
 
 type ResolvedPluginRegistryDeps = {
-  storage: Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'>;
-  env: Pick<RuntimeEnvPort, 'get'>;
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync'>;
+  env: Pick<EnvPort, 'get'>;
   registryPath?: string;
   homeDir?: string;
 };
-function defaultStorage(): Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'> {
+function defaultStorage(): Pick<StoragePort, 'existsSync' | 'readFileSync'> {
   return { existsSync, readFileSync };
 }
 
-function defaultEnv(): Pick<RuntimeEnvPort, 'get'> {
+function defaultEnv(): Pick<EnvPort, 'get'> {
   return {
     get: (key) => process.env[key],
   };

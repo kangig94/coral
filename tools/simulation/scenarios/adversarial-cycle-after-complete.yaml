@@ -1,0 +1,42 @@
+# Adversarial: cycle after a completed job and verify the new generation starts clean.
+world:
+  durable:
+    - pid: 99002
+      runtimeDelayMs: 5
+      exit:
+        delayMs: 10
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: first-gen-result
+      outcome:
+        kind: completed
+steps:
+  - type: boot
+  - type: launch
+    prompt: completed job before cycle
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    result:
+      content: first-gen-result
+      outcome:
+        kind: completed
+  - type: cycle
+  - type: expect
+    jobCount: 0
+  - type: launch
+    prompt: second gen after cycle
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    noRealIO: true
+continueOnFailure: true

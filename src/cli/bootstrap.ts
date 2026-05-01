@@ -1,12 +1,16 @@
-import { CommanderError } from 'commander';
-
-import { buildProgram, emitError } from './main.js';
+import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
+import { emitError } from './emit.js';
+import { buildProgram } from './program.js';
 
 const program = buildProgram();
 
 program.parseAsync(process.argv).catch((error) => {
-  if (error instanceof CommanderError && error.exitCode === 0) {
-    process.exit(0);
+  if (isCommanderDisplayOnlyError(error)) {
+    process.exitCode = 0;
+    return;
+  }
+
+  if (handleExpansionCommanderFailure(error, process.argv, { exit: true })) {
     return;
   }
 

@@ -1,0 +1,24 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`cli coral-store read parity > preserves jobs output via CoralStore reads 1`] = `
+"JOB ID            PHASE    PROVIDER  CWD                                          AGE   
+----------------  -------  --------  -------------------------------------------  ------
+job-store-read-1  running  codex     <project-root>  1d ago
+"
+`;
+
+exports[`cli coral-store read parity > preserves kb principles output via CoralStore reads 1`] = `
+"contract-first-design
+Total: 1
+"
+`;
+
+exports[`cli coral-store read parity > preserves kb read output via CoralStore reads 1`] = `
+"{"kind":"note","note":"coral-kb-mode","title":"KB Mode","content":"## Rule\\nKeep the JSON index authoritative.","tags":["coral","kb"],"principles":["contract-first-design"],"updatedAt":"2026-03-21T00:00:00.000Z","age":"1 day ago"}
+"
+`;
+
+exports[`cli coral-store read parity > preserves kb search output via CoralStore reads 1`] = `
+"{"results":[{"note":"coral-kb-mode","kind":"note","title":"KB Mode","matched":["content"],"snippet":"## Rule Keep the JSON index authoritative."}],"mode":"text","count":1}
+"
+`;

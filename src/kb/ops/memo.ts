@@ -1,21 +1,31 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveProjectSource } from '../../infra/paths.js';
-import { isNoEntryError, unlinkIfExists } from '../../shared/utils.js';
-import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../frontmatter.js';
+import { resolveProjectSource } from '../../infra/project-source.js';
+import { nowDate } from '../../infra/time.js';
+import type { IdPort, StoragePort, TimePort } from '../../runtime/ports.js';
+import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
+import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {
   KbMemoDeleteInput,
   KbMemoDeleteResult,
   KbMemoInput,
   KbMemoListResult,
   KbMemoPurgeResult,
-} from '../types.js';
-import { writeFileAtomic } from '../mutation-helpers.js';
+} from '../entry-types.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';
 
-function generateTimestamp(): string {
-  const now = new Date();
+export type MemoStorage = Pick<
+  StoragePort,
+  'readFileSync' | 'readdirSync' | 'statSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync' | 'unlinkSync'
+>;
+export type MemoHost = {
+  readonly storagePort: MemoStorage;
+  readonly ids: Pick<IdPort, 'uuid'>;
+};
+
+function generateTimestamp(time: Pick<TimePort, 'now'>): string {
+  const now = nowDate(time);
   const pad = (n: number, len = 2): string => String(n).padStart(len, '0');
   return [
     now.getFullYear(),
@@ -28,23 +38,28 @@ function generateTimestamp(): string {
   ].join('');
 }
 
-export function writeMemo(projectRoot: string, input: KbMemoInput): { filename: string; path: string } {
+export function writeMemo(
+  host: MemoHost,
+  projectRoot: string,
+  input: KbMemoInput,
+  time: Pick<TimePort, 'now'>,
+): { filename: string; path: string } {
   const source = resolveProjectSource(projectRoot);
   const dir = memoDir(projectRoot);
-  const timestamp = generateTimestamp();
+  const timestamp = generateTimestamp(time);
   const filename = `${timestamp}-${input.topic}.md`;
   const path = join(dir, filename);
 
   const frontmatter = serializeMemoFrontmatter({ source, owner: input.owner });
   const body = `${frontmatter}\n\n${input.content.trim()}\n`;
-  writeFileAtomic(path, body);
+  writeFileAtomic(host, path, body);
 
   return { filename, path };
 }
 
-function readMemoDir(projectRoot: string): string[] {
+function readMemoDir(storage: Pick<StoragePort, 'readdirSync'>, projectRoot: string): string[] {
   try {
-    return readdirSync(memoDir(projectRoot));
+    return storage.readdirSync(memoDir(projectRoot));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return [];
@@ -92,7 +107,7 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   const hour = Number.parseInt(timePart.slice(0, 2), 10);
   const minute = Number.parseInt(timePart.slice(2, 4), 10);
   const second = Number.parseInt(timePart.slice(4, 6), 10);
-  const sortKey = new Date(year, month - 1, day, hour, minute, second).getTime();
+  const sortKey = Date.UTC(year, month - 1, day, hour, minute, second);
 
   if (Number.isNaN(sortKey)) {
     return null;
@@ -101,14 +116,14 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   return { display: match[1], sortKey };
 }
 
-export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoListResult {
+export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter?: string): KbMemoListResult {
   const dir = memoDir(projectRoot);
-  const memos = readMemoDir(projectRoot)
+  const memos = readMemoDir(storage, projectRoot)
     .filter((filename) => filename.endsWith('.md'))
     .flatMap((filename) => {
       try {
         const path = join(dir, filename);
-        const raw = readFileSync(path, 'utf-8');
+        const raw = storage.readFileSync(path, 'utf-8');
         const memo = parseTimestampPrefix(filename);
 
         let owner: string | undefined;
@@ -116,15 +131,16 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
           const parsed = parseMemoFrontmatter(raw);
           owner = parsed.owner;
         } catch {
-          // Legacy memos without valid frontmatter: treat as unowned
+          // Memos without valid frontmatter are treated as unowned.
         }
 
         if (ownerFilter !== undefined && owner !== ownerFilter) {
           return [];
         }
 
-        const createdAt = memo?.display ?? statSync(path).mtime.toISOString();
-        const sortKey = memo?.sortKey ?? (Date.parse(createdAt) || 0);
+        const mtimeMs = storage.statSync(path).mtimeMs;
+        const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
+        const sortKey = memo?.sortKey ?? (memo === null ? mtimeMs : Date.parse(createdAt) || 0);
 
         return [{ filename, summary: extractSummary(raw), createdAt, sortKey, owner }];
       } catch {
@@ -139,16 +155,16 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
   };
 }
 
-export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
+export function deleteMemos(storage: MemoStorage, projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
   const dir = memoDir(projectRoot);
   const matcher = globToRegex(input.pattern);
-  const deleted = readMemoDir(projectRoot)
+  const deleted = readMemoDir(storage, projectRoot)
     .filter((filename) => filename.endsWith('.md'))
     .filter((filename) => matcher.test(filename))
     .filter((filename) => {
       if (input.owner === undefined) return true;
       try {
-        const raw = readFileSync(join(dir, filename), 'utf-8');
+        const raw = storage.readFileSync(join(dir, filename), 'utf-8');
         const parsed = parseMemoFrontmatter(raw);
         return parsed.owner === input.owner;
       } catch {
@@ -158,12 +174,12 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
     .sort(compareLocale);
 
   for (const filename of deleted) {
-    unlinkIfExists(join(dir, filename));
+    unlinkIfExists(join(dir, filename), storage);
   }
 
   return { deleted, count: deleted.length };
 }
 
-export function purgeMemos(projectRoot: string, owner?: string): KbMemoPurgeResult {
-  return { deleted: deleteMemos(projectRoot, { pattern: '*', owner }).count };
+export function purgeMemos(storage: MemoStorage, projectRoot: string, owner?: string): KbMemoPurgeResult {
+  return { deleted: deleteMemos(storage, projectRoot, { pattern: '*', owner }).count };
 }

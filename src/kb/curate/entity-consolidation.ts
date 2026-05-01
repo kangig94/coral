@@ -6,9 +6,9 @@ import {
   type EntityRelationship,
   type EntityType,
   type RelationshipType,
-} from '../types.js';
+} from '../entry-types.js';
 import { compareLocale } from '../validation.js';
-import { uniqueTrimmedList } from './shared.js';
+import { uniqueTrimmedList } from './content-normalize.js';
 
 const GENERIC_PLURAL_SEGMENTS = new Set([
   'aliases',
@@ -181,10 +181,7 @@ function compareCanonicalKeyPreference(left: string, right: string): number {
   return rightSegments - leftSegments || right.length - left.length || compareLocale(left, right);
 }
 
-function buildAliasTargetMap(
-  candidates: EntityCandidate[],
-  observedKeys: ReadonlySet<string>,
-): Map<string, string> {
+function buildAliasTargetMap(candidates: EntityCandidate[], observedKeys: ReadonlySet<string>): Map<string, string> {
   const aliasTargets = new Map<string, string>();
   const descriptiveByPrefix = new Map<string, Set<string>>();
 
@@ -326,7 +323,9 @@ function buildCanonicalEntities(
     .sort(([left], [right]) => compareLocale(left, right))
     .map(([canonicalName, canonicalCandidates]) => {
       const aliases = uniqueTrimmedList(
-        canonicalCandidates.flatMap((candidate) => [candidate.name, ...candidate.aliases]).filter((alias) => alias !== canonicalName),
+        canonicalCandidates
+          .flatMap((candidate) => [candidate.name, ...candidate.aliases])
+          .filter((alias) => alias !== canonicalName),
       ).sort(compareLocale);
       const descriptions = [
         ...canonicalCandidates
@@ -350,7 +349,9 @@ function buildCanonicalEntities(
       ] as const;
     });
 
-  const replacementMap = Object.fromEntries([...replacementEntries.entries()].sort(([left], [right]) => compareLocale(left, right)));
+  const replacementMap = Object.fromEntries(
+    [...replacementEntries.entries()].sort(([left], [right]) => compareLocale(left, right)),
+  );
 
   return {
     entityMeta: Object.fromEntries(entityMetaEntries),

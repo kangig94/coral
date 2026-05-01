@@ -2,46 +2,59 @@
 
 ## Core Principles
 
-1. **Graceful Degradation**: If Codex CLI is unavailable, return a clear error message with installation instructions. If a session file is corrupt, skip it with a warning and continue loading valid sessions.
+1. **Clean-Slate Ownership**: The rewrite branch does not preserve legacy paths, aliases, compatibility shims, or transitional facades for convenience. If ownership moves, the old path is deleted and guarded by invariants.
 
-2. **Atomic Persistence**: Session files are written to `.tmp` then renamed. This prevents partial writes from corrupting session state on crash or timeout.
+2. **One Coordinator, Two Authorities**: The coordinator owns live orchestration and recovery. The Journal owns process-like event truth. The Corpus owns KB markdown content. Derived projections and equipment state are rebuildable consumers, not authority.
 
-3. **Node.js ESM Hooks**: Hook scripts are Node.js ESM modules (`.mjs`). They read event JSON from stdin, write `hookSpecificOutput` JSON to stdout when active, and exit 0 on no-op. All hooks fail-open: any unhandled error exits silently to avoid blocking Claude Code.
+3. **Functional Core / Imperative Shell**: Domains own pure event vocabulary, reducers, read contracts, and shell-local orchestration. Cross-domain assembly happens only through coordinator composition and explicit owner contracts.
+
+4. **Single Runtime World**: Backend I/O flows through the Runtime ports selected at composition. Domains and coordinator services receive time, storage, paths, process, ids, and env through ports instead of reading ambient state. Port objects are eager constants — `runtime.paths.coral` is composed once at `createRealRuntime(flavor)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime *after* the mock is set; do not rely on lazy re-evaluation.
+
+5. **Causal Faults**: Failure truth lives once on the originating stream. Job terminals point with `causeRef`; they do not wrap domain fault payloads. `JobLifecycleFault` is reserved for wrapper-local failures with no originating domain event.
+
+6. **Hooks Stay Self-Contained**: Hook scripts are Node.js ESM modules. They read stdin, write `hookSpecificOutput` when active, fail open, and never import from `src/`.
+
+7. **No Ambiguity**: Every concept has exactly one canonical home. Two files that "could" hold the same thing — even if currently different — get forgotten with 100% probability in future development, and the more generic-named file absorbs everything. The full naming/subdivision policy lives in [`docs/design-rationale.md`](../../docs/design-rationale.md) §9; the load-bearing rules:
+   - **Never create a content-blank file** (`helpers.ts`, `utils.ts`, `shared.ts`, `helper.ts`, `shared-utils.ts`) — names that describe nothing invite "anything that fits" and accumulate unrelated logic. Forbidden by `tests/invariants/architecture-boundary.test.ts`.
+   - **`index.ts` and `types.ts` ARE allowed anywhere** — conventional names with clear semantics (entry point, type vocabulary); parent directory provides scope. Discipline is on *content*, not *name*: when either grows large or loses cohesion, MUST split. (Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.)
+   - **Magnet vs registry**: a file holding a *typed-identifier registry* (HTTP status, POSIX errno, `CoralSetupError` documented codes) is the *correct* shape for that concept — accumulation is what canonical registries look like. Don't split per-domain just because the codes name domain things. The magnet anti-pattern only applies when content-blank names absorb *unrelated logic*.
+   - **Filename honesty**: a file's name must describe what it actually does. A "client" that doesn't talk to a transport, a "main.ts" that isn't the entry point, a redundant scope qualifier inside an already-scoped dir — all violate this. Real fixes from the audit: `cli/command-client.ts` → `dispatch.ts`; `cli/main.ts` → `program.ts`; `cli/read-coral-store.ts` → `read-store.ts`.
+   - **Subdivision trigger**: promote an implicit prefix cluster to a subdirectory when ≥4 sibling files share a prefix AND form a cohesive subsystem (each file owns a distinct facet of the same bounded responsibility). Strip the now-redundant prefix; if one file is the orchestrator, name it `<subdir>/index.ts`. 3 files = borderline; 2 files = no.
+   - **Domain shape minimum, not template**: the 4 Journal-stream domains share a *minimum* shape — `events.ts` and `read-queries.ts` at the domain root. Beyond that, each domain adds files to match its own complexity (`projections.ts` when it projects to SQL; `reducer.ts` only when it reconstructs in-memory state like a state machine; `paths.ts` only when it owns filesystem paths). Don't manufacture files just to mirror another domain's shape. Full shape policy in [`docs/design-rationale.md`](../../docs/design-rationale.md) §9.6.
+   - **Never split a single concept across two files** unless a cycle physically forces the split, and document the cycle when it does (e.g. `manifest-types.ts` exists only to break a `kb/contracts.ts ↔ manifest-authority.ts` cycle).
+   - When you find a content-blank file, redistribute its contents to per-domain modules and add an invariant asserting the file does not return (see `tests/invariants/architecture-boundary.test.ts` for the `infra/paths.ts` precedent).
 
 ## Source Tree Policy
 
-| Directory | Layer | Contents | Modification Rule |
-|-----------|-------|----------|-------------------|
-| `src/bridge/` | L2 | Legacy transport bridge pending deletion | Transitional only — do not add new dependencies or features here |
-| `src/cli/` | L2 | Commander CLI client (parallel Bash-tool client) | CLI wiring — changes affect CLI subcommands, not backend logic |
-| `src/execution/` | L1 | Persistent HTTP backend daemon (runtime, lifecycle, routing, service, engine, sessions, recovery-core) | Backend core — all I/O routes through `Runtime` interface (6 subports: time, storage, paths, process, ids, env) |
-| `src/execution/discuss/` | L1 | Discuss runtime (operations, loop, subflows, persistence, registry) | Discuss runtime — imperative shell around the discuss domain core |
-| `src/providers/` | L0 | Provider adapter system (registry, bootstrap, types) | Adapter framework — changes affect provider discovery and wiring |
-| `src/providers/codex/` | L0 | Codex adapter (schemas, executor, parser, detection) | Provider adapter — preserve Codex wire-compatibility |
-| `src/providers/claude/` | L0 | Claude adapter (schemas, executor, detection) | Provider adapter — preserve Claude JSON + resume semantics |
-| `src/discuss/` | L0 | Domain core: state machine, reducer, events, projections, schemas | Functional core — pure state functions, zero I/O |
-| `src/kb/` | L0 | Knowledge base: search, mutation, curation, Orama indexing | KB domain — changes affect search ranking and note lifecycle |
-| `src/workflow/` | L0 | Pipeline executor: parser, AST, launch/retry/wait | Workflow engine — dependency-injected via ExecutionService |
-| `src/shared/` | L0 | Shared utilities (schemas, types, SSE parser, env-sanitize, test-deferred, node-process) | Changes affect CLI, execution, and provider consumers |
-| `src/infra/` | L0 | Path resolution, backend connection info | Infrastructure — changes affect all layers |
-| `src/client/` | L0 | Public barrel for external consumers (readers, discuss DTOs, lifecycle) | Public API surface — changes affect coral-reef and CLI |
-| `agents/` | — | Agent markdown definitions (Claude-native + Codex delegation + discuss) | Follow agent template structure |
-| `skills/` | — | SKILL.md files for slash commands | Frontmatter must match plugin.json |
-| `hooks/` | — | Hook scripts (`.mjs`) + hooks.json config | Node.js ESM, timeout-safe, fail-open. **Never import from `src/`** — hooks run without a build step and must stay self-contained. Shared hook logic lives in `hooks/lib/` |
-| `bridge/` | — | Bundled output artifacts | Generated by build — do not edit directly |
-| `docs/` | — | Architecture, module docs, guides | Update when architecture or API surface changes. Do not duplicate source artifacts. |
+| Area | Responsibility | Modification Rule |
+|------|----------------|-------------------|
+| CLI | User command parsing, local startup glue, output formatting | No backend/domain truth. Mutating and live commands go through IPC; no-coordinator reads use explicit read surfaces. |
+| Backend composition | Daemon bootstrap | Wires runtime ports, coordinator services, domain owner modules, and transport. New domain behavior does not land here. |
+| Domains (`jobs` / `sessions` / `discuss` / `workflow`) | Domain event vocabulary, schemas, reducers, read contracts, and imperative shells | Domains expose explicit owner modules/contracts. Avoid `api.ts` barrels and compatibility facades. |
+| Provider adapters | External CLI/appserver protocol adaptation | Preserve provider wire semantics while staying on canonical domain types. |
+| Journal / store | SQLite schema, append, rebuild, envelope decode, upcasters, projection dispatch | Store runs composed domain validators; it does not own product read APIs or domain policy. |
+| Read model | Product read facade and cause-ref describer composition | No writes, no recovery, no ambient root selection. |
+| Causality | `CauseRef` vocabulary and renderer walk | No store access and no domain imports; domains inject describers through read-model composition. |
+| Runtime / infra | Low-level paths, flavor, I/O ports, JSON/error/text helpers | No domain concepts and no dumping ground for owner-specific helpers. |
+| Coordinator | Lifecycle, startup ordering, ConsumerDriver freshness, equipment slots, provider-host coordination, coordinator-owned KB jobs | The only layer allowed to compose multiple domains and transport at once. It must not own domain vocabulary. |
+| Transport | IPC + HTTP/SSE parsing, validation, response mapping | Carriage only. Depends on coordinator/domain contracts, not domain shells. |
+| KB | Corpus authority, query semantics, source/memo/note operations, retrieval backend contracts | Does not own coordinator equipment slot assignment. |
+| Agents / skills | Claude-native agent definitions and slash-command skills | Invoke CLI surfaces rather than backend internals. |
+| Bridge | Generated build artifacts | Do not edit directly. |
+| Docs | Architecture and module documentation | Update together with ownership, API, or behavior changes. |
 
 Key rules:
-1. Layer dependency: code in Lx may only depend on L0..L(x-1)
-2. L0 modules never import from L1 (`execution/`) or L2 entrypoints (`cli/`)
-3. `src/client/` straddles L0/L1 with type-only imports from execution — layering holds at runtime
+
+1. Deleted legacy paths stay deleted; do not recreate retired barrels, `src/shared`, `src/client`, or compatibility shims.
+2. Lower-level modules do not import entrypoints or composition roots.
+3. Cross-domain dependencies must be explicit contracts or coordinator composition, not convenience imports.
+4. Domain event schemas, reducers, append validators, and describers are owned by the domain that emits the event.
+5. Tests and simulation helpers live under `tests/` or `tools/testing/`, never under production `src/`.
 
 ## Module Structure
 
-Dependency direction is strict: `execution/server.ts` is the backend daemon composition root; `cli/bootstrap.ts` is the CLI client entry point; plugin skills and hooks invoke CLI surfaces rather than backend internals directly. Lower modules never import from upper modules. See `docs/architecture.md` for the current dependency graph.
+The backend has one composition root; the CLI has its own entry point; plugin skills and hooks invoke CLI surfaces. The coordinator may assemble domain shells and contracts, but domains do not import coordinator implementation modules.
 
-The backend execution layer follows a **single Runtime world** pattern (FoundationDB-style): `execution/runtime.ts` defines 6 I/O subports (`time`, `storage`, `paths`, `process`, `ids`, `env`), and `createBackendServer()` swaps the entire world once at the composition root. All ~25 execution modules route I/O through this interface. `SimulationRuntime` provides deterministic virtual implementations for testing.
+Each domain follows the same shape: event contracts, reducer/projection logic, read contracts, and shell modules for I/O. Shared vocabulary that truly crosses domains lives in a lower owner such as `causality/`, `runtime/`, `store/`, or `infra/`; otherwise it stays with the domain that owns the behavior.
 
-The discuss system follows a **Functional Core / Imperative Shell** pattern: `src/discuss/state-machine.ts` and `src/discuss/reducer.ts` contain pure state transitions with zero I/O; `src/execution/discuss/` handles all runtime I/O, persistence, and loop control.
-
-The recovery system follows the same pattern: `execution/recovery-core.ts` contains pure `planRecovery()` returning `RecoveryPlan { register, cleanup }`; `execution/lifecycle.ts` applies the plan imperatively.
+Cause-ref rendering is deliberately split: `causality/` owns the walk and cycle/missing diagnostics, each domain owns its event describer map, and `read-model/event-describers.ts` composes the default map. Adding a domain fault event means adding a domain event schema and domain describer, not editing a central fault union.

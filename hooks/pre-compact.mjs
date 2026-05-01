@@ -1,68 +1,107 @@
 #!/usr/bin/env node
 
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
-import { JOBS_DIR, projectTmpDir } from './lib/plugin-paths.mjs';
-import { isLivePhase, snapshotFileName } from './lib/jobs-state.mjs';
-exitIfChildProcess();
-exitIfWrongFlavor();
 
-try {
-  const input = JSON.parse(await readStdin());
-  const projectRoot = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
-  if (!projectRoot) process.exit(0);
+import { buildFlavor, failOpen, logHookLine, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
+import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 
-  const sourceSessionId = input.session_id;
-  if (!existsSync(JOBS_DIR)) process.exit(0);
-
-  const jobs = [];
-
-  for (const entry of readdirSync(JOBS_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-
-    const status = safeReadStatus(entry.name);
-    if (!status) continue;
-    if (status.projectRoot !== projectRoot) continue;
-    if (!isLivePhase(status.phase)) continue;
-    if (typeof status.jobId !== 'string') continue;
-    if (typeof status.sessionId !== 'string') continue;
-
-    jobs.push({
-      jobId: status.jobId,
-      phase: status.phase,
-      provider: status.provider,
-      sessionId: status.sessionId,
-      jobKind: status.jobKind,
-    });
-  }
-
-  if (jobs.length === 0) process.exit(0);
-
-  const snapshotDir = projectTmpDir(projectRoot);
-  const capturedAtMs = Date.now();
-  mkdirSync(snapshotDir, { recursive: true });
-
-  const snapshotPath = join(
-    snapshotDir,
-    snapshotFileName(capturedAtMs, randomBytes(4).toString('hex')),
-  );
-
-  writeFileSync(snapshotPath, JSON.stringify({
-    capturedAtMs,
-    projectRoot,
-    sourceSessionId: sourceSessionId ?? null,
-    jobs,
-  }, null, 2));
-} catch {
-  process.exit(0);
+function storeDbPath() {
+  const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
+  return join(homedir(), '.coral', dataDir, 'store', 'store.db');
 }
 
-function safeReadStatus(jobId) {
+function snapshotDirForProject(projectDir) {
+  return join(projectTmpDir(projectDir), 'hooks');
+}
+
+function logNoRelevantJobs(projectDir, extra = {}) {
+  logHookLine('pre-compact', 'no relevant jobs to snapshot', { projectDir, ...extra });
+}
+
+await failOpen(async () => {
+  const input = JSON.parse((await readStdin()) || '{}');
+  const projectDir = projectDirFromInput(input, process.cwd());
+  const snapshotDir = snapshotDirForProject(projectDir);
+  sweepStale(snapshotDir, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS);
+
+  const dbPath = storeDbPath();
+  if (!existsSync(dbPath)) {
+    logNoRelevantJobs(projectDir);
+    return;
+  }
+
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    return JSON.parse(readFileSync(join(JOBS_DIR, jobId, 'status.json'), 'utf-8'));
-  } catch {
-    return null;
+    let rows;
+    try {
+      rows = db
+        .prepare(
+          `SELECT job_id AS jobId, phase
+             FROM projection_jobs
+            WHERE project_root = ?
+            ORDER BY last_seq DESC
+            LIMIT 20`,
+        )
+        .all(projectDir);
+    } catch (error) {
+      logNoRelevantJobs(projectDir, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const jobs = rows.flatMap((row) => {
+      if (typeof row.jobId !== 'string' || typeof row.phase !== 'string') {
+        return [];
+      }
+
+      const resultPath = join(exportsJobsDir(buildFlavor()), row.jobId, 'result.md');
+      const hasArtifact = existsSync(resultPath);
+      if (!isLivePhase(row.phase) && !hasArtifact) {
+        return [];
+      }
+
+      return [
+        {
+          jobId: row.jobId,
+          phase: row.phase,
+          ...(hasArtifact ? { resultPath } : {}),
+        },
+      ];
+    });
+
+    if (jobs.length === 0) {
+      logNoRelevantJobs(projectDir);
+      return;
+    }
+
+    mkdirSync(snapshotDir, { recursive: true });
+    const capturedAtMs = Date.now();
+    const snapshotPath = join(snapshotDir, snapshotFileName(capturedAtMs, String(process.pid)));
+    writeFileSync(
+      snapshotPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          projectDir,
+          capturedAtMs,
+          jobs,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    logHookLine('pre-compact', 'captured job snapshot', {
+      projectDir,
+      count: jobs.length,
+      snapshotPath,
+    });
+  } finally {
+    db.close();
   }
-}
+}, 'pre-compact');

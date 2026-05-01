@@ -6,9 +6,12 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | TypeScript compile plus esbuild bundle to `build/` (prod flavor) |
-| `npm run build:dev` | TypeScript compile plus esbuild bundle to `build/` (dev flavor) |
-| `npm run build:release` | TypeScript compile plus esbuild bundle (prod), then copy `build/` to `bridge/` |
+| `npm run clean:dist` | Remove `dist/` so deleted source paths cannot survive in package output |
+| `npm run build` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (prod flavor) |
+| `npm run build:dev` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (dev flavor) |
+| `npm run build:release` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `build/` to `bridge/` |
+| `npm run check:simulation` | Typecheck `tools/simulation` against `src` and verify sealing |
+| `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` | Run the debug-only simulation harness |
 | `npm run dev` | TypeScript watch mode |
 | `npm test` | Run the test suite |
 
@@ -34,10 +37,13 @@ CI verifies that committed `bridge/` files match a fresh build via hash comparis
 ```text
 src/**/*.ts
   │
+  ▼  clean:dist (`scripts/clean-dist.mjs`)
+dist/ removed
+  │
   ▼  tsc
 dist/**/*.js + dist/**/*.d.ts
   │
-  ▼  verify-simulation-sealing
+  ▼  check:simulation (`tsc -p tsconfig/simulation.json` + sealing)
   │
   ▼  esbuild (`scripts/build-server.mjs`)
 build/coral-backend.cjs
@@ -53,16 +59,21 @@ The runtime is anchored by two primary entry points:
 
 | Entry point | Output | Role |
 | --- | --- | --- |
-| `src/execution/server.ts` | `build/coral-backend.cjs` | Backend daemon |
+| `src/coordinator/bootstrap.ts` | `build/coral-backend.cjs` | Backend daemon |
 | `src/cli/bootstrap.ts` | `build/coral-cli.cjs` | CLI entrypoint |
 
 The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude-appserver/server.ts` for the Claude appserver helper runtime.
 
 ## Build Script Responsibilities
 
+The npm build commands run `scripts/clean-dist.mjs` before `tsc`. TypeScript
+does not delete outputs for source files that were removed or moved, so cleaning
+`dist/` before compile is required for `package.json`'s `dist/` export to match
+the current `src/` tree.
+
 `scripts/build-server.mjs` does five things:
 
-1. Runs simulation sealing verification (`verify-simulation-sealing.mjs`).
+1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 4. Bundles the backend, CLI, and Claude appserver helper to `build/`.
@@ -94,7 +105,6 @@ When `--release` is passed, it additionally copies all artifacts from `build/` t
 | `__PLUGIN_ROOT__` | CJS banner using `__dirname` | Resolve plugin-relative assets at runtime |
 | `__IS_CORAL_BACKEND_MAIN__` | build script | Backend main-entry guard |
 | `CORAL_VEC_ADDON_VERSION` | coral-needle release metadata | KB addon reporting |
-| `CORAL_VEC_SCHEMA_VERSION` | `src/kb/vector-store-contract.ts` | Vector-store compatibility checks |
 
 Build flavor is intentionally not injected through an esbuild define. Hooks are unbundled ESM files, so the shared carrier is `bridge/manifest.json`.
 
@@ -110,7 +120,7 @@ Tests run with:
 npm test
 ```
 
-The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts.
+The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
 
 ## Claude Code Integration
 

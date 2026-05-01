@@ -1,0 +1,59 @@
+import { describe, expect, it } from 'vitest';
+
+import { loadExpansions } from '#src/expansion/loader.js';
+import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
+
+const NEEDLE_ENTRY = {
+  id: 'needle',
+  version: '0.2.0',
+  specifier: '#src/engines/needle/expansion.js',
+  tier: 'installed' as const,
+  description: 'Needle vector backend',
+  onboarding: [{ kind: 'require-binding' as const, binding: 'kb.embedding' }],
+  fills: ['kb.vector'],
+};
+
+const FAKE_EMBEDDER_ENTRY = {
+  id: 'test-embedder',
+  version: '0.0.0',
+  specifier: '#tests/fakes/fake-embedder.js',
+  tier: 'installed' as const,
+  description: 'fake embedder',
+  fills: ['kb.embedding'],
+};
+
+function disposeScopes(scopes: readonly { [Symbol.dispose](): void }[]): void {
+  for (const scope of [...scopes].reverse()) {
+    scope[Symbol.dispose]();
+  }
+}
+
+describe('needle expansion', () => {
+  it('equips needle when an embedder expansion is already bound', async () => {
+    const { kb, makeHost } = createTestRuntime();
+    const embedderScopes = await loadExpansions(makeHost, [FAKE_EMBEDDER_ENTRY]);
+
+    try {
+      const needleScopes = await loadExpansions(makeHost, [NEEDLE_ENTRY]);
+
+      try {
+        expect(kb.embedding.heldBy).toBe('test-embedder');
+        expect(kb.vector.heldBy).toBe('needle');
+        expect(kb.vector.read().consumer.id).toBe('needle');
+      } finally {
+        disposeScopes(needleScopes);
+      }
+    } finally {
+      disposeScopes(embedderScopes);
+    }
+  });
+
+  it('throws binding_required when no embedder expansion is bound', async () => {
+    const { makeHost } = createTestRuntime();
+
+    await expect(loadExpansions(makeHost, [NEEDLE_ENTRY])).rejects.toMatchObject({
+      code: 'binding_required',
+      context: { binding: 'kb.embedding', requiredBy: 'needle' },
+    });
+  });
+});

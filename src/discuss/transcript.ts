@@ -1,5 +1,6 @@
-import type { AgentState, TranscriptEntry } from './types.js';
-import { pad2 } from './util/string.js';
+import type { AgentState, TranscriptEntry } from './session-types.js';
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
 
 const SOFT_LIMIT = 80;
 const HARD_LIMIT = 100;
@@ -50,23 +51,6 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
 function formatTimestamp(ts: string): string {
   const d = new Date(ts);
   return `[${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}]`;
-}
-
-export function generateOneLiner(content: string): string {
-  const flat = content.replace(/\n/g, ' ').trim();
-  const sentenceEnd = flat.search(/[.!?]\s/u);
-  if (sentenceEnd !== -1 && sentenceEnd < 120) return flat.slice(0, sentenceEnd + 1);
-  if (flat.length <= 100) return flat;
-  const cut = flat.lastIndexOf(' ', 100);
-  return cut > 0 ? flat.slice(0, cut) + '…' : flat.slice(0, 100) + '…';
-}
-
-function summarizeSpeech(agentName: string, content: string): string {
-  return `- ${agentName}: ${generateOneLiner(content)}`;
-}
-
-function isSpeechEntry(entry: TranscriptEntry): entry is Extract<TranscriptEntry, { type: 'speech' }> {
-  return entry.type === 'speech';
 }
 
 function renderBidRows(
@@ -155,51 +139,4 @@ export function renderHeader(topic: string, agents?: Record<string, AgentState>)
     return title + '\n' + renderPanelists(agents) + '\n\n---\n\n## Epoch 1\n';
   }
   return title + '\n## Epoch 1\n';
-}
-
-/**
- * Agent-facing full transcript: bids entries filtered to speaker name only (information veil).
- * Agents cannot infer bid scores, quota state, or resolution mechanism from this view.
- * Full audit data (scores, quotas) is preserved in the persisted transcript and audit views.
- */
-export function formatAgentView(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
-  let agentView = '';
-  for (const entry of entries) {
-    if (entry.type !== 'bids') {
-      agentView += renderEntry(entry, agents);
-      continue;
-    }
-    if (!entry.winner) continue;
-    const winnerDisplayName = agents[entry.winner]?.display_name ?? entry.winner;
-    agentView += `\n> **Speaker: ${winnerDisplayName}**\n`;
-  }
-  return renderHeader('') + agentView;
-}
-
-export function formatRecent(entries: TranscriptEntry[], lastN: number, agents: Record<string, AgentState>): string {
-  const speeches = entries.filter(isSpeechEntry);
-  if (speeches.length === 0) return '';
-
-  const recentStart = Math.max(0, speeches.length - lastN);
-
-  const olderSummaries = speeches
-    .slice(0, recentStart)
-    .map((speech) => summarizeSpeech(speech.display_name, speech.content));
-  const recentParts = speeches.slice(recentStart).map((speech) => renderEntry(speech, agents));
-
-  const parts: string[] = [];
-  if (olderSummaries.length > 0) {
-    parts.push('## Earlier speeches (summary)\n' + olderSummaries.join('\n'));
-  }
-  if (recentParts.length > 0) {
-    parts.push('## Recent\n' + recentParts.join(''));
-  }
-  return parts.join('\n\n');
-}
-
-export function formatSummary(entries: TranscriptEntry[]): string {
-  return entries
-    .filter(isSpeechEntry)
-    .map((e) => summarizeSpeech(e.display_name, e.content))
-    .join('\n');
 }

@@ -1,25 +1,20 @@
-import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isRecord, isStringArray } from '../../shared/utils.js';
+import { isRecord, isStringArray } from '../../infra/json.js';
+import type { KbRuntime } from '../contract.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
-import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
-import { parseJsonArray, uniqueTrimmedList } from './shared.js';
+import { parseJsonArray, uniqueTrimmedList } from './content-normalize.js';
 import {
   compareCursor,
   getCurateRepairFrontier,
   normalizeCurateStateRepairFrontier,
   noteCursor,
   type CurateCursor,
+  type CurateStateTarget,
   type CurateState,
-} from './state.js';
-import type {
-  DiscoveryCurateClaimedEntry,
-  DiscoveryProposal,
-  NoteClaimCandidate,
-} from './types.js';
+} from './state/index.js';
+import type { DiscoveryCurateClaimedEntry, DiscoveryProposal, NoteClaimCandidate } from './pipeline-types.js';
 
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;
 const DISCOVERY_BATCH_SIZE = 100;
@@ -125,11 +120,12 @@ function shouldRunDiscoveryBatch(
 }
 
 export function prepareDiscoveryBatch(
+  kb: CurateStateTarget,
   index: KbIndex,
   state: CurateState,
   requestedProcessedThrough: CurateCursor,
 ): PreparedDiscoveryBatch | null {
-  const normalizedState = normalizeCurateStateRepairFrontier(state);
+  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
   const currentProcessedThrough = normalizedState.processedThrough;
   if (currentProcessedThrough === null) {
     return null;
@@ -139,7 +135,7 @@ export function prepareDiscoveryBatch(
       ? requestedProcessedThrough
       : currentProcessedThrough;
 
-  const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
+  const repairFrontier = getCurateRepairFrontier(kb);
   const allClassified = filterCandidatesBeforeRepairFrontier(
     collectDiscoveryCandidates(index).filter((candidate) => compareCursor(candidate.cursor, processedThrough) <= 0),
     repairFrontier,
@@ -180,12 +176,13 @@ export function selectDiscoveryBatch(
 }
 
 export function buildDiscoveryPrompt(
+  kb: Pick<KbRuntime, 'storagePort' | 'ids' | 'envPort'>,
   notes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryPromptResult {
   const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
-  const corpusPath = join(tmpdir(), `coral-discovery-${randomUUID()}.md`);
-  writeFileSync(corpusPath, noteBlocks.join('\n\n'));
+  const corpusPath = join(kb.envPort.tmpdir(), `coral-discovery-${kb.ids.uuid()}.md`);
+  kb.storagePort.writeFileSync(corpusPath, noteBlocks.join('\n\n'));
 
   const principleEntries = Object.entries(existingPrinciples)
     .sort(([left], [right]) => compareLocale(left, right))

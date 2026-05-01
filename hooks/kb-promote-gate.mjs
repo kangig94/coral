@@ -64,7 +64,7 @@ try {
     .filter(name => name.endsWith('.md'))
     .filter(name => { try { return statSync(join(memoDir, name)).isFile(); } catch { return false; } });
 
-  // Derive session-visible memos: owner matches session or unowned (legacy)
+  // Derive session-visible memos: owner matches session or no owner is recorded.
   const validSession = isValidSessionId(sessionId);
   const visibleMemos = validSession ? memoFiles.filter(name => {
     try {

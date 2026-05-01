@@ -1,10 +1,30 @@
 import { join } from 'node:path';
-import type { ProviderRequest } from '../../shared/types.js';
-import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
-import type { ProviderRuntime, ProviderServerSpec } from '../types.js';
+import type {
+  EffortLevel,
+  ProviderContinuityUpdate,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerSpec,
+} from '../contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord, readString } from '../../infra/json.js';
+import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
-export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {
+type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
+
+export interface CodexPersistedContinuity extends ProviderContinuityBlob {
+  cwd?: string;
+  threadId?: string;
+  turnId?: string;
+}
+
+export function buildCodexPrompt(
+  request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
+): string {
   const parts: string[] = [];
   if (request.action !== 'resume' && request.instruction) {
     parts.push(request.instruction.content);
@@ -17,9 +37,16 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
 }
 
 // Codex ceiling is 'xhigh'; 'max' collapses to it.
-const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
+const CODEX_EFFORT: Record<EffortLevel, string> = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'xhigh',
+};
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 export type CodexServiceTier = 'fast' | 'flex';
+const serviceTierCache = new Map<string, { mtimeMs: number; value: CodexServiceTier | undefined }>();
 
 /**
  * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
@@ -33,7 +60,118 @@ function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'd
   return bypassPermissions ? 'danger-full-access' : 'workspace-write';
 }
 
-export function buildCodexProviderServerSpec(
+export function readCodexPersistedContinuity(
+  persistedContinuity: ProviderContinuityBlob | undefined,
+): CodexPersistedContinuity {
+  if (!isRecord(persistedContinuity)) {
+    return {};
+  }
+
+  return {
+    cwd: readString(persistedContinuity.cwd),
+    threadId: readString(persistedContinuity.threadId),
+    turnId: readString(persistedContinuity.turnId),
+  };
+}
+
+export function buildCodexContinuity(update: {
+  cwd?: string;
+  threadId?: string;
+  turnId?: string | null;
+}): CodexPersistedContinuity {
+  return {
+    ...(update.cwd ? { cwd: update.cwd } : {}),
+    ...(update.threadId ? { threadId: update.threadId } : {}),
+    ...(update.turnId ? { turnId: update.turnId } : {}),
+  };
+}
+
+export function withCodexContinuity(
+  persistedContinuity: ProviderContinuityBlob | undefined,
+  update: {
+    cwd?: string;
+    threadId?: string;
+    turnId?: string | null;
+  },
+): CodexPersistedContinuity {
+  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  return buildCodexContinuity({
+    cwd: update.cwd ?? continuity.cwd,
+    threadId: update.threadId ?? continuity.threadId,
+    turnId: update.turnId === undefined ? continuity.turnId : update.turnId,
+  });
+}
+
+export function clearCodexTurnContinuity(
+  persistedContinuity: ProviderContinuityBlob | undefined,
+): CodexPersistedContinuity | undefined {
+  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  if (!continuity.threadId) {
+    return undefined;
+  }
+
+  return buildCodexContinuity({
+    cwd: continuity.cwd,
+    threadId: continuity.threadId,
+  });
+}
+
+function hasCodexContinuity(continuity: CodexPersistedContinuity): boolean {
+  return Boolean(continuity.cwd ?? continuity.threadId ?? continuity.turnId);
+}
+
+export function snapshotCodexPersistedContinuity(persistedContinuity: ProviderContinuityBlob | undefined): {
+  conversationRef: string | null;
+  resumable: boolean;
+  providerContinuity: CodexPersistedContinuity | null;
+} {
+  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  return {
+    conversationRef: continuity.threadId ?? null,
+    resumable: Boolean(continuity.threadId),
+    providerContinuity: hasCodexContinuity(continuity) ? continuity : null,
+  };
+}
+
+export function applyCodexContinuityUpdate(
+  persistedContinuity: CodexPersistedContinuity,
+  update: ProviderContinuityUpdate,
+): CodexPersistedContinuity {
+  if (update.providerContinuity !== undefined) {
+    return readCodexPersistedContinuity(update.providerContinuity as ProviderContinuityBlob | undefined);
+  }
+
+  if (update.conversationRef === null || update.resumable === false) {
+    return {};
+  }
+
+  if (typeof update.conversationRef === 'string' && update.conversationRef.length > 0) {
+    return withCodexContinuity(persistedContinuity, { threadId: update.conversationRef });
+  }
+
+  return readCodexPersistedContinuity(persistedContinuity);
+}
+
+export function applyCodexTransportClosed(
+  persistedContinuity: CodexPersistedContinuity,
+  _closed: ProviderTransportClose,
+): CodexPersistedContinuity {
+  return readCodexPersistedContinuity(persistedContinuity);
+}
+
+export function isCodexSessionUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes('not found') ||
+    message.includes('missing thread') ||
+    message.includes('unknown thread') ||
+    message.includes('does not exist') ||
+    message.includes('no such thread') ||
+    message.includes('no longer resumable because the saved thread is missing or invalid')
+  );
+}
+
+function createCodexProviderServerSpec(
   projectRoot: string,
   env?: Record<string, string>,
   clientVersion?: string,
@@ -53,6 +191,37 @@ export function buildCodexProviderServerSpec(
       params: { clientInfo: { name: 'coral', version: clientVersion ?? 'unknown' } },
     },
   };
+}
+
+export function buildCodexProviderServerSpec(
+  projectRoot: string,
+  env?: Record<string, string>,
+  clientVersion?: string,
+): ProviderServerSpec;
+export function buildCodexProviderServerSpec(
+  request: CodexServerSpecRequest,
+  persistedContinuity?: ProviderContinuityBlob,
+  clientVersion?: string,
+): ProviderServerSpec;
+export function buildCodexProviderServerSpec(
+  projectRootOrRequest: string | CodexServerSpecRequest,
+  envOrPersisted?: Record<string, string> | ProviderContinuityBlob,
+  clientVersion?: string,
+): ProviderServerSpec {
+  if (typeof projectRootOrRequest !== 'string') {
+    const continuity = readCodexPersistedContinuity(envOrPersisted as ProviderContinuityBlob | undefined);
+    return createCodexProviderServerSpec(
+      continuity.cwd ?? projectRootOrRequest.cwd,
+      projectRootOrRequest.coralEnv,
+      clientVersion,
+    );
+  }
+
+  return createCodexProviderServerSpec(
+    projectRootOrRequest,
+    envOrPersisted as Record<string, string> | undefined,
+    clientVersion,
+  );
 }
 
 export function buildCodexTurnInput(prompt: string): UserInput[] {
@@ -82,8 +251,24 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     return undefined;
   }
 
+  const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+  let cachedMtimeMs: number | undefined;
+
   try {
-    const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+    cachedMtimeMs = runtime.storage.statSync(configPath).mtimeMs;
+    const cached = serviceTierCache.get(configPath);
+    if (cached && cached.mtimeMs === cachedMtimeMs) {
+      return cached.value;
+    }
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'EACCES') {
+      serviceTierCache.set(configPath, { mtimeMs: 0, value: undefined });
+      return undefined;
+    }
+  }
+
+  try {
     const content = runtime.storage.readFileSync(configPath, 'utf-8');
     const lines = content.split(/\r?\n/);
 
@@ -93,18 +278,23 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
       }
       const match = line.match(/^\s*service_tier\s*=\s*["']?(fast|flex)["']?\s*(#.*)?$/i);
       if (match) {
-        return match[1].toLowerCase() as CodexServiceTier;
+        const value = match[1].toLowerCase() as CodexServiceTier;
+        serviceTierCache.set(configPath, { mtimeMs: cachedMtimeMs ?? 0, value });
+        return value;
       }
     }
   } catch (error: unknown) {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT' && code !== 'EACCES') {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[coral] Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.\n`);
+      const message = errorMessage(error);
+      backendLog.warn(
+        `Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.`,
+      );
     }
     return undefined;
   }
 
+  serviceTierCache.set(configPath, { mtimeMs: cachedMtimeMs ?? 0, value: undefined });
   return undefined;
 }
 

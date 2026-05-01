@@ -7,9 +7,11 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
-const MANIFEST_PATH = resolve(REPO_ROOT, 'sealed-inventory.json');
-const SIMULATION_CORE_ROOT = 'src/execution/simulation/core/index.ts';
-const SERVER_ROOT = 'src/execution/server.ts';
+const SIMULATION_ROOT = resolve(REPO_ROOT, 'tools', 'simulation');
+const TOOLS_TESTING_ROOT = resolve(REPO_ROOT, 'tools', 'testing');
+const MANIFEST_PATH = resolve(SIMULATION_ROOT, 'sealed-inventory.json');
+const SIMULATION_CORE_ROOT = 'tools/simulation/core/backend.ts';
+const SERVER_ROOT = 'src/coordinator/bootstrap.ts';
 
 function toPosixPath(filePath) {
   return filePath.split(sep).join('/');
@@ -19,7 +21,7 @@ function toCanonicalRepoPath(filePath) {
   return toPosixPath(relative(REPO_ROOT, filePath));
 }
 
-function listProductionSourceFiles(dirPath) {
+function listSourceFiles(dirPath) {
   const files = [];
 
   for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
@@ -30,7 +32,7 @@ function listProductionSourceFiles(dirPath) {
         continue;
       }
 
-      files.push(...listProductionSourceFiles(entryPath));
+      files.push(...listSourceFiles(entryPath));
       continue;
     }
 
@@ -83,7 +85,7 @@ function resolveRelativeSourcePath(sourceFilePath, sourceCanonicalPath, specifie
     }
   }
 
-  throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production src/*.ts file`);
+  throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production source file`);
 }
 
 function classifyImportDeclaration(node) {
@@ -311,7 +313,11 @@ function findDirectEdge(source, target, edgeGraph) {
 
 function main() {
   const manifest = loadManifest();
-  const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
+  const productionFilePaths = [
+    ...listSourceFiles(SRC_ROOT),
+    ...listSourceFiles(SIMULATION_ROOT),
+    ...listSourceFiles(TOOLS_TESTING_ROOT),
+  ].sort();
   const productionFiles = new Set(productionFilePaths.map((filePath) => toCanonicalRepoPath(filePath)));
 
   validateManifestPaths(manifest, productionFiles);

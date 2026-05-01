@@ -12,21 +12,13 @@ This writes the local checkout's `build/manifest.json` with `flavor: "dev"`. To 
 
 ## 2. Register the local hooks in `.claude/settings.local.json`
 
-Use `docs/examples/settings.local.json` as the template for your local settings file. The template points every Coral hook at your local checkout and sets `CLAUDE_PLUGIN_ROOT` so the dev hooks can coexist with the installed prod plugin hooks.
-
-## 3. Select the dev hook flavor for your shell session
-
-```bash
-export CORAL_FLAVOR=dev
-```
-
-If you use `direnv`, load the same value from `.envrc.example`.
+Keep `.claude/settings.local.json` machine-local. Point the Coral hooks at your checkout, set `CLAUDE_PLUGIN_ROOT`, and register `CORAL_FLAVOR=dev` in the settings `env` block so the dev hooks can coexist with the installed prod plugin hooks.
 
 ## How it works
 
 - **Daemon identity is intrinsic**: each daemon reads its own `bridge/manifest.json` to determine its flavor. No environment variable tells the daemon what it is.
-- **`CORAL_FLAVOR` is a session-level hook selector**: it tells hooks which flavor they should serve. Hooks that don't match the session's flavor exit immediately.
-- **KB isolation**: prod markdown → `~/.coral/kb/`, dev → `~/.coral/kb-dev/`. Runtime state (indexes, vectors): prod → `~/.coral/data/kb/`, dev → `~/.coral/data/kb-dev/`. Override markdown root with `CORAL_KB_PATH`.
+- **`CORAL_FLAVOR` is a settings-level hook selector**: hooks read it from their process environment, so local dev setup records it in `.claude/settings.local.json` under `env`. Hooks that don't match the selected flavor exit immediately.
+- **KB isolation**: prod markdown → `~/.coral/kb/`, dev → `~/.coral/kb-dev/`. Runtime state (indexes, vectors): prod → `~/.coral/data/kb/`, dev → `~/.coral/data-dev/kb/`. Override markdown root with `CORAL_KB_PATH`.
 - **Backend replacement**: if a prod daemon is running and you start a dev session, the dev hooks detect a flavor mismatch on the running backend and trigger replacement. The dev daemon starts at a different namespace (derived from the local plugin root path).
 
 ## Verification
@@ -38,4 +30,4 @@ After setup, confirm the dev flavor is active:
 
 ## Switching back to prod
 
-Unset `CORAL_FLAVOR` (or close the shell) and launch a new Claude Code session. The default is always prod.
+Remove `CORAL_FLAVOR` from the settings `env` block (or switch back to a prod settings file) and launch a new Claude Code session. The default is always prod.

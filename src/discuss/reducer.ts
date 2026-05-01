@@ -4,7 +4,6 @@ import type {
   AgentRunBoundEvent,
   BidRoundClosedEvent,
   DiscussDomainEvent,
-
   PersistedDiscussAgentRun,
   PersistedDiscussRuntime,
   PersistedDiscussSnapshot,
@@ -15,9 +14,16 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
-import type { AgentState, DiscussState, TranscriptEntry } from './types.js';
-import { appendEntry, resetBids } from './state-helpers.js';
-import { parseDisplayName } from './util/string.js';
+import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
+import { appendEntry, resetBids } from './state-transitions.js';
+
+function parseDisplayName(persona: string, agentName: string): string {
+  const headerLine = persona.split('\n', 1)[0] ?? '';
+  const strippedHeader = headerLine.replace(/^#\s*/, '');
+  const match = strippedHeader.match(/^(.+?)\s+[—–-]\s+/);
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional: empty string should fall through to agentName
+  return match?.[1]?.trim() || agentName;
+}
 
 function makeEmptyState(sessionId: string): DiscussState {
   return {
@@ -39,7 +45,6 @@ function makeEmptyState(sessionId: string): DiscussState {
     created_at: '',
     last_activity_at: '',
     last_speech_step: 0,
-    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -131,7 +136,6 @@ function buildSessionState(event: SessionCreatedEvent): DiscussState {
     created_at: event.ts,
     last_activity_at: event.ts,
     last_speech_step: 0,
-    pending_since_ts: null,
     bid_release_step: 0,
     end_reason_content: null,
     transcript: [],
@@ -447,7 +451,6 @@ export function reduceDiscussEvent(
       let nextState: DiscussState = {
         ...snapshot.state,
         last_activity_at: event.ts,
-        pending_since_ts: null,
       };
       const removedPendingBidders = new Set<string>();
 

@@ -1,22 +1,33 @@
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { StoragePort } from '../../runtime/ports.js';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;
 const USAGE_WK_THRESHOLD = 100;
 
-export function isUsageBudgetExhausted(): boolean {
+export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
+
+export type UsageBudgetOptions = {
+  storage: UsageBudgetStorage;
+  homeDir?: string;
+  now: () => number;
+};
+
+export function isUsageBudgetExhausted({ storage, homeDir, now }: UsageBudgetOptions): boolean {
+  if (homeDir === undefined) {
+    return false;
+  }
+
   try {
-    const cachePath = join(homedir(), '.claude', 'hud', '.coral-cache.json');
-    const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
+    const cachePath = join(homeDir, '.claude', 'hud', '.coral-cache.json');
+    const raw = JSON.parse(storage.readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
     const entry = raw.claude as
       | { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean }
       | undefined;
     if (!entry?.ts || !entry.data || entry.error) {
       return false;
     }
-    if (Date.now() - entry.ts > USAGE_CACHE_STALE_MS) {
+    if (now() - entry.ts > USAGE_CACHE_STALE_MS) {
       return false;
     }
     const { fiveHour, weekly } = entry.data;

@@ -1,71 +1,40 @@
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import type { KbRuntime } from '../contracts.js';
-import {
-  buildEntityConsolidationDelta,
-  buildMetadataTargets,
-} from './classification.js';
-import { runCommunitySubphase } from './community.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
+import type { TimerHandle } from '../../runtime/ports.js';
+import type { KbRuntime } from '../contract.js';
+import { buildEntityConsolidationDelta, buildMetadataTargets } from './classification/assignments.js';
+import { runCommunitySubphase } from './community/index.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
+import { clearCurateRetryState, clearCurateRetryStateLocked, recordCurateFailure } from './operations.js';
+import { runPrincipleDiscovery } from './principles.js';
+import { claimCurateRun, hasPendingEntriesBeyondCursor, runClassificationBatches } from './runner.js';
 import {
-  clearCurateRetryState,
-  clearCurateRetryStateLocked,
-  recordCurateFailure,
-} from './operations.js';
-import {
-  addPendingDiscovery,
-  recordDiscoveryAttempt,
-  removePendingDiscovery,
-  runPrincipleDiscovery,
-} from './principles.js';
-import {
-  claimCurateRun,
-  hasPendingEntriesBeyondCursor,
-  runClassificationBatches,
-} from './runner.js';
-import {
+  INVARIANT,
   isClaimStale,
-  migrateCurateStateIfNeeded,
   readCurateState,
+  resolveCurateTimings,
+  writeCurateState,
   type CurateCursor,
   type CurateState,
-} from './state.js';
-import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './types.js';
-import { createRealRuntime } from '../../execution/runtime.js';
-
-export type {
-  ClassificationAssignment,
-  ClassificationNewEntity,
-  ClassificationRelationship,
-  CurateClaim,
-  CurateClaimedEntry,
-  CurateHandle,
-  DiscoveryProposal,
-  MetadataTarget,
-  SpawnCliFn,
-} from './types.js';
-export {
-  buildClassificationPrompt,
-  buildMetadataTargets,
-  chunkEntriesByPromptBudget,
-  estimateClassificationBatchTokens,
-  parseClassificationResponse,
-  validateAssignments,
-  type ClassificationBatchShape,
-} from './classification.js';
-export {
-  buildDiscoveryPrompt,
-  parseDiscoveryResponse,
-  serializePrincipleDocument,
-  validateDiscoveryProposals,
-  type DiscoveryBatch,
-  type DiscoveryPromptResult,
-} from './discovery.js';
+} from './state/index.js';
+import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
+import type { GitSyncRuntimePicks } from './pipeline-types.js';
+import type { SpawnCliFn } from './spawn-cli.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 
+export type CurateHandle = {
+  start(): Promise<void>;
+  schedule(): void;
+  scheduleDeferredCommit(): void;
+  stop(): Promise<void>;
+  isRunning(): boolean;
+};
+
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
+const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
 
 class CurateRunError extends Error {
   readonly through: CurateCursor | null;
@@ -89,9 +58,9 @@ export function createCurateScheduler({
 }: {
   kb: KbRuntime;
   spawnCli: SpawnCliFn;
-  processPort?: GitSyncRuntimePicks['processPort'];
-  storagePort?: GitSyncRuntimePicks['storagePort'];
-  envPort?: GitSyncRuntimePicks['envPort'];
+  processPort: GitSyncRuntimePicks['processPort'];
+  storagePort: GitSyncRuntimePicks['storagePort'];
+  envPort: GitSyncRuntimePicks['envPort'];
   scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
@@ -99,30 +68,82 @@ export function createCurateScheduler({
   let queuedRun = false;
   let activeRun: Promise<void> | null = null;
   let activeRunController: AbortController | null = null;
-  let retryWakeTimer: NodeJS.Timeout | null = null;
-  let debounceTimer: NodeJS.Timeout | null = null;
+  let retryWakeTimer: TimerHandle | null = null;
+  let debounceTimer: TimerHandle | null = null;
+  let pendingCommunitySkipTicks = 0;
 
-  const ports = ((): GitSyncRuntimePicks => {
-    if (processPort && storagePort && envPort) {
-      return { processPort, storagePort, envPort };
-    }
-    const fallback = createRealRuntime();
-    return {
-      processPort: processPort ?? fallback.process,
-      storagePort: storagePort ?? fallback.storage,
-      envPort: envPort ?? fallback.env,
-    };
-  })();
   const gitSync = createGitSyncController({
     kb,
     spawnCli,
-    ...ports,
+    processPort,
+    storagePort,
+    envPort,
   });
 
   function clearRetryWake(): void {
     if (retryWakeTimer !== null) {
-      clearTimeout(retryWakeTimer);
+      kb.time.clearTimeout(retryWakeTimer);
       retryWakeTimer = null;
+    }
+  }
+
+  async function incrementCommunityBatchFailures(): Promise<number> {
+    let nextFailures = 0;
+
+    await kb.withMutationLock(() => {
+      const state = readCurateState(kb);
+      nextFailures = state.consecutiveCommunityBatchFailures + 1;
+      // Stamp on the healthy → disabled transition; preserve any earlier stamp
+      // so operators see the original trip time across subsequent retries.
+      const tripped = nextFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES && state.communityBatchLaneDisabledAt === null;
+      writeCurateState(kb, {
+        ...state,
+        consecutiveCommunityBatchFailures: nextFailures,
+        communityBatchLaneDisabledAt: tripped ? nowIsoString(kb.time) : state.communityBatchLaneDisabledAt,
+      });
+    });
+
+    return nextFailures;
+  }
+
+  async function runCommunityBatch(signal: AbortSignal): Promise<boolean> {
+    if (stopped || signal.aborted) {
+      return false;
+    }
+
+    if (readCurateState(kb).consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES) {
+      backendLog.warn(
+        `kb_curate: community batch lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
+      );
+      return false;
+    }
+
+    if (pendingCommunitySkipTicks > 0) {
+      pendingCommunitySkipTicks -= 1;
+      schedule();
+      return false;
+    }
+
+    try {
+      const wroteCommunityFiles = await runCommunitySubphase(kb, spawnCli, {
+        signal,
+        shouldStop: () => stopped,
+        onFreshnessMismatch: schedule,
+      });
+      if (readCurateState(kb).consecutiveCommunityBatchFailures === 0) {
+        pendingCommunitySkipTicks = 0;
+      }
+      return wroteCommunityFiles;
+    } catch (error: unknown) {
+      if (stopped || signal.aborted) {
+        return false;
+      }
+
+      backendLog.error('kb_curate: community batch failed', error);
+      const communityBatchFailures = await incrementCommunityBatchFailures();
+      pendingCommunitySkipTicks = calculateCommunityBatchBackoffTicks(communityBatchFailures);
+      schedule();
+      return false;
     }
   }
 
@@ -138,24 +159,24 @@ export function createCurateScheduler({
       return;
     }
 
-    const delayMs = Date.parse(state.retryNotBefore) - Date.now();
+    const delayMs = Date.parse(state.retryNotBefore) - kb.time.now();
     if (Number.isNaN(delayMs) || delayMs <= 0) {
       schedule();
       return;
     }
 
-    retryWakeTimer = setTimeout(() => {
+    retryWakeTimer = kb.time.setTimeout(() => {
       retryWakeTimer = null;
       schedule();
     }, delayMs);
   }
 
   async function runScheduledCurate(signal: AbortSignal): Promise<CurateCursor | null> {
-    await gitSync.gitSync(signal);
+    await kb.runInboundSync(() => gitSync.gitSync(signal), { structuredDiff: true });
     let lastCompletedThrough: CurateCursor | null = null;
 
     while (!stopped && !signal.aborted) {
-      const claim = await claimCurateRun(kb, nowIsoString().slice(0, 10));
+      const claim = await claimCurateRun(kb, nowIsoString(kb.time).slice(0, 10));
       if (claim === null) {
         break;
       }
@@ -178,7 +199,10 @@ export function createCurateScheduler({
     if (lastCompletedThrough === null) {
       await kb.withMutationLock(() => {
         const state = readCurateState(kb);
-        if (state.activeClaim !== null && !isClaimStale(state, nowIsoString())) {
+        if (
+          state.activeClaim !== null &&
+          !isClaimStale(state, nowIsoString(kb.time), resolveCurateTimings(kb.envPort).claimStaleMs)
+        ) {
           return;
         }
         clearCurateRetryStateLocked(kb, state);
@@ -197,12 +221,8 @@ export function createCurateScheduler({
     }
 
     if (!stopped && !signal.aborted) {
-      try {
-        if (await runCommunitySubphase(kb, spawnCli, { signal, shouldStop: () => stopped })) {
-          gitSync.gitAutoCommit('curate: detect communities');
-        }
-      } catch (error: unknown) {
-        throw new CurateRunError(lastCompletedThrough, error);
+      if (await runCommunityBatch(signal)) {
+        gitSync.gitAutoCommit('curate: detect communities');
       }
     }
 
@@ -218,8 +238,21 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
-    if (isUsageBudgetExhausted()) {
+    if (
+      isUsageBudgetExhausted({
+        homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
+        now: kb.time.now,
+        storage: storagePort,
+      })
+    ) {
       return;
+    }
+    const claimLanePermanentlyDisabled =
+      readCurateState(kb).consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES;
+    if (claimLanePermanentlyDisabled) {
+      backendLog.warn(
+        `kb_curate: claim lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
+      );
     }
     const runController = new AbortController();
     activeRunController = runController;
@@ -227,9 +260,9 @@ export function createCurateScheduler({
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
-        lastCompletedThrough = await runScheduledCurate(runController.signal);
+        lastCompletedThrough = claimLanePermanentlyDisabled ? null : await runScheduledCurate(runController.signal);
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
-          if (await runCommunitySubphase(kb, spawnCli, { signal: runController.signal, shouldStop: () => stopped })) {
+          if (await runCommunityBatch(runController.signal)) {
             gitSync.gitAutoCommit('curate: detect communities');
             await gitSync.gitPush();
           }
@@ -281,10 +314,17 @@ export function createCurateScheduler({
     }
 
     gitSync.ensureKbGitignore();
-    await kb.ensureIndex();
-    await migrateCurateStateIfNeeded(kb);
+    // Curate classifies entries against the current Corpus, so it needs the
+    // blocking variant — running against a stale snapshot would mis-route work.
+    await kb.ensureCorpusFreshness({ wait: true });
+    await initializeCurateStateIfNeeded(kb);
+    const state = readCurateState(kb);
+    pendingCommunitySkipTicks =
+      state.consecutiveCommunityBatchFailures > 0
+        ? calculateCommunityBatchBackoffTicks(state.consecutiveCommunityBatchFailures)
+        : 0;
     runtimeStarted = true;
-    armRetryWake();
+    armRetryWake(state);
     schedule();
   }
 
@@ -299,14 +339,14 @@ export function createCurateScheduler({
 
     clearRetryWake();
     if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
+      kb.time.clearTimeout(debounceTimer);
     }
     if (scheduleDebounceMs <= 0) {
-      setTimeout(launchQueuedRun, 0);
+      kb.time.setTimeout(launchQueuedRun, 0);
       return;
     }
 
-    debounceTimer = setTimeout(() => {
+    debounceTimer = kb.time.setTimeout(() => {
       debounceTimer = null;
       launchQueuedRun();
     }, scheduleDebounceMs);
@@ -317,7 +357,7 @@ export function createCurateScheduler({
     queuedRun = false;
     clearRetryWake();
     if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
+      kb.time.clearTimeout(debounceTimer);
       debounceTimer = null;
     }
     gitSync.cancelDeferredCommit();
@@ -348,40 +388,9 @@ export function createCurateScheduler({
     isRunning() {
       return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },
-    _testInternals: {
-      claimCurateRun(today) {
-        return claimCurateRun(kb, today);
-      },
-      runClassificationBatches(claim, index) {
-        return runClassificationBatches(kb, spawnCli, claim, index);
-      },
-      commitMetadataTargets(targets) {
-        return commitMetadataTargets(kb, targets);
-      },
-      runPrincipleDiscovery(processedThrough) {
-        return runPrincipleDiscovery(kb, spawnCli, processedThrough, { schedule });
-      },
-      recordCurateFailure(through, error) {
-        return recordCurateFailure(kb, through, error);
-      },
-      clearCurateRetryState() {
-        return clearCurateRetryState(kb);
-      },
-      recordDiscoveryAttempt(highSeq, nextOffset) {
-        return recordDiscoveryAttempt(kb, highSeq, nextOffset);
-      },
-      addPendingDiscovery(entry) {
-        return addPendingDiscovery(kb, entry);
-      },
-      removePendingDiscovery(entry) {
-        return removePendingDiscovery(kb, entry);
-      },
-      runCommunitySubphase() {
-        return runCommunitySubphase(kb, spawnCli, { shouldStop: () => stopped });
-      },
-      async migrateCurateStateIfNeeded() {
-        await migrateCurateStateIfNeeded(kb);
-      },
-    },
   };
+}
+
+export function calculateCommunityBatchBackoffTicks(failureCount: number): number {
+  return Math.min(2 ** Math.max(failureCount, 0), COMMUNITY_BATCH_BACKOFF_TICK_CAP);
 }

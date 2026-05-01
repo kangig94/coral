@@ -1,21 +1,23 @@
 import type { Command } from 'commander';
 
 import { UsageError } from '../errors.js';
-import {
-  emitError,
-  handleLaunchResult,
-  makeClient,
-  resolveInput,
-  type WorkflowOptions,
-} from '../command-helpers.js';
+import { makeClient, type WorkflowOptions } from '../dispatch.js';
+import { emitError, handleLaunchResult } from '../emit.js';
+import { resolveInput } from '../flags.js';
 
 export function registerWorkflowCommands(program: Command): void {
   const workflowCommand = program.command('workflow');
   workflowCommand
     .description('Execute a workflow pipeline')
     .option('-e, --expression <expr>', 'Pipeline DSL expression')
-    .option('-s, --start-prompt <text-or-file...>', 'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
-    .option('-c, --context <text-or-file...>', 'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
+    .option(
+      '-s, --start-prompt <text-or-file...>',
+      'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+    )
+    .option(
+      '-c, --context <text-or-file...>',
+      'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+    )
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')
@@ -39,7 +41,7 @@ export function registerWorkflowCommands(program: Command): void {
           startPrompt: resolveInput(opts.startPrompt),
         };
 
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), workflowCommand);
         const result = await client.workflow(expression, payload);
         await handleLaunchResult(result, opts.detach, client);
       } catch (error) {

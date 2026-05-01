@@ -1,23 +1,22 @@
-import { readFileSync } from 'node:fs';
-import { isNoEntryError } from '../../shared/utils.js';
-import type { KbRuntime } from '../contracts.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import type { KbMutationEffects, KbRuntime } from '../contract.js';
+import { captureNoteManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
 import {
   extractTitle,
   parseFrontmatter,
   parseSourceFrontmatter,
   replaceFrontmatter,
   replaceSourceFrontmatter,
-} from '../frontmatter.js';
+} from '../corpus/frontmatter.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { recordMetadataMutation } from '../corpus/index-mutations.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
   cloneEntityMetaRecord,
   cloneEntityRelationship,
   cloneKbIndex,
-  recordMetadataMutation,
-  writeFileAtomic,
-} from '../mutation-helpers.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
+} from '../corpus/index-records.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -26,8 +25,8 @@ import {
   type EntityGraph,
   type EntityMeta,
   type EntityRelationship,
-} from '../types.js';
-import { fingerprintEntryContent, uniqueTrimmedList } from './shared.js';
+} from '../entry-types.js';
+import { fingerprintEntryContent, uniqueTrimmedList } from './content-normalize.js';
 import {
   compareCursor,
   compareOptionalCursor,
@@ -39,7 +38,7 @@ import {
   type CurateCursor,
   type CurateRepairFrontier,
   type CurateState,
-} from './state.js';
+} from './state/index.js';
 import {
   consolidateEntityGraph,
   resolveCanonicalEntityId,
@@ -48,7 +47,7 @@ import {
   type EntityReplacementMap,
 } from './entity-consolidation.js';
 import { CURATE_STALE_REASON } from './operations.js';
-import type { MetadataTarget, NoteMetadataTarget } from './types.js';
+import type { MetadataTarget, NoteMetadataTarget } from './pipeline-types.js';
 
 export type MetadataCommitPlan = {
   graphDelta?: EntityConsolidationDelta;
@@ -60,10 +59,13 @@ type LiveMetadataDecision = {
   nextPrinciples: string[];
 };
 
-function snapshotEntityGraph(currentIndex: { entityMeta?: Record<string, EntityMeta>; relationships?: EntityRelationship[] }): EntityGraph {
+function snapshotEntityGraph(currentIndex: {
+  entityMeta: Record<string, EntityMeta>;
+  relationships: EntityRelationship[];
+}): EntityGraph {
   return {
-    entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta ?? {}),
-    relationships: (currentIndex.relationships ?? []).map(cloneEntityRelationship),
+    entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta),
+    relationships: currentIndex.relationships.map(cloneEntityRelationship),
   };
 }
 
@@ -169,7 +171,10 @@ function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[])
   return [...liveRelated, ...additions];
 }
 
-function applyEntityReplacementMap(tags: string[] | undefined, replacementMap: EntityReplacementMap): string[] | undefined {
+function applyEntityReplacementMap(
+  tags: string[] | undefined,
+  replacementMap: EntityReplacementMap,
+): string[] | undefined {
   if (tags === undefined) {
     return undefined;
   }
@@ -190,12 +195,13 @@ function rewriteMetadataTargetEntities(target: MetadataTarget, replacementMap: E
 
 export async function commitMetadataTargetsLocked(
   kb: KbRuntime,
+  mutation: KbMutationEffects,
   targets: MetadataTarget[],
   state: CurateState,
   plan: MetadataCommitPlan = {},
 ): Promise<CurateState> {
-  const normalizedState = normalizeCurateStateRepairFrontier(state);
-  const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
+  const normalizedState = normalizeCurateStateRepairFrontier(kb, state);
+  const repairFrontier = getCurateRepairFrontier(kb);
   const currentIndex = kb.readIndexOrEmpty();
   const nextIndex = cloneKbIndex(currentIndex);
   const currentGraph = snapshotEntityGraph(currentIndex);
@@ -215,7 +221,7 @@ export async function commitMetadataTargetsLocked(
 
   if (graphChanged) {
     try {
-      writeFileAtomic(kb.entityGraphPath(), `${JSON.stringify(desiredGraph, null, 2)}\n`);
+      mutation.writeEntityGraph(desiredGraph);
     } catch (error: unknown) {
       failure ??= error;
     }
@@ -239,7 +245,7 @@ export async function commitMetadataTargetsLocked(
       let raw: string;
 
       try {
-        raw = readFileSync(notePath, 'utf-8');
+        raw = kb.storagePort.readFileSync(notePath, 'utf-8');
       } catch (error: unknown) {
         if (isNoEntryError(error)) {
           processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -270,8 +276,10 @@ export async function commitMetadataTargetsLocked(
         related: nextRelated,
         entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
       };
+      const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
-      writeFileAtomic(notePath, replaceFrontmatter(raw, nextFrontmatter));
+      writeFileAtomic(kb, notePath, nextRaw);
+      mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(target.slug, nextRaw));
       wroteMarkdown = true;
 
       const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
@@ -297,7 +305,7 @@ export async function commitMetadataTargetsLocked(
     let raw: string;
 
     try {
-      raw = readFileSync(sourcePath, 'utf-8');
+      raw = kb.storagePort.readFileSync(sourcePath, 'utf-8');
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
@@ -328,8 +336,10 @@ export async function commitMetadataTargetsLocked(
       related: nextRelated,
       entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
     };
+    const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
-    writeFileAtomic(sourcePath, replaceSourceFrontmatter(raw, nextFrontmatter));
+    writeFileAtomic(kb, sourcePath, nextRaw);
+    mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(target.slug, nextRaw));
     wroteMarkdown = true;
 
     const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];
@@ -349,7 +359,7 @@ export async function commitMetadataTargetsLocked(
     processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
   }
 
-  const nextState = normalizeCurateStateRepairFrontier({
+  const nextState = normalizeCurateStateRepairFrontier(kb, {
     ...normalizedState,
     processedThrough,
     activeClaim: null,
@@ -380,9 +390,8 @@ export async function commitMetadataTargets(
   targets: MetadataTarget[],
   plan: MetadataCommitPlan = {},
 ): Promise<void> {
-  await kb.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(kb);
+  await kb.withMutationLock(async (mutation) => {
     const state = readCurateState(kb);
-    await commitMetadataTargetsLocked(kb, targets, state, plan);
+    await commitMetadataTargetsLocked(kb, mutation, targets, state, plan);
   });
 }

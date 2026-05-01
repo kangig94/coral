@@ -1,33 +1,38 @@
 import type { Command } from 'commander';
 import { z, ZodError } from 'zod';
 
-import { ensureBackend } from '../../client/backend-lifecycle.js';
-import { streamWait, type WaitCursorRef } from '../../client/backend-helpers.js';
-import { isLivePhase, jobPhaseSchema } from '../../shared/types.js';
+import { BackendToolHttpError } from '../../transport/http/errors.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
+import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
+import {
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+  type WaitCursor,
+  type WaitStreamEvent,
+} from '../../jobs/wait.js';
+import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
-  emitError,
-  getPluginRoot,
   getProviderNames,
-  getTerminalContext,
   makeClient,
-  parseJobIds,
   WAIT_TIMEOUT_SECONDS,
   type AbortOptions,
   type WaitOptions,
-} from '../command-helpers.js';
+} from '../dispatch.js';
+import { emitError, getTerminalContext } from '../emit.js';
+import { parseJobIds } from '../flags.js';
+import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError } from '../errors.js';
+import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
+import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import {
-  formatAbortResult,
-  formatJobsList,
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
   formatWaitWaiting,
-  renderJobsList,
   renderWaitLine,
   type WaitRenderContext,
-} from '../format.js';
+} from '../format/wait.js';
 
 type JobsOptions = {
   phase?: string;
@@ -38,7 +43,7 @@ type JobsOptions = {
 type AbortQuerySelector = {
   all: false;
   projectRoot: string;
-  phase?: string;
+  phase?: JobStatus['phase'];
   provider?: string;
 };
 
@@ -159,7 +164,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       try {
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
-        const client = makeClient(projectRoot);
+        const client = makeClient(projectRoot, jobsCommand);
         const result = await client.listJobs({
           projectRoot,
           ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
@@ -175,6 +180,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             all: parsed.all,
           }) + '\n',
         );
+        flushPendingReadStoreNote('text');
       } catch (error) {
         emitError(normalizeUsageError(error));
       }
@@ -192,46 +198,68 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const timeoutSeconds = WAIT_TIMEOUT_SECONDS;
         const projectRoot = process.cwd();
         const embed = opts.embed === true;
-        const { port, host, token } = await ensureBackend(getPluginRoot() || undefined);
-        const cursorRef: WaitCursorRef = { lastEventId: opts.cursor };
-        const jobLabels =
-          jobIds.length > 1
-            ? new Map(jobIds.map((id, index) => [id, `j${index}`]))
-            : null;
+        const client = makeClient(projectRoot, waitCommand);
+        const parsedCursor = parseSerializedWaitCursor(opts.cursor);
+        if (opts.cursor && !parsedCursor) {
+          throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
+            code: 'invalid_request',
+            message: 'Invalid Last-Event-ID cursor',
+          });
+        }
 
-        for await (const event of streamWait(
-          jobIds,
-          timeoutSeconds,
-          { port, host, token },
-          opts.cursor,
-          undefined,
-          projectRoot,
-          cursorRef,
-        )) {
-          const cursor = cursorRef.lastEventId ?? null;
+        const currentCursor: WaitCursor = { afterSeq: parsedCursor?.afterSeq ?? 0 };
+        const jobLabels = jobIds.length > 1 ? new Map(jobIds.map((id, index) => [id, `j${index}`])) : null;
+        const causeRenderer = openCliCauseRefRenderer(projectRoot);
 
-          const ctx: WaitRenderContext = getTerminalContext();
-          let formatted: string;
+        try {
+          const subscription = await client.subscribe<WaitStreamEvent>('jobs.wait', {
+            jobIds,
+            timeoutSeconds,
+            projectRoot,
+            ...(parsedCursor ? { cursor: parsedCursor } : {}),
+          });
 
-          switch (event.type) {
-            case 'progress':
-              formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
-              break;
-            case 'queued':
-              formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
-              break;
-            case 'terminal':
-              formatted = formatWaitTerminal(event, cursor, embed);
-              break;
-            case 'waiting':
-              formatted = formatWaitWaiting(event, cursor);
-              break;
+          try {
+            for await (const event of subscription) {
+              if (event.type === 'progress' || event.type === 'terminal') {
+                currentCursor.afterSeq = event.seq;
+              }
+
+              const cursor = currentCursor.afterSeq > 0 ? serializeWaitCursor(currentCursor) : null;
+
+              const ctx: WaitRenderContext = getTerminalContext();
+              const renderCauseRef = causeRenderer.render;
+              let formatted: string;
+
+              switch (event.type) {
+                case 'progress':
+                  formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
+                  break;
+                case 'queued':
+                  formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
+                  break;
+                case 'terminal': {
+                  const describer = renderCauseRef
+                    ? { describeCauseRef: (ref: CauseRef) => renderCauseRef(ref, event.result.outcome) }
+                    : {};
+                  formatted = formatWaitTerminal(event, cursor, embed, describer);
+                  break;
+                }
+                case 'waiting':
+                  formatted = formatWaitWaiting(event, cursor);
+                  break;
+              }
+
+              process.stdout.write(renderWaitLine(formatted, ctx));
+              if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
+                process.stdout.write('\n');
+              }
+            }
+          } finally {
+            await subscription.close();
           }
-
-          process.stdout.write(renderWaitLine(formatted, ctx));
-          if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
-            process.stdout.write('\n');
-          }
+        } finally {
+          causeRenderer.close();
         }
       } catch (error) {
         emitError(error);
@@ -249,7 +277,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       try {
         const parsed = abortSelectorSchema.parse(opts);
         const projectRoot = process.cwd();
-        const client = makeClient(projectRoot);
+        const client = makeClient(projectRoot, abortCommand);
 
         if (parsed.jobs !== undefined) {
           const result = await client.abortJobs(parseJobIds(parsed.jobs));
@@ -260,7 +288,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const selector: AbortQuerySelector = {
           projectRoot,
           all: false,
-          ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
+          ...(parsed.phase !== undefined ? { phase: parsed.phase as JobStatus['phase'] } : {}),
           ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
         };
         const jobs = await client.listJobs(selector);

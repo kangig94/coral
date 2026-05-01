@@ -1,12 +1,15 @@
-import type { KbRuntime } from '../contracts.js';
-import { normalizeCurateStateRepairFrontier, readCurateState, writeCurateState } from './state.js';
+import type { KbRuntime } from '../contract.js';
 import {
   applyClearCurateRetryState,
   applyRecordCurateFailure,
+  normalizeCurateStateRepairFrontier,
+  readCurateState,
+  resolveCurateTimings,
+  writeCurateState,
   type CurateCursor,
   type CurateState,
-} from './state.js';
-import type { SpawnCliFn } from './types.js';
+} from './state/index.js';
+import type { SpawnCliFn } from './spawn-cli.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
 
@@ -22,7 +25,7 @@ export function persistCurateState(kb: KbRuntime, state: CurateState, next: Cura
     return state;
   }
 
-  const normalizedNext = normalizeCurateStateRepairFrontier(next);
+  const normalizedNext = normalizeCurateStateRepairFrontier(kb, next);
   writeCurateState(kb, normalizedNext);
   return normalizedNext;
 }
@@ -33,14 +36,14 @@ export function recordCurateFailureLocked(
   through: CurateCursor | null,
   error: unknown,
 ): CurateState {
-  return persistCurateState(kb, state, applyRecordCurateFailure(state, through, error));
+  return persistCurateState(
+    kb,
+    state,
+    applyRecordCurateFailure(state, through, error, kb.time.now(), resolveCurateTimings(kb.envPort)),
+  );
 }
 
-export async function recordCurateFailure(
-  kb: KbRuntime,
-  through: CurateCursor | null,
-  error: unknown,
-): Promise<void> {
+export async function recordCurateFailure(kb: KbRuntime, through: CurateCursor | null, error: unknown): Promise<void> {
   await kb.withMutationLock(() => {
     const state = readCurateState(kb);
     recordCurateFailureLocked(kb, state, through, error);

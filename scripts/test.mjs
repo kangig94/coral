@@ -1,26 +1,7 @@
-/**
- * Mark-based flaky test runner with parallel execution.
- *
- * Test files containing a `// @flaky` comment are detected automatically,
- * excluded from the main vitest run, then executed in isolation.
- * To mark a test as flaky, add `// @flaky` anywhere in the file (typically
- * line 1 with a short reason).
- *
- * The main run, flaky run, and simulation run execute concurrently.
- */
-
 import { spawn } from 'child_process';
-import { readFileSync } from 'fs';
-import { glob } from 'fs/promises';
-
-const TEST_PATTERN = 'src/**/*.test.ts';
-const MARKER = /\/\/\s*@flaky\b/;
-
-const flaky = [];
-for await (const file of glob(TEST_PATTERN)) {
-  const head = readFileSync(file, 'utf8').slice(0, 512);
-  if (MARKER.test(head)) flaky.push(file);
-}
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function runAsync(cmd) {
   return new Promise((resolve, reject) => {
@@ -30,20 +11,45 @@ function runAsync(cmd) {
   });
 }
 
-const jobs = [];
-
-if (flaky.length) {
-  const excludes = flaky.map((f) => `--exclude '${f}'`).join(' ');
-  jobs.push(runAsync(`npx vitest run ${excludes}`));
-  jobs.push(runAsync(`npx vitest run ${flaky.join(' ')}`));
-} else {
-  jobs.push(runAsync('npx vitest run'));
+// Vitest reports `success: true` even when a worker dies and its test file is
+// reclassified as a "pending suite". The pipe-executor OOM (commit e769228d)
+// hid 28 broken tests behind this. Run with the JSON reporter and fail
+// explicitly if any test suite was left pending.
+async function runVitestStrict(cmd) {
+  const tmp = mkdtempSync(join(tmpdir(), 'coral-vitest-'));
+  const reportPath = join(tmp, 'report.json');
+  const fullCmd = `${cmd} --reporter=default --reporter=json --outputFile.json=${reportPath}`;
+  try {
+    await runAsync(fullCmd);
+  } finally {
+    try {
+      const raw = readFileSync(reportPath, 'utf8');
+      const report = JSON.parse(raw);
+      const pendingSuites = report.numPendingTestSuites ?? 0;
+      if (pendingSuites > 0) {
+        const pending = (report.testResults ?? [])
+          .filter((r) => r.status === 'pending' || r.assertionResults?.every((a) => a.status === 'pending'))
+          .map((r) => r.name);
+        console.error(
+          `\nFAIL: ${pendingSuites} test suite(s) ended in 'pending' state — likely worker crash:\n${pending.map((p) => `  - ${p}`).join('\n')}\n`,
+        );
+        rmSync(tmp, { recursive: true, force: true });
+        process.exit(1);
+      }
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        console.error('warning: could not parse vitest JSON report:', err.message);
+      }
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
-jobs.push(runAsync('npx vitest run --config vitest.simulation.config.ts'));
-
 try {
-  await Promise.all(jobs);
+  await runAsync('npx tsc -p tests/types/tsconfig.json');
+  await runAsync('npx tsc -p tsconfig.test.json --noEmit');
+  await runVitestStrict('npx vitest run --config vitest/default.ts');
+  await runVitestStrict('npx vitest run --config vitest/simulation.ts');
 } catch {
   process.exit(1);
 }

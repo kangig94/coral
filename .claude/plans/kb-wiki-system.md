@@ -289,7 +289,7 @@ AC14 ◄─── AC5, AC6               (extends existing promote with --wiki)
 
 **F1. Wake-up generator** (new `src/kb/ops/wake-up.ts`)
 - `generateWakeUpPacket(kb: KbRuntime, tokenBudget: number = 900): string`
-- **Precondition**: call `await kb.ensureIndex()` (not bare `readIndex()`) to guarantee fresh text artifacts before generation — prevents stale wake-up after out-of-band wiki edits
+- **Precondition**: call `await kb.ensureCorpusFreshness()` (not bare `readIndex()`) to guarantee fresh text artifacts before generation — prevents stale wake-up after out-of-band wiki edits
 - Read index, filter wiki entries, sort by `updatedAt` DESC
 - For each entry: extract first paragraph of Understanding section
 - Concatenate as `## slug (updatedAt)\nfirst-paragraph\n`

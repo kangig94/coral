@@ -12,13 +12,13 @@ import type {
   Result,
   TranscriptEntry,
   ResolveResult,
-} from './types.js';
+} from './session-types.js';
 
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
-const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = {
+const END_REASON_CONTENT: Record<EndReason, string> = {
   all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
   max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
   all_blocked:
@@ -26,7 +26,7 @@ const END_REASON_CONTENT: Record<Exclude<EndReason, 'already_ended'>, string> = 
   no_participants: 'No eligible agents remaining. Ending discussion.',
 };
 
-export function endContent(reason: Exclude<EndReason, 'already_ended'>): string {
+export function endContent(reason: EndReason): string {
   return END_REASON_CONTENT[reason];
 }
 
@@ -153,23 +153,6 @@ export function decideSessionCreate(
       }),
       makeEvent(sessionId, projectRoot, topic, seq + 1, 'bidding.opened', ts, {}),
     ],
-  };
-}
-
-export function decideBiddingOpen(
-  state: DiscussState,
-  context: DecisionContext,
-  seq: number,
-  ts: string,
-): Result<DiscussDomainEvent[]> {
-  const { sessionId, projectRoot, topic } = context;
-  if (state.status !== 'setup') {
-    return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
-  }
-
-  return {
-    ok: true,
-    value: [makeEvent(sessionId, projectRoot, topic, seq, 'bidding.opened', ts, {})],
   };
 }
 
@@ -437,9 +420,6 @@ export function decideExpel(
     return { ok: false, error: 'session_ended', detail: { hint: 'Cannot expel agents from an ended session.' } };
   }
   const isRespawn = state.epoch === 1 && state.step === 1;
-  const hint = isRespawn
-    ? `Shutdown and respawn: ${pendingAgents.join(', ')}.`
-    : `Banned: ${pendingAgents.join(', ')}. Shutdown and do not respawn.`;
 
   return {
     ok: true,
@@ -447,7 +427,6 @@ export function decideExpel(
       makeEvent(sessionId, projectRoot, topic, seq, 'participants.expelled', ts, {
         agents: [...pendingAgents],
         isRespawn,
-        hint,
       }),
     ],
   };
@@ -486,7 +465,7 @@ export function decideEpochSummary(
 
 export function decideEnd(
   state: DiscussState,
-  opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
+  opts: { force?: boolean; reason?: string; endReason?: EndReason },
   context: DecisionContext,
   seq: number,
   ts: string,

@@ -1,7 +1,7 @@
-import type { KbRuntime } from '../contracts.js';
+import type { KbRuntime } from '../contract.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import { approximateTokenCount, fingerprintEntryContent } from './shared.js';
-import type { ClaimCandidate, CurateClaimedEntry } from './types.js';
+import { approximateTokenCount, fingerprintEntryContent } from './content-normalize.js';
+import type { ClaimCandidate, CurateClaimedEntry } from './pipeline-types.js';
 
 const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
 
@@ -39,7 +39,7 @@ function excerptSourceBody(body: string): string {
 
 export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): CurateClaimedEntry {
   if (candidate.kind === 'note') {
-    const { title, body } = loadKbNote(kb.notePath(candidate.slug));
+    const { title, body } = loadKbNote(kb.storagePort, kb.notePath(candidate.slug));
 
     return {
       kind: 'note',
@@ -52,7 +52,7 @@ export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): Cura
     };
   }
 
-  const { raw, title, body } = loadKbSource(kb.sourcePath(candidate.slug));
+  const { raw, title, body } = loadKbSource(kb.storagePort, kb.sourcePath(candidate.slug));
   return {
     kind: 'source',
     entryId: candidate.entryId,

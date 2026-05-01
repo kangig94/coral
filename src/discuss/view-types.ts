@@ -1,8 +1,8 @@
-/**
- * Discuss view DTO types shared between views.ts (canonical definitions)
- * and projections.ts (builders). Extracted to break the views ↔ projections cycle.
- */
-import type { TranscriptEntry } from './types.js';
+// Discuss transcript DTO types — exists to break a `read-contract.ts ↔
+// projections.ts` cycle (read-contract builds the DTO, projections types it).
+// The split is documented because a cycle physically forces it; otherwise
+// the types would live in read-contract.ts.
+import type { TranscriptEntry } from './session-types.js';
 
 type DiscussBidTranscriptEntry = Extract<TranscriptEntry, { type: 'bids' }>;
 type DiscussNonBidTranscriptEntry = Exclude<TranscriptEntry, { type: 'bids' }>;
@@ -14,14 +14,12 @@ export type DiscussControlBidsTranscriptEntryDto = Omit<
 
 export type DiscussControlTranscriptEntryDto = DiscussControlBidsTranscriptEntryDto | DiscussNonBidTranscriptEntry;
 
-export type DiscussAuditTranscriptEntryDto = TranscriptEntry;
-
 export type DiscussControlView = {
   transcript: DiscussControlTranscriptEntryDto[];
   lastSeq: number;
 };
 
 export type DiscussAuditView = {
-  transcript: DiscussAuditTranscriptEntryDto[];
+  transcript: TranscriptEntry[];
   lastSeq: number;
 };

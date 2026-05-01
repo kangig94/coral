@@ -1,6 +1,6 @@
 # Coral - Development Instructions
 
-Claude Code plugin providing structured agents, Codex and Claude CLI integrations, and moderated multi-agent discussions. Skills and hooks invoke Coral's CLI surfaces, which coordinate through a persistent HTTP backend daemon for provider execution, workflow dispatch, discuss operations, and knowledge-base tasks.
+Claude Code plugin providing structured agents, Codex and Claude CLI integrations, and moderated multi-agent discussions. Skills and hooks invoke Coral's CLI surfaces, which coordinate through a persistent backend daemon — primarily over an authenticated IPC socket, with HTTP exposed only as a remote gateway plus the `/health`, `/admin/shutdown`, and `/events/stream` carveouts — for provider execution, workflow dispatch, discuss operations, and knowledge-base tasks.
 
 **Critical Requirements**:
 - Zod schema validation on every CLI/backend input before execution
@@ -11,6 +11,7 @@ Claude Code plugin providing structured agents, Codex and Claude CLI integration
 
 **Key Documentation**:
 - `docs/architecture.md` - System structure, data flow, module dependency graph
+- `docs/design-rationale.md` - WHY behind the structure: authority duality, causal-graph faults, naming/subdivision policy with rejected anti-patterns
 - `docs/core-modules.md` - TypeScript module details
 - `docs/agents.md` - Agent definitions and routing
 - `docs/methodology.md` - HOW methodology system, agent/skill connections

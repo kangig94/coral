@@ -6,6 +6,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, parseManifestFlavor, readStdin } from './lib/hook-utils.mjs';
 
+const BACKEND_HOOK_TIMEOUT_MS = 1000;
+
 function readManifestFlavor(pluginRoot) {
   return parseManifestFlavor(join(pluginRoot, 'bridge', 'manifest.json')) ?? 'prod';
 }
@@ -33,7 +35,7 @@ async function readLiveBackendFlavor(info) {
     const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(BACKEND_HOOK_TIMEOUT_MS),
     });
     if (!response.ok) return null;
 
@@ -53,7 +55,7 @@ async function requestBackendShutdown(info) {
     await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': info.token },
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(BACKEND_HOOK_TIMEOUT_MS),
     });
   } catch {}
 }

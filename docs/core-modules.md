@@ -1,163 +1,158 @@
 # Core Modules
 
-Key modules and their roles in the current Coral runtime.
+A high-level map of what each area of the codebase is for. This document describes stable seams — composition roots, domain owner modules, and public contracts. Implementation files evolve inside each area without requiring doc updates.
+
+Coral's product identity is a coding-assistant plugin for Claude Code and Codex. Its internal architecture is a local coding-agent coordination layer: the coordinator owns live decisions and recovery, domains own truth vocabulary, transport carries requests, and the CLI is the local operator surface.
 
 ## Composition Roots
 
 | Entry | Bundle | Role |
 | --- | --- | --- |
-| `src/execution/server.ts` | `bridge/coral-backend.cjs` | Backend daemon composition root |
-| `src/cli/bootstrap.ts` | `bridge/coral-cli.cjs` | CLI entrypoint |
-| `src/providers/claude-appserver/server.ts` | `bridge/coral-claude-appserver.cjs` | Claude appserver helper runtime |
+| Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes. |
+| CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
+| Claude appserver helper | `bridge/coral-claude-appserver.cjs` | Runtime for the Claude appserver-hosted provider lane. |
 
 ## CLI and Client
 
-| Module | Responsibility |
+The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `read-model/CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel.
+
+## Backend
+
+The coordinator is a composition root, not a domain. The root is split into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, job-backed KB source import/reindex, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through explicit owner modules/contracts.
+
+## Runtime
+
+The backend uses a **single Runtime world** pattern: one interface with a fixed set of I/O subports (time, storage, paths, process, ids, env), swapped once at composition. Every I/O-touching module routes through it. The real runtime is used in production; a deterministic counterpart powers the simulation lane.
+
+## Journal
+
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
+
+## Causality
+
+Cross-stream event references live below the domains in `causality/`. `CauseRef` is vocabulary, not storage: domains can point at originating Journal events without importing `store/`, database handles, or each other's shells.
+
+## Domains
+
+Each domain is self-contained: its own contract (events, projection, read-models), its own functional core (pure state transitions), its own imperative shell (persistence, loop control, external effects), and explicit coordinator-facing owner modules for commands, queries, recovery, and ports. Domains do not import each other; cross-domain composition happens at the backend layer only. Ownership surfaces are real contracts/modules, not `api.ts` barrels or compatibility shims.
+
+| Domain | Responsibility |
 | --- | --- |
-| `src/cli/main.ts` | Commander command tree and request dispatch |
-| `src/cli/follow.ts` | Detached launch follow mode built on `streamWait()` |
-| `src/cli/format.ts` | Text formatting for CLI output |
-| `src/client/backend-lifecycle.ts` | Backend startup, replacement, and health probing |
-| `src/client/backend-helpers.ts` | Wait streaming, backend status, shutdown helpers |
-| `src/client/http-client.ts` | Dedicated HTTP client for provider, workflow, discuss, KB, and abort routes |
-| `src/client/index.ts` | Public client barrel for external consumers |
+| Jobs | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation, cross-namespace adoption. |
+| Sessions | Session persistence and continuity — open, checkpoint, interrupt, provider failure, close, atomic storage, lookup by id or ref. |
+| Workflow | DSL parsing, semantic plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection. |
+| Discuss | Multi-agent discussion loop — pure state machine at the core, imperative shell around it for persistence, bids, speeches, follow-ups, synthesis, and snapshots. |
 
-## Backend Core (`src/execution/`)
+## Provider Adapters
 
-| Module | Responsibility |
-| --- | --- |
-| `runtime.ts` | `Runtime` interface (6 subports: `time`, `storage`, `paths`, `process`, `ids`, `env`) + `RealRuntime` production implementation. All execution I/O routes through this single world, swapped once at `createBackendServer()`. |
-| `server.ts` | Backend daemon entry point. Wraps `createBackendCore` with the runtime observer. Composition lives in `src/execution/composition/`. |
-| `backend-core.ts` | Public façade re-exporting `createBackendCore`, `listInstantiatedExecutionServices`, and public types from `composition/`. |
-| `backend-core-types.ts` | Acyclic leaf for public surface types (`BackendBootSnapshot`, `BackendCoreOptions`, `BackendCoreResult`, `CreateServerFn`, `FetchFn`). |
-| `http-handler.ts` | HTTP route parsing and request handling |
-| `service.ts` | `ExecutionService`: session create (with optional agent), resume/fork, workflow delegation, wait handling. Receives root-resolved `backendNamespace` from deps (no ambient fallback). |
-| `engine.ts` | `LaunchCoordinator({ runtime })`: child-process tracking, queues, timeouts. Worker limits (`MAX_WORKERS`, `DISCUSS_MAX_WORKERS`) are lazy getters via `RuntimeEnv`. `DurableExecutionTransport` seam for the durable wrapper protocol. |
-| `lifecycle.ts` | Startup, recovery, shutdown, drain. `LifecycleDeps` includes `runtime` field + boot seams (`createServerFn`, `listenFn`, `recoverPersistedDiscussFn`, etc.). |
-| `recovery-core.ts` | Pure `planRecovery()` → `RecoveryPlan { register: RegisterAction[], cleanup: CleanupAction[] }`. Type-safe action classification. |
-| `idle-timer.ts` | `IdleTimer({ time: RuntimeTimePort, timeoutMs })`: time-injectable idle tracking. |
-| `backend-lock.ts` | Backend singleton lock with `BackendLockRuntime` (storage + paths + time + ownership verifier). |
-| `host-manager.ts` | Provider host runtime management (runtime-backed spawn) |
-| `event-bus.ts` | Typed backend event bus |
-| `progress-store.ts` | Namespace-bound job persistence. Constructor: `(namespace, runtime, eventBus?)`. Lazy hydration via `ensureHydrated()`. Instance-scoped `enqueueSequence`. |
-| `session-manager.ts` | Persisted provider sessions on disk. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
-| `agent-resolution.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
-| `instruction.ts` | Converts resolved content into provider instructions |
-| `tool-response.ts` | Shared domain result contract used by HTTP routes |
-| `discuss-tools.ts` | Dedicated discuss action handlers for `/discuss/:action` |
-| `kb-tools.ts` | Dedicated KB action handlers for `/kb/:action` |
+Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
 
-## Backend Composition (`src/execution/composition/`)
+## Expansion
 
-| Module | Responsibility |
-| --- | --- |
-| `create-backend-core.ts` | Orchestration root. `createBackendCore` sequences `resolveBackendDefaults` → `createBackendWorld` → `finalizeWithWorld(world)` → `createRuntimeState` → `createExecutionServices` → `createDiscussRuntime` → `createBackendControl`, assembles `HttpHandlerDeps` + `LifecycleDeps`, creates the server, and late-binds `lifecycleController`. Owns the single `streamResponses` set and the `scopeCheckJobs` 2-arity curry. |
-| `backend-defaults.ts` | `resolveBackendDefaults(options, runtime)` returns a single-use `BackendDefaultsPlan`: eager defaults plus `finalizeWithWorld(bindings)` that binds `listenFn`, `cleanupStaleJobsFn`, `markJobsAsErrorFn`, and `terminateAllFn` against the world and throws on a second call. Owns `__PLUGIN_ROOT__`, ownership verifier, plugin-root resolution, and the default factory bag. |
-| `backend-world.ts` | `createBackendWorld(options, runtime, defaultsPlan)` resolves identity metadata (version, bundleHash, flavor, instanceId, token, bindHost, advertiseHost, backendPid, coralEnvSnapshot, log, resolveProjectSource, namespace, pluginRoot), runs `setBuildFlavor`/`backendLog.init`, constructs primitive singletons (`IdleTimer`, `LaunchCoordinator`, `TypedEventBus`, `ProviderRegistry`, `PluginRegistry`, `DiscussContextRegistry`, `ProgressStore`, `ProviderHostManager`), and returns the `BackendWorld` bag. Declares `__VERSION__`. |
-| `runtime-state.ts` | `createRuntimeState(startedAt)` returns `MutableBackendRuntimeState` (lifecycle, startedAt, kbSubsystem, kbInitError, launchFenceActive). |
-| `execution-services.ts` | `createExecutionServices` exposes per-`CallerContext` `getExecutionService`/`getRecoveryService`/`listExecutionServices` with a private `Map<string, ExecutionServiceLike>`. Also re-exports `listInstantiatedExecutionServices` for façade compatibility. |
-| `discuss-runtime.ts` | `createDiscussRuntime` returns `getDiscussStoreForSource`, `getDiscussContext`, `readHelpersDeps`, `discussStores` (live Map for `LifecycleDeps`), and `hooks` (`onShutdown`, `onIdleCheck`, `onRecoveryComplete`). Hooks live here because every branch pivots on discuss state. |
-| `backend-control.ts` | `createBackendControl` returns `abortJobs`, `scopeCheckJobs`, `isDrainRequested`, `requestDrain`. Uses a late-bound `getLifecycleController` getter (called at use time, not snapshotted). Bundles abort/scope job-control and the drain admission gate as one control-plane helper. |
+Expansion is the installable runtime contract that lets optional backends bind to a domain's `RuntimeBinding<Backed<T>>` cells without the domain knowing whether the binding is held. An `Expansion = (host) => void | Promise<void>` is a single-function contract; bundled and (future) third-party expansions are byte-identical to the loader. The coordinator's `ExpansionLifecycleService` orchestrates equip/unequip — equip resolves the entry from `BUNDLED_EXPANSIONS`, dynamic-imports it, invokes the function under a fresh disposable scope, and persists `{id, version, installed_at}` in `expansion_state`. Unequip disposes the scope (which atomically releases every binding the expansion held) and deletes the row.
 
-## Discuss Runtime (`src/execution/discuss/`)
+Built-in defaults are NOT registered as expansions. Orama is the constructor-time value of `kb.vector` and `kb.fts` bindings on `KbRuntime`; the KB router calls `binding.read().read(...)` and gets either the default or the bound expansion's value with one indirection. `kb.embedding` carries no constructor-time default — embedders are peer Expansions (`gemini`, `onnx`) discriminated by `BundledExpansion.metadata.slot === 'kb.embedding'`. Single-occupancy is enforced inside `RuntimeBinding.bind` itself (throws `binding-occupied` if held), not by lifecycle bookkeeping. Retrieval-consumer freshness is observed through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` after the Corpus commit; readiness is a comparison (`backed.consumer.cursor ≥ corpus version`), not a method on the `Backed<T>` contract.
 
-| Module | Responsibility |
-| --- | --- |
-| `operations.ts` | High-level discuss operations |
-| `loop.ts` | Live control loop |
-| `subflows.ts` | Bid, speech, follow-up, synthesis workers |
-| `context.ts` / `context-registry.ts` | Backend-local discuss dependency registry |
-| `session-store.ts` | Event log and snapshot persistence |
-| `registry.ts` | Live attached-session registry and watch buffers |
-| `persistence.ts` | Snapshot/index update helpers |
-| `prompts.ts` / `executor.ts` | Provider-turn prompt construction and execution |
+## Knowledge Base
 
-## Discuss Domain (`src/discuss/`)
+The KB domain owns the Corpus markdown authority, text and vector search contracts, note mutation, source persistence, background curation (community detection, entity consolidation), and the project-scoped memo scratch lifecycle. Source import conversion is coordinator-owned because it can be long-running and is represented as an internal `kb.source_import` job with explicit readiness (`commit`, `base-search`, `active-vector`, `all-equipped`). Explicit reindex is also coordinator-owned as an internal `kb.reindex` job: the KB op rebuilds text artifacts, and the coordinator service waits for base-search freshness. These jobs are Journal-observable process attempts, not provider/session jobs.
 
-| Module | Responsibility |
-| --- | --- |
-| `state-machine.ts` | Pure event deciders |
-| `reducer.ts` | Replay path from events to state |
-| `events.ts` | Event definitions |
-| `projections.ts` / `views.ts` / `watch.ts` | Read models and watch projections |
-| `persona-seed.ts` | Persona seeding |
-| `schemas.ts` / `types.ts` / `view-types.ts` | Shared discuss contracts |
+The KB mutation lock commits Corpus state and text artifacts only. It does not install retrieval projections. Orama is the base CorpusConsumer and Needle is an optional Expansion-bound CorpusConsumer; both rebuild derived retrieval state from the Corpus snapshot they apply.
 
-## Providers (`src/providers/`)
+## Work Classes
 
-| Module | Responsibility |
-| --- | --- |
-| `registry.ts` | Provider registration and lookup |
-| `bootstrap.ts` | Built-in provider bootstrap |
-| `types.ts` | Provider interfaces and runtime contracts |
-| `codex/adapter.ts` | Codex execution adapter |
-| `claude/adapter.ts` | Claude execution adapter |
-| `claude-appserver/*` | Claude provider-side server runtime |
-| `inject.ts` | Resolves and renders `INJECT.md` for provider-launched sessions |
-| `cli-detection.ts` / `result-mapping.ts` | Shared provider support code |
+Jobs are not an async wrapper for every command. They are durable work ledgers for long-running, observable, or recovery-relevant attempts.
 
-## Knowledge Base (`src/kb/`)
+| Class | Examples | Owner |
+| --- | --- | --- |
+| Direct read | KB search/read/list, `jobs`, discuss watch | Read model or KB query helpers; no durable artifact rebuild |
+| Direct mutation | KB note write/delete; memo write/delete | Corpus lock for KB notes; project data dir for memos |
+| Provider/session job | Codex/Claude launches, workflow atoms | Jobs + sessions + provider adapters |
+| Internal coordinator job | KB source import, KB reindex | Coordinator service over jobs + KB |
+| Projection freshness | Orama/Needle catch-up | ConsumerDriver cursor wait |
 
-| Module | Responsibility |
-| --- | --- |
-| `runtime.ts` | KB runtime and index lifecycle |
-| `search.ts` | Text plus vector plus graph search |
-| `memo.ts`, `promote.ts`, `update.ts`, `delete.ts`, `read.ts` | KB mutation and read operations |
-| `source-store.ts`, `source-import.ts` | Imported source lifecycle |
-| `curate.ts`, `community-detection.ts`, `entity-consolidation.ts` | Background curation and graph analysis |
-| `vector-store.ts`, `vector-sync.ts`, `embedding.ts`, `chunking.ts` | Vector runtime and embedding support |
+Direct KB reads are coordinator-free, not context-free. CLI/bootstrap adapters resolve plugin root, build flavor, project root, Corpus root, and KB runtime root before invoking KB query helpers or `read-model/CoralStore`; lower KB path helpers do not choose `cwd`, `HOME`, or `CORAL_KB_PATH` on their own.
 
-## Workflow (`src/workflow/`)
+Projection freshness is not authority. A Corpus commit remains durable even if a retrieval consumer fails to catch up; callers that requested readiness observe that failure through the hosting command or job.
 
-| Module | Responsibility |
-| --- | --- |
-| `pipe-parser.ts` | Workflow DSL parser |
-| `pipe-executor.ts` | Pipeline execution, retries, stale recovery |
-| `handler.ts` | HTTP-facing workflow entry point |
-| `schemas.ts` / `types.ts` | Workflow contracts |
+## Coordinator
 
-## Shared and Infrastructure
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, expansion lifecycle, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
 
-| Module | Responsibility |
-| --- | --- |
-| `src/shared/utils.ts` | Shared utility helpers: `readBundleHash()`, `readBuildFlavor()`, `isRecord()`, `nowIsoString()` |
-| `src/shared/env-sanitize.ts` | Pure env sanitization: ARG_MAX budget resolution, CORAL_* stripping, env shedding |
-| `src/shared/types.ts` | Shared runtime contracts: jobs, sessions, wait events, workflow metadata |
-| `src/shared/session-entry.ts` | Session contract validation and lenient reading |
-| `src/shared/fs-lock.ts` | Cross-process directory locking (runtime-aware async path + legacy sync path) |
-| `src/shared/file-tail.ts` | Incremental file tailing for progress streams (runtime-backed storage) |
-| `src/shared/child-env.ts` | `buildChildEnv()` for appserver provider (delegates to env-sanitize.ts) |
-| `src/shared/node-process.ts` | Client-side PID liveness check (EPERM-aware) |
-| `src/shared/test-deferred.ts` | Shared test utility: `createDeferred<T>()` |
-| `src/shared/sse-parser.ts` | SSE and HTTP parsing helpers for wait/follow flows |
-| `src/infra/paths.ts` | Canonical path resolution + `setBuildFlavor()`/`currentBuildFlavor()` for KB isolation |
-| `src/infra/backend-info.ts` | Backend connection info persistence (`BackendInfo` includes `flavor` field) |
+Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
+
+## Infrastructure
+
+Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground.
+
+## Ownership Matrix
+
+| Area | Owns | Does not own |
+| --- | --- | --- |
+| `store/` | SQL schema, Journal append/reducer substrate | Product read facade, domain policy |
+| `read-model/` | Composed read API | Writes, recovery, domain truth |
+| `jobs/` | Job lifecycle and terminal vocabulary | Provider process mechanics |
+| `sessions/` | Continuity and scope | Job terminal policy |
+| `workflow/` | Plan and slot semantics | Provider/session persistence |
+| `discuss/` | Discussion state and shell loop | Coordinator lifecycle |
+| `kb/` | Corpus authority and query semantics | Expansion lifecycle ownership |
+| `coordinator/` | Live state, startup order, cross-domain assembly | Domain vocabulary |
+| `transport/` | Wire parsing and response mapping | Business behavior |
+| `cli/` | User command surface and local startup glue | Backend/domain truth |
+| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports | Domain concepts |
+| `causality/` | Cross-stream event-reference vocabulary | Store/database access |
 
 ## Dependency Outline
 
 ```text
 CLI
   -> client helpers
-     -> backend HTTP routes
+     -> transport IPC/HTTP routes
+  -> read-model/CoralStore library reads (read-only no-coordinator commands)
 
-backend HTTP routes
-  -> execution service
-  -> workflow handler
-  -> discuss tools
-  -> KB tools
+transport IPC/HTTP routes
+  -> coordinator API + control ports
+  -> domain owner modules/contracts (workflow / discuss / KB)
 
-execution service
-  -> providers
-  -> progress/session/host management
+coordinator API
+  -> jobs domain owner modules/contracts
+  -> sessions domain owner modules/contracts
+  -> provider adapters
+  -> expansion lifecycle service
+  -> live launch / host management
+  -> provider host manager
 
-discuss runtime
-  -> discuss domain
+coordinator startup
+  -> Journal open
+  -> Journal consumer-driver freshness drain
+  -> domain reconcile surfaces (in sequence)
+  -> KB Corpus edit absorption
+  -> CorpusConsumer registration + freshness drain
 
-KB tools
-  -> KB runtime
+discuss shell
+  -> discuss pure core
+  -> Journal append via the domain's store-registry
 
-shared/utils.ts + shared/types.ts
+KB runtime
+  -> Corpus authority + publication state
+  -> RuntimeBinding cells: kb.vector, kb.embedding, kb.fts (each a `RuntimeBinding<Backed<T>>`)
+  -> Orama as constructor-time default for kb.vector and kb.fts (kb.embedding has no default — peer expansions bind it)
+
+infra / runtime / causality
   -> lowest common layer reused everywhere
 ```
 
-The bridge layer is gone. The stable architectural split is now CLI/client, backend execution, provider adapters, discuss runtime, KB runtime, workflow engine, and shared infrastructure.
+## Stable Seams
+
+These are the load-bearing boundaries that must not leak:
+
+- The Runtime interface is the only channel for I/O inside the backend.
+- Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
+- `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
+- Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
+- Expansion lifecycle is coordinator-owned: transport reaches it through `ExpansionLifecycleService`, and KB routing reads the active backend through `kbRuntime.<name>.read()` on each `RuntimeBinding<Backed<T>>` cell.
+- KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
+- KB source import/reindex failure facts are recorded by coordinator-owned KB job recording glue as job progress cause events; the KB domain remains Corpus authority only.
+- Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
+- Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
+- Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.

@@ -1,11 +1,9 @@
 import { CommanderError } from 'commander';
 
-import { BackendToolHttpError } from '../client/http-client.js';
-import {
-  BackendUnreachableError,
-  TransientHttpError,
-  isRecord,
-} from '../shared/utils.js';
+import { BackendToolHttpError } from '../transport/http/errors.js';
+import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
+import { isRecord } from '../infra/json.js';
+import { DiscussWatchReadError } from '../discuss/watch.js';
 
 export class UsageError extends Error {
   constructor(message: string) {
@@ -18,13 +16,11 @@ export interface CliErrorEnvelope {
   error: true;
   code: string;
   message: string;
+  remediation?: string;
   detail?: unknown;
 }
 
-function withExitCode(
-  envelope: CliErrorEnvelope,
-  exitCode: number,
-): { envelope: CliErrorEnvelope; exitCode: number } {
+function withExitCode(envelope: CliErrorEnvelope, exitCode: number): { envelope: CliErrorEnvelope; exitCode: number } {
   return { envelope, exitCode };
 }
 
@@ -49,12 +45,27 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
     const body = isRecord(error.body) ? error.body : null;
     const code = body && typeof body.code === 'string' ? body.code : 'backend_error';
     const message = body && typeof body.message === 'string' ? body.message : error.message;
+    const remediation = body && typeof body.remediation === 'string' ? body.remediation : undefined;
     const detail = body && 'detail' in body ? body.detail : undefined;
     return withExitCode(
-      detail === undefined
-        ? { error: true, code, message }
-        : { error: true, code, message, detail },
+      {
+        error: true,
+        code,
+        message,
+        ...(remediation === undefined ? {} : { remediation }),
+        ...(detail === undefined ? {} : { detail }),
+      },
       errorCodeToExit(code, error.statusCode),
+    );
+  }
+
+  if (error instanceof DiscussWatchReadError) {
+    const message = error.code.replaceAll('_', ' ');
+    return withExitCode(
+      error.detail === undefined
+        ? { error: true, code: error.code, message }
+        : { error: true, code: error.code, message, detail: error.detail },
+      errorCodeToExit(error.code),
     );
   }
 

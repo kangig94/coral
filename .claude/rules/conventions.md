@@ -67,7 +67,7 @@ PR procedure (dev → main):
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
 - Mock external dependencies (Codex CLI, filesystem) — never call real Codex in tests
-- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go in `vitest.integration.config.ts` (pool: forks, singleFork) for process-level isolation.
+- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go in `vitest/integration.ts` (pool: forks, singleFork) for process-level isolation.
 
 ## Error Handling
 

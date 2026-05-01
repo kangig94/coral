@@ -1,11 +1,5 @@
 import type { ProviderCatalog } from './catalog.js';
-import type {
-  Provider,
-  ProviderAppServerLifecycle,
-  ProviderArtifactCleanup,
-  ProviderArtifactRecovery,
-  ProviderExecutor,
-} from './types.js';
+import type { ProviderSpec } from './contract.js';
 
 const RESERVED_TOOL_NAMES = new Set([
   'wait',
@@ -33,44 +27,23 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_abort',
 ]);
 export class ProviderRegistry implements ProviderCatalog {
-  private providers = new Map<string, Provider>();
+  private providers = new Map<string, ProviderSpec>();
 
-  register(provider: Provider): void {
-    if (RESERVED_TOOL_NAMES.has(provider.name)) {
-      throw new Error(`Provider name "${provider.name}" is reserved`);
+  register(spec: ProviderSpec): void {
+    if (RESERVED_TOOL_NAMES.has(spec.name)) {
+      throw new Error(`Provider name "${spec.name}" is reserved`);
     }
-    if (this.providers.has(provider.name)) {
-      throw new Error(`New provider "${provider.name}" is already registered`);
+    if (this.providers.has(spec.name)) {
+      throw new Error(`New provider "${spec.name}" is already registered`);
     }
-    this.providers.set(provider.name, provider);
+    this.providers.set(spec.name, spec);
   }
 
-  get(name: string): Provider | undefined {
+  get(name: string): ProviderSpec | undefined {
     return this.providers.get(name);
   }
 
-  getExecutor(name: string): ProviderExecutor | undefined {
-    return this.providers.get(name);
-  }
-
-  getAppServerLifecycle(name: string): ProviderAppServerLifecycle | undefined {
-    return this.providers.get(name)?.appServerLifecycle;
-  }
-
-  getArtifactRecovery(name: string): ProviderArtifactRecovery | undefined {
-    return this.providers.get(name)?.artifactRecovery;
-  }
-
-  getArtifactCleanup(name: string): ProviderArtifactCleanup | undefined {
-    return this.providers.get(name)?.artifactCleanup;
-  }
-
-  getAll(): Provider[] {
+  getAll(): ProviderSpec[] {
     return [...this.providers.values()];
-  }
-
-  /** Reset provider registry state. Intended for test isolation. */
-  clear(): void {
-    this.providers.clear();
   }
 }

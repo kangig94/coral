@@ -1,24 +1,28 @@
 import type { Command } from 'commander';
 
-import type { BackendClient } from '../../client/http-client.js';
-import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
 import {
-  emitError,
+  discussBidSchema,
+  discussSeedSchema,
+  discussSpeechSchema,
+  discussStartSchema,
+} from '../../discuss/command-schemas.js';
+import {
   makeClient,
-  parseIntegerFlag,
   type DiscussAbortOptions,
   type DiscussParticipateOptions,
   type DiscussSeedOptions,
   type DiscussStartOptions,
   type DiscussWatchOptions,
-} from '../command-helpers.js';
+} from '../dispatch.js';
+import { emitError } from '../emit.js';
+import { parseIntegerFlag } from '../flags.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,
   formatDiscussStart,
   formatDiscussWatch,
   formatPersonaSeed,
-} from '../format.js';
+} from '../format/discuss.js';
 import { parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from '../parse.js';
 
 export function registerDiscussCommands(program: Command): void {
@@ -45,8 +49,8 @@ export function registerDiscussCommands(program: Command): void {
           ...(axes !== undefined ? { controversy_axes: axes } : {}),
         };
         discussSeedSchema.parse(args);
-        const client = makeClient(process.cwd());
-        const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
+        const client = makeClient(process.cwd(), discussSeedCommand);
+        const result = await client.discussSeed(args as Parameters<typeof client.discussSeed>[0]);
         process.stdout.write(formatPersonaSeed(result) + '\n');
       } catch (error) {
         emitError(error);
@@ -72,8 +76,8 @@ export function registerDiscussCommands(program: Command): void {
           ...(agents !== undefined ? { agents } : {}),
         };
         discussStartSchema.parse(args);
-        const client = makeClient(process.cwd());
-        const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
+        const client = makeClient(process.cwd(), discussStartCommand);
+        const result = await client.discussStart(args as Parameters<typeof client.discussStart>[0]);
         process.stdout.write(formatDiscussStart(result) + '\n');
       } catch (error) {
         emitError(error);
@@ -88,7 +92,7 @@ export function registerDiscussCommands(program: Command): void {
     .action(async (opts: DiscussWatchOptions) => {
       try {
         const cursor = opts.cursor !== undefined ? parseIntegerFlag('--cursor', opts.cursor) : undefined;
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussWatchCommand);
         const result = await client.discussWatch(opts.session, cursor);
         process.stdout.write(formatDiscussWatch(result) + '\n');
       } catch (error) {
@@ -122,10 +126,10 @@ export function registerDiscussCommands(program: Command): void {
         } else {
           discussBidSchema.parse(args);
         }
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussParticipateCommand);
         const result = isSpeech
-          ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
-          : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
+          ? await client.discussSpeech(args as Parameters<typeof client.discussSpeech>[0])
+          : await client.discussBid(args as Parameters<typeof client.discussBid>[0]);
         process.stdout.write(formatDiscussParticipate(result) + '\n');
       } catch (error) {
         emitError(error);
@@ -138,7 +142,7 @@ export function registerDiscussCommands(program: Command): void {
     .requiredOption('--session <id>', 'Session ID')
     .action(async (opts: DiscussAbortOptions) => {
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussAbortCommand);
         const result = await client.discussAbort(opts.session);
         process.stdout.write(formatDiscussAbort(result) + '\n');
       } catch (error) {

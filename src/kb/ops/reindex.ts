@@ -1,46 +1,42 @@
-import type { KbRuntime } from '../contracts.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
-import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts.js';
-import type { ReindexResult } from '../types.js';
-import { ensureVectorIndex } from '../vector/sync.js';
+import type { KbRuntime } from '../contract.js';
+import { performRescan } from '../corpus/rescan/index.js';
+import type { ReindexResult } from '../entry-types.js';
 
-export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
-  const startedAt = Date.now();
+/** Heavy-path mutation deadline for `kb reindex` — full corpus rescans on
+ * large KBs legitimately exceed the 60s default. */
+export const KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
-  const textResult = await kb.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(kb);
-    const startState = kb.readIndexState();
-    let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
+/** `signal` is the caller's AbortSignal — threaded from the KB job's
+ * coordinator-owned AbortRegistry into `withMutationLock` and into
+ * `performRescan` so `'scan'` / `'repair'` checkpoints honor it. */
+export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal }): Promise<ReindexResult> {
+  const startedAt = kb.time.now();
+  const signal = options?.signal;
 
-    try {
-      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(kb, {
-        contentSeq: startState.contentSeq,
-        metadataSeq: startState.metadataSeq,
-      });
-    } catch (error: unknown) {
-      if (error instanceof TextSnapshotRebuildError) {
-        return {
-          ...error.counts,
-          duration_ms: Date.now() - startedAt,
-          mode: 'text',
-          warning: error.message,
-        };
-      }
+  // The destructured `lockSignal` is the composed signal from the mutation
+  // lock (caller signal + internal deadline) and propagates into rescan.
+  const counts = await kb.withMutationLock(
+    async (mutation, { signal: lockSignal }) => {
+      const startState = kb.readIndexState();
+      return performRescan(
+        kb,
+        mutation,
+        {
+          contentSeq: startState.contentSeq,
+          metadataSeq: startState.metadataSeq,
+        },
+        { signal: lockSignal },
+      );
+    },
+    {
+      timeoutMs: KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS,
+      ...(signal === undefined ? {} : { signal }),
+    },
+  );
 
-      throw error;
-    }
-
-    return {
-      ...rebuildResult.counts,
-      mode: 'text',
-    };
-  });
-
-  const vectorResult = await ensureVectorIndex(kb);
   return {
-    ...textResult,
-    duration_ms: Date.now() - startedAt,
-    mode: vectorResult.mode,
-    ...(vectorResult.warning === undefined ? {} : { warning: vectorResult.warning }),
+    ...counts,
+    duration_ms: kb.time.now() - startedAt,
+    mode: 'text',
   };
 }

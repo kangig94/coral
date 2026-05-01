@@ -2,3 +2,9 @@ dist/
 bridge/
 node_modules/
 *.cjs
+
+# Test fixtures contain byte-exact expected outputs (compact JSON, raw conflict
+# markers, malformed YAML). Prettier reformatting these silently breaks
+# byte-equivalence assertions in golden-master tests and rescan repair fixtures.
+tests/unit/discuss/fixtures/
+tests/unit/kb/corpus/rescan/fixtures/

@@ -1,40 +1,61 @@
-import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
-import type { AbortReason, ProviderName } from '../../shared/coral-fault.js';
-import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
+import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../contract.js';
+import type { StoragePort } from '../../runtime/ports.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from '../protocol.js';
 
-export interface AppServerSessionDriver<TState> {
+export interface AppServerContract {
   readonly name: string;
-  readonly faultProviderName: ProviderName;
-  readonly subscriptionPhase: 'beforeInitialize' | 'afterInitialize';
-
+  readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
+    ports: { storage: Pick<StoragePort, 'existsSync'> },
   ): ProviderServerSpec;
-  createInitialState(ctx: DriverContext, request: ProviderRequest): TState;
-  initialize(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
-  startTurn(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
-  applyNotification(state: TState, message: { method: string; params?: Record<string, unknown> }): void;
-  awaitTurnOutcome(state: TState): Promise<TurnOutcome>;
-  requestInterrupt(ctx: DriverContext, state: TState): Promise<void>;
-  onTransportClosed(state: TState, outcome: Error | void): TurnOutcome;
-  finalize(state: TState, outcome: TurnOutcome): ProviderResult;
+  interrupt(lease: ProviderServerLease): Promise<void>;
+  onNotification?(message: AppServerNotificationMessage): void;
 }
 
-export interface DriverContext {
-  lease: ProviderServerLease;
-  runtime: ProviderRuntime;
-  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
-  emitProgress(message: string): void;
+const appServerLeaseBindings = new WeakMap<ProviderRuntime, ProviderServerLease>();
+const appServerNotificationBindings = new WeakMap<ProviderRuntime, (message: AppServerNotificationMessage) => void>();
+
+export function bindAppServerLease(runtime: ProviderRuntime, lease: ProviderServerLease): () => void {
+  appServerLeaseBindings.set(runtime, lease);
+  return () => {
+    if (appServerLeaseBindings.get(runtime) === lease) {
+      appServerLeaseBindings.delete(runtime);
+    }
+  };
 }
 
-export type DriverStepOutcome = { terminal?: TurnOutcome };
+export function getAppServerLease(runtime: ProviderRuntime): ProviderServerLease | undefined {
+  return appServerLeaseBindings.get(runtime);
+}
 
-export type TurnOutcome =
-  | { kind: 'completed'; turn: unknown }
-  | { kind: 'failed'; message: string }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'nonResumable'; message: string };
+export function bindAppServerNotificationHandler(
+  runtime: ProviderRuntime,
+  handler: (message: AppServerNotificationMessage) => void,
+): () => void {
+  appServerNotificationBindings.set(runtime, handler);
+  return () => {
+    if (appServerNotificationBindings.get(runtime) === handler) {
+      appServerNotificationBindings.delete(runtime);
+    }
+  };
+}
+
+export function getAppServerNotificationHandler(
+  runtime: ProviderRuntime,
+): ((message: AppServerNotificationMessage) => void) | undefined {
+  return appServerNotificationBindings.get(runtime);
+}
+
+export function requireAppServerLease(runtime: ProviderRuntime, providerName: string): ProviderServerLease {
+  const lease = getAppServerLease(runtime);
+  if (!lease) {
+    throw new Error(`${providerName} provider requires app-server session middleware to bind a ProviderServerLease.`);
+  }
+  return lease;
+}
 
 export function buildProviderFailureMessage(label: string, message?: string, status?: string): string {
   if (typeof message === 'string' && message.trim().length > 0) {

@@ -1,5 +1,5 @@
-import { nowIsoString } from '../../shared/utils.js';
-import type { KbRuntime } from '../contracts.js';
+import { nowIsoString } from '../../infra/time.js';
+import type { KbRuntime } from '../contract.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -7,15 +7,14 @@ import {
   sourceEntryId,
   type CuratableEntry,
   type KbIndex,
-} from '../types.js';
+} from '../entry-types.js';
 import {
   buildClassificationPrompt,
   buildPrincipleNames,
-  mergeAssignmentsIntoIndexGraph,
-  parseClassificationResponseResult,
   takeClassificationBatchWithIndex,
-  validateAssignments,
-} from './classification.js';
+} from './classification/prompt.js';
+import { mergeAssignmentsIntoIndexGraph, validateAssignments } from './classification/assignments.js';
+import { parseClassificationResponseResult } from './classification/parse.js';
 import { readClaimedEntry } from './claim-io.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { CurateJsonParseError, runCurateClaude } from './operations.js';
@@ -26,15 +25,12 @@ import {
   isClaimStale,
   noteCursor,
   readCurateState,
+  resolveCurateTimings,
   writeCurateState,
   type CurateCursor,
-} from './state.js';
-import type {
-  ClaimCandidate,
-  ClassificationAssignment,
-  CurateClaim,
-  SpawnCliFn,
-} from './types.js';
+} from './state/index.js';
+import type { ClaimCandidate, ClassificationAssignment, CurateClaim } from './pipeline-types.js';
+import type { SpawnCliFn } from './spawn-cli.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
@@ -112,9 +108,9 @@ function pendingExtendsBeyondCursor(pendingEntries: ClaimCandidate[], cursor: Cu
 export async function claimCurateRun(kb: KbRuntime, today: string): Promise<CurateClaim | null> {
   const lockResult = await kb.withMutationLock(() => {
     const state = readCurateState(kb);
-    const now = nowIsoString();
+    const now = nowIsoString(kb.time);
 
-    if (state.activeClaim !== null && !isClaimStale(state, now)) {
+    if (state.activeClaim !== null && !isClaimStale(state, now, resolveCurateTimings(kb.envPort).claimStaleMs)) {
       return null;
     }
 
@@ -123,7 +119,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
       return null;
     }
 
-    const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+    const repairFrontier = getCurateRepairFrontier(kb);
     const pendingEntries = filterCandidatesBeforeRepairFrontier(
       collectClaimCandidates(index).filter(
         (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
@@ -161,7 +157,10 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
         startedAt: now,
       },
       lastAttemptedThrough: through,
-      consecutiveFailures: freshPendingSuffix ? 0 : state.consecutiveFailures,
+      consecutiveClaimFailures: freshPendingSuffix ? 0 : state.consecutiveClaimFailures,
+      // Reset the lane-disabled stamp alongside the counter on a fresh suffix —
+      // moving past the wedge-causing cursor is what re-enables the lane.
+      claimLaneDisabledAt: freshPendingSuffix ? null : state.claimLaneDisabledAt,
       ...(firstPassClaim ? { lastRunDay: today } : {}),
     });
 
@@ -228,13 +227,12 @@ export async function runClassificationBatches(
 
 export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: CurateCursor): Promise<boolean> {
   return kb.withMutationLock(() => {
-    const state = readCurateState(kb);
     const index = kb.readIndex();
     if (index === null) {
       return false;
     }
 
-    const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+    const repairFrontier = getCurateRepairFrontier(kb);
     return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
       (candidate) => compareCursor(candidate.cursor, cursor) > 0,
     );

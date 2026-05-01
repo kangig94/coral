@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isRecord } from '../../shared/utils.js';
+import { isRecord } from '../../infra/json.js';
 
 export const claudeControlRequestSubtypes = {
   initialize: 'initialize',
@@ -188,13 +188,6 @@ export const sdkKeepAliveSchema = z
   })
   .passthrough();
 
-export const sdkUpdateEnvironmentVariablesSchema = z
-  .object({
-    type: z.literal('update_environment_variables'),
-    variables: z.record(z.string(), z.string()),
-  })
-  .passthrough();
-
 const assistantContentTextBlockSchema = z
   .object({
     type: z.literal('text'),
@@ -223,33 +216,12 @@ const assistantContentBlockSchema = z.union([
   assistantContentUnknownBlockSchema,
 ]);
 
-const sdkUserPayloadSchema = z
-  .object({
-    role: z.literal('user'),
-    content: z.unknown(),
-  })
-  .passthrough();
-
 const sdkAssistantPayloadSchema = z
   .object({
     role: z.literal('assistant').optional(),
     content: z.array(assistantContentBlockSchema),
     model: z.string().optional(),
     usage: z.unknown().optional(),
-  })
-  .passthrough();
-
-export const sdkUserMessageSchema = z
-  .object({
-    type: z.literal('user'),
-    message: sdkUserPayloadSchema,
-    parent_tool_use_id: z.string().nullable(),
-    isSynthetic: z.boolean().optional(),
-    tool_use_result: z.unknown().optional(),
-    priority: z.enum(['now', 'next', 'later']).optional(),
-    timestamp: z.string().optional(),
-    uuid: z.string().optional(),
-    session_id: z.string().optional(),
   })
   .passthrough();
 
@@ -452,14 +424,6 @@ const sdkStdoutControlRequestSchema = z
   })
   .passthrough();
 
-export const claudeStdinMessageSchema = z.union([
-  sdkUserMessageSchema,
-  sdkControlRequestSchema,
-  sdkControlResponseSchema,
-  sdkKeepAliveSchema,
-  sdkUpdateEnvironmentVariablesSchema,
-]);
-
 export const claudeStdoutMessageSchema = z.union([
   sdkAssistantMessageSchema,
   sdkResultMessageSchema,
@@ -469,23 +433,17 @@ export const claudeStdoutMessageSchema = z.union([
   sdkKeepAliveSchema,
 ]);
 
-export type SDKUserMessage = z.infer<typeof sdkUserMessageSchema>;
 export type SDKControlInitializeRequest = z.infer<typeof sdkControlInitializeRequestSchema>;
 export type SDKControlInterruptRequest = z.infer<typeof sdkControlInterruptRequestSchema>;
-export type SDKControlPermissionRequest = z.infer<typeof sdkControlPermissionRequestSchema>;
 export type SDKControlSetModelRequest = z.infer<typeof sdkControlSetModelRequestSchema>;
 export type SDKControlSetMaxThinkingTokensRequest = z.infer<typeof sdkControlSetMaxThinkingTokensRequestSchema>;
 export type SDKControlRequest = z.infer<typeof sdkControlRequestSchema>;
-export type SDKControlSuccessResponse = z.infer<typeof sdkControlSuccessResponseSchema>;
-export type SDKControlErrorResponse = z.infer<typeof sdkControlErrorResponseSchema>;
 export type SDKControlResponse = z.infer<typeof sdkControlResponseSchema>;
 export type SDKKeepAlive = z.infer<typeof sdkKeepAliveSchema>;
-export type SDKUpdateEnvironmentVariables = z.infer<typeof sdkUpdateEnvironmentVariablesSchema>;
 export type SDKAssistantMessage = z.infer<typeof sdkAssistantMessageSchema>;
 export type SDKResultMessage = z.infer<typeof sdkResultMessageSchema>;
 export type SDKSystemMessage = z.infer<typeof sdkSystemMessageSchema>;
 export type SDKPermissionRequestMessage = z.infer<typeof sdkStdoutControlRequestSchema>;
-export type ClaudeStdinMessage = z.infer<typeof claudeStdinMessageSchema>;
 export type ClaudeStdoutMessage = z.infer<typeof claudeStdoutMessageSchema>;
 
 const jsLineTerminators = /\u2028|\u2029/g;

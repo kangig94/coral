@@ -1,565 +1,330 @@
-import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { load, save, type RawData } from '@orama/orama';
-import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
-import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate/state.js';
+import type BetterSqlite3 from 'better-sqlite3';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { createRuntimeBinding } from '../runtime/binding.js';
+import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
+import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type {
-  KbCachedOramaIndex,
+  Backed,
+  EmbeddingService,
+  EnsureCorpusFreshnessOptions,
+  FtsRetrieval,
+  KbInboundSyncOptions,
+  KbCorpusPublishCallbacks,
+  KbCorpusPublication,
+  KbCorpusSnapshot,
   KbIndexMutationLane,
   KbIndexState,
+  KbMutationEffects,
+  KbProjectionArtifactPort,
   KbRuntime,
-  KbVectorLease,
-  KbVectorSpecState,
-  KbVectorTextSnapshot,
-} from './contracts.js';
-import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
-import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
-import { createOramaDb } from './orama-factory.js';
-import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
+} from './contract.js';
+import type { VectorRetrieval } from './search/contract.js';
 import {
-  communityPathFromName,
-  communitiesDir as pathsCommunitiesDir,
-  notePathFromName,
-  notesDir as pathsNotesDir,
-  principlePathFromName,
-  principlesDir as pathsPrinciplesDir,
-  sourceImportStageDir as pathsSourceImportStageDir,
-  sourcePathFromName,
-  sourcesDir as pathsSourcesDir,
-} from './paths.js';
-import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
+  createKbMutationLock,
+  DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
+  type KbMutationLockContext,
+  type KbMutationLockDiagnostics,
+  type KbMutationLockOptions,
+} from './corpus/mutation-lock.js';
+import { captureEntityGraphManifestDelta, createManifestAuthority } from './corpus/manifest-authority.js';
+import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
+import { cloneKbIndex } from './corpus/index-records.js';
+import { detectRescanInfo } from './corpus/rescan/drift.js';
+import { performRescan } from './corpus/rescan/index.js';
+import { createCorpusStorage, type CorpusStorage, type CorpusMarkdownKind } from './corpus/rescan/storage.js';
+import { type EntityGraph, type KbIndex } from './entry-types.js';
+import { createCorpusStateMirror } from './state/corpus-state.js';
 import {
-  communityEntryId,
-  ENTITY_TYPES,
-  RELATIONSHIP_TYPES,
-  type CommunityEntry,
-  type EntityGraph,
-  type EntityMeta,
-  type EntityRelationship,
-  type EntityType,
-  isNoteEntry,
-  isSourceEntry,
-  noteEntryId,
-  parseKbEntryId,
-  sourceEntryId,
-  type KbIndex,
-  type NoteEntry,
-  type RelationshipType,
-  type SourceEntry,
-} from './types.js';
+  applyMutationLane,
+  captureIndexStateSnapshot,
+  commitMutationState,
+  indexStateMatchesSnapshot,
+  mergeMutationLane,
+  mutationLanesFromDiff,
+  previewPendingMutationState,
+  withoutTextStaleReason,
+  type KbIndexStateSnapshot,
+} from './corpus/lanes.js';
+import { emptyIndex, isFreshTextSnapshot, KbIndexStore, writeJsonAtomic } from './corpus/index-store.js';
+import { writeFileAtomic } from './corpus/file-atomic.js';
+import { readEntityGraphFile, writeEntityGraphFile } from './corpus/entity-graph-store.js';
+import { CorpusPublicationQueue, mergePublication } from './corpus/publication.js';
 import {
-  assertCommunitySlug,
-  assertNonEmptyText,
-  assertNoteSlug,
-  assertSourceSlug,
-  parseNonNegativeInteger,
-  parseOptionalTrimmedString,
-  parsePositiveInteger,
-} from './validation.js';
-import { resolveEmbeddingProviderConfig } from './vector/embedding.js';
+  buildInboundSyncIndexDelta,
+  captureCorpusFilesystemSnapshot,
+  detectInboundSyncMutation,
+  detectInboundSyncMutationFromFullCollectors,
+  detectInboundSyncMutationFromStructuredDiff,
+  isGitSyncResult,
+  type InboundSyncMutationDiff,
+} from './corpus/inbound-sync.js';
+import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
 import {
-  type ActiveVectorHandleInfo,
-  type OpenedVectorStore,
-  VectorHandleLifecycle,
-} from './vector/handle-lifecycle.js';
-import { loadKbNote, loadKbSource } from './read.js';
-import { readActiveSnapshotId } from './vector/store.js';
-import type { VectorStore } from './vector/contracts.js';
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
+  buildCorpusScanView,
+  createCorpusEntityGraphScan,
+  createCorpusMarkdownFileScan,
+  createCorpusScanView,
+  ENTITY_GRAPH_SCAN_ENTRY_ID,
+} from './corpus/rescan/scan.js';
+import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from './state/corpus-snapshot-builder.js';
+import { createKbProjectionInput } from './projection-input.js';
+import { EngineArtifactRegistry } from './corpus/artifact-registry.js';
+import {
+  collectCorpusAuthorityBaseline,
+  createCorpusAuthorityBaselineStore,
+} from './corpus/rescan/authority-baseline.js';
+import type {
+  CorpusAuthorityBaselineMap,
+  CorpusAuthorityBaselineRecord,
+  CorpusAuthorityBaselineStore,
+} from './corpus/authority-baseline-contract.js';
 
-const INDEX_STATE_FILE = 'index-state.json';
-const INDEX_FILE = 'index.json';
-const ORAMA_INDEX_FILE = 'orama-index.json';
-export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
-const ENTITY_TYPE_SET = new Set<string>(ENTITY_TYPES);
-const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
+type MutationLockContext = KbMutationLockContext<
+  KbIndex,
+  KbCorpusPublication,
+  KbIndexMutationLane,
+  ManifestAuthorityDelta
+>;
 
-type PersistedKbIndexState = Omit<KbIndexState, 'mutationSeq' | 'textIndexedSeq'>;
-type KbIndexStateSnapshot = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
-
-function maxIndexSeq(state: KbIndexStateSnapshot): number {
-  return Math.max(state.contentSeq, state.metadataSeq);
-}
-
-function withLegacyIndexStateAliases(state: PersistedKbIndexState): KbIndexState {
-  const mutationSeq = maxIndexSeq(state);
-  return {
-    ...state,
-    mutationSeq,
-    textIndexedSeq: mutationSeq,
-  };
-}
-
-function stripLegacyIndexStateAliases(state: KbIndexState): PersistedKbIndexState {
-  const { mutationSeq: _mutationSeq, textIndexedSeq: _textIndexedSeq, ...persisted } = state;
-  return persisted;
-}
-
-function withoutTextStaleReason(state: PersistedKbIndexState): PersistedKbIndexState {
-  const { textStaleReason: _textStaleReason, ...nextState } = state;
-  return nextState;
-}
-
-function captureIndexStateSnapshot(state: KbIndexState | PersistedKbIndexState | null): KbIndexStateSnapshot {
-  return {
-    contentSeq: state?.contentSeq ?? 0,
-    metadataSeq: state?.metadataSeq ?? 0,
-  };
-}
-
-function indexStateMatchesSnapshot(state: KbIndexStateSnapshot, snapshot: KbIndexStateSnapshot): boolean {
-  return state.contentSeq === snapshot.contentSeq && state.metadataSeq === snapshot.metadataSeq;
-}
-
-function applyMutationLane(state: PersistedKbIndexState, lane: KbIndexMutationLane | null): PersistedKbIndexState {
-  if (lane === null) {
-    return state;
-  }
-
-  const nextSeq = maxIndexSeq(state) + 1;
-  return {
-    ...state,
-    contentSeq: lane === 'content' || lane === 'both' ? nextSeq : state.contentSeq,
-    metadataSeq: lane === 'metadata' || lane === 'both' ? nextSeq : state.metadataSeq,
-  };
-}
-
-function isLegacyRawIndexState(value: unknown): value is Record<string, unknown> {
-  return isRecord(value) && !('contentSeq' in value) && 'mutationSeq' in value;
-}
-
-function defaultIndexState(): KbIndexState {
-  return {
-    contentSeq: 0,
-    metadataSeq: 0,
-    vector: {
-      bySpec: {},
-    },
-    mutationSeq: 0,
-    textIndexedSeq: 0,
-  };
-}
-
-function emptyIndex(): KbIndex {
-  return {
-    entries: {},
-    principles: {},
-    entityMeta: {},
-    relationships: [],
-  };
-}
-
-
-function parseStringArray(value: unknown): string[] {
-  if (!isStringArray(value)) {
-    throw new Error('Invalid KB index');
-  }
-
-  return [...value];
-}
-
-function parseNonEmptyStringArray(
-  value: unknown,
-  field: string,
-  errorMessageText = 'Invalid KB entity graph',
-): string[] {
-  if (!isStringArray(value)) {
-    throw new Error(errorMessageText);
-  }
-
-  return value.map((entry, index) => assertNonEmptyText(entry, `${field}[${index}]`));
-}
-
-function parseEntityType(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityType {
-  if (typeof value !== 'string' || !ENTITY_TYPE_SET.has(value)) {
-    throw new Error(errorMessageText);
-  }
-
-  return value as EntityType;
-}
-
-function parseRelationshipType(value: unknown, errorMessageText = 'Invalid KB entity graph'): RelationshipType {
-  if (typeof value !== 'string' || !RELATIONSHIP_TYPE_SET.has(value)) {
-    throw new Error(errorMessageText);
-  }
-
-  return value as RelationshipType;
-}
-
-function parseEntityMetaMap(value: unknown, errorMessageText = 'Invalid KB entity graph'): Record<string, EntityMeta> {
-  if (!isRecord(value)) {
-    throw new Error(errorMessageText);
-  }
-
-  return Object.fromEntries(
-    Object.entries(value).map(([entityName, rawMeta]) => {
-      if (!isRecord(rawMeta)) {
-        throw new Error(errorMessageText);
-      }
-
-      const aliases = rawMeta.aliases;
-      return [
-        assertNonEmptyText(entityName, 'entityMeta key'),
-        {
-          type: parseEntityType(rawMeta.type, errorMessageText),
-          description: assertNonEmptyText(rawMeta.description, 'entity description'),
-          ...(aliases === undefined
-            ? {}
-            : { aliases: parseNonEmptyStringArray(aliases, `entityMeta.${entityName}.aliases`, errorMessageText) }),
-        },
-      ];
-    }),
-  );
-}
-
-function parseEntityRelationships(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityRelationship[] {
-  if (!Array.isArray(value)) {
-    throw new Error(errorMessageText);
-  }
-
-  return value.map((rawRelationship, index) => {
-    if (!isRecord(rawRelationship)) {
-      throw new Error(errorMessageText);
+type AuthorityBaselineRefreshTarget =
+  | {
+      readonly kind: CorpusMarkdownKind;
+      readonly slug: string;
+      readonly entryId: string;
+      readonly key: string;
     }
-
-    return {
-      source: assertNonEmptyText(rawRelationship.source, `relationships[${index}].source`),
-      target: assertNonEmptyText(rawRelationship.target, `relationships[${index}].target`),
-      type: parseRelationshipType(rawRelationship.type, errorMessageText),
-      description: assertNonEmptyText(rawRelationship.description, `relationships[${index}].description`),
-      evidence: parseNonEmptyStringArray(
-        rawRelationship.evidence,
-        `relationships[${index}].evidence`,
-        errorMessageText,
-      ),
+  | {
+      readonly kind: 'entity-graph';
+      readonly entryId: typeof ENTITY_GRAPH_SCAN_ENTRY_ID;
+      readonly key: typeof ENTITY_GRAPH_SCAN_ENTRY_ID;
     };
-  });
-}
 
-function parseEntityGraph(value: unknown): EntityGraph {
-  if (!isRecord(value) || !('entityMeta' in value) || !('relationships' in value)) {
-    throw new Error('Invalid KB entity graph');
-  }
-
-  return {
-    entityMeta: parseEntityMetaMap(value.entityMeta),
-    relationships: parseEntityRelationships(value.relationships),
-  };
-}
-
-function parseEntryIdArray(value: unknown): string[] {
-  const values = parseStringArray(value);
-  return values.map((entryId) => {
-    const normalized = parseKbEntryId(entryId);
-    if (normalized === null) {
-      throw new Error('Invalid KB index');
-    }
-    return normalized;
-  });
-}
-
-function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
-  if ('mutationSeqAtPromote' in value) {
-    throw new Error('Invalid KB index');
-  }
-
-  const slug = assertNoteSlug(value.slug, 'KB index entry slug');
-  if (entryId !== noteEntryId(slug)) {
-    throw new Error('Invalid KB index');
-  }
-
-  return {
-    kind: 'note',
-    slug,
-    title: assertNonEmptyText(value.title, 'KB index entry title'),
-    tags: parseStringArray(value.tags),
-    principles: parseStringArray(value.principles),
-    source: parseStringArray(value.source),
-    createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
-    updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
-    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
-  };
-}
-
-function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>): SourceEntry {
-  if ('mutationSeqAtPromote' in value) {
-    throw new Error('Invalid KB index');
-  }
-
-  const slug = assertSourceSlug(value.slug, 'KB index entry slug');
-  if (entryId !== sourceEntryId(slug)) {
-    throw new Error('Invalid KB index');
-  }
-  const url = value.url;
-  if (url !== undefined && typeof url !== 'string') {
-    throw new Error('Invalid KB index');
-  }
-
-  return {
-    kind: 'source',
-    slug,
-    title: assertNonEmptyText(value.title, 'KB index entry title'),
-    type: assertNonEmptyText(value.type, 'KB index entry type'),
-    tags: parseStringArray(value.tags),
-    ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
-    importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
-    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
-    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
-  };
-}
-
-function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown>): CommunityEntry {
-  const slug = assertCommunitySlug(value.slug, 'KB index entry slug');
-  if (entryId !== communityEntryId(slug)) {
-    throw new Error('Invalid KB index');
-  }
-
-  const parent = normalizeCommunityParent(value.parent);
-  const children = normalizeCommunityChildren(value.children);
-  const summary = parseOptionalTrimmedString(value.summary, 'summary');
-
-  return {
-    kind: 'community',
-    slug,
-    title: assertNonEmptyText(value.title, 'KB index entry title'),
-    level: parseNonNegativeInteger(value.level ?? 0, 'level'),
-    members: parseStringArray(value.members),
-    ...(parent === undefined ? {} : { parent }),
-    ...(children === undefined ? {} : { children }),
-    ...(summary === undefined ? {} : { summary }),
-    createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
-    updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-  };
-}
-
-function parseIndex(value: unknown): KbIndex {
-  if (!isRecord(value) || !isRecord(value.entries) || !isRecord(value.principles)) {
-    throw new Error('Invalid KB index');
-  }
-
-  const entries: KbIndex['entries'] = {};
-  for (const [entryId, rawEntry] of Object.entries(value.entries)) {
-    if (!isRecord(rawEntry)) {
-      throw new Error('Invalid KB index');
-    }
-
-    if (rawEntry.kind === 'note') {
-      entries[entryId] = parseNoteIndexEntry(entryId, rawEntry);
-      continue;
-    }
-
-    if (rawEntry.kind === 'source') {
-      entries[entryId] = parseSourceIndexEntry(entryId, rawEntry);
-      continue;
-    }
-
-    if (rawEntry.kind === 'community') {
-      entries[entryId] = parseCommunityIndexEntry(entryId, rawEntry);
-      continue;
-    }
-
-    throw new Error('Invalid KB index');
-  }
-
-  const principles: KbIndex['principles'] = {};
-  for (const [name, statement] of Object.entries(value.principles)) {
-    if (typeof statement !== 'string') {
-      throw new Error('Invalid KB index');
-    }
-    principles[name] = statement;
-  }
-
-  const entityMeta =
-    value.entityMeta === undefined ? undefined : parseEntityMetaMap(value.entityMeta, 'Invalid KB index');
-  const relationships =
-    value.relationships === undefined ? undefined : parseEntityRelationships(value.relationships, 'Invalid KB index');
-
-  return {
-    entries,
-    principles,
-    ...(entityMeta === undefined ? {} : { entityMeta }),
-    ...(relationships === undefined ? {} : { relationships }),
-  };
-}
-
-function parseIndexState(value: unknown): KbIndexState {
-  if (!isRecord(value)) {
-    throw new Error('Invalid KB index state');
-  }
-
-  const hasSemanticLanes = value.contentSeq !== undefined || value.metadataSeq !== undefined;
-  const contentSeq = hasSemanticLanes ? value.contentSeq : value.mutationSeq;
-  const metadataSeq = hasSemanticLanes ? value.metadataSeq : value.mutationSeq;
-  const legacyTextIndexedSeq = value.textIndexedSeq ?? value.indexedSeq;
-  const textStaleReason = value.textStaleReason ?? value.staleReason;
-  if (typeof contentSeq !== 'number' || !Number.isInteger(contentSeq) || contentSeq < 0) {
-    throw new Error('Invalid KB index state');
-  }
-  if (typeof metadataSeq !== 'number' || !Number.isInteger(metadataSeq) || metadataSeq < 0) {
-    throw new Error('Invalid KB index state');
-  }
-  if (textStaleReason !== undefined && typeof textStaleReason !== 'string') {
-    throw new Error('Invalid KB index state');
-  }
-
-  const migratedLegacyState =
-    !hasSemanticLanes && legacyTextIndexedSeq !== undefined && legacyTextIndexedSeq !== contentSeq
-      ? 'KB text snapshot requires lane-state migration rebuild.'
-      : undefined;
-
-  const bySpec: Record<string, KbVectorSpecState> = {};
-  const vectorValue = value.vector;
-  if (vectorValue !== undefined) {
-    const rawBySpec = isRecord(vectorValue) && isRecord(vectorValue.bySpec) ? vectorValue.bySpec : null;
-    if (rawBySpec !== null) {
-      for (const [specId, rawSpecState] of Object.entries(rawBySpec)) {
-        if (!isRecord(rawSpecState)) {
-          continue;
-        }
-
-        const indexedSeq = rawSpecState.indexedSeq;
-        const staleReason = rawSpecState.staleReason;
-        const activeSnapshotId = rawSpecState.activeSnapshotId;
-        if (typeof indexedSeq !== 'number' || !Number.isInteger(indexedSeq) || indexedSeq < 0) {
-          continue;
-        }
-        if (staleReason !== undefined && typeof staleReason !== 'string') {
-          continue;
-        }
-        if (activeSnapshotId !== undefined && typeof activeSnapshotId !== 'string') {
-          continue;
-        }
-
-        bySpec[specId] = {
-          indexedSeq,
-          ...(typeof staleReason === 'string' ? { staleReason } : {}),
-          ...(typeof activeSnapshotId === 'string' ? { activeSnapshotId } : {}),
-        };
-      }
-    }
-  }
-
-  return withLegacyIndexStateAliases({
-    contentSeq,
-    metadataSeq,
-    ...(typeof textStaleReason === 'string'
-      ? { textStaleReason }
-      : migratedLegacyState === undefined
-        ? {}
-        : { textStaleReason: migratedLegacyState }),
-    vector: {
-      bySpec,
-    },
-  });
-}
-
-function writeJsonAtomic(filePath: string, value: unknown): void {
-  writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
-  return state !== null && state.textStaleReason === undefined;
+export interface CreateKbRuntimeOptions {
+  markdownRoot: string;
+  runtimeDir: string;
+  db: BetterSqlite3.Database;
+  corpusPublishCallbacks?: KbCorpusPublishCallbacks;
+  /**
+   * Time port. `now()` drives the existing time fields; `setTimeout` /
+   * `clearTimeout` back the mutation-lock deadline (§16 #50: ports only, no
+   * ambient timers).
+   */
+  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  ids: Pick<IdPort, 'uuid'>;
+  envPort: EnvPort;
+  storage: StoragePort;
+  spawnCli: SpawnCliFn;
+  processPort: ProcessPort;
+  /** Defaults to {@link DEFAULT_MUTATION_LOCK_TIMEOUT_MS}; override for slow paths. */
+  mutationLockTimeoutMs?: number;
+  engineArtifactRegistry?: EngineArtifactRegistry;
 }
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
-  vectorStore: VectorStore | null = null;
+  readonly db: BetterSqlite3.Database;
+  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  readonly ids: Pick<IdPort, 'uuid'>;
+  readonly storagePort: StoragePort;
+  readonly corpusStorage: CorpusStorage;
+  readonly spawnCli: SpawnCliFn;
+  readonly processPort: ProcessPort;
+  readonly envPort: EnvPort;
+  readonly vector: KbRuntime['vector'];
+  readonly embedding: KbRuntime['embedding'];
+  readonly fts: KbRuntime['fts'];
+  readonly engineArtifactRegistry: EngineArtifactRegistry;
+  readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
+  readonly projectionArtifacts: KbProjectionArtifactPort;
+  readonly corpusProjectionReader: KbRuntime['corpusProjectionReader'];
+  private readonly paths: KbRuntimePaths;
+  private readonly manifestAuthority = createManifestAuthority();
+  private readonly indexStore: KbIndexStore;
 
-  private indexCache: { index: KbIndex | null } | null = null;
-  private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
-  private readonly vectorLifecycle: VectorHandleLifecycle;
-  private upgradeGuardDone = false;
-  private pendingRepairCache: { mtime: number; result: boolean } | null = null;
+  private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
+  private readonly publicationQueue: CorpusPublicationQueue;
+  private activeMutationContext: MutationLockContext | null = null;
+  /**
+   * Single shared rebuild promise. `wait: true` callers await it; `wait: false`
+   * callers fire-and-forget. Cleared in `.finally()` so the next staleness
+   * detection can dispatch a fresh rebuild.
+   */
+  private rebuildInFlight: Promise<void> | null = null;
+  private readonly mutationEffects: KbMutationEffects = {
+    queueManifestAuthorityDelta: (deltas) => {
+      this.queueManifestAuthorityDelta(deltas);
+    },
+    writeEntityGraph: (graph) => {
+      this.writeEntityGraphLocked(graph);
+    },
+  };
+  private readonly mutationLockController: ReturnType<
+    typeof createKbMutationLock<KbIndex, KbCorpusPublication, KbIndexMutationLane, ManifestAuthorityDelta>
+  >;
 
-  constructor({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }) {
+  constructor({
+    markdownRoot,
+    runtimeDir,
+    db,
+    corpusPublishCallbacks,
+    time,
+    ids,
+    envPort,
+    storage,
+    spawnCli,
+    processPort,
+    mutationLockTimeoutMs,
+    engineArtifactRegistry,
+  }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
-    this.vectorLifecycle = new VectorHandleLifecycle({
+    this.db = db;
+    this.time = time;
+    this.ids = ids;
+    this.storagePort = storage;
+    this.corpusStorage = createCorpusStorage(storage);
+    this.spawnCli = spawnCli;
+    this.processPort = processPort;
+    this.envPort = envPort;
+    this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
+    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
+    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+    this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
+    this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
+    this.projectionArtifacts = {
       runtimeDir: this.runtimeDir,
-      getVectorStatus: (specId) => this.getVectorStatus(specId),
-      syncVectorStore: (store) => {
-        this.vectorStore = store;
+      files: {
+        existsSync: (path) => this.storagePort.existsSync(path),
+        readFileSync: (path, encoding) => this.storagePort.readFileSync(path, encoding),
+        rmSync: (path, options) => this.storagePort.rmSync(path, options),
+        mkdirSync: (path, options) => {
+          this.storagePort.mkdirSync(path, options);
+        },
+        renameSync: (oldPath, newPath) => this.storagePort.renameSync(oldPath, newPath),
+        writeTextAtomic: (path, content) => {
+          writeFileAtomic(this, path, content);
+        },
+        writeJsonAtomic: (path, value) => {
+          writeJsonAtomic(this, path, value);
+        },
+      },
+    };
+    this.corpusProjectionReader = {
+      resolveCurrentIndex: () => this.readIndexOrEmpty(),
+      prepareCurrentProjectionInput: async ({ signal, ...options } = {}) => {
+        await this.ensureCorpusFreshness({ wait: true, signal });
+        return createKbProjectionInput(this, options);
+      },
+    };
+    this.corpusStateMirror = createCorpusStateMirror(this.db);
+    this.indexStore = new KbIndexStore({
+      runtimeDir: this.runtimeDir,
+      storage,
+      ids,
+      onStateChange: (previous, next) => {
+        this.capturePublicationFromStateChange(previous, next);
       },
     });
+    this.publicationQueue = new CorpusPublicationQueue({
+      readCorpusStateSnapshot: () => this.getCorpusStateSnapshot(),
+      invalidateCorpusStateSnapshot: () => {
+        this.invalidateCorpusStateSnapshot();
+      },
+    });
+    this.mutationLockController = createKbMutationLock<
+      KbIndex,
+      KbCorpusPublication,
+      KbIndexMutationLane,
+      ManifestAuthorityDelta
+    >(
+      {
+        cloneStartIndex: () => cloneKbIndex(this.readIndex()),
+        getCurrentLock: () => this.mutationLock,
+        setCurrentLock: (lock) => {
+          this.mutationLock = lock;
+        },
+        setActiveContext: (context) => {
+          this.activeMutationContext = context;
+        },
+        finalizePendingMutation: (context) => {
+          this.finalizePendingMutation(context);
+        },
+        enqueuePublication: (publication) => {
+          this.publicationQueue.enqueue(publication);
+        },
+        hasQueuedPublications: () => this.publicationQueue.hasQueuedPublications(),
+        processPublishQueue: () => this.publicationQueue.process(),
+      },
+      {
+        defaultTimeoutMs: mutationLockTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
+        time: this.time,
+      },
+    );
 
-    mkdirSync(this.runtimeDir, { recursive: true });
-    runEntrySeqUpgradeGuard(this);
-    this.upgradeGuardDone = true;
+    storage.mkdirSync(this.runtimeDir, { recursive: true });
+    if (corpusPublishCallbacks !== undefined) {
+      this.register(corpusPublishCallbacks);
+    }
+
+    this.manifestAuthority.seedFromFullCollectors(this);
   }
 
   notesDir(): string {
-    return pathsNotesDir(this.markdownRoot);
+    return this.paths.notesDir();
   }
 
   sourcesDir(): string {
-    return pathsSourcesDir(this.markdownRoot);
+    return this.paths.sourcesDir();
   }
 
   communitiesDir(): string {
-    return pathsCommunitiesDir(this.markdownRoot);
+    return this.paths.communitiesDir();
   }
 
   principlesDir(): string {
-    return pathsPrinciplesDir(this.markdownRoot);
+    return this.paths.principlesDir();
   }
 
   entityGraphPath(): string {
-    return join(this.markdownRoot, '.entity-graph.json');
+    return this.paths.entityGraphPath();
   }
 
   notePath(note: string): string {
-    return notePathFromName(note, this.markdownRoot);
+    return this.paths.notePath(note);
   }
 
   sourcePath(source: string): string {
-    return sourcePathFromName(source, this.markdownRoot);
+    return this.paths.sourcePath(source);
   }
 
   communityPath(community: string): string {
-    return communityPathFromName(community, this.markdownRoot);
+    return this.paths.communityPath(community);
   }
 
   principlePath(principle: string): string {
-    return principlePathFromName(principle, this.markdownRoot);
+    return this.paths.principlePath(principle);
   }
 
   sourceImportStageDir(): string {
-    return pathsSourceImportStageDir(this.runtimeDir);
-  }
-
-  curateStatePath(): string {
-    return join(this.runtimeDir, CURATE_STATE_FILE);
+    return this.paths.sourceImportStageDir();
   }
 
   readEntityGraph(): EntityGraph | null {
-    const graphPath = this.entityGraphPath();
-
-    try {
-      const raw = readFileSync(graphPath, 'utf-8');
-      if (raw.includes('<<<<<<<')) {
-        throw new Error('Merge conflict markers detected.');
-      }
-
-      return parseEntityGraph(JSON.parse(raw) as unknown);
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) {
-        return null;
-      }
-
-      backendLog.warn(
-        `KB entity graph is unavailable; graph and community-derived features are disabled: ${errorMessage(error)}`,
-      );
-      return null;
-    }
+    return readEntityGraphFile(this.storagePort, this.entityGraphPath());
   }
 
-  writeEntityGraph(graph: EntityGraph): void {
-    const normalized = parseEntityGraph(graph);
-    writeJsonAtomic(this.entityGraphPath(), normalized);
+  async writeEntityGraph(graph: EntityGraph): Promise<void> {
+    await this.withMutationLock((mutation) => {
+      mutation.writeEntityGraph(graph);
+    });
+  }
+
+  private writeEntityGraphLocked(graph: EntityGraph): void {
+    const { normalized, raw } = writeEntityGraphFile(this, this.entityGraphPath(), graph);
+    this.queueManifestAuthorityDelta(captureEntityGraphManifestDelta(raw));
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 
     const currentIndex = this.readIndex();
@@ -571,168 +336,75 @@ class KbRuntimeImpl implements KbRuntime {
     }
   }
 
-  async initVectorStore(pluginRoot: string): Promise<void> {
-    this.vectorLifecycle.setPluginRoot(pluginRoot);
-    rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
-    await this.closeVectorStores();
-    mkdirSync(this.runtimeDir, { recursive: true });
-    if (!this.upgradeGuardDone) {
-      runEntrySeqUpgradeGuard(this);
-      this.upgradeGuardDone = true;
-    }
-
-    if (this.textArtifactsNeedRebuild()) {
-      return;
-    }
-
-    try {
-      this.installOramaCache(await this.loadOramaSnapshot());
-    } catch {
-      this.cachedOramaIndex = null;
-    }
-
-    let desiredSpecId: string | null;
-    try {
-      desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
-    } catch {
-      return;
-    }
-
-    if (desiredSpecId === null) {
-      return;
-    }
-
-    const snapshotId = readActiveSnapshotId(this.runtimeDir, desiredSpecId);
-    if (snapshotId === null) {
-      return;
-    }
-
-    try {
-      await this.activateVectorSnapshot(desiredSpecId, snapshotId);
-    } catch {
-      await this.closeVectorStores();
-    }
-  }
-
-  async openVectorStore(dbPath: string, handleToken: string): Promise<OpenedVectorStore | null> {
-    return this.vectorLifecycle.open(dbPath, handleToken);
-  }
-
-  async activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
-    await this.vectorLifecycle.activate(specId, snapshotId);
-  }
-
-  async acquireVectorLease(): Promise<KbVectorLease | null> {
-    return this.vectorLifecycle.acquireLease();
-  }
-
-  async closeVectorStores(): Promise<void> {
-    await this.vectorLifecycle.closeAll();
-  }
-
-  getActiveVectorHandleInfo(): ActiveVectorHandleInfo | null {
-    return this.vectorLifecycle.getActiveInfo();
-  }
-
   readIndex(): KbIndex | null {
-    if (this.indexCache !== null) {
-      return this.indexCache.index;
-    }
-
-    const indexPath = this.indexPath();
-    try {
-      const raw = readFileSync(indexPath, 'utf-8');
-      let parsed: KbIndex;
-      try {
-        parsed = parseIndex(JSON.parse(raw) as unknown);
-      } catch {
-        this.indexCache = { index: null };
-        this.cachedOramaIndex = null;
-        rmSync(indexPath, { force: true });
-        return null;
-      }
-      this.indexCache = { index: parsed };
-      return parsed;
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) {
-        this.indexCache = { index: null };
-        return null;
-      }
-      throw error;
-    }
+    return this.indexStore.readIndex();
   }
 
   persistIndexToDisk(index: KbIndex): KbIndex {
-    const normalized = parseIndex(index);
-    writeJsonAtomic(this.indexPath(), normalized);
-    return normalized;
+    return this.indexStore.persistIndexToDisk(index);
   }
 
   writeIndex(index: KbIndex): KbIndex {
-    return this.installIndexCache(this.persistIndexToDisk(index));
+    return this.indexStore.writeIndex(index);
   }
 
   readIndexOrEmpty(): KbIndex {
-    return this.readIndex() ?? emptyIndex();
+    return this.indexStore.readIndexOrEmpty();
   }
 
   readIndexStateIfPresent(): KbIndexState | null {
-    try {
-      const raw = readFileSync(this.indexStatePath(), 'utf-8');
-      const parsedRaw = JSON.parse(raw) as unknown;
-      const parsedState = parseIndexState(parsedRaw);
-      if (isLegacyRawIndexState(parsedRaw)) {
-        this.writeIndexState(parsedState);
-      }
-      return parsedState;
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) {
-        return null;
-      }
-      // Corrupt index-state.json: delete and return null (same as missing).
-      // The next mutation or rebuild will recreate it from defaultIndexState().
-      rmSync(this.indexStatePath(), { force: true });
-      return null;
-    }
+    return this.indexStore.readIndexStateIfPresent();
   }
 
   readIndexState(): KbIndexState {
-    return this.readIndexStateIfPresent() ?? defaultIndexState();
+    return this.indexStore.readIndexState();
   }
 
   writeIndexState(state: KbIndexState): void {
-    writeJsonAtomic(this.indexStatePath(), stripLegacyIndexStateAliases(state));
+    this.indexStore.writeIndexState(state);
+  }
+
+  register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
+    this.publicationQueue.register(corpusPublishCallbacks);
   }
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
-      ...applyMutationLane(state, lane),
-      ...(reason === undefined ? {} : { textStaleReason: reason }),
-    });
+    if (this.activeMutationContext !== null) {
+      this.activeMutationContext.pendingMutationLane = mergeMutationLane(
+        this.activeMutationContext.pendingMutationLane,
+        lane,
+      );
+      if (reason !== undefined) {
+        this.activeMutationContext.pendingMutationReason = reason;
+      }
+
+      return previewPendingMutationState(this.readIndexState(), this.activeMutationContext);
+    }
+
+    const nextState = commitMutationState(this.readIndexState(), lane, reason);
     this.writeIndexState(nextState);
+    this.refreshIndexBaselineIfPresent();
+    this.rebuildAuthorityBaselineFromDisk();
     return nextState;
   }
 
   recordIndexSyncSuccess(): KbIndexState {
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
-      vector: state.vector,
-    });
+    };
     this.writeIndexState(nextState);
     return nextState;
   }
 
   recordIndexSyncFailure(reason: string): KbIndexState {
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
       textStaleReason: reason,
-      vector: state.vector,
-    });
+    };
     this.writeIndexState(nextState);
     return nextState;
   }
@@ -746,333 +418,424 @@ class KbRuntimeImpl implements KbRuntime {
       return state;
     }
 
-    const nextState = withLegacyIndexStateAliases({
-      ...applyMutationLane(withoutTextStaleReason(stripLegacyIndexStateAliases(state)), externalMutation),
-      vector: state.vector,
-    });
+    this.manifestAuthority.seedFromFullCollectors(this);
+    const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation);
     this.writeIndexState(nextState);
+    this.rebuildAuthorityBaselineFromDisk();
     return nextState;
   }
 
-  recordVectorSyncSuccess(specId: string, startContentSeq: number, snapshotId: string): KbIndexState {
-    const state = this.readIndexState();
-    if (state.contentSeq !== startContentSeq) {
-      return state;
-    }
-
-    const nextState: KbIndexState = {
-      ...state,
-      vector: {
-        bySpec: {
-          ...state.vector.bySpec,
-          [specId]: {
-            indexedSeq: startContentSeq,
-            activeSnapshotId: snapshotId,
-          },
-        },
-      },
-    };
-    this.writeIndexState(nextState);
-    return nextState;
+  getCorpusStateSnapshot(): KbCorpusSnapshot {
+    return this.corpusStateMirror.get();
   }
 
-  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState {
-    const state = this.readIndexState();
-    const current = state.vector.bySpec[specId];
-    const nextActiveSnapshotId = activeSnapshotId ?? current?.activeSnapshotId;
-    const nextState: KbIndexState = {
-      ...state,
-      vector: {
-        bySpec: {
-          ...state.vector.bySpec,
-          [specId]: {
-            indexedSeq: current?.indexedSeq ?? 0,
-            staleReason: reason,
-            ...(nextActiveSnapshotId === undefined ? {} : { activeSnapshotId: nextActiveSnapshotId }),
-          },
-        },
-      },
-    };
-    this.writeIndexState(nextState);
-    return nextState;
+  invalidateCorpusStateSnapshot(): void {
+    this.corpusStateMirror.invalidate();
   }
 
-  getVectorStatus(specId: string): KbVectorSpecState | null {
-    return this.readIndexState().vector.bySpec[specId] ?? null;
-  }
+  async ensureCorpusFreshness(options: EnsureCorpusFreshnessOptions = {}): Promise<KbIndex> {
+    const wait = options.wait ?? false;
+    const signal = options.signal;
 
-  async ensureIndex(): Promise<KbIndex> {
-    if (this.textArtifactsNeedRebuild()) {
-      await this.withMutationLock(async () => {
-        if (!this.upgradeGuardDone) {
-          runEntrySeqUpgradeGuard(this);
-          this.upgradeGuardDone = true;
+    if (await this.textArtifactsNeedRebuild()) {
+      // Shutdown drained the runtime — do not kick a fresh background rebuild
+      // and do not block readiness callers. Boot's `wait: true` on the next
+      // coordinator picks up the staleness.
+      if (signal?.aborted !== true) {
+        this.rebuildInFlight ??= this.runRebuildOnce(signal).finally(() => {
+          this.rebuildInFlight = null;
+        });
+
+        if (wait) {
+          await this.rebuildInFlight;
         }
-        const state = this.readIndexStateIfPresent();
-        if (!this.textArtifactsNeedRebuild(state)) {
-          return;
-        }
-
-        await rebuildTextArtifactsAndPersistRepairState(this, captureIndexStateSnapshot(state));
-      });
+      } else if (wait) {
+        throw new Error('ensureCorpusFreshness aborted before rebuild started.');
+      }
     }
 
     return this.readIndex() ?? emptyIndex();
   }
 
-  async ensureOramaIndex(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-  }> {
-    const indexAfterEnsure = await this.ensureIndex();
-    // Fast path: index is fresh and Orama cache is valid — skip re-read.
-    // ensureIndex() guarantees text artifacts are up-to-date when it returns.
-    if (this.cachedOramaIndex !== null && this.indexCache !== null) {
-      return {
-        ...this.cachedOramaIndex,
-        index: indexAfterEnsure,
-      };
+  private async runRebuildOnce(signal?: AbortSignal): Promise<void> {
+    // The destructured `lockSignal` is the composed signal from the mutation
+    // lock (caller signal + internal deadline). It threads into `performRescan`
+    // so `'scan'` / `'repair'` checkpoints honor user aborts and deadline aborts.
+    await this.withMutationLock(
+      async (mutation, { signal: lockSignal }) => {
+        const state = this.readIndexStateIfPresent();
+        if (!(await this.textArtifactsNeedRebuild(state))) {
+          return;
+        }
+
+        await performRescan(this, mutation, captureIndexStateSnapshot(state), { signal: lockSignal });
+      },
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+  }
+
+  async withMutationLock<T>(
+    fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
+    options: KbMutationLockOptions = {},
+  ): Promise<T> {
+    return this.mutationLockController.withMutationLock((_lockCtx, args) => fn(this.mutationEffects, args), options);
+  }
+
+  mutationLockDiagnostics(): KbMutationLockDiagnostics {
+    return this.mutationLockController.diagnostics();
+  }
+
+  async retryPendingCorpusPublication(): Promise<void> {
+    this.publishCurrentSnapshot();
+    if (!this.publicationQueue.hasQueuedPublications()) {
+      return;
     }
+
+    await this.publicationQueue.process();
+  }
+
+  async runInboundSync<T>(fn: () => Promise<T> | T, options: KbInboundSyncOptions = {}): Promise<T> {
+    let mutationDiff: InboundSyncMutationDiff | null = null;
 
     return this.withMutationLock(async () => {
-      const state = this.readIndexStateIfPresent();
-      const startState = captureIndexStateSnapshot(state);
+      const beforeSnapshot = options.structuredDiff === true ? null : captureCorpusFilesystemSnapshot(this);
+      const result = await fn();
 
-      let needsRebuild = this.textArtifactsNeedRebuild(state);
-      if (!needsRebuild && this.cachedOramaIndex === null) {
-        try {
-          this.installOramaCache(await this.loadOramaSnapshot());
-        } catch {
-          needsRebuild = true;
+      if (options.structuredDiff === true && isGitSyncResult(result)) {
+        if (result.kind === 'ambiguous') {
+          mutationDiff = detectInboundSyncMutationFromFullCollectors(this, this.manifestAuthority, true);
+        } else if (result.kind === 'paths') {
+          mutationDiff = detectInboundSyncMutationFromStructuredDiff(result.changes, this, this.manifestAuthority);
+        } else {
+          mutationDiff = {
+            lane: null,
+            changedEntryIds: [],
+            requiresFullInstall: false,
+            manifestDeltas: [],
+          };
         }
-      }
-
-      if (needsRebuild) {
-        try {
-          await rebuildTextArtifactsAndPersistRepairState(this, startState);
-        } catch (error: unknown) {
-          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-        }
-      }
-
-      const stateAfterArtifacts = this.readIndexStateIfPresent();
-      if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
-        throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-      }
-
-      return {
-        ...this.cachedOramaIndex,
-        index: this.readIndex() ?? emptyIndex(),
-      };
-    });
-  }
-
-  async ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot> {
-    let rebuilt: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>> | null = null;
-    if (this.textArtifactsNeedRebuild()) {
-      rebuilt = await rebuildTextArtifactsAndPersistRepairState(
-        this,
-        captureIndexStateSnapshot(this.readIndexState()),
-      );
-    } else if (this.cachedOramaIndex === null) {
-      try {
-        this.installOramaCache(await this.loadOramaSnapshot());
-      } catch {
-        rebuilt = await rebuildTextArtifactsAndPersistRepairState(
-          this,
-          captureIndexStateSnapshot(this.readIndexState()),
+      } else {
+        mutationDiff = detectInboundSyncMutation(
+          beforeSnapshot ?? captureCorpusFilesystemSnapshot(this),
+          captureCorpusFilesystemSnapshot(this),
         );
+        if (mutationDiff.lane !== null) {
+          // Full manifest refresh for inbound sync callers that cannot provide structured path changes.
+          this.manifestAuthority.seedFromFullCollectors(this);
+        }
       }
-    }
 
-    if (rebuilt !== null) {
-      return this.snapshotFromRebuildResult(rebuilt);
-    }
-
-    const stateAfterArtifacts = this.readIndexStateIfPresent();
-    if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
-      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-    }
-
-    return this.captureVectorTextSnapshot();
+      if (mutationDiff.lane !== null) {
+        if (mutationDiff.manifestDeltas.length > 0) {
+          this.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
+        }
+        if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
+          this.writeIndex(this.buildInboundSyncIndexDelta(mutationDiff.changedEntryIds));
+        } else if (mutationDiff.requiresFullInstall) {
+          this.invalidateKbCache();
+        }
+        this.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
+      }
+      return result;
+    });
   }
 
-  async withMutationLock<T>(fn: () => Promise<T> | T): Promise<T> {
-    const previous = this.mutationLock;
-    let release!: () => void;
-    this.mutationLock = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+  captureCorpusSnapshot(): KbCorpusPublication['snapshot'] {
+    return this.buildCurrentCorpusSnapshot(captureIndexStateSnapshot(this.readIndexState()));
+  }
 
-    await previous;
+  private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
+    return buildInboundSyncIndexDelta(
+      this.activeMutationContext?.startIndex ?? this.readIndex(),
+      changedEntryIds,
+      this,
+    );
+  }
 
-    try {
-      return await fn();
-    } finally {
-      release();
+  private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): KbCorpusSnapshot {
+    return buildRuntimeCorpusSnapshot(state, this.manifestAuthority);
+  }
+
+  private queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void {
+    if (this.activeMutationContext === null) {
+      throw new Error('KB manifest authority deltas can only be queued while the mutation lock is held.');
     }
+
+    this.activeMutationContext.pendingOpaqueDeltas.push(...deltas);
+  }
+
+  private applyPendingManifestAuthorityDeltas(lockContext: MutationLockContext): void {
+    if (lockContext.pendingOpaqueDeltas.length === 0) {
+      return;
+    }
+
+    this.manifestAuthority.updateFromDelta(lockContext.pendingOpaqueDeltas);
   }
 
   invalidateKbCache(): void {
-    this.indexCache = null;
-    this.cachedOramaIndex = null;
+    this.indexStore.invalidateIndexCache();
   }
 
   invalidateTextSnapshot(reason: string): KbIndexState {
-    const nextState = this.recordIndexSyncFailure(reason);
-    this.cachedOramaIndex = null;
-    rmSync(this.oramaIndexPath(), { force: true });
-    return nextState;
+    return this.recordIndexSyncFailure(reason);
   }
 
-  installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex {
-    const normalized = this.installIndexCache(index);
-    this.installOramaCache(orama);
-    return normalized;
+  private publishCurrentSnapshot(): void {
+    const stateSnapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
+    if (stateSnapshot.contentSeq === 0 && stateSnapshot.metadataSeq === 0) {
+      return;
+    }
+
+    this.publicationQueue.enqueue({
+      snapshot: this.buildCurrentCorpusSnapshot(stateSnapshot),
+      changedLanes: ['content', 'metadata'],
+    });
   }
 
-  persistOramaSnapshot(db: KbOramaDb): void {
-    const snapshot = save(db) as unknown as RawData;
-    writeJsonAtomic(this.oramaIndexPath(), snapshot);
+  private refreshIndexBaselineIfPresent(): void {
+    const currentIndex = this.readIndex();
+    if (currentIndex === null) {
+      return;
+    }
+
+    this.persistIndexToDisk(currentIndex);
   }
 
-  private indexPath(): string {
-    return join(this.runtimeDir, INDEX_FILE);
+  private finalizePendingMutation(lockContext: MutationLockContext): void {
+    this.applyPendingManifestAuthorityDeltas(lockContext);
+    if (lockContext.pendingMutationLane === null) {
+      return;
+    }
+
+    const nextState = previewPendingMutationState(this.readIndexState(), lockContext);
+    this.writeIndexState(nextState);
+    this.refreshIndexBaselineIfPresent();
+    this.refreshAuthorityBaselineForPendingDeltas(lockContext.pendingOpaqueDeltas);
   }
 
-  private indexStatePath(): string {
-    return join(this.runtimeDir, INDEX_STATE_FILE);
+  private capturePublicationFromStateChange(previous: KbIndexStateSnapshot, next: KbIndexStateSnapshot): void {
+    if (this.activeMutationContext === null) {
+      return;
+    }
+
+    const changedLanes = mutationLanesFromDiff(previous, next);
+    if (changedLanes.length === 0) {
+      return;
+    }
+
+    this.activeMutationContext.publication = mergePublication(this.activeMutationContext.publication, {
+      snapshot: this.buildCurrentCorpusSnapshot(next),
+      changedLanes,
+    });
   }
 
-  private oramaIndexPath(): string {
-    return join(this.runtimeDir, ORAMA_INDEX_FILE);
+  private rebuildAuthorityBaselineFromDisk(): void {
+    this.corpusAuthorityBaseline.rebuild(buildCorpusScanView(this));
   }
 
-  private captureVectorTextSnapshot(): KbVectorTextSnapshot {
-    const index = this.readIndex() ?? emptyIndex();
-    const notes: KbVectorTextSnapshot['notes'] = [];
-    const sources: KbVectorTextSnapshot['sources'] = [];
+  private refreshAuthorityBaselineForPendingDeltas(deltas: readonly ManifestAuthorityDelta[]): void {
+    if (deltas.length === 0) {
+      this.rebuildAuthorityBaselineFromDisk();
+      return;
+    }
 
-    for (const entry of Object.values(index.entries)) {
-      if (isNoteEntry(entry)) {
-        notes.push({
-          entry,
-          body: loadKbNote(this.notePath(entry.slug)).body,
-        });
-        continue;
+    const targets = new Map<string, AuthorityBaselineRefreshTarget>();
+    for (const delta of deltas) {
+      const target = this.authorityBaselineRefreshTarget(delta.manifestId);
+      if (target === null) {
+        this.rebuildAuthorityBaselineFromDisk();
+        return;
       }
+      targets.set(target.key, target);
+    }
 
-      if (isSourceEntry(entry)) {
-        sources.push({
-          entry,
-          body: loadKbSource(this.sourcePath(entry.slug)).body,
-        });
+    const current = this.corpusAuthorityBaseline.read();
+    if (current.size === 0) {
+      this.rebuildAuthorityBaselineFromDisk();
+      return;
+    }
+
+    for (const target of targets.values()) {
+      if (target.kind === 'entity-graph') {
+        this.refreshEntityGraphAuthorityBaseline(current, target);
+      } else {
+        this.refreshMarkdownAuthorityBaseline(current, target);
       }
     }
 
-    return { index, notes, sources };
+    this.corpusAuthorityBaseline.replace([...current.values()]);
   }
 
-  /** Install an already-validated index into the in-memory cache. */
-  private installIndexCache(validated: KbIndex): KbIndex {
-    this.indexCache = { index: validated };
-    return validated;
-  }
-
-  private installOramaCache(orama: KbCachedOramaIndex): void {
-    this.cachedOramaIndex = orama;
-  }
-
-  private async loadOramaSnapshot(): Promise<KbCachedOramaIndex> {
-    const { db, tokenizer } = await createOramaDb();
-    const raw = JSON.parse(readFileSync(this.oramaIndexPath(), 'utf-8')) as RawData;
-    load(db, raw);
-    return { db, tokenizer };
-  }
-
-  private pendingRepairPath(entry: PendingRepair): string | null {
-    if (entry.entryId.startsWith('note:')) {
-      return this.notePath(entry.entryId.slice('note:'.length));
+  private authorityBaselineRefreshTarget(manifestId: string): AuthorityBaselineRefreshTarget | null {
+    if (manifestId.startsWith('note-meta:')) {
+      const slug = manifestId.slice('note-meta:'.length);
+      return {
+        kind: 'note',
+        slug,
+        entryId: `note:${slug}`,
+        key: `note:${slug}`,
+      };
     }
-    if (entry.entryId.startsWith('source:')) {
-      return this.sourcePath(entry.entryId.slice('source:'.length));
+
+    if (manifestId.startsWith('note:')) {
+      const slug = manifestId.slice('note:'.length);
+      return {
+        kind: 'note',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('source-meta:')) {
+      const slug = manifestId.slice('source-meta:'.length);
+      return {
+        kind: 'source',
+        slug,
+        entryId: `source:${slug}`,
+        key: `source:${slug}`,
+      };
+    }
+
+    if (manifestId.startsWith('source:')) {
+      const slug = manifestId.slice('source:'.length);
+      return {
+        kind: 'source',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('community:')) {
+      const slug = manifestId.slice('community:'.length);
+      return {
+        kind: 'community',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId.startsWith('principle:')) {
+      const slug = manifestId.slice('principle:'.length);
+      return {
+        kind: 'principle',
+        slug,
+        entryId: manifestId,
+        key: manifestId,
+      };
+    }
+
+    if (manifestId === ENTITY_GRAPH_SCAN_ENTRY_ID) {
+      return {
+        kind: 'entity-graph',
+        entryId: ENTITY_GRAPH_SCAN_ENTRY_ID,
+        key: ENTITY_GRAPH_SCAN_ENTRY_ID,
+      };
     }
 
     return null;
   }
 
-  private pendingRepairNeedsRetry(): boolean {
-    // Cache the curate-state read to avoid per-request disk I/O.
-    // Invalidated when curate-state.json mtime changes (any repair/curate write).
-    const curateStatePath = this.curateStatePath();
-    let curateStateMtime: number;
+  private refreshMarkdownAuthorityBaseline(
+    current: CorpusAuthorityBaselineMap,
+    target: Extract<AuthorityBaselineRefreshTarget, { readonly kind: CorpusMarkdownKind }>,
+  ): void {
+    const path = this.authorityBaselineMarkdownPath(target.kind, target.slug);
+    let content: string;
     try {
-      curateStateMtime = statSync(curateStatePath).mtimeMs;
-    } catch {
-      return false;
-    }
-    if (this.pendingRepairCache !== null && this.pendingRepairCache.mtime === curateStateMtime) {
-      return this.pendingRepairCache.result;
-    }
-
-    const pendingRepair = readCurateState(this).pendingRepair;
-    if (pendingRepair === null) {
-      this.pendingRepairCache = { mtime: curateStateMtime, result: false };
-      return false;
-    }
-
-    const result = pendingRepair.some((entry) => {
-      const detectedAt = Date.parse(entry.detectedAt);
-      const path = this.pendingRepairPath(entry);
-      if (Number.isNaN(detectedAt) || path === null) {
-        return false;
+      content = this.storagePort.readFileSync(path, 'utf-8');
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        current.delete(target.entryId);
+        return;
       }
+      throw error;
+    }
 
-      try {
-        return statSync(path).mtimeMs > detectedAt;
-      } catch {
-        return false;
-      }
-    });
-    this.pendingRepairCache = { mtime: curateStateMtime, result };
-    return result;
+    this.replaceAuthorityBaselineRecord(
+      current,
+      collectCorpusAuthorityBaseline(
+        createCorpusScanView({
+          markdownFiles: [
+            createCorpusMarkdownFileScan({
+              kind: target.kind,
+              path,
+              content,
+              slug: target.slug,
+            }),
+          ],
+        }),
+      )[0],
+      target.entryId,
+    );
   }
 
-  private indexNeedsRebuild(): boolean {
-    return detectTextArtifactRebuildInfo(this).needsRebuild;
+  private refreshEntityGraphAuthorityBaseline(
+    current: CorpusAuthorityBaselineMap,
+    target: Extract<AuthorityBaselineRefreshTarget, { readonly kind: 'entity-graph' }>,
+  ): void {
+    const path = this.entityGraphPath();
+    let content: string;
+    try {
+      content = this.storagePort.readFileSync(path, 'utf-8');
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        current.delete(target.entryId);
+        return;
+      }
+      throw error;
+    }
+
+    this.replaceAuthorityBaselineRecord(
+      current,
+      collectCorpusAuthorityBaseline(
+        createCorpusScanView({
+          markdownFiles: [],
+          entityGraph: createCorpusEntityGraphScan({ content, path }),
+        }),
+      )[0],
+      target.entryId,
+    );
   }
 
-  private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
+  private replaceAuthorityBaselineRecord(
+    current: CorpusAuthorityBaselineMap,
+    record: CorpusAuthorityBaselineRecord | undefined,
+    entryId: string,
+  ): void {
+    if (record === undefined) {
+      current.delete(entryId);
+      return;
+    }
+
+    current.set(record.entryId, record);
+  }
+
+  private authorityBaselineMarkdownPath(kind: CorpusMarkdownKind, slug: string): string {
+    switch (kind) {
+      case 'note':
+        return this.notePath(slug);
+      case 'source':
+        return this.sourcePath(slug);
+      case 'community':
+        return this.communityPath(slug);
+      case 'principle':
+        return this.principlePath(slug);
+    }
+  }
+
+  private async indexNeedsRebuild(): Promise<boolean> {
+    return (await detectRescanInfo(this, buildCorpusScanView(this))).needsRebuild;
+  }
+
+  private async textArtifactsNeedRebuild(state?: KbIndexState | null): Promise<boolean> {
     const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild() || this.pendingRepairNeedsRetry();
-  }
-
-  /** Build a vector text snapshot directly from rebuild output, avoiding N re-reads from disk. */
-  private snapshotFromRebuildResult(
-    result: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>,
-  ): KbVectorTextSnapshot {
-    const index = this.readIndex() ?? emptyIndex();
-    const notes: KbVectorTextSnapshot['notes'] = [];
-    const sources: KbVectorTextSnapshot['sources'] = [];
-
-    for (const note of result.notes) {
-      const entry = index.entries[noteEntryId(note.note)];
-      if (entry !== undefined && isNoteEntry(entry)) {
-        notes.push({ entry, body: note.body });
-      }
-    }
-    for (const source of result.sources) {
-      const entry = index.entries[sourceEntryId(source.slug)];
-      if (entry !== undefined && isSourceEntry(entry)) {
-        sources.push({ entry, body: source.body });
-      }
-    }
-
-    return { index, notes, sources };
+    return !isFreshTextSnapshot(currentState) || (await this.indexNeedsRebuild());
   }
 }
 
-export function createKbRuntime(opts: { markdownRoot: string; runtimeDir: string }): KbRuntime {
+export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {
   return new KbRuntimeImpl(opts);
 }

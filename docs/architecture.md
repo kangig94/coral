@@ -1,8 +1,26 @@
 # Architecture
 
-Coral is a local CLI + HTTP system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. `coral-cli` ensures the backend daemon is running, sends JSON requests over localhost HTTP, and streams job updates over SSE. No bridge or stdio proxy remains in the runtime path.
+Coral is a coding-assistant plugin for Claude Code and Codex. Its purpose is to help LLM agents do software work better: plan/review workflows, side-effect and bug discovery, multi-perspective discussion, durable job observation, session continuity, and long-term project memory through KB.
+
+Internally, Coral is a local coding-agent coordination layer. Claude Code reaches Coral through hooks, slash-command skills, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 
 Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
+
+## Design Frame
+
+The product frame is coding assistance. The architecture frame is local coordination. "Control plane" in this document is internal vocabulary: the coordinator owns local decisions, live state, recovery sequencing, and capability activation so Claude/Codex do not have to manage those concerns inside prompts or shell glue.
+
+| Product capability | Internal owner |
+| --- | --- |
+| Plan/review workflow | Workflow plan + jobs execution |
+| Side-effect and bug discovery | Workflow slots, provider jobs, wait/follow |
+| Idea digging and multi-agent review | Discuss domain and shell |
+| Long-term coding memory | KB Corpus authority + retrieval projections |
+| Provider continuity | Sessions authority |
+| Long-running observable work | Jobs authority |
+| Optional sharper retrieval | Coordinator-owned expansion lifecycle |
+
+This frame constrains new code: first name the truth owner, then decide whether the work is direct, durable, or projection freshness, then compose cross-domain behavior only in the coordinator or CLI.
 
 ## Runtime Layout
 
@@ -20,15 +38,21 @@ bridge/coral-cli.cjs
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
-      ▼  HTTP + SSE (`127.0.0.1`, authenticated)
+      ├── IPC (`coordinator.sock`, authenticated) for mutating/live commands
+      ├── read-model/CoralStore library reads for no-coordinator `jobs` / `kb` paths
+      └── HTTP gateway + carveouts (`127.0.0.1`, authenticated)
+            `/health`, `/admin/shutdown`, `/events/stream`
+      │
+      ▼
 bridge/coral-backend.cjs
-  ├── Request routing (`src/execution/http-handler.ts`)
-  ├── Provider orchestration (`src/execution/service.ts`)
-  ├── Workflow execution (`src/workflow/*`)
-  ├── Discuss runtime (`src/execution/discuss/*`)
-  ├── KB runtime (`src/kb/*`)
-  ├── Session + job persistence
-  └── Optional provider host management (`src/execution/host-manager.ts`)
+  ├── Coordinator bootstrap + lifecycle
+  ├── IPC + HTTP/SSE transport adapters
+  ├── Jobs / sessions / workflow / discuss / KB owner modules and contracts
+  ├── Live ConsumerDriver freshness + drain path
+  ├── Corpus notify seam for KB publication
+  ├── Journal substrate (`better-sqlite3`)
+  ├── KB runtime + curation scheduler
+  └── Optional provider host management
       │
       ├── Codex CLI
       ├── Claude CLI
@@ -45,6 +69,9 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
 | `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
+| `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
+| `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
+| `GET /coordinator/expansion` | 200 | List currently-equipped expansions via `expansion_state` |
 | `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
@@ -66,139 +93,211 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `PUT /kb/notes/:slug` | 200 | Update a note by slug |
 | `DELETE /kb/notes/:slug` | 200 | Delete a note by slug |
 | `GET /kb/sources` | 200 | List imported KB sources |
-| `POST /kb/sources` | 201 | Import a KB source |
+| `POST /kb/sources` | 201 / 202 | Start a job-backed KB source import; async requests return 202 |
 | `DELETE /kb/sources/:slug` | 200 | Delete an imported KB source |
 | `GET /kb/memos` | 200 | List project-scoped memos |
 | `POST /kb/memos` | 201 | Create a project-scoped memo |
 | `DELETE /kb/memos` | 200 | Delete selected memos or purge all project memos |
 | `GET /kb/principles` | 200 | Search KB principles |
-| `POST /kb/index` | 200 | Rebuild the KB index |
+| `POST /kb/index` | 200 | Rebuild KB text artifacts through an internal job |
 | `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
 | `GET /events/stream` | 200 | Backend-local event stream for live observers |
 
 `GET /jobs` accepts optional `projectRoot`, `phase`, `provider`, and `all=1` query filters. Without `all=1`, the list stays live-only (`queued`, `launching`, `running`) and remains sorted by `updatedAt` descending.
 
-Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / legacy session), 503 (recovering / busy).
+Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / non-resumable or provider-mismatched session), 503 (recovering / busy).
+
+`POST /kb/sources` accepts `{ filePath, slug?, readiness?, async? }`. It does not accept pre-staged markdown paths from clients. Source conversion, staging, persistence, progress, terminal outcome, and failure causes are coordinator-owned as an internal `kb.source_import` job. `readiness` defaults to `base-search` and may be `commit`, `base-search`, `active-vector`, or `all-equipped`; `async: true` returns 202 with the job id immediately, while the default waits for the requested readiness and returns 201 after the completed import.
+
+`POST /kb/index` rebuilds KB text artifacts through an internal coordinator-owned `kb.reindex` job and waits for base-search readiness before returning. The job is recorded for recovery and observability, but it is not a provider/session job.
+
+## Work Classification
+
+Not every command becomes a job. Jobs are for work that is long-running, observable, resumable, or recovery-relevant. Immediate reads and small mutations remain direct commands.
+
+| Class | Examples | Surface | Rule |
+| --- | --- | --- | --- |
+| Direct read | `kb search`, `kb read`, `jobs`, `discuss watch` | Return result immediately | No job id; may use `read-model/CoralStore` or KB query helpers. KB list/read paths do not persist derived rebuild artifacts. |
+| Direct mutation | KB note write/delete; memo write/delete | Return result after the small write | Corpus writes use the KB mutation lock. Memos are project-scoped scratch artifacts, not Corpus authority. |
+| Provider/session job | `codex`, `claude`, workflow atoms | Return job id; `wait` observes terminal state | User-facing agent work is Journal-observable and recoverable. |
+| Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Used when source conversion, indexing, or readiness can take time. |
+| Projection freshness wait | Orama/Needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness wait is not itself truth; failure reports against the hosting command/job. |
+
+`kb source import` is job-backed because even without Needle it can spend time reading and converting large documents before committing Corpus markdown. With retrieval readiness, it also waits for Orama or Needle consumers. By contrast, KB search/read, note write, memo operations, and principle reads are direct unless a future implementation gives them durable work to recover. Direct list/read commands may build transient in-memory views, but explicit `kb reindex` owns durable text-artifact repair.
+
+Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin root, build flavor, project root, Corpus markdown root, and KB runtime root before calling KB/read-model code. KB path helpers and `read-model/CoralStore` do not silently fall back to the current working directory or the user's home KB.
 
 ## Primary Execution Flows
 
 ### Session lifecycle
 
 1. `coral-cli codex -i ...` or `coral-cli codex <agent> -i ...`
-2. `src/client/http-client.ts` calls `createSession()` → `POST /sessions`
-3. `src/execution/http-handler.ts` parses the direct body, builds `CallerContext` server-side
-4. `src/execution/service.ts` resolves agent (if specified), persists session profile, launches provider
-5. Provider adapters in `src/providers/*` spawn the real CLI/runtime and emit progress
-6. `ProgressStore` and `SessionManager` persist job/session state with authoritative provenance
+2. The CLI client calls `POST /sessions`
+3. The transport layer validates the direct body, builds `CallerContext`, and forwards a domain-shaped request into the coordinator
+4. The coordinator API resolves agent intent, persists session continuity, and launches or resumes work through jobs-owned launch/admission contracts plus sessions-owned continuity storage
+5. Provider adapters spawn the real CLI/runtime and emit progress
+6. Journal appends publish projection freshness through the live `ConsumerDriver`; session continuity remains authoritative in the sessions shell
 
-Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()` which resolves provider from the stored session, merges omitted fields from the stored profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
+Continuations use `POST /sessions/:id/messages`, which resolves provider from stored continuity, merges omitted fields from the session profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
 
 ### Wait / follow
 
 1. Detached launches print `Job <job> <launchState> (session <session>)`
-2. `coral-cli wait --jobs "<ids>" [--embed]` calls `streamWait()`
-3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
+2. `coral-cli wait --jobs "<ids>" [--embed]` opens the `jobs.wait` IPC subscription
+3. The local IPC stream and the remote `POST /jobs/wait` HTTP gateway both read the same coordinator-owned wait surface, which uses the same job truth as startup recovery and steady-state launch orchestration
 4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 
 ### Job inspection and control
 
-1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `GET /jobs` for the current project and projects job summaries into the CLI surface
-2. `coral-cli abort --jobs "<ids>"` posts directly to `POST /jobs/abort`
-3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through `GET /jobs`, then aborts the resulting job IDs
+1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
+2. `coral-cli abort --jobs "<ids>"` dispatches `jobs.abort` over IPC for local calls
+3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
 ### Workflow
 
 1. `coral-cli workflow ...` posts to `POST /workflow`
-2. `src/workflow/handler.ts` parses the DSL and normalizes the AST
-3. `src/workflow/pipe-executor.ts` launches provider or `coral:` atoms through `ExecutionService`
-4. Workflow state is persisted in the normal job store, so `coral-cli wait` works unchanged
+2. The workflow domain compiles the DSL into a semantic plan (slot id, dependencies, provider, instruction, optional agent)
+3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
+4. Workflow state is persisted as Journal events with a projection row per workflow; child job identity is derived from `parentWorkflowJobId` + `workflowSlotId`, not stored in the plan; `coral-cli wait` reads the same job store
 
 ### Discuss and KB
 
-- `coral-cli discuss ...` maps to resource routes under `/discuss/*` and uses `src/execution/discuss-tools.ts`
-- `coral-cli kb ...` maps to resource routes under `/kb/*` and uses `src/execution/kb-tools.ts`
-- Discuss runtime lives under `src/execution/discuss/` and the pure domain model lives under `src/discuss/`
-- KB runtime lives under `src/kb/`
+- `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes explicit coordinator-facing owner modules for commands, reads, and recovery rather than a compatibility `api.ts` facade
+- `coral-cli kb ...` maps to resource routes under `/kb/*`
+- Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
+- KB markdown is the Corpus authority for notes, sources, principles, and communities. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, and memo operations stay direct commands.
+- Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer (constructor-time default of the `kb.vector` and `kb.fts` `RuntimeBinding<Backed<T>>` cells); Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
 
 ## Module Map
 
-| Area | Key modules | Role |
-| --- | --- | --- |
-| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, text formatting, KB JSON formatting |
-| Client | `src/client/http-client.ts`, `src/client/backend-lifecycle.ts`, `src/client/backend-helpers.ts` | Backend startup, HTTP requests, wait/admin helpers |
-| Backend HTTP | `src/execution/server.ts`, `src/execution/http-handler.ts` | Backend composition root and route registration |
-| Provider execution | `src/execution/service.ts`, `src/execution/engine.ts`, `src/providers/*` | Launch orchestration, provider spawning, host/runtime management |
-| Workflows | `src/workflow/handler.ts`, `src/workflow/pipe-executor.ts`, `src/workflow/pipe-parser.ts` | DSL parsing and pipeline execution |
-| Discuss | `src/execution/discuss/*`, `src/discuss/*` | Imperative runtime shell plus pure event-sourced core |
-| Knowledge base | `src/execution/kb-tools.ts`, `src/kb/*` | Dedicated KB endpoints, indexing, vector/text search, memo/source flows |
-| Shared / infra | `src/shared/utils.ts`, `src/shared/types.ts`, `src/infra/*` | Shared helpers, shared contracts, backend info and path resolution |
+| Area | Role |
+| --- | --- |
+| CLI | Command parsing, follow mode, text/JSON formatting. |
+| Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `read-model/CoralStore` read helpers for no-coordinator CLI paths. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, expansion lifecycle (`ExpansionLifecycleService` + `expansion_state`), provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
+| Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
+| Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
+| Jobs | Truth-owning owner for job lifecycle: launch, admission, wait, abort, terminal outcomes, and startup reconciliation. |
+| Sessions | Session persistence and continuity, including resume/fork identity and atomic storage. |
+| Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
+| Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
+| Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |
+| Causality | Cross-stream event-reference vocabulary (`CauseRef`) shared below jobs/sessions/discuss/workflow without store access. |
+| Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
+| Simulation | Deterministic doubles for tests. |
+| Knowledge base | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers. |
+| Infrastructure | Low-level helpers, settled path resolution, and adapters below domain ownership. Domain upcasters own event body evolution at Journal read boundaries. |
+
+## Ownership Matrix
+
+| Area | Owns truth | May write | May read/compose | Must not own |
+| --- | --- | --- | --- | --- |
+| `store/` | SQL schema, Journal append/reducer substrate | Store DB primitives and composed validator execution | Domain registries | Product read facade or domain policy |
+| `read-model/` | No truth; composed product reads | Nothing authoritative | Domain read queries + KB reads with explicit roots | Writes, recovery, or ambient root selection |
+| `jobs/` | Job lifecycle, terminal outcomes, wait/reconcile vocabulary | Job streams/projections through store substrate | Session/workflow refs by typed query/composition | Provider process mechanics or transport |
+| `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
+| `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |
+| `discuss/` | Discuss events, state machine, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle |
+| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Expansion-bound backends through `KbRuntime` `RuntimeBinding<Backed<T>>` cells | Expansion lifecycle, coordinator startup |
+| `coordinator/` | Live state, startup order, expansion lifecycle, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary |
+| `transport/` | Wire parsing, validation, response mapping | Nothing authoritative | Coordinator ports and domain contracts | Business behavior |
+| `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Coordinator lifecycle truth |
+| `infra/` / `runtime/` | Low-level path, flavor, I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
+| `causality/` | Cross-stream event-reference vocabulary | Nothing authoritative | Domain event/fault models | Store/database access |
 
 ## Dependency Sketch
 
 ```text
-src/cli/*
-  -> src/client/*
-      -> src/execution/http-handler.ts routes
+CLI layer
+  -> Client layer
+      -> Transport IPC/HTTP surface
+  -> read-model/CoralStore library reads (read-only no-coordinator commands)
 
-src/execution/http-handler.ts
-  -> src/execution/service.ts
-  -> src/workflow/handler.ts
-  -> src/execution/discuss-tools.ts
-  -> src/execution/kb-tools.ts
+Transport IPC/HTTP surface
+  -> Coordinator API + control ports
+  -> Domain owner modules/contracts (workflow / discuss / KB / jobs / sessions)
 
-src/execution/service.ts
-  -> src/providers/*
-  -> src/execution/progress-store.ts
-  -> src/execution/session-manager.ts
-  -> src/execution/host-manager.ts
+Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
+  -> Jobs launch/admission/wait/recovery contracts
+  -> Sessions continuity storage and lookup contracts
+  -> Workflow / discuss / KB owner modules
+  -> Provider adapters + live host management
 
-src/execution/discuss/*
-  -> src/discuss/*
+Coordinator startup
+  -> Open Journal
+  -> Register Journal projection consumers
+  -> Drain freshness to the current Journal head
+  -> jobs recovery coordinator startup
+  -> discuss shell recovery startup
+  -> workflowRecover.resumeAll
+  -> Absorb KB Corpus edits into text artifacts
+  -> Register KB CorpusConsumers
+  -> Replay Corpus snapshot and wait for Orama base freshness
+  -> expose steady-state transport
 
-src/execution/kb-tools.ts
-  -> src/kb/*
+Discuss shell
+  -> Pure discuss core (state machine + reducer)
+  -> Journal append via the discuss store-registry
 
-src/shared/utils.ts and src/shared/types.ts
-  -> shared foundation used across CLI, client, execution, providers, and KB
+KB runtime
+  -> Corpus authority + publication state
+  -> Coordinator notify seam
+  -> CorpusConsumer freshness / health bridge
+
+Foundation layer
+  -> Infra/runtime/causality primitives consumed by higher layers
+  -> Domain upcasters own read-time body transforms
 ```
 
 ## Runtime State
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/coral/backend.json` | Active backend connection info |
-| `~/.claude/coral/backend.lock` | Singleton backend lock |
-| `~/.claude/coral/sessions/<project-hash>/*.json` | Persisted provider sessions |
-| `<os-tmpdir>/coral-jobs/<jobId>/` | Job status, progress log, result artifact |
-| `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
+| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record |
+| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
+| `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db` | Journal authority and projection tables |
+| `projection_sessions` in `store.db` | Projected provider sessions, continuation profiles, and project `scope_key` |
+| `projection_discuss` in `store.db` | Projected discuss snapshots and source-scoped discovery/summary state |
+| `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact |
+| `<os-tmpdir>/coral-jobs/<jobId>/` | Live job scratch artifacts such as stdout/stderr/intermediates |
+| `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
-| `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB text/vector state and imported sources |
+| `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 
-## Migration Notes
+## Design Rationale
 
-### CoralFault ADT (breaking wire/persistence change)
+For the **why** behind these structures — the duality of authorities, causal-graph fault model, provider stream composition, the Zelda Expansion philosophy, naming/subdivision policy with rejected anti-patterns — see [`docs/design-rationale.md`](design-rationale.md).
 
-Terminal results now carry a typed outcome (`TerminalOutcome`) instead of the legacy `notice: string` + `aborted: boolean` pair. The outcome is a discriminated union with four branches:
+## Rewrite Policy
+
+The rewrite branch is clean-slate. Legacy module paths, compatibility shims, and fallback aliases are not kept for convenience. If an old path no longer represents the owner, it is deleted and guarded by invariants. When implementation reveals a better owner than the document predicted, update the document and code together rather than preserving a transitional layer.
+
+## Terminal Outcome Model
+
+Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated union owned by the jobs domain:
 
 - `completed` — provider turn finished successfully.
 - `aborted { reason }` — closed-token reason: `signal_abort` | `user_abort` | `queue_shutdown`.
 - `provider_exit { code, note? }` — provider process terminated with a numeric exit code.
-- `coral_fault { fault }` — typed coral-internal failure from the 12-variant `CoralFault` ADT (`src/shared/coral-fault.ts`).
+- `failed { causeRef }` — upstream cause resolvable via the Journal (`CauseRef = { stream, seq }`).
+- `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
-CLI wait output surfaces the outcome through four exhaustive headers:
+Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
+Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
+`job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
+Raw `job.terminal.recorded` object construction is owned by `jobs/store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.
+
+CLI wait output surfaces the outcome through five exhaustive headers:
 
 ```
 Job <id> completed
 Job <id> aborted: <reason>
 Job <id> provider exited <N>[: <note>]
+Job <id> failed: <cause description>
 Job <id> coral errored: <sentence> [<kind>]
 ```
 
-The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`) — the human sentence may drift across releases.
-
-**Upgrade impact**: pre-upgrade `status.json` / `progress.jsonl` records use the legacy shape. On the first start after upgrade, the backend validates each record against the new schema and silently discards any record that fails — logging `Ignoring invalid status.json for <jobId>` once per job. The job directory is NOT deleted, and any session claim it owned is released so the session stays usable. No read-time promotion is performed; pre-upgrade jobs simply vanish from the discovery set.
-
-To upgrade cleanly, drop `<os-tmpdir>/coral-jobs/` before the first restart, or accept that in-flight pre-upgrade jobs will not be recoverable after the version bump.
+The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).

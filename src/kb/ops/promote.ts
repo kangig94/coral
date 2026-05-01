@@ -1,17 +1,14 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { nowIsoString } from '../../shared/utils.js';
-import { parseMemoFrontmatter, serializeNote } from '../frontmatter.js';
+import { nowIsoString } from '../../infra/time.js';
+import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
+import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
-import { noteEntryId, setEntry, type KbPromoteInput } from '../types.js';
+import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
-import {
-  buildNoteIndexEntry,
-  commitIndexUpdate,
-  recordContentAndMetadataMutation,
-  writeFileAtomic,
-} from '../mutation-helpers.js';
-import type { KbRuntime } from '../contracts.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
+import { buildNoteIndexEntry } from '../corpus/index-records.js';
+import type { KbRuntime } from '../contract.js';
+import { currentEntrySeq } from '../index-state.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -29,25 +26,24 @@ export async function promote(
   const topic = assertNoteSlug(input.topic, 'topic');
 
   let memoPath = memoPathFromContext(projectRoot, memo);
-  if (!existsSync(memoPath) && !memo.endsWith('.md')) {
+  if (!rt.storagePort.existsSync(memoPath) && !memo.endsWith('.md')) {
     memoPath = memoPathFromContext(projectRoot, `${memo}.md`);
   }
   const note = `${domain}-${topic}`;
   const notePath = rt.notePath(note);
-  if (!existsSync(memoPath)) {
+  if (!rt.storagePort.existsSync(memoPath)) {
     throw new Error(`Memo file not found: ${memoPath}`);
   }
 
-  const result = await rt.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(rt);
-    if (existsSync(notePath)) {
+  const result = await rt.withMutationLock(async (mutation) => {
+    if (rt.storagePort.existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
 
-    const memoContent = readFileSync(memoPath, 'utf-8');
+    const memoContent = rt.storagePort.readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
-    const entrySeq = recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.').contentSeq;
-    const createdAt = nowIsoString();
+    const entrySeq = currentEntrySeq(rt.readIndexState()) + 1;
+    const createdAt = nowIsoString(rt.time);
     const noteMeta = {
       tags: [domain],
       principles: [],
@@ -59,7 +55,8 @@ export async function promote(
     };
     const noteContent = serializeNote(noteMeta, title, content);
 
-    writeFileAtomic(notePath, noteContent);
+    writeFileAtomic(rt, notePath, noteContent);
+    mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(note, noteContent));
 
     commitIndexUpdate(rt, (index) => {
       setEntry(
@@ -72,8 +69,9 @@ export async function promote(
         }),
       );
     });
+    recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.');
 
-    rmSync(memoPath, { force: true });
+    rt.storagePort.rmSync(memoPath, { force: true });
     return { path: notePath };
   });
 
