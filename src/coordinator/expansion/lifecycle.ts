@@ -1,6 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
-import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
-import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import type { EngineManifest, Expansion, ExpansionHost } from '../../expansion/contract.js';
+import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
@@ -26,6 +26,13 @@ export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (id: string, scope: Disposable, tier: 'bundled' | 'installed') => ExpansionHost;
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
+  /**
+   * Override map for `tier: 'bundled'` engine loaders. Defaults to the
+   * production `BUNDLED_LOADERS` registry. Tests inject custom `Expansion`
+   * functions here to exercise failure / partial-bind / success paths
+   * without going through the dynamic-import surface.
+   */
+  readonly bundledLoaders?: Readonly<Record<string, Expansion>>;
   readonly now: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
   /**
@@ -242,8 +249,7 @@ export class ExpansionLifecycleService {
         const host = this.options.makeHost(entry.id, scope, entry.tier);
 
         try {
-          const module = (await import(entry.specifier)) as ExpansionModule;
-          await module.default(host);
+          await loadBundledEngine(entry, host, this.options.bundledLoaders);
           if (this.didFillFallbackBinding(entry, before, kb)) {
             this.appendScope(entry.id, scope);
             this.failedRecovery.delete(entry.id);

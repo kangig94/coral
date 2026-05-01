@@ -5,8 +5,8 @@ import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/expansion/rpc-contract.js';
 import { createScope, decorateDispose } from '#src/expansion/scope.js';
-import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
-import type { EngineManifest } from '#src/expansion/contract.js';
+import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';
+import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';
 import type { EngineArtifactRegistration } from '#src/kb/corpus/artifact-registry.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
@@ -58,8 +58,13 @@ const SYNTHETIC_VECTOR_SOURCE = `
   };
 `;
 
-const SYNTHETIC_FTS_SOURCE = `
-  export default (host) => {
+// Bundled-tier engines run through static dispatch — tests inject their stubs
+// via `bundledLoaders` keyed by id, never by data URL specifier. The real
+// `BUNDLED_LOADERS` is spread in so tests that exercise the canonical orama
+// entry (`ORAMA_ENTRY` below) still resolve.
+const SYNTHETIC_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
+  ...BUNDLED_LOADERS,
+  'orama-fts-only': (host) => {
     host.bind(host.kb.fts, {
       read: () => ({
         search: async () => ({ hits: [], exhausted: true }),
@@ -74,12 +79,9 @@ const SYNTHETIC_FTS_SOURCE = `
         corpusInterest: 'content',
         apply: async () => {},
       },
-    });
-  };
-`;
-
-const SYNTHETIC_BUNDLED_VECTOR_SOURCE = `
-  export default (host) => {
+    } as never);
+  },
+  'bundled-vector': (host) => {
     host.bind(host.kb.vector, {
       read: () => ({
         search: async () => ({ hits: [] }),
@@ -92,9 +94,13 @@ const SYNTHETIC_BUNDLED_VECTOR_SOURCE = `
         corpusInterest: 'content',
         apply: async () => {},
       },
-    });
-  };
-`;
+    } as never);
+  },
+};
+
+// Specifier kept on bundled-tier manifest entries for schema parity but unused
+// at runtime — see SYNTHETIC_BUNDLED_LOADERS above.
+const UNUSED_BUNDLED_SPECIFIER = '#unused-test-specifier';
 
 const FAKE_EMBEDDER_ENTRY = {
   id: 'test-embedder',
@@ -137,7 +143,7 @@ const NEEDLE_SYNTHETIC_ENTRY = {
 const BUNDLED_FTS_SYNTHETIC_ENTRY = {
   id: 'orama-fts-only',
   version: '0.0.0',
-  specifier: javascriptDataUrl(SYNTHETIC_FTS_SOURCE),
+  specifier: UNUSED_BUNDLED_SPECIFIER,
   tier: 'bundled',
   description: 'synthetic bundled FTS backend',
   fills: ['kb.fts'],
@@ -146,7 +152,7 @@ const BUNDLED_FTS_SYNTHETIC_ENTRY = {
 const BUNDLED_VECTOR_SYNTHETIC_ENTRY = {
   id: 'bundled-vector',
   version: '0.0.0',
-  specifier: javascriptDataUrl(SYNTHETIC_BUNDLED_VECTOR_SOURCE),
+  specifier: UNUSED_BUNDLED_SPECIFIER,
   tier: 'bundled',
   description: 'synthetic bundled vector backend',
   fills: ['kb.vector'],
@@ -188,6 +194,7 @@ function createLifecycleHarness(
   const lifecycle = new ExpansionLifecycleService({
     makeHost,
     state: state as unknown as ExpansionStateStore,
+    bundledLoaders: SYNTHETIC_BUNDLED_LOADERS,
     manifest: options.manifest ?? [FAKE_EMBEDDER_ENTRY],
     now: () => FIXED_NOW,
     resolveKbRuntime: () => kb,

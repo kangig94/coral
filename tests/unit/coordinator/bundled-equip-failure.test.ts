@@ -5,65 +5,39 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import type { Expansion } from '#src/expansion/contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
 
-function javascriptDataUrl(source: string): string {
-  return `data:application/javascript,${encodeURIComponent(source)}`;
-}
+const stubFtsRetrieval = {
+  search: async () => ({ hits: [], exhausted: true }),
+  tokenize: () => [],
+  warnings: () => [],
+};
 
-const THROWING_BUNDLED_SOURCE = `
-  export default () => {
+const TEST_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
+  'broken-orama': () => {
     throw new Error('boot-equip-boom');
-  };
-`;
-const THROWING_BUNDLED_SPECIFIER = `data:text/javascript;base64,${Buffer.from(THROWING_BUNDLED_SOURCE, 'utf8').toString(
-  'base64',
-)}`;
-
-const SECOND_THROWING_SOURCE = `
-  export default () => {
+  },
+  'broken-secondary': () => {
     throw new Error('second-boom');
-  };
-`;
-const SECOND_THROWING_SPECIFIER = `data:text/javascript;base64,${Buffer.from(SECOND_THROWING_SOURCE, 'utf8').toString(
-  'base64',
-)}`;
-
-const PARTIAL_BIND_THEN_THROW_SOURCE = `
-  export default (host) => {
+  },
+  'partial-bundled': (host) => {
     host.bind(host.kb.fts, {
-      read: () => ({
-        search: async () => ({ hits: [], exhausted: true }),
-        tokenize: () => [],
-        warnings: () => [],
-      }),
+      read: () => stubFtsRetrieval,
       consumer: {
         id: 'partial-fts',
         kind: 'stateless',
         registrationKind: 'stateless',
       },
-    });
+    } as never);
     throw new Error('mid-bind failure');
-  };
-`;
-const PARTIAL_BIND_THEN_THROW_SPECIFIER = `data:text/javascript;base64,${Buffer.from(
-  PARTIAL_BIND_THEN_THROW_SOURCE,
-  'utf8',
-).toString('base64')}`;
-
-const SUCCESS_BUNDLED_SOURCE = `
-  const stubFtsRetrieval = {
-    search: async () => ({ hits: [], exhausted: true }),
-    tokenize: () => [],
-    warnings: () => [],
-  };
-
-  export default (host) => {
-    const ftsBacked = {
+  },
+  'success-engine': (host) => {
+    host.bind(host.kb.fts, {
       read: () => stubFtsRetrieval,
       consumer: {
         id: 'success-engine-base',
@@ -73,16 +47,19 @@ const SUCCESS_BUNDLED_SOURCE = `
         corpusInterest: 'content',
         apply: async () => {},
       },
-    };
-    host.bind(host.kb.fts, ftsBacked);
-  };
-`;
-const SUCCESS_BUNDLED_SPECIFIER = javascriptDataUrl(SUCCESS_BUNDLED_SOURCE);
+    } as never);
+  },
+};
+
+// Specifiers are unused at runtime under the static-dispatch contract, but the
+// EngineManifest schema still requires the field. Tests inject behavior via
+// `bundledLoaders` keyed by id.
+const UNUSED_SPECIFIER = '#unused-test-specifier';
 
 const THROWING_BUNDLED_ENTRY = {
   id: 'broken-orama',
   version: '0.0.0',
-  specifier: THROWING_BUNDLED_SPECIFIER,
+  specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that throws on boot',
   fills: ['kb.fts'],
@@ -91,7 +68,7 @@ const THROWING_BUNDLED_ENTRY = {
 const SECOND_THROWING_BUNDLED_ENTRY = {
   id: 'broken-secondary',
   version: '0.0.0',
-  specifier: SECOND_THROWING_SPECIFIER,
+  specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'second bundled engine that throws on boot',
   fills: ['kb.vector'],
@@ -100,7 +77,7 @@ const SECOND_THROWING_BUNDLED_ENTRY = {
 const PARTIAL_BIND_THEN_THROW_ENTRY = {
   id: 'partial-bundled',
   version: '0.0.0',
-  specifier: PARTIAL_BIND_THEN_THROW_SPECIFIER,
+  specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that binds then throws',
   fills: ['kb.fts'],
@@ -109,7 +86,7 @@ const PARTIAL_BIND_THEN_THROW_ENTRY = {
 const SUCCESS_BUNDLED_ENTRY = {
   id: 'success-engine',
   version: '0.0.0',
-  specifier: SUCCESS_BUNDLED_SPECIFIER,
+  specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that binds FTS successfully',
   fills: ['kb.fts'],
@@ -139,6 +116,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
       state: createMemoryState(),
+      bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [THROWING_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
     });
@@ -153,6 +131,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
       state: createMemoryState(),
+      bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [THROWING_BUNDLED_ENTRY, SECOND_THROWING_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
     });
@@ -168,6 +147,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
       state,
+      bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [SUCCESS_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
       resolveKbRuntime: () => kb,
@@ -194,6 +174,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
       state: createMemoryState(),
+      bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [PARTIAL_BIND_THEN_THROW_ENTRY],
       now: () => FIXED_NOW,
       resolveKbRuntime: () => kb,
@@ -217,6 +198,7 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
       state: createMemoryState(),
+      bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [THROWING_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
       resolveKbRuntime: () => kb,
