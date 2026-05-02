@@ -1,0 +1,34 @@
+world:
+  listen:
+    port: 4305
+  durable:
+    - pid: 30505
+      runtimeDelayMs: 5
+      stdout:
+        - delayMs: 20
+          data: "hard-progress\n"
+      exit: null
+  fakeProvider:
+    progress:
+      - delayMs: 5
+        message: provider-progress-pre-hard
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate hard shutdown marks running job as error
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 5
+  - type: wait
+    until:
+      progressContains: provider-progress-pre-hard
+    stepMs: 5
+    maxSteps: 5
+  - type: shutdown
+    reason: crash
+  - type: expect
+    phase: error
+    runtimeRecorded: true
+    noRealIO: true

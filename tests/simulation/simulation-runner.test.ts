@@ -10,7 +10,13 @@ const FIRST_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000002';
 const FIRST_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000003';
 const SECOND_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000004';
 const SECOND_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000005';
-const EXAMPLE_SCENARIOS = ['lifecycle-complete.yaml', 'lifecycle-abort.yaml', 'lifecycle-reset.yaml'];
+const EXAMPLE_SCENARIOS = [
+  'lifecycle-complete.yaml',
+  'lifecycle-abort.yaml',
+  'lifecycle-reset.yaml',
+  'lifecycle-handoff-shutdown.yaml',
+  'lifecycle-hard-shutdown-marks-error.yaml',
+];
 
 const worlds: SimulationWorld[] = [];
 
