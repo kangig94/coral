@@ -213,7 +213,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                    plan skill                                │  │
 │  │                                                              │  │
-│  │  Phase 1 (--codex)        Phase 2 (always)                   │  │
+│  │  Phase 1 (--delegate)     Phase 2 (always)                   │  │
 │  │  ┌──────────────────┐    ┌──────────────────┐                │  │
 │  │  │ 4a: coral-cli    │    │ 4a: architect    │                │  │
 │  │  │ codex architect  │    │     critic       │  ──parallel──  │  │
@@ -224,12 +224,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 │  │  │ 4b: coral-cli    │    │ 4b: resolver     │  --deep only   │  │
 │  │  │ codex resolver   │    │  (edits plan)    │                │  │
 │  │  │ -i               │    │                  │                │  │
-│  │  └────────┬─────────┘    └────────┬─────────┘                │  │
-│  │           │                       │                          │  │
-│  │  ┌────────▼─────────────────────────────────┐                │  │
-│  │  │ 4e: plan skill reads directly:           │  --deep only   │  │
-│  │  │   ▒▒ HOW-COMPLETE (exit evaluation)      │                │  │
-│  │  └──────────────────────────────────────────┘                │  │
+│  │  └──────────────────┘    └──────────────────┘                │  │
 │  │                                                              │  │
 │  │  Step 5: Handoff → coral:ralph                               │  │
 │  └──────────────────────────────────────────────────────────────┘  │
@@ -256,7 +251,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 
 | HOW File | Skill | Strength | Trigger |
 |----------|-------|----------|---------|
-| HOW-COMPLETE | plan | `--deep` ONLY | Step 4e exit evaluation (when `--deep`) |
+| (none) | plan | — | Resolver owns synthesis and exit decision; orchestrator does not read HOW files directly |
 | (none) | analyze | — | Provenance gate executes inline without reading HOW files |
 | (none) | preplan | — | References HOW-REVIEW conceptually (prose mention only) |
 | HOW-ELICIT | preplan | RECOMMENDED | When filling Assumptions (#4) |

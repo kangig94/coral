@@ -13,7 +13,7 @@ Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, �
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 
-# Codex (--codex 교차 모델 위임도 활성화):
+# Codex (--delegate 교차 모델 위임도 활성화):
 npm install -g @openai/codex
 codex plugin marketplace add kangig94/coral
 # Codex를 재시작한 뒤 /plugins를 실행하고 Coral marketplace에서 Coral을 설치하세요.
@@ -136,14 +136,11 @@ plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며
 # 적대적 테스트 — 놓친 부분을 찾는 red-attacker 생성:
 /coral:ralph --red implement the caching layer
 
-# Codex CLI에 교차 모델 위임:
-/coral:plan --codex redesign the session management system
-
-# Codex 직접 세션 (다중 턴, 세션 유지):
-/coral:codex review auth.ts for security issues
+# 교차 모델 위임 (Claude에선 Codex로, Codex에선 Claude로):
+/coral:plan --delegate redesign the session management system
 ```
 
-`--codex`는 스킬 내에서 Codex에 위임; `/coral:codex`는 독립적인 Codex 세션.
+`--delegate`는 현재 host의 반대 host에서 작업을 실행 (Claude면 Codex, Codex면 Claude).
 
 </details>
 
@@ -196,16 +193,15 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 ## 스킬
 
-| 스킬 | 설명 | Codex |
-|------|------|:-----:|
-| `/coral:analyze` | 심층 분석 및 조사 | 선택 |
+| 스킬 | 설명 | `--delegate` |
+|------|------|:------------:|
+| `/coral:analyze` | 심층 분석 및 조사 | ✓ |
 | `/coral:pathfind` | 문제 증상에서 발산적 방향 탐색 | - |
-| `/coral:preplan` | 계획 전 문제 정의 | 선택 |
-| `/coral:plan` | 구조화된 다중 라운드 리뷰 포함 계획. `--deep`으로 방법론 기반 종합 | 선택 |
-| `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | 선택 |
-| `/coral:bugfix` | 버그 진단, 계획, 수정을 한 번에 | 선택 |
-| `/coral:code-simplify` | 코드 명확성 향상 및 정리 | 선택 |
-| `/coral:codex` | Codex CLI 직접 실행 (세션 유지) | 필수 |
+| `/coral:preplan` | 계획 전 문제 정의 | ✓ |
+| `/coral:plan` | 구조화된 다중 라운드 리뷰 포함 계획. `--deep`으로 방법론 기반 종합 | ✓ |
+| `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | ✓ |
+| `/coral:bugfix` | 버그 진단, 계획, 수정을 한 번에 | ✓ |
+| `/coral:code-simplify` | 코드 명확성 향상 및 정리 | ✓ |
 | `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
 | `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |
 | `/coral:bid` | 활성 `--user` 토론 세션에서 입찰/발언 | - |

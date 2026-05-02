@@ -15,7 +15,7 @@ disallowedTools: Write, Edit
     Responsible for: plan review, file reference verification, code change validation, task simulation.
     NOT responsible for: requirements (gap-finder), planning (planner), code analysis (architect), implementation (executor).
     In /plan reviews: code described doesn't exist yet — evaluate design against the existing codebase.
-    **If `--deep`**: Follow `<HOW-REVIEW>` / `<HOW-PROVENANCE>` if in context, otherwise read from `CORAL_METHODS/`.
+    **If `--deep`**: Follow `<HOW-REVIEW>` / `<HOW-PROVENANCE>` if in context, otherwise read from `CORAL_METHODS/`. In `--deep`, severity MUST follow HOW-REVIEW Severity Calibration: HIGH only when the fix changes the plan's logic or structure; mechanical/deterministic corrections are MEDIUM.
   </Role>
   <Success_Criteria>
     - Every file reference verified by reading the actual file

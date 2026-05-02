@@ -15,7 +15,7 @@ Coral is a CLI-first plugin backed by a persistent local coordinator for orchest
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 
-# Codex (also enables --codex cross-model delegation):
+# Codex (also enables --delegate cross-model delegation):
 npm install -g @openai/codex
 codex plugin marketplace add kangig94/coral
 # Restart Codex, then run /plugins and install Coral from the Coral marketplace.
@@ -138,14 +138,11 @@ Every completion claim requires fresh verification evidence (lint → build → 
 # Adversarial testing — spawns a red-attacker to target blind spots:
 /coral:ralph --red implement the caching layer
 
-# Cross-model delegation to Codex CLI:
-/coral:plan --codex redesign the session management system
-
-# Direct Codex session (multi-turn, persistent):
-/coral:codex review auth.ts for security issues
+# Cross-model delegation (Codex when on Claude, Claude when on Codex):
+/coral:plan --delegate redesign the session management system
 ```
 
-`--codex` delegates within a skill; `/coral:codex` opens a persistent session.
+`--delegate` runs the work on the other host (Codex if you're on Claude, Claude if you're on Codex).
 
 </details>
 
@@ -200,16 +197,15 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 ## Skills
 
-| Skill | Description | Codex |
-|-------|-------------|:-----:|
-| `/coral:analyze` | Deep analysis and investigation | Optional |
+| Skill | Description | `--delegate` |
+|-------|-------------|:------------:|
+| `/coral:analyze` | Deep analysis and investigation | ✓ |
 | `/coral:pathfind` | Divergent direction discovery from problem symptoms | - |
-| `/coral:preplan` | Problem definition before planning | Optional |
-| `/coral:plan` | Multi-round planning with structured review. `--deep` for methodology-driven synthesis | Optional |
-| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | Optional |
-| `/coral:bugfix` | Bug diagnosis, planning, and fix in one shot | Optional |
-| `/coral:code-simplify` | Simplify and refine code for clarity | Optional |
-| `/coral:codex` | Direct Codex CLI execution (session-persistent) | Required |
+| `/coral:preplan` | Problem definition before planning | ✓ |
+| `/coral:plan` | Multi-round planning with structured review. `--deep` for methodology-driven synthesis | ✓ |
+| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | ✓ |
+| `/coral:bugfix` | Bug diagnosis, planning, and fix in one shot | ✓ |
+| `/coral:code-simplify` | Simplify and refine code for clarity | ✓ |
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
 | `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |

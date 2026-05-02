@@ -12,12 +12,11 @@ Codex delegation is a normal CLI-to-backend provider launch.
 
 | User request | Routing | Reason |
 | --- | --- | --- |
-| "review with architect" | Claude-native `architect` | Default read-only reviewer |
-| "review with codex architect" | `coral-cli codex architect -i ...` via `/coral:codex` | Explicit Codex delegation |
-| "review with critic" | Claude-native `critic` | Default critical reviewer |
-| "review with codex critic" | `coral-cli codex critic -i ...` via `/coral:codex` | Explicit Codex delegation |
+| "review with architect" | Self-execute `architect` on current host | Default read-only reviewer |
+| "review with the other host's architect" | `coral-cli <other-host> architect -i ...` | Explicit cross-host delegation |
+| "review with critic" | Self-execute `critic` on current host | Default critical reviewer |
 | "run ralph on this task" | `/coral:ralph` | Skill-owned execution protocol |
-| "codex ralph this task" | `/coral:ralph --codex` | Codex-backed execution through CLI launch + wait |
+| "delegate ralph this task" | `/coral:ralph --delegate` | Cross-host execution through CLI launch + wait |
 
 ## Claude-native Agents
 

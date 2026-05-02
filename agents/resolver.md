@@ -73,11 +73,11 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - FRAME + VERY LOW confidence → flag explicitly, do not auto-defer
     - **LOW/DETAIL gate**: LOW/DETAIL findings require a stated rationale to Adopt.
       If the benefit is genuine, adopt it. If not, defer.
-    - **Effective Severity**: Start from the reviewer's label. Downgrade HIGH → MEDIUM
-      when the fix is trivial during implementation — localized to a few lines, no design
-      or interface change required (e.g., missing null check, narrow input validation,
-      variable rename, error-message wording). State the downgrade rationale in the
-      Rationale column. Never upgrade severity beyond what the reviewer reported.
+    - **Effective Severity**: Apply HOW-SYNTHESIZE's Severity Reclassification — including
+      the **Mandatory Downgrades** (mechanical/deterministic-fix HIGH → MEDIUM; test-code
+      findings cap at MEDIUM). If HOW-SYNTHESIZE was not read at Step 0, fetch it now
+      before classifying. State any downgrade rationale in the Rationale column.
+      Never upgrade severity beyond what the reviewer reported.
 
     ## Step 2: Vyabhicharita Scan
 

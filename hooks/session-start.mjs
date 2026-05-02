@@ -31,10 +31,13 @@ try {
     asOwner: true,
   });
 
+  const aiAgent = process.env.AI_AGENT ?? '';
+  const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
+
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: `SessionStart:session_id=${sessionId}\n\n${injectContent}`,
+      additionalContext: `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`,
     },
   }));
 } catch {

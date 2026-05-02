@@ -11,7 +11,6 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist |
 | `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer synthesis |
 | `HOW-RESOLVE.md` | resolver | Constraint-collision resolution |
-| `HOW-COMPLETE.md` | plan | Exit evaluation |
 | `HOW-FALSIFY.md` | debugger, scanner | Hypothesis elimination |
 | `HOW-CONFIDENCE.md` | debugger | Evidence confidence grading |
 | `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence chain tracking |
@@ -21,11 +20,10 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 
 | Skill | Description |
 | --- | --- |
-| `/coral:codex` | Main Codex entrypoint: general runs, continuity, and delegated agent flows |
-| `/coral:analyze` | Deep analysis and investigation; `--codex` delegates through Codex CLI |
+| `/coral:analyze` | Deep analysis and investigation; `--delegate` runs on the other host |
 | `/coral:preplan` | Structured problem-definition conversation before planning |
-| `/coral:plan` | Planning with architect/critic review; `--deep` enables methodology-driven synthesis; `--codex` adds Codex review rounds |
-| `/coral:ralph` | Persistent execution loop with verification; supports `--codex`, `--team`, and `--red` |
+| `/coral:plan` | Planning with architect/critic review; `--deep` enables methodology-driven synthesis; `--delegate` adds a review round on the other host |
+| `/coral:ralph` | Persistent execution loop with verification; supports `--delegate`, `--team`, and `--red` |
 | `/coral:code-simplify` | Code simplification and cleanup |
 | `/coral:bugfix` | Diagnosis, planning, and fix execution |
 | `/coral:equip` | Install Coral companion tooling and KB runtime helpers |
@@ -54,22 +52,11 @@ Rules:
 
 `/coral:ralph --red <task>` runs adversarial testing in parallel with implementation.
 
-- `--red` with Claude implementation launches Codex-side red-attacker work through `coral-cli codex red-attacker -i ...`
-- `--red --codex` flips the implementation model and keeps the red-attacker on the opposite model for diversity
+- `--red` runs the red-attacker on the opposite host from the implementation for diversity (e.g., when implementation runs on Claude, red-attacker launches through `coral-cli codex red-attacker -i ...`)
+- `--red --delegate` flips the implementation host; the red-attacker still uses the opposite host
 - `--red --team` integrates the attacker into teammate orchestration
 
 Generated tests use `red-<target>.<ext>` staging names and are triaged before being merged into the main suite.
-
-## `/coral:codex`
-
-The Codex skill is session-aware:
-
-- active Codex work can be inspected with `coral-cli jobs --provider codex`
-- general requests use `coral-cli codex -i ...`
-- delegated agent requests use `coral-cli codex <agent> -i ...`
-- consecutive general requests reuse the previous `session` when available
-
-Codex session branching is intentionally unsupported. Skills and docs should not advertise branching or named-fork flows.
 
 ## `/coral:discuss`
 

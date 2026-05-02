@@ -1,7 +1,7 @@
 ---
 name: plan
-description: 'Use when a task needs structured planning before implementation. Supports --deep and --codex flags.'
-argument-hint: '[--deep] [--codex] [task description]'
+description: 'Use when a task needs structured planning before implementation. Supports --deep and --delegate flags.'
+argument-hint: '[--deep] [--delegate] [task description]'
 ---
 
 # Planning
@@ -12,12 +12,12 @@ Execute a multi-round planning session with architect/critic review.
 
 | Argument       | Mode                                                                                               |
 | -------------- | -------------------------------------------------------------------------------------------------- |
-| `<prompt>`     | Claude-native (default)                                                                            |
-| `--codex`      | Codex delegation (context from conversation)                                                       |
-| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), read HOW-COMPLETE, pass `--deep` to reviewers |
+| `<prompt>`     | Self-execute on current host (default)                                                             |
+| `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
+| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), pass `--deep` to reviewers |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
 
-Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
+Strip `--delegate`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
 
 <Planning_Protocol>
 <Role>
@@ -70,12 +70,12 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ### 4. Review Loop
 
     Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
-    Phase 1 runs only when `--codex` flag is set. Phase 2 always runs (unless skipped by Complexity Gate).
+    Phase 1 runs only when `--delegate` flag is set (review on the other host). Phase 2 always runs (unless skipped by Complexity Gate; review on the current host).
 
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
-    - `TaskCreate({ subject: "Phase 1 — Codex review" })` (only if `--codex`)
-    - `TaskCreate({ subject: "Phase 2 — Claude review" })`
+    - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`)
+    - `TaskCreate({ subject: "Phase 2 — <current-host> review" })`
     - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
@@ -112,10 +112,12 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     #### Review Phases
 
+    Let `<current-host>` come from SessionStart `Current host:`. Let `<other-host>` = the other of `codex`/`claude`.
+
     | Phase | Condition | Provider | Round Label |
     |-------|-----------|----------|-------------|
-    | 1 | `--codex` only | `"codex"` | `(Codex)` |
-    | 2 | always | `"claude"` | `(Claude)` |
+    | 1 | `--delegate` only | `<other-host>` | `(<other-host capitalized>)` |
+    | 2 | always | `<current-host>` | `(<current-host capitalized>)` |
 
     For each applicable phase, repeat (max 5 rounds):
 
@@ -165,22 +167,9 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     **4d. Exit Condition**
 
-    **Step 1 — Completion assessment** (`--deep` only):
-    If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Evaluate coverage gaps (Counterexample Coverage),
-    effort quality (Refutation Effort), and convergence pattern (Progressive Focus).
-    Record the assessment — it informs both the verdict (Step 2) and next-round steering (Continue path).
+    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
 
-    **Step 2 — Verdict**:
-
-    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
-
-    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
-
-    **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
-
-    Apply ALL conditions in HOW-COMPLETE's Combined Exit Rule using the Step 1 assessment.
-    If any condition fails → **Continue** (→ 4a, next round).
-    Exit phase only when both Step 2 AND Step 3 pass.
+    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then exit phase. LOW/none → exit phase. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
 
     ### 4e. Execution Order
 
@@ -261,7 +250,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     **Plan file**: `CORAL_PROJECT/plans/{topic}.md`
 
     ### Review Summary
-    - Phases: [0 (Frame Gate) + 1 (Codex) + 2 (Claude)] or [0 (Frame Gate) + 1 (Claude)]
+    - Phases: [0 (Frame Gate) + 1 (<other-host>) + 2 (<current-host>)] or [0 (Frame Gate) + 2 (<current-host>)]
     - Rounds: N per phase
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
@@ -282,7 +271,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
       { question: "How would you like to implement?", header: "Mode",
         options: [
           { label: "ralph", description: "Claude-native sequential" },
-          { label: "ralph --codex", description: "Codex delegation" },
+          { label: "ralph --delegate", description: "Delegate to the other host" },
           { label: "ralph --team", description: "Parallel via Agent Teams" },
           { label: "Skip", description: "No implementation" }
         ], multiSelect: false },

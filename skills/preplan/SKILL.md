@@ -1,7 +1,7 @@
 ---
 name: preplan
-description: "Use when a problem needs clarification and agreement before planning begins. Supports --deep and --codex."
-argument-hint: "[--deep] [--codex] <issue or topic>"
+description: "Use when a problem needs clarification and agreement before planning begins. Supports --deep and --delegate."
+argument-hint: "[--deep] [--delegate] <issue or topic>"
 ---
 
 # Pre-plan
@@ -12,11 +12,11 @@ Structured problem-definition conversation with the user before planning begins.
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` | Claude-native (default) |
+| `<prompt>` | Self-execute on current host (default) |
 | `--deep` | Enable pioneer review for elegant alternatives |
-| `--codex` | Delegate pioneer to Codex CLI (activates `--deep`) |
+| `--delegate` | Delegate pioneer to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`). Activates `--deep`. |
 
-Strip `--deep` and `--codex` flags before passing the prompt to the execution path.
+Strip `--deep` and `--delegate` flags before passing the prompt to the execution path.
 
 <Preplan_Protocol>
   <Role>
@@ -60,19 +60,19 @@ Strip `--deep` and `--codex` flags before passing the prompt to the execution pa
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Pioneer (`--deep` or `--codex`)
+    ### 2. Pioneer (`--deep` or `--delegate`)
 
-    **Skip this step unless `--deep` or `--codex` is set.** Without either flag, proceed
+    **Skip this step unless `--deep` or `--delegate` is set.** Without either flag, proceed
     directly to Step 3 — the orchestrator fills the three-point spectrum from its own analysis.
 
-    Dispatch pioneer to find the most elegant alternatives:
+    Dispatch pioneer to find the most elegant alternatives. Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
 
     ```
-    // --deep (without --codex)
+    // --deep (without --delegate): self-execute
     output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
 
-    // --codex
-    launch = Bash(`coral-cli codex pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
+    // --delegate: dispatch to the other host
+    launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
     terminal = Bash(`coral-cli wait --jobs "${job}" --embed`)
     output = Read(<path from the terminal's `Result path:` line>)
@@ -205,7 +205,7 @@ Strip `--deep` and `--codex` flags before passing the prompt to the execution pa
         options: [
           { label: "Proceed", description: "Start planning" },
           { label: "Proceed --deep", description: "Plan with deep review" },
-          { label: "Proceed --deep --codex", description: "Plan with deep Codex review" },
+          { label: "Proceed --deep --delegate", description: "Plan with deep review on the other host" },
           { label: "Continue discussion", description: "Keep refining preplan" }
         ], multiSelect: false }
     ]})
