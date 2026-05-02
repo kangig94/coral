@@ -1,11 +1,8 @@
-import { buildChildEnv } from '../../infra/env-sanitize.js';
-import type { IdPort } from '../../runtime/ports.js';
 import { raceTimeout } from '../../infra/async.js';
 import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,
   parseClaudeStdoutLine,
-  type PermissionMode,
   type SDKAssistantMessage,
   type SDKControlInitializeRequest,
   type SDKControlInterruptRequest,
@@ -17,7 +14,8 @@ import {
   type SDKSystemMessage,
 } from '../claude/control-protocol.js';
 import { extractClaudeProgressMessage, formatToolProgress } from '../claude/progress.js';
-import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/request-prep.js';
+import { hashSortedEnv, sameBootstrapSignature } from '../claude/request-prep.js';
+import { buildClaudeChildEnv } from './child-env.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -29,20 +27,23 @@ import {
   systemProgressMessage,
   toBootstrapSignature,
   type ClaudeBootstrapSignature,
-  type ClaudeBrokerNotification,
   type SessionEnsureParams,
   type SessionEnsureResult,
   type SessionProbeParams,
   type SessionProbeResult,
-  type SessionUpdatedParams,
-  type TurnCompletedParams,
-  type TurnFailedParams,
   type TurnInterruptParams,
   type TurnInterruptResult,
-  type TurnProgressParams,
   type TurnStartParams,
   type TurnStartResult,
 } from './protocol.js';
+import type {
+  ChildExit,
+  ClaudeBrokerChild,
+  ControllerNotification,
+  ControllerNotificationMap,
+  CreateBrokerSessionOptions,
+  SingleSessionControllerOptions,
+} from './session-contract.js';
 
 const DEFAULT_STDERR_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
@@ -53,12 +54,6 @@ type ControlRequestPayload =
   | SDKControlInterruptRequest
   | SDKControlSetModelRequest
   | SDKControlSetMaxThinkingTokensRequest;
-
-type ChildExit = {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  error?: Error;
-};
 
 type PendingControlRequest = {
   subtype: ControlRequestPayload['subtype'];
@@ -82,68 +77,17 @@ type ControllerSessionProbeParams = Omit<SessionProbeParams, 'brokerSessionKey'>
 type ControllerTurnStartParams = Omit<TurnStartParams, 'brokerSessionKey'>;
 type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey'>;
 
-type ControllerNotificationMap = {
-  'session/updated': Omit<SessionUpdatedParams, 'brokerSessionKey'>;
-  'turn/progress': Omit<TurnProgressParams, 'brokerSessionKey'>;
-  'turn/completed': Omit<TurnCompletedParams, 'brokerSessionKey'>;
-  'turn/failed': Omit<TurnFailedParams, 'brokerSessionKey'>;
-};
-
-export type ControllerNotification = {
-  [TMethod in keyof ControllerNotificationMap]: {
-    method: TMethod;
-    params: ControllerNotificationMap[TMethod];
-  };
-}[keyof ControllerNotificationMap];
-
 type ChildBinding = {
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
   dispose: () => void;
 };
 
-export interface ClaudeBrokerChild {
-  writeLine(line: string): void;
-  kill(signal?: NodeJS.Signals): void;
-  onStdoutLine(handler: (line: string) => void): () => void;
-  onExit(handler: (event: ChildExit) => void): () => void;
-  onStderrChunk?(handler: (chunk: string) => void): () => void;
-}
-
-export interface SpawnClaudeChildOptions {
-  cwd: string;
-  conversationRef?: string;
-  systemPrompt?: string;
-  permissionMode: PermissionMode;
-  env?: Record<string, string>;
-}
-
-export interface CreateBrokerSessionOptions {
-  spawnChild: (options: SpawnClaudeChildOptions) => Promise<ClaudeBrokerChild> | ClaudeBrokerChild;
-  ids: Pick<IdPort, 'uuid'>;
-  onTurnStarted?: (turn: { brokerTurnId: string }) => Promise<void> | void;
-  stderrLimit?: number;
-}
-
-export interface ClaudeBrokerSession {
-  readonly closed: Promise<Error | void>;
-  sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult>;
-  sessionProbe(params: SessionProbeParams): Promise<SessionProbeResult>;
-  turnStart(params: TurnStartParams): Promise<TurnStartResult>;
-  turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult>;
-  shutdown(): Promise<void>;
-  subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void;
-}
-
-export type SingleSessionControllerOptions = CreateBrokerSessionOptions & {
-  onUnexpectedExit?: () => void;
-};
-
 export class SingleSessionController {
   private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
-  private readonly ids: Pick<IdPort, 'uuid'>;
+  private readonly ids: CreateBrokerSessionOptions['ids'];
   private readonly onUnexpectedExit: (() => void) | undefined;
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
   private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
@@ -179,7 +123,7 @@ export class SingleSessionController {
 
   async sessionEnsure(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): Promise<ControllerSessionEnsureResult> {
     const signature = toBootstrapSignature(params);
-    const controllerEnvHash = hashClaudeChildEnv(buildClaudeChildEnv(params.controllerEnv));
+    const controllerEnvHash = hashSortedEnv(buildClaudeChildEnv(params.controllerEnv));
     this.assertCompatibility(signature, controllerEnvHash);
 
     if (this.ensurePromise) {
@@ -856,14 +800,6 @@ export class SingleSessionController {
       handler(notification);
     }
   }
-}
-
-export function buildClaudeChildEnv(controllerEnv?: Record<string, string>): Record<string, string> {
-  return buildChildEnv(normalizeControllerEnv(controllerEnv));
-}
-
-export function hashClaudeChildEnv(childEnv: Record<string, string>): string {
-  return hashSortedEnv(childEnv);
 }
 
 function appendRingBuffer(current: string, next: string, limit: number): string {

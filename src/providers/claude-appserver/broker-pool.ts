@@ -1,9 +1,4 @@
-import {
-  SingleSessionController,
-  type ClaudeBrokerSession,
-  type ControllerNotification,
-  type CreateBrokerSessionOptions,
-} from './controller.js';
+import { SingleSessionController } from './controller.js';
 import {
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
@@ -20,6 +15,7 @@ import {
   type TurnStartParams,
   type TurnStartResult,
 } from './protocol.js';
+import type { ClaudeBrokerSession, ControllerNotification, CreateBrokerSessionOptions } from './session-contract.js';
 
 const DEFAULT_STDERR_RING_LIMIT = 16_384;
 
@@ -298,4 +294,4 @@ export function createBrokerSession(options: CreateBrokerSessionOptions): Claude
   return new BrokerSessionPool(options);
 }
 
-export type { ClaudeBrokerSession } from './controller.js';
+export type { ClaudeBrokerSession } from './session-contract.js';

@@ -18,8 +18,9 @@ import {
   requireTurnStartParams,
 } from './protocol.js';
 import type { JsonRpcRequest } from '../../infra/json-rpc.js';
-import { buildClaudeChildEnv, type ClaudeBrokerChild, type SpawnClaudeChildOptions } from './controller.js';
-import { createBrokerSession, type ClaudeBrokerSession } from './broker-pool.js';
+import { buildClaudeChildEnv } from './child-env.js';
+import { createBrokerSession } from './broker-pool.js';
+import type { ClaudeBrokerChild, ClaudeBrokerSession, SpawnClaudeChildOptions } from './session-contract.js';
 
 interface CreateClaudeBrokerServerOptions {
   input?: NodeJS.ReadableStream;
