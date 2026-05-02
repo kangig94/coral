@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { createServer, type Server as NetServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { decode, encode, type JsonRpcRequestEnvelope, type JsonRpcResponseEnvelope } from '#src/transport/ipc/json-rpc.js';
+import {
+  decode,
+  encode,
+  type JsonRpcRequestEnvelope,
+  type JsonRpcResponseEnvelope,
+} from '#src/transport/ipc/json-rpc.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 

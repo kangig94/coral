@@ -1,6 +1,13 @@
 import { basename, join } from 'node:path';
 import type { EnvPort } from '../../../src/infra/port-types.js';
-import type { Disposable, IdPort, RuntimeObserver, RuntimePaths, SpawnEvent, SpawnListener } from '../../../src/runtime/ports.js';
+import type {
+  Disposable,
+  IdPort,
+  RuntimeObserver,
+  RuntimePaths,
+  SpawnEvent,
+  SpawnListener,
+} from '../../../src/runtime/ports.js';
 import { cloneSpawnEvent } from '../../../src/runtime/ports.js';
 import { composeCoralPaths, type CoralPaths } from '../../../src/infra/path/index.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';

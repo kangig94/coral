@@ -83,11 +83,7 @@ export function listWorkflowProjections(db: Database): WorkflowProjectionRow[] {
   }));
 }
 
-export function readWorkflowView(
-  db: Database,
-  workflowId: string,
-  ctx: StoreReadContext,
-): WorkflowView | null {
+export function readWorkflowView(db: Database, workflowId: string, ctx: StoreReadContext): WorkflowView | null {
   const projection = readWorkflowProjection(db, workflowId);
   if (!projection) {
     return null;

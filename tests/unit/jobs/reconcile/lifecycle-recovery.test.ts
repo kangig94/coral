@@ -425,7 +425,7 @@ function createLifecycleHarness(
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
-      expansionLifecycleService: null,
+    expansionLifecycleService: null,
     handoffQuiescePorts: () => [],
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},

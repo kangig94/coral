@@ -101,7 +101,12 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly publicationQueue: CorpusPublicationQueue;
   private activeMutationContext: KbRuntimeMutationLockContext | null = null;
-  private readonly mutationLockController: KbMutationLockController<KbIndex, KbCorpusPublication, KbIndexMutationLane, ManifestAuthorityDelta>;
+  private readonly mutationLockController: KbMutationLockController<
+    KbIndex,
+    KbCorpusPublication,
+    KbIndexMutationLane,
+    ManifestAuthorityDelta
+  >;
   private readonly publicationService: CorpusPublicationService;
   private readonly authorityBaselineRefresh: CorpusAuthorityBaselineRefresh;
   private readonly mutationFinalizer: CorpusMutationFinalizer;
@@ -280,16 +285,36 @@ class KbRuntimeImpl implements KbRuntime {
     this.manifestAuthority.seedFromFullCollectors(this);
   }
 
-  notesDir(): string { return this.paths.notesDir(); }
-  sourcesDir(): string { return this.paths.sourcesDir(); }
-  communitiesDir(): string { return this.paths.communitiesDir(); }
-  principlesDir(): string { return this.paths.principlesDir(); }
-  entityGraphPath(): string { return this.paths.entityGraphPath(); }
-  notePath(note: string): string { return this.paths.notePath(note); }
-  sourcePath(source: string): string { return this.paths.sourcePath(source); }
-  communityPath(community: string): string { return this.paths.communityPath(community); }
-  principlePath(principle: string): string { return this.paths.principlePath(principle); }
-  sourceImportStageDir(): string { return this.paths.sourceImportStageDir(); }
+  notesDir(): string {
+    return this.paths.notesDir();
+  }
+  sourcesDir(): string {
+    return this.paths.sourcesDir();
+  }
+  communitiesDir(): string {
+    return this.paths.communitiesDir();
+  }
+  principlesDir(): string {
+    return this.paths.principlesDir();
+  }
+  entityGraphPath(): string {
+    return this.paths.entityGraphPath();
+  }
+  notePath(note: string): string {
+    return this.paths.notePath(note);
+  }
+  sourcePath(source: string): string {
+    return this.paths.sourcePath(source);
+  }
+  communityPath(community: string): string {
+    return this.paths.communityPath(community);
+  }
+  principlePath(principle: string): string {
+    return this.paths.principlePath(principle);
+  }
+  sourceImportStageDir(): string {
+    return this.paths.sourceImportStageDir();
+  }
 
   readEntityGraph(): EntityGraph | null {
     return readEntityGraphFile(this.storagePort, this.entityGraphPath());
@@ -301,13 +326,27 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  readIndex(): KbIndex | null { return this.indexStore.readIndex(); }
-  persistIndexToDisk(index: KbIndex): KbIndex { return this.indexStore.persistIndexToDisk(index); }
-  writeIndex(index: KbIndex): KbIndex { return this.indexStore.writeIndex(index); }
-  readIndexOrEmpty(): KbIndex { return this.indexStore.readIndexOrEmpty(); }
-  readIndexStateIfPresent(): KbIndexState | null { return this.indexStore.readIndexStateIfPresent(); }
-  readIndexState(): KbIndexState { return this.indexStore.readIndexState(); }
-  writeIndexState(state: KbIndexState): void { this.indexStore.writeIndexState(state); }
+  readIndex(): KbIndex | null {
+    return this.indexStore.readIndex();
+  }
+  persistIndexToDisk(index: KbIndex): KbIndex {
+    return this.indexStore.persistIndexToDisk(index);
+  }
+  writeIndex(index: KbIndex): KbIndex {
+    return this.indexStore.writeIndex(index);
+  }
+  readIndexOrEmpty(): KbIndex {
+    return this.indexStore.readIndexOrEmpty();
+  }
+  readIndexStateIfPresent(): KbIndexState | null {
+    return this.indexStore.readIndexStateIfPresent();
+  }
+  readIndexState(): KbIndexState {
+    return this.indexStore.readIndexState();
+  }
+  writeIndexState(state: KbIndexState): void {
+    this.indexStore.writeIndexState(state);
+  }
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
     this.publicationService.register(corpusPublishCallbacks);
   }
@@ -361,11 +400,21 @@ class KbRuntimeImpl implements KbRuntime {
     return nextState;
   }
 
-  getCorpusStateSnapshot(): KbCorpusSnapshot { return this.corpusStateMirror.get(); }
-  captureCorpusSnapshot(): KbCorpusSnapshot { return this.publicationService.captureCorpusSnapshot(); }
-  invalidateCorpusStateSnapshot(): void { this.corpusStateMirror.invalidate(); }
-  invalidateKbCache(): void { this.indexStore.invalidateIndexCache(); }
-  invalidateTextSnapshot(reason: string): KbIndexState { return this.recordIndexSyncFailure(reason); }
+  getCorpusStateSnapshot(): KbCorpusSnapshot {
+    return this.corpusStateMirror.get();
+  }
+  captureCorpusSnapshot(): KbCorpusSnapshot {
+    return this.publicationService.captureCorpusSnapshot();
+  }
+  invalidateCorpusStateSnapshot(): void {
+    this.corpusStateMirror.invalidate();
+  }
+  invalidateKbCache(): void {
+    this.indexStore.invalidateIndexCache();
+  }
+  invalidateTextSnapshot(reason: string): KbIndexState {
+    return this.recordIndexSyncFailure(reason);
+  }
   ensureCorpusFreshness(options: EnsureCorpusFreshnessOptions = {}): Promise<KbIndex> {
     return this.freshnessService.ensureCorpusFreshness(options);
   }

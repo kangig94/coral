@@ -36,9 +36,7 @@ const TIMER_SCOPED_ROOTS = [
   'src/coordinator',
   'src/transport',
 ] as const;
-const DATE_NOW_SCOPED_ROOTS = [
-  'src/transport',
-] as const;
+const DATE_NOW_SCOPED_ROOTS = ['src/transport'] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
   'src/providers/claude-appserver/server.ts',

@@ -2456,7 +2456,6 @@ describe('ExecutionService', () => {
               },
             },
           },
-
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2548,7 +2547,6 @@ describe('ExecutionService', () => {
               },
             },
           },
-
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2596,7 +2594,6 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-
           });
           return undefined;
         });
@@ -2609,10 +2606,7 @@ describe('ExecutionService', () => {
 
         const warnHits = stderrSpy.mock.calls.some(([chunk]) => {
           const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : '';
-          return (
-            text.includes(jobId) &&
-            text.includes('cross-version partial-state from pre-PR daemon')
-          );
+          return text.includes(jobId) && text.includes('cross-version partial-state from pre-PR daemon');
         });
         expect(warnHits).toBe(true);
         stderrSpy.mockRestore();
@@ -2651,7 +2645,6 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-
           });
           return undefined;
         });

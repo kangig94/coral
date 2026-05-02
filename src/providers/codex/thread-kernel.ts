@@ -8,11 +8,7 @@ import type {
   ProviderRuntime,
   ProviderServerLease,
 } from '../contract.js';
-import {
-  bindAppServerNotificationHandler,
-  buildProviderFailureMessage,
-  requireAppServerLease,
-} from '../app-server.js';
+import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

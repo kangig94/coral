@@ -110,7 +110,6 @@ type JobExitProjection = {
   continuity?: JobContinuitySnapshot | null;
 };
 
-
 type ProjectionRow = {
   job_id: string;
   phase: string;
@@ -271,10 +270,7 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
   return eventsByJob;
 }
 
-function readLatestProjectionStatusEvents(
-  db: Database,
-  jobIds: string[],
-): Map<string, JobStatusEventsByType> {
+function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<string, JobStatusEventsByType> {
   const eventsByJob = new Map<string, JobStatusEventsByType>();
   if (jobIds.length === 0) {
     return eventsByJob;
@@ -531,11 +527,7 @@ function hydrateJobProjectionDetail(
   };
 }
 
-export function loadJobProjectionDetail(
-  db: Database,
-  jobId: string,
-  ctx: StoreReadContext,
-): JobProjectionDetail {
+export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
   const projection = readProjectionRow(db, jobId);
   const requested = readLatestEvent(db, 'job', jobId, 'job.launch.requested');
   const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');

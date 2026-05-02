@@ -44,7 +44,10 @@ import {
 export { FreshnessTimeout } from './freshness-waiter.js';
 export type { Authority, ForcedCorpusFreshnessTarget } from './state.js';
 
-export interface StuckConsumerStatus { readonly id: string; readonly elapsedSinceStopMs: number; }
+export interface StuckConsumerStatus {
+  readonly id: string;
+  readonly elapsedSinceStopMs: number;
+}
 
 export interface ConsumerDriverOptions {
   readonly db: Database;
@@ -54,7 +57,9 @@ export interface ConsumerDriverOptions {
   readonly onTextProjectionSync?: () => void;
 }
 
-export interface UnregisterStoppedConsumerOptions { readonly preserveCursor?: boolean; }
+export interface UnregisterStoppedConsumerOptions {
+  readonly preserveCursor?: boolean;
+}
 
 export class ConsumerDriver {
   private readonly now: () => Date;
@@ -228,7 +233,9 @@ export class ConsumerDriver {
 
   async shutdown(): Promise<void> {
     const states = [...this.consumers.values()];
-    await Promise.all(states.map((state) => stopConsumer(state, new Error('ConsumerDriver shutting down'), this.stopDeps)));
+    await Promise.all(
+      states.map((state) => stopConsumer(state, new Error('ConsumerDriver shutting down'), this.stopDeps)),
+    );
     this.consumers.clear();
   }
 
@@ -289,10 +296,6 @@ export class ConsumerDriver {
     if (state.kind === 'journal') {
       return state.inFlight !== null || state.pendingTarget !== null;
     }
-    return (
-      state.inFlight !== null ||
-      state.pendingCorpusSnapshot !== null ||
-      state.pendingForcedCorpusApply !== null
-    );
+    return state.inFlight !== null || state.pendingCorpusSnapshot !== null || state.pendingForcedCorpusApply !== null;
   }
 }

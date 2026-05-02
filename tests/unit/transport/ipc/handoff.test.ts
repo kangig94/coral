@@ -15,7 +15,12 @@ import {
   type IncumbentHealth,
   type DesiredIncumbentIdentity,
 } from '#src/transport/ipc/handoff.js';
-import { decode, encode, type JsonRpcRequestEnvelope, type JsonRpcResponseEnvelope } from '#src/transport/ipc/json-rpc.js';
+import {
+  decode,
+  encode,
+  type JsonRpcRequestEnvelope,
+  type JsonRpcResponseEnvelope,
+} from '#src/transport/ipc/json-rpc.js';
 
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];

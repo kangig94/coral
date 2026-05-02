@@ -198,13 +198,7 @@ export async function runShutdownSequence({
   const kbSubsystem = kbStatus.kind === 'ok' ? kbStatus.subsystem : null;
   const curateSchedulerStop = kbSubsystem?.curateScheduler.stop?.bind(kbSubsystem.curateScheduler);
   if (curateSchedulerStop) {
-    await withBudget(
-      'kb curate scheduler stop',
-      async () => curateSchedulerStop(),
-      remainingDrain,
-      runtime.time,
-      log,
-    );
+    await withBudget('kb curate scheduler stop', async () => curateSchedulerStop(), remainingDrain, runtime.time, log);
   }
   if (expansionLifecycleService) {
     await withBudget(
@@ -218,13 +212,7 @@ export async function runShutdownSequence({
       log,
     );
   }
-  await withBudget(
-    'hooks.onShutdown',
-    async () => hooks.onShutdown(mode),
-    remainingDrain,
-    runtime.time,
-    log,
-  );
+  await withBudget('hooks.onShutdown', async () => hooks.onShutdown(mode), remainingDrain, runtime.time, log);
   for (const store of discussStores.values()) {
     store.dispose();
   }

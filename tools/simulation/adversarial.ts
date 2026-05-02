@@ -1,11 +1,7 @@
 import { join } from 'node:path';
 import { SessionManager } from '../../src/sessions/shell.js';
 import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/lifecycle.js';
-import {
-  createSimulationBackend,
-  type SimulationBackend,
-  type SimulationHookLog,
-} from './core/backend.js';
+import { createSimulationBackend, type SimulationBackend, type SimulationHookLog } from './core/backend.js';
 import { DEFAULT_EPOCH_MS } from './core/virtual-time.js';
 import {
   acquireNoRealIoMonitor,
@@ -49,7 +45,6 @@ export type WaitDetail = {
   expected: WaitUntil;
   actual: WaitObservation;
 };
-
 
 export type SimulationHttpResponse = {
   statusCode: number;

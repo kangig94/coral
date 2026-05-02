@@ -84,12 +84,8 @@ function verifySignalTarget(
     return 'gone';
   }
   const reason =
-    liveStartedAt === null
-      ? 'process start time unavailable while pid is alive'
-      : 'process start time mismatch';
-  throw new HandoffEscalationError(
-    `Refusing to signal unverified incumbent pid=${incumbent.pid}: ${reason}`,
-  );
+    liveStartedAt === null ? 'process start time unavailable while pid is alive' : 'process start time mismatch';
+  throw new HandoffEscalationError(`Refusing to signal unverified incumbent pid=${incumbent.pid}: ${reason}`);
 }
 
 /**
@@ -130,9 +126,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
       if (shutdownResult.verifiedIdentity && incumbent === null) {
         incumbent = shutdownResult.verifiedIdentity;
         const incumbentBundleHash = shutdownResult.health?.bundleHash ?? 'unknown';
-        backendLog.info(
-          `Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`,
-        );
+        backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
       }
     }
     if (incumbent === null) {
@@ -146,9 +140,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     remaining = deadline - opts.runtime.time.now();
     if (remaining <= 0) {
       if (incumbent === null) {
-        throw new HandoffEscalationError(
-          'Incumbent socket remained bound, but no verified pid was available',
-        );
+        throw new HandoffEscalationError('Incumbent socket remained bound, but no verified pid was available');
       }
       if (sigtermAt === null) {
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
@@ -165,9 +157,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           // best-effort; if signal fails the incumbent may already be gone
         }
         sigtermAt = opts.runtime.time.now();
-        backendLog.warn(
-          `Incumbent did not exit within ${opts.totalBudgetMs}ms; sent SIGTERM to pid=${incumbent.pid}`,
-        );
+        backendLog.warn(`Incumbent did not exit within ${opts.totalBudgetMs}ms; sent SIGTERM to pid=${incumbent.pid}`);
       } else if (sigkillAt === null && opts.runtime.time.now() - sigtermAt >= SIGTERM_GRACE_MS) {
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGKILL; retrying bind`);
@@ -183,9 +173,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           // best-effort
         }
         sigkillAt = opts.runtime.time.now();
-        backendLog.error(
-          `Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=${incumbent.pid}`,
-        );
+        backendLog.error(`Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=${incumbent.pid}`);
       } else if (sigkillAt !== null && opts.runtime.time.now() - sigkillAt >= SIGKILL_GRACE_MS) {
         throw new HandoffEscalationError(
           `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,

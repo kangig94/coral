@@ -4653,7 +4653,7 @@ describe('execution backend server', () => {
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
-      expansionLifecycleService: null,
+        expansionLifecycleService: null,
         handoffQuiescePorts: () => [fakeService as never],
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},

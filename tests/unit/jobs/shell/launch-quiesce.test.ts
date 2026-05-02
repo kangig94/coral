@@ -4,26 +4,13 @@ import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import type { ProviderEventBody, ProviderRequest, ProviderSpec } from '#src/providers/contract.js';
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
-import type {
-  AdmittedHandle,
-  JobAdmissionPort,
-  LaunchPool,
-} from '#src/jobs/contracts/admission.js';
-import type {
-  JobProgressStore,
-  TerminalWriteOptions,
-} from '#src/jobs/contracts/job-store.js';
+import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { JobProgressStore, TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
-import type {
-  ProviderServerLease,
-  ProviderServerSpec,
-} from '#src/providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
-import type {
-  SessionJobContinuityCheckpointResult,
-  SessionJobClaimPort,
-} from '#src/sessions/contracts.js';
+import type { SessionJobContinuityCheckpointResult, SessionJobClaimPort } from '#src/sessions/contracts.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -243,11 +230,12 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   // the job as app-server.
   const provider = {
     name: 'codex',
-    run: ((_request: ProviderRequest, providerRuntime: { acquireServer: (s: ProviderServerSpec) => Promise<unknown> }) => {
+    run: ((
+      _request: ProviderRequest,
+      providerRuntime: { acquireServer: (s: ProviderServerSpec) => Promise<unknown> },
+    ) => {
       // mark this job as app-server through the runtime port
-      void providerRuntime
-        .acquireServer({ provider: 'codex', shared: false } as ProviderServerSpec)
-        .catch(() => {});
+      void providerRuntime.acquireServer({ provider: 'codex', shared: false } as ProviderServerSpec).catch(() => {});
       return providerStream.iterable;
     }) as never,
   } as unknown as ProviderSpec;

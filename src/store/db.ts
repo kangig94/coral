@@ -25,8 +25,10 @@ export interface RunResult {
  * parameter and result generics so call sites can express their row shape
  * once at `prepare(...)` instead of casting on every `.get/.all`.
  */
-export interface Statement<TParams extends unknown[] = unknown[], TRow = unknown>
-  extends Omit<StatementSync, 'get' | 'all' | 'iterate' | 'run'> {
+export interface Statement<TParams extends unknown[] = unknown[], TRow = unknown> extends Omit<
+  StatementSync,
+  'get' | 'all' | 'iterate' | 'run'
+> {
   get(...params: TParams): TRow | undefined;
   all(...params: TParams): TRow[];
   iterate(...params: TParams): IterableIterator<TRow>;

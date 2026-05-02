@@ -56,7 +56,11 @@ function transportErrorResponse(message: string, data?: unknown): JsonRpcErrorEn
   };
 }
 
-function requestErrorResponse(id: JsonRpcRequestEnvelope['id'] | null, message: string, data?: unknown): JsonRpcErrorEnvelope {
+function requestErrorResponse(
+  id: JsonRpcRequestEnvelope['id'] | null,
+  message: string,
+  data?: unknown,
+): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,

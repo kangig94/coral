@@ -15,11 +15,7 @@ import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
-import {
-  IncumbentMatchesError,
-  requestIncumbentShutdown,
-  type DesiredIncumbentIdentity,
-} from './handoff.js';
+import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
 import type { TimePort } from '../../infra/port-types.js';
 
 export const STARTUP_POLL_MS = 200;

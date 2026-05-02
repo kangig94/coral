@@ -103,9 +103,7 @@ describe('handoff escalation (AC7)', () => {
     const harness = buildEscalationHarness({ incumbentExitsAt, totalBudgetMs, identity });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe matches identity until the incumbent "exits" — after that, probe returns null.
-    mockedProbe.mockImplementation(() =>
-      harness.elapsedMs() < incumbentExitsAt ? identity.processStartedAt : null,
-    );
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.processStartedAt : null));
 
     const promise = bindWithHandoff(harness.options);
     // Drive virtual time forward.
@@ -155,9 +153,7 @@ describe('handoff escalation (AC7)', () => {
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe returns null after incumbent exits → 'gone'.
-    mockedProbe.mockImplementation(() =>
-      harness.elapsedMs() < 600 ? identity.processStartedAt : null,
-    );
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.processStartedAt : null));
 
     const promise = bindWithHandoff(harness.options);
     for (let i = 0; i < 30; i += 1) {

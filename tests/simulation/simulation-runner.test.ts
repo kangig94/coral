@@ -363,9 +363,7 @@ describe('scenario runner', () => {
 
         const failures = result.steps.filter((s) => !s.ok);
         if (failures.length > 0) {
-          const report = failures.map(
-            (f) => `  step ${f.stepIndex} (${f.type}): ${JSON.stringify(f.detail, null, 2)}`,
-          );
+          const report = failures.map((f) => `  step ${f.stepIndex} (${f.type}): ${JSON.stringify(f.detail, null, 2)}`);
           console.log(`\n[${name}] ${failures.length} failed step(s):\n${report.join('\n')}`);
         }
 

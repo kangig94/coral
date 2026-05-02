@@ -1,11 +1,6 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
-import type {
-  ChildProcessLike,
-  EnvPort,
-  StoragePort,
-  TimePort,
-} from '../infra/port-types.js';
+import type { ChildProcessLike, EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {

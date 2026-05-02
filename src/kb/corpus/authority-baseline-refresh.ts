@@ -7,9 +7,7 @@ import type {
   CorpusAuthorityBaselineStore,
 } from './authority-baseline-contract.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
-import {
-  collectCorpusAuthorityBaseline,
-} from './rescan/authority-baseline.js';
+import { collectCorpusAuthorityBaseline } from './rescan/authority-baseline.js';
 import {
   buildCorpusScanView,
   createCorpusEntityGraphScan,

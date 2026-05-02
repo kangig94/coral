@@ -7,11 +7,7 @@ import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '#s
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import {
-  IncumbentMatchesError,
-  type IncumbentHealth,
-  type IncumbentIdentity,
-} from '#src/transport/ipc/handoff.js';
+import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } from '#src/transport/ipc/handoff.js';
 
 // We mock `requestIncumbentShutdown` so the handoff state machine sees
 // scripted health/verifiedIdentity outcomes without spinning real IPC.
@@ -78,8 +74,7 @@ function buildHarness(opts?: {
     return bindSequence[idx];
   });
 
-  const readDiscovery: HandoffOptions['readVerifiedIncumbentFromDiscovery'] =
-    opts?.readDiscovery ?? (() => null);
+  const readDiscovery: HandoffOptions['readVerifiedIncumbentFromDiscovery'] = opts?.readDiscovery ?? (() => null);
 
   const options: HandoffOptions = {
     socketPath: '/tmp/coral.sock',
@@ -143,7 +138,13 @@ describe('bindWithHandoff', () => {
       source: 'health',
     };
     mockedShutdown.mockResolvedValue({
-      health: { bundleHash: 'old', flavor: 'prod', namespace: 'ns', pid: 4242, processStartedAt: 1_000_000 } as IncumbentHealth,
+      health: {
+        bundleHash: 'old',
+        flavor: 'prod',
+        namespace: 'ns',
+        pid: 4242,
+        processStartedAt: 1_000_000,
+      } as IncumbentHealth,
       verifiedIdentity,
     });
     const promise = bindWithHandoff(options);
@@ -210,10 +211,7 @@ describe('bindWithHandoff', () => {
   it('process gone before signal → retries bind without signaling', async () => {
     let alive = true;
     const { options, time, killCalls } = buildHarness({
-      bindSequence: [
-        { kind: 'incumbent', reason: 'live-listener' },
-        { kind: 'bound' },
-      ],
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
       isAlive: () => alive,
       totalBudgetMs: 500,
     });

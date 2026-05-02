@@ -1,8 +1,4 @@
-import type {
-  KbCorpusPublication,
-  KbCorpusPublishCallbacks,
-  KbCorpusSnapshot,
-} from '../contract.js';
+import type { KbCorpusPublication, KbCorpusPublishCallbacks, KbCorpusSnapshot } from '../contract.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from '../state/corpus-snapshot-builder.js';
 import type { KbIndexStore } from './index-store.js';
 import { captureIndexStateSnapshot, mutationLanesFromDiff, type KbIndexStateSnapshot } from './lanes.js';

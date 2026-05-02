@@ -159,9 +159,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(elapsed).toBeLessThanOrEqual(HANDOFF_DRAIN_TIMEOUT_MS + 100);
 
     // Warn line for the hanging hooks.onShutdown finalizer must be present.
-    const warnedHooks = harness.logLines.some((line) =>
-      line.includes('hooks.onShutdown: exceeded drain budget'),
-    );
+    const warnedHooks = harness.logLines.some((line) => line.includes('hooks.onShutdown: exceeded drain budget'));
     expect(warnedHooks).toBe(true);
 
     // Socket release happens regardless.
@@ -191,9 +189,7 @@ describe('runShutdownSequence drain budget', () => {
     const sawExceeded = harness.logLines.some((l) =>
       l.includes('provider host drain for handoff: exceeded drain budget'),
     );
-    const sawSkipped = harness.logLines.some((l) =>
-      l.includes('hooks.onShutdown: skipped (drain budget exhausted)'),
-    );
+    const sawSkipped = harness.logLines.some((l) => l.includes('hooks.onShutdown: skipped (drain budget exhausted)'));
     expect(sawExceeded).toBe(true);
     expect(sawSkipped).toBe(true);
     expect(harness.closeIpcCalled()).toBe(true);
@@ -330,9 +326,7 @@ describe('runShutdownSequence drain budget', () => {
 
     // No "exceeded drain budget" line should appear for hooks.onShutdown:
     // when the task wins, the sleep is aborted in `finally`.
-    const sawHooksTimeout = harness.logLines.some((l) =>
-      l.includes('hooks.onShutdown: exceeded drain budget'),
-    );
+    const sawHooksTimeout = harness.logLines.some((l) => l.includes('hooks.onShutdown: exceeded drain budget'));
     expect(sawHooksTimeout).toBe(false);
     expect(harness.closeIpcCalled()).toBe(true);
   });

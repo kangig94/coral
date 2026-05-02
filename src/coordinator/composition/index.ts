@@ -515,10 +515,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
     handoffQuiescePorts: () =>
-      services.listExecutionServices().filter(
-        (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
-          typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
-      ),
+      services
+        .listExecutionServices()
+        .filter(
+          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
+            typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
+        ),
     expansionLifecycleService: options.expansionLifecycleService,
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,

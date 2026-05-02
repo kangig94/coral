@@ -26,13 +26,7 @@ import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type {
-  ChildProcessLike,
-  EnvPort,
-  StorageData,
-  StoragePort,
-  TimePort,
-} from '../infra/port-types.js';
+import type { ChildProcessLike, EnvPort, StorageData, StoragePort, TimePort } from '../infra/port-types.js';
 import type {
   DurableExecutionTransport,
   IdPort,

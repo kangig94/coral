@@ -189,10 +189,7 @@ function readCommunitySummaryInputFingerprints(db: ReadHandle): Record<string, s
   return Object.fromEntries(rows.map(({ community_slug, fingerprint }) => [community_slug, fingerprint]));
 }
 
-function writeCommunitySummaryInputFingerprints(
-  db: Database,
-  fingerprints: Record<string, string> | undefined,
-): void {
+function writeCommunitySummaryInputFingerprints(db: Database, fingerprints: Record<string, string> | undefined): void {
   const existing = readCommunitySummaryInputFingerprints(db) ?? {};
   const next = fingerprints ?? {};
 

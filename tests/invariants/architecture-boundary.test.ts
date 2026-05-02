@@ -566,9 +566,7 @@ describe('architecture boundary guard', () => {
   });
   it('kb/corpus/* must not import the runtime facade module', () => {
     const runtimeFacadeImport = /from\s+['"]\.\.\/runtime(?:\.js)?['"]/u;
-    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) =>
-      filePath.endsWith('.ts'),
-    )
+    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) => filePath.endsWith('.ts'))
       .flatMap((filePath) => {
         const source = readFileSync(filePath, 'utf8');
         return runtimeFacadeImport.test(source) ? [toCanonicalSrcPath(REPO_ROOT, filePath)] : [];

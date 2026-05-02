@@ -178,8 +178,8 @@ export function createDiscussContextOptions(
     },
     jobStatusReader: {
       read: (jobId) => progressStore?.readStatus(jobId) ?? null,
-    readExit: () => null,
-  },
+      readExit: () => null,
+    },
   };
 }
 

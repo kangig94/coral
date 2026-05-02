@@ -483,7 +483,10 @@ export function createIpcClient(socketPath: string, timePort: TimePort = createR
     subscribe: <TResult>(method: string, params?: unknown, options?: IpcSubscriptionOptions) =>
       subscribeIpcMethod<TResult>(socketPath, method, params, { ...options, time: options?.time ?? timePort }),
     health: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, { ...options, time: options?.time ?? timePort }),
+      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, {
+        ...options,
+        time: options?.time ?? timePort,
+      }),
     shutdown: <TResult>(options?: IpcRequestOptions) =>
       requestIpcMethod<TResult>(socketPath, 'transport.shutdown', undefined, {
         ...options,

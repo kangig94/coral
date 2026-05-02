@@ -118,11 +118,7 @@ function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): M
   return selected;
 }
 
-function compileSlotsForRecovery(
-  db: Database,
-  workflowId: string,
-  plan: WorkflowPlan,
-): CompiledPlanSlot[] {
+function compileSlotsForRecovery(db: Database, workflowId: string, plan: WorkflowPlan): CompiledPlanSlot[] {
   return compileWorkflowPlan(plan, { jobIds: readSlotJobIds(db, workflowId, plan) });
 }
 

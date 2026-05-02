@@ -489,8 +489,8 @@ describe('coordinator continuity lifecycle integration', () => {
       },
       jobStatusReader: {
         read: (jobId) => progressStore.readStatus(jobId),
-      readExit: () => null,
-    },
+        readExit: () => null,
+      },
     });
     const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'null-live', model: 'gpt-5' }];
 
