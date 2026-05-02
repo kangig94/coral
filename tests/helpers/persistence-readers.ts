@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import type { JobEvent, JobStatus } from '#src/jobs/records.js';
 import { openStoreDatabase } from '#src/store/db.js';

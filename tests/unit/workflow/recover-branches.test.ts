@@ -5,7 +5,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
-import { SimulationRuntime } from '#tools/simulation/core/backend.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';

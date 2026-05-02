@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
 
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
 import { getEvent } from '../../store/event-queries.js';
 import type { EventsRow } from '../../store/schema.js';

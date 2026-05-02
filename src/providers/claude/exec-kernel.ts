@@ -1,6 +1,6 @@
 import type { EffortLevel, Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../protocol.js';
-import type { TimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../infra/port-types.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

@@ -6,14 +6,14 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
 import type { VectorRetrieval as BoundVectorRetrieval } from '#src/kb/search/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {

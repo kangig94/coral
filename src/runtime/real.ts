@@ -23,21 +23,23 @@ import {
 } from 'node:fs';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname } from 'node:path';
-import { composeCoralPaths } from '../infra/path/compose.js';
+import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type {
   ChildProcessLike,
-  DurableExecutionTransport,
   EnvPort,
+  StorageData,
+  StoragePort,
+  TimePort,
+} from '../infra/port-types.js';
+import type {
+  DurableExecutionTransport,
   IdPort,
   ProcessPort,
   Runtime,
   RuntimeExecOptions,
   RuntimePaths,
-  StorageData,
-  StoragePort,
-  TimePort,
 } from './ports.js';
 import { errorMessage } from '../infra/error-format.js';
 import { MAX_BUFFER } from '../infra/process-constants.js';

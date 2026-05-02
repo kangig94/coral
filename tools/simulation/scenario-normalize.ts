@@ -1,11 +1,10 @@
 import type {
   ChildOutputChunk,
-  FakeProviderScenario,
   MockDurableScript,
   MockKillAction,
   MockSpawnScript,
-  SimulationScenario,
-} from './core/backend.js';
+} from './core/mock-script-types.js';
+import type { FakeProviderScenario, SimulationScenario } from './core/backend.js';
 import type { ProviderTerminalOutcome } from '../../src/providers/contract.js';
 import { toError } from './core/constants.js';
 import type { ScenarioError, WorldConfig } from './scenario-schema.js';

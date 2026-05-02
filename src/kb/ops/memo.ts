@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import { resolveProjectSource } from '../../infra/project-source.js';
 import { nowDate } from '../../infra/time.js';
-import type { IdPort, StoragePort, TimePort } from '../../runtime/ports.js';
+import type { StoragePort, TimePort } from '../../infra/port-types.js';
+import type { IdPort } from '../../runtime/ports.js';
 import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {

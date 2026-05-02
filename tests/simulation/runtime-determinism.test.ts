@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';

@@ -10,10 +10,10 @@ import { join } from 'node:path';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
-import type * as ServerTestDepsMod from '#tests/unit/coordinator/server-test-deps.js';
+import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
-import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
+import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 import { makeEvent } from '#src/discuss/events.js';
@@ -29,7 +29,7 @@ import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.j
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
@@ -65,12 +65,10 @@ import {
 // Use the bundled FTS projection id so the fallback registration matches the
 // consumer.id exposed by mocked bindings that rely on waitFreshUntil resolution.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
-import {
-  LaunchCoordinator,
-  TypedEventBus,
-  createProviderHostManager,
-  type MutableCoordinatorRuntimeState,
-} from '#tests/unit/coordinator/server-test-deps.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -131,7 +129,7 @@ vi.mock('node:os', async () => {
 });
 
 type ServerModule = typeof ServerMod;
-type BackendInfoModule = typeof ServerTestDepsMod.backendDiscovery;
+type BackendInfoModule = typeof BackendDiscoveryMod;
 type LifecycleModule = typeof LifecycleMod;
 
 type FakeExecutionService = {
@@ -356,7 +354,7 @@ async function loadExecutionModules(): Promise<{
   vi.resetModules();
   const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
     import('#src/coordinator/index.js'),
-    import('#tests/unit/coordinator/server-test-deps.js').then((module) => module.backendDiscovery),
+    import('#src/infra/backend-discovery.js'),
     import('#src/coordinator/lifecycle.js'),
   ]);
   return { serverModule, backendInfo, lifecycleModule };

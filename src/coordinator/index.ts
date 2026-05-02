@@ -33,7 +33,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDriver } from './consumer-driver.js';
+import { ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';

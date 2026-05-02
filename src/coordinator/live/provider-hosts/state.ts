@@ -1,5 +1,5 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { TimePort } from '../../../runtime/ports.js';
+import type { TimePort } from '../../../infra/port-types.js';
 import type { ProviderServerHandle } from '../provider-server-transport.js';
 
 export type ProviderServerAttachment = {

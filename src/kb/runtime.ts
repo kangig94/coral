@@ -1,6 +1,7 @@
 import type { Database } from '../store/db.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
-import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
+import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import type { IdPort, ProcessPort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type {
   Backed,

@@ -3,7 +3,7 @@
 // tests opt into the same shape so the constructor can require them
 // without forcing every test site to re-spell ambient timers/clock.
 
-import type { TimePort, TimerHandle } from '#src/runtime/ports.js';
+import type { TimePort, TimerHandle } from '#src/infra/port-types.js';
 
 export const REAL_CONSUMER_DRIVER_TIMERS: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),

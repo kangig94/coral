@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { ChildProcessLike } from '#src/runtime/ports.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
 
 const createdDirs: string[] = [];
 

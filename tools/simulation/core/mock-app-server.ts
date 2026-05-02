@@ -1,5 +1,6 @@
 import type { ThreadStartResponse, TurnStartResponse } from '../../../src/providers/codex/protocol.js';
-import { type MockSpawnScript, MockStdin } from './mock-process.js';
+import { MockStdin } from './mock-process.js';
+import type { MockSpawnScript } from './mock-script-types.js';
 
 type JsonRpcRequest = {
   id?: unknown;

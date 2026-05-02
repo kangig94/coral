@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { TimerHandle } from '../../runtime/ports.js';
+import type { TimerHandle } from '../../infra/port-types.js';
 import type { KbRuntime } from '../contract.js';
 import { buildEntityConsolidationDelta, buildMetadataTargets } from './classification/assignments.js';
 import { runCommunitySubphase } from './community/index.js';

@@ -11,7 +11,6 @@ import { backendLog } from '../infra/backend-log.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   requestIncumbentShutdown,
-  IncumbentMatchesError,
   type DesiredIncumbentIdentity,
   type IncumbentHealth,
   type IncumbentIdentity,
@@ -21,8 +20,6 @@ const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
 export const SIGTERM_GRACE_MS = 5_000;
 export const SIGKILL_GRACE_MS = 5_000;
-
-export { IncumbentMatchesError };
 
 /**
  * Raised when the contender exhausts the bounded escalation window without

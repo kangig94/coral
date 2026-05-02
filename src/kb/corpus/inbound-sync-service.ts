@@ -5,7 +5,7 @@ import type {
   KbMutationEffects,
 } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import {
   buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,

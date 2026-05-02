@@ -11,13 +11,14 @@ import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { decode, encode, type JsonRpcRequest, type JsonRpcResponse } from '#src/transport/json-rpc.js';
-import {
-  bindWithHandoff,
-  IncumbentMatchesError,
-} from '#src/coordinator/handoff.js';
+import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { IncumbentHealth, IncumbentIdentity } from '#src/transport/ipc/handoff.js';
+import {
+  IncumbentMatchesError,
+  type IncumbentHealth,
+  type IncumbentIdentity,
+} from '#src/transport/ipc/handoff.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
 const tempDirs: string[] = [];

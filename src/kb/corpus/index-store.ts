@@ -2,7 +2,8 @@ import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord, isStringArray } from '../../infra/json.js';
-import type { IdPort, StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { IdPort } from '../../runtime/ports.js';
 import type { KbIndexState } from '../contract.js';
 import {
   communityEntryId,

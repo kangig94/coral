@@ -20,9 +20,9 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 

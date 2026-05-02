@@ -18,7 +18,7 @@ import {
 } from './entry-types.js';
 import { memoDir } from './paths.js';
 import { expandKbReadSelector, parseKbSelector, type KbResolvedReadSelector } from './selector.js';
-import type { StoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
 
 export type KbReadStorage = Pick<StoragePort, 'existsSync' | 'readFileSync'>;
 

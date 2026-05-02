@@ -27,7 +27,7 @@ async function brokerRpc<R = unknown>(
 }
 
 export async function claudePreflight(runtime: PreflightRuntime): Promise<void> {
-  const cli = await detectClaudeCli(runtime.process);
+  const cli = await detectClaudeCli(runtime.process, runtime.env);
   if (!cli.available) {
     throw new Error(`Claude CLI not available: ${cli.error}`);
   }

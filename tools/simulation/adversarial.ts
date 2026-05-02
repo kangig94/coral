@@ -1,12 +1,12 @@
 import { join } from 'node:path';
-import { SessionManager } from '../../src/sessions/shell/store.js';
+import { SessionManager } from '../../src/sessions/shell.js';
 import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/lifecycle.js';
 import {
   createSimulationBackend,
-  DEFAULT_EPOCH_MS,
   type SimulationBackend,
   type SimulationHookLog,
 } from './core/backend.js';
+import { DEFAULT_EPOCH_MS } from './core/virtual-time.js';
 import {
   acquireNoRealIoMonitor,
   cloneNoRealIoReport,
@@ -50,7 +50,6 @@ export type WaitDetail = {
   actual: WaitObservation;
 };
 
-export { type NoRealIoReport } from './no-real-io.js';
 
 export type SimulationHttpResponse = {
   statusCode: number;

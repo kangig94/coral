@@ -1,7 +1,7 @@
 import { appServerSession } from '../middleware/app-server-session.js';
 import { sessionContinuity, type SessionContinuityContract } from '../middleware/session-continuity.js';
 import { compose, type ProviderRequest } from '../contract.js';
-import type { AppServerContract } from '../app-server/driver.js';
+import type { AppServerContract } from '../app-server.js';
 import {
   applyCodexContinuityUpdate,
   applyCodexTransportClosed,

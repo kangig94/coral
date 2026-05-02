@@ -1,7 +1,7 @@
 import { type SessionContinuityContract, sessionContinuity } from '../middleware/session-continuity.js';
 import { adapterParseGuard } from '../middleware/adapter-parse-guard.js';
 import { appServerSession } from '../middleware/app-server-session.js';
-import type { AppServerContract } from '../app-server/driver.js';
+import type { AppServerContract } from '../app-server.js';
 import {
   compose,
   type Provider,

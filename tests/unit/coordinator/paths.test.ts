@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/path/compose.js';
+import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/path/index.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';

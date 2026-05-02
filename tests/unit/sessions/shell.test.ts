@@ -25,7 +25,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;

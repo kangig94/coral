@@ -2,8 +2,9 @@ declare const __PLUGIN_ROOT__: string;
 
 import { join } from 'node:path';
 
-import { isRecord } from '../../infra/json.js';
-import type { IdPort, StoragePort } from '../../runtime/ports.js';
+import { isRecord, readString } from '../../infra/json.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { IdPort } from '../../runtime/ports.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
@@ -13,7 +14,7 @@ import type {
   TurnInterruptParams,
   TurnStartParams,
 } from '../claude-appserver/protocol.js';
-import { hashSortedEnv, normalizeControllerEnv, readBootstrapSignature, readString } from './request-prep.js';
+import { hashSortedEnv, normalizeControllerEnv, readBootstrapSignature } from './request-prep.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;

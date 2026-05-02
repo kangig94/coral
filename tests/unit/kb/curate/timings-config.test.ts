@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { EnvPort } from '#src/runtime/ports.js';
+import type { EnvPort } from '#src/infra/port-types.js';
 import {
   CORAL_CURATE_CLAIM_STALE_MS_ENV,
   CORAL_CURATE_MAX_RETRY_MS_ENV,

@@ -1,4 +1,4 @@
-import { readProcessEnv } from '../infra/process-env.js';
+import type { EnvPort } from '../infra/port-types.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
 export type CliInfo =
@@ -13,6 +13,7 @@ export type AuthProbeResult =
   | { authState: 'unauthenticated'; authError: string };
 
 export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'>;
+export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
 
 export type CliDetectorConfig = {
   binaryName: string;
@@ -23,11 +24,11 @@ export type CliDetectorConfig = {
   authErrorPattern: RegExp;
   authErrorMessage: string;
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
-  readEnv?: (key: string) => string | undefined;
 };
 
 export function createCliDetector(
   processPort: CliDetectorProcessPort,
+  envPort: CliDetectorEnvPort,
   config: CliDetectorConfig,
 ): {
   detect: () => Promise<CliInfo>;
@@ -95,7 +96,7 @@ export function createCliDetector(
   }
 
   async function queryAuthState(): Promise<AuthProbeResult> {
-    if ((config.readEnv ?? readProcessEnv)(config.authEnvVar)?.trim()) {
+    if (envPort.get(config.authEnvVar)?.trim()) {
       return { authState: 'authenticated' };
     }
 
@@ -186,7 +187,7 @@ export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
 
 let claudeDetector: ReturnType<typeof createCliDetector> | null = null;
 
-export function detectClaudeCli(processPort: CliDetectorProcessPort): Promise<CliInfo> {
-  claudeDetector ??= createCliDetector(processPort, CLAUDE_DETECTOR_CONFIG);
+export function detectClaudeCli(processPort: CliDetectorProcessPort, envPort: CliDetectorEnvPort): Promise<CliInfo> {
+  claudeDetector ??= createCliDetector(processPort, envPort, CLAUDE_DETECTOR_CONFIG);
   return claudeDetector.detect();
 }

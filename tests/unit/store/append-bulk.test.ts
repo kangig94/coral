@@ -5,7 +5,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

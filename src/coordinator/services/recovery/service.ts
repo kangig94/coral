@@ -29,9 +29,11 @@ import {
   FINALIZE_CONTINUITY_MAX_RETRIES,
   buildInterruptedAppServerReport,
   isProviderContinuityBlob,
-  type InterruptedAppServerReason,
-  type InterruptedProbeOutcome,
 } from '../execution-policies.js';
+import type {
+  InterruptedAppServerReason,
+  InterruptedProbeOutcome,
+} from '../../../jobs/reconcile/interrupted-reason.js';
 import { recordSessionInterruptedTerminal } from '../terminal-materializer.js';
 
 type ProviderLaunchRecord = JobLaunch & {

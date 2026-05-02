@@ -6,7 +6,7 @@
 // and `transport.shutdown`); there is no coordinator policy here.
 
 import { createRealTimePort } from '../../infra/time.js';
-import { createIpcClient, type IpcRequestOptions } from './client.js';
+import { createIpcClient } from './client.js';
 import type { TimePort } from '../../infra/port-types.js';
 
 /**
@@ -134,7 +134,3 @@ export async function requestIncumbentShutdown(opts: {
 
   return { health, verifiedIdentity };
 }
-
-// Re-export for symmetry; some callers want to construct their own request
-// options against an existing IpcClient.
-export type { IpcRequestOptions };

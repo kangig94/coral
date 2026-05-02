@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
 import { nowIsoString } from '../../../infra/time.js';
-import type { EnvPort } from '../../../runtime/ports.js';
+import type { EnvPort } from '../../../infra/port-types.js';
 import { noteEntryId, parseKbEntryId, type KbEntryId } from '../../entry-types.js';
 
 /**

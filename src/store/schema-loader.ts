@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import type { StoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
 import type { Database } from './db.js';
 
 declare const __PLUGIN_ROOT__: string | undefined;

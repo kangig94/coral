@@ -1,7 +1,7 @@
-import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../contract.js';
-import type { StoragePort } from '../../runtime/ports.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from '../protocol.js';
+import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from './contract.js';
+import type { StoragePort } from '../infra/port-types.js';
+import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './protocol.js';
 
 export interface AppServerContract {
   readonly name: string;

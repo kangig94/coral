@@ -293,5 +293,3 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
 export function createBrokerSession(options: CreateBrokerSessionOptions): ClaudeBrokerSession {
   return new BrokerSessionPool(options);
 }
-
-export type { ClaudeBrokerSession } from './session-contract.js';

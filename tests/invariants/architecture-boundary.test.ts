@@ -56,7 +56,7 @@ const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb/recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
 const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
-const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver.ts';
+const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -711,17 +711,17 @@ describe('architecture boundary guard', () => {
     expect(simulationWorld).not.toContain('createReplayCursor');
     expect(simulationWorld).not.toContain('replayFrom');
   });
-  it('infra/paths.ts is permanently retired (use infra/path/compose and per-domain path modules)', () => {
+  it('infra/paths.ts is permanently retired (use infra/path/index and per-domain path modules)', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
   });
-  it('production src/ imports infra/path/ subdir only via compose.ts (sibling files stay subdir-internal)', () => {
-    // The infra/path/ subdir is the path subsystem: compose.ts is the public
+  it('production src/ imports infra/path/ subdir only via index.ts (sibling files stay subdir-internal)', () => {
+    // The infra/path/ subdir is the path subsystem: index.ts is the public
     // composer (used by runtime port construction); root/store/coordinator/
-    // expansion are private family builders. External src/ callers must go
+    // engine are private family builders. External src/ callers must go
     // through composeCoralPaths so that flavor-aware path resolution stays
     // funneled through one entry point. KB has a documented exception for
     // root.ts (cycle-break primitive needed for kbRuntimeDir).
-    const COMPOSE_PUBLIC = 'src/infra/path/compose.ts';
+    const COMPOSE_PUBLIC = 'src/infra/path/index.ts';
     const ALLOWED_INTERNAL_IMPORTERS: Record<string, ReadonlySet<string>> = {
       'src/infra/path/root.ts': new Set(['src/kb/paths.ts', 'src/kb/env.ts', 'src/infra/project-source.ts']),
     };
@@ -744,7 +744,7 @@ describe('architecture boundary guard', () => {
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
       'src/infra/backend-discovery.ts',
-      'src/infra/path/compose.ts',
+      'src/infra/path/index.ts',
       'src/infra/path/root.ts',
       'src/infra/plugin-registry.ts',
       'src/kb/paths.ts',

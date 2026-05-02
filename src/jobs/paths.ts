@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { EnvPort } from '../runtime/ports.js';
+import type { EnvPort } from '../infra/port-types.js';
 
 /**
  * Tmp scratch root for live job artifacts (recordings, intermediates).

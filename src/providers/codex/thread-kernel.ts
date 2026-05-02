@@ -1,5 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
-import type { TimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../infra/port-types.js';
 import { resolveModelTier } from '../request-policy.js';
 import type {
   Provider,
@@ -12,7 +12,7 @@ import {
   bindAppServerNotificationHandler,
   buildProviderFailureMessage,
   requireAppServerLease,
-} from '../app-server/driver.js';
+} from '../app-server.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

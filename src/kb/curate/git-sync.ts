@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { TimerHandle } from '../../runtime/ports.js';
+import type { TimerHandle } from '../../infra/port-types.js';
 import type { KbRuntime } from '../contract.js';
 import { runCurateClaude } from './operations.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';

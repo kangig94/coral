@@ -1,17 +1,12 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MAX_BUFFER } from '#src/infra/process-constants.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
-import {
-  InMemoryPaths,
-  InMemoryStorage,
-  SealedEnv,
-  SequentialIds,
-  SimulationRuntime,
-  VirtualTime,
-  createSimulationBackend,
-  flushMicrotasks,
-} from '#tools/simulation/core/backend.js';
+import { SessionManager } from '#src/sessions/shell.js';
+import { createSimulationBackend } from '#tools/simulation/core/backend.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
+import { InMemoryPaths, SealedEnv, SequentialIds } from '#tools/simulation/core/runtime-doubles.js';
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {

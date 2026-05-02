@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { EnvPort } from '#src/runtime/ports.js';
+import type { EnvPort } from '#src/infra/port-types.js';
 import {
   CORAL_WORKFLOW_DRAIN_TIMEOUT_MS_ENV,
   DEFAULT_DRAIN_DEADLINE_MS,

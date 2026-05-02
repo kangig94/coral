@@ -1,6 +1,7 @@
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { ConsumerRegistration, CorpusStateReadPort, JournalConsumerReadPort } from '../store/consumer-contract.js';
-import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../runtime/ports.js';
+import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import type { IdPort, ProcessPort } from '../runtime/ports.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
 import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';

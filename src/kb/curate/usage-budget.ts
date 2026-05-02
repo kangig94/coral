@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 90;

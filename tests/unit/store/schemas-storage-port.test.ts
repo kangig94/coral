@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { SimulationRuntime } from '#tools/simulation/core/backend.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 
 describe('applyStoreSchemas with Runtime.storage', () => {

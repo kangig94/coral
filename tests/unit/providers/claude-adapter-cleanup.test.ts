@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
-import type { DirentLike, EnvPort, StoragePort } from '#src/runtime/ports.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import { claudeArtifactCleanup } from '#src/providers/claude/provider-facets.js';
 
 function makeDirent(name: string, kind: 'file' | 'dir'): DirentLike {

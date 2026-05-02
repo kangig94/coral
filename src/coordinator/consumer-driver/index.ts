@@ -1,9 +1,9 @@
-import type { KbCorpusSnapshot } from '../kb/contract.js';
-import type { KbCorpusProjectionReader } from '../kb/projection-input-contract.js';
-import { readCorpusState } from '../kb/state/corpus-state.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
-import type { TimePort } from '../runtime/ports.js';
-import type { Database } from '../store/db.js';
+import type { KbCorpusSnapshot } from '../../kb/contract.js';
+import type { KbCorpusProjectionReader } from '../../kb/projection-input-contract.js';
+import { readCorpusState } from '../../kb/state/corpus-state.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
+import type { TimePort } from '../../infra/port-types.js';
+import type { Database } from '../../store/db.js';
 import type {
   ConsumerHandle,
   ConsumerHandleStatus,
@@ -11,16 +11,16 @@ import type {
   CorpusLaneHint,
   CorpusStateReadPort,
   JournalConsumerReadPort,
-} from '../store/consumer-contract.js';
+} from '../../store/consumer-contract.js';
 import {
   DEFAULT_CORPUS_PROJECTION_READER,
   scheduleCorpusApply,
   scheduleForcedCorpusApply,
   scheduleJournalApply,
   type AuthorityApplyDeps,
-} from './consumer-driver/authority-apply.js';
-import { waitFreshUntilImpl, rejectWaiters, resolveWaiters } from './consumer-driver/freshness-waiter.js';
-import { ConsumerCursorRepository } from './consumer-driver/persistence.js';
+} from './authority-apply.js';
+import { waitFreshUntilImpl, rejectWaiters, resolveWaiters } from './freshness-waiter.js';
+import { ConsumerCursorRepository } from './persistence.js';
 import {
   assertExistingRegistrationMatches,
   assertValidRegistration,
@@ -29,7 +29,7 @@ import {
   unregisterConsumer,
   type FinalizeStoppedConsumerDeps,
   type StopConsumerDeps,
-} from './consumer-driver/registration.js';
+} from './registration.js';
 import {
   consumerNotRegisteredError,
   consumerRegistrationKindMismatchError,
@@ -39,10 +39,10 @@ import {
   type ConsumerDriverTimers,
   type ConsumerState,
   type ForcedCorpusFreshnessTarget,
-} from './consumer-driver/state.js';
+} from './state.js';
 
-export { FreshnessTimeout } from './consumer-driver/freshness-waiter.js';
-export type { Authority, ForcedCorpusFreshnessTarget } from './consumer-driver/state.js';
+export { FreshnessTimeout } from './freshness-waiter.js';
+export type { Authority, ForcedCorpusFreshnessTarget } from './state.js';
 
 export interface StuckConsumerStatus { readonly id: string; readonly elapsedSinceStopMs: number; }
 

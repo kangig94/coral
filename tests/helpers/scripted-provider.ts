@@ -14,8 +14,6 @@ import type {
 } from '#src/providers/contract.js';
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
 
-export type { PreflightRuntime } from '#src/providers/contract.js';
-
 type TestProviderInvocation = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
 
 type TestAppServerLifecycle = {

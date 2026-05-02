@@ -7,7 +7,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';

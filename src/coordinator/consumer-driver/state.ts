@@ -1,6 +1,6 @@
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../../runtime/errors.js';
-import type { TimerHandle, TimePort } from '../../runtime/ports.js';
+import type { TimerHandle, TimePort } from '../../infra/port-types.js';
 import type {
   ConsumerApplyError,
   ConsumerHandle,

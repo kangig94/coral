@@ -6,14 +6,15 @@ import type { ProviderCatalog } from '../../../providers/catalog.js';
 import type { JobStore } from '../../../jobs/store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
-import type { Runtime, TimerHandle } from '../../../runtime/ports.js';
+import type { TimerHandle } from '../../../infra/port-types.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../../jobs/reconcile/cross-namespace-adoption.js';
 import { StartupInterruptedError } from '../../startup-error.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
-import type { InterruptedAppServerReason } from '../execution-policies.js';
+import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,

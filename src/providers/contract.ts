@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import type { IdPort, Runtime, StoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,

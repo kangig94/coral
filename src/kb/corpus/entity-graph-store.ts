@@ -2,7 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import type { EntityGraph } from '../entry-types.js';
 import type { FileAtomicHost } from './file-atomic.js';
 import { parseEntityMetaMap, parseEntityRelationships, writeJsonAtomic } from './index-store.js';

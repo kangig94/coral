@@ -29,7 +29,8 @@ import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js'
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
-import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
+import { createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 

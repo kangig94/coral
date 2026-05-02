@@ -6,7 +6,7 @@ import { newRawDatabase, pragmaSimple, totalChanges } from '#tests/helpers/test-
 import { describe, expect, it } from 'vitest';
 
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 
 const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
   existsSync,

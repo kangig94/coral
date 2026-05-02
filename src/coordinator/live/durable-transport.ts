@@ -4,7 +4,8 @@ import { readAppendedLines } from '../../infra/file-tail.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
-import type { Runtime, StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import type { StoragePort } from '../../../runtime/ports.js';
+import type { StoragePort } from '../../../infra/port-types.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
 import { extractBody, parseSourceFrontmatter } from '../frontmatter.js';
 import { computeContentSurfaceHash } from '../snapshot.js';

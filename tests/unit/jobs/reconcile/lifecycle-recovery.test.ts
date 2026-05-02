@@ -49,7 +49,7 @@ async function loadModules() {
     providerRegistryModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
-    import('#src/sessions/shell/store.js'),
+    import('#src/sessions/shell.js'),
     import('#src/coordinator/lifecycle.js'),
     import('#src/coordinator/execution-service.js'),
     import('#src/coordinator/live/admission.js'),

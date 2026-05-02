@@ -9,7 +9,7 @@ import {
 } from '../wait.js';
 import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
-import type { TimePort } from '../../runtime/ports.js';
+import type { TimePort } from '../../infra/port-types.js';
 import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';

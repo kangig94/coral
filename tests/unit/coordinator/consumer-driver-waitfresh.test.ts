@@ -3,9 +3,9 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { TimerHandle, StoragePort, TimePort } from '#src/runtime/ports.js';
+import type { TimerHandle, StoragePort, TimePort } from '#src/infra/port-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';

@@ -1,4 +1,4 @@
-import type { ConsumerDriver } from '../consumer-driver.js';
+import type { ConsumerDriver } from '../consumer-driver/index.js';
 import { createExpansionHost, type ExpansionTier } from '../../expansion/host.js';
 import type { ExpansionHost } from '../../expansion/contract.js';
 import type { KbRuntime } from '../../kb/contract.js';

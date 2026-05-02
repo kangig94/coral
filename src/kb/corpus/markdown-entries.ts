@@ -1,5 +1,5 @@
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import { compareLocale } from '../validation.js';
 
 export function sortedMarkdownEntries(storage: Pick<StoragePort, 'readdirSync'>, dirPath: string): string[] {

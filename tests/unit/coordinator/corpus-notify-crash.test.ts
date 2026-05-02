@@ -10,12 +10,12 @@ import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 
