@@ -110,16 +110,6 @@ type JobExitProjection = {
   continuity?: JobContinuitySnapshot | null;
 };
 
-type JobProgressProjection = {
-  jobId: string;
-  sessionId: string | null;
-  seq: number;
-  type: 'progress' | 'terminal';
-  ts: string;
-  message?: string;
-  result?: JobTerminal;
-  continuity?: JobContinuitySnapshot | null;
-};
 
 type ProjectionRow = {
   job_id: string;
@@ -692,7 +682,7 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
 
   const sessionId = readProjectionRow(db, jobId)?.session_id ?? null;
 
-  return rows.flatMap<JobProgressProjection>((row) => {
+  return rows.flatMap<JobEvent>((row) => {
     if (row.type === 'job.progress.emitted') {
       const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {

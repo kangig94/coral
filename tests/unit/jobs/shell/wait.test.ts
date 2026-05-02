@@ -649,6 +649,7 @@ function makeTerminalReplay(
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
+    continuity: null,
   };
 }
 
@@ -856,6 +857,7 @@ describe('ExecutionService wait', () => {
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
         result: { content: 'done', outcome: { kind: 'completed' } },
+        continuity: null,
       },
     ];
 
@@ -1573,6 +1575,7 @@ describe('ExecutionService wait', () => {
             type: 'terminal' as const,
             ts: '',
             result: { content: 'done', outcome: { kind: 'completed' as const } },
+            continuity: null,
           },
         ];
       });

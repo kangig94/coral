@@ -636,6 +636,7 @@ function _makeTerminalReplay(
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
+    continuity: null,
   };
 }
 

@@ -1,5 +1,5 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobEvent, JobStatus } from '../records.js';
+import type { JobEvent, JobProgressEvent, JobStatus, JobTerminalEvent } from '../records.js';
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   type WaitRequest,
@@ -29,34 +29,28 @@ function compareProgressSeq(left: JobEvent, right: JobEvent): number {
   return left.jobId.localeCompare(right.jobId);
 }
 
-function toProgressWaitEvent(event: JobEvent): WaitStreamEvent {
-  if (event.type !== 'progress') {
-    throw new Error('Expected progress event.');
-  }
+function toProgressWaitEvent(event: JobProgressEvent): WaitStreamEvent {
   return {
     type: 'progress',
     jobId: event.jobId,
     seq: event.seq,
-    message: event.message ?? '',
+    message: event.message,
   };
 }
 
 function toTerminalWaitEvent(
-  event: JobEvent,
+  event: JobTerminalEvent,
   pending: ReadonlySet<string>,
   resultPath: string,
   continuity: JobContinuitySnapshot | null,
 ): WaitStreamEvent {
-  if (event.type !== 'terminal') {
-    throw new Error('Expected terminal event.');
-  }
   return {
     type: 'terminal',
     jobId: event.jobId,
     seq: event.seq,
     remainingJobIds: [...pending].filter((id) => id !== event.jobId),
     resultPath,
-    result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
+    result: event.result,
     continuity: event.continuity ?? continuity,
   };
 }
