@@ -47,6 +47,13 @@ const TIMER_EXEMPT_FILES = new Set<string>([
   // are method signatures defining a structural alias for the runtime time
   // port, not runtime calls. The controller receives the port through DI.
   'src/kb/corpus/mutation-lock.ts',
+  // Subprocess composition root — daemon's own bootstrap entrypoint. It uses
+  // `setInterval`/`clearInterval` for a startup keepalive that holds the
+  // event loop ref'd until `coordinator.start()` resolves; using
+  // `runtime.time.setInterval` would require constructing a runtime locally
+  // just for this single ref, which is the boundary case `claude-appserver/server.ts`
+  // is also exempt for.
+  'src/coordinator/bootstrap.ts',
 ]);
 
 function listSourceFiles(root: string): string[] {
