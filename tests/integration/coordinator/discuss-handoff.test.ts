@@ -1,31 +1,133 @@
-import { describe, it } from 'vitest';
-
-// AC4 cross-domain coverage: discuss sessions in mid-turn must survive a
-// daemon handoff swap. The replacement daemon's startup recovery must
-// rehydrate discuss state from journal projections without observing the old
-// daemon's terminal/abort writes.
+// Cross-domain handoff coverage for discuss state across a daemon swap.
+// Composes two coordinator cores against a shared journal via the harness,
+// seeds a live discuss session on the incumbent, triggers handoff shutdown
+// (`reason='replaced'` ⇒ ShutdownMode='handoff'), and asserts:
 //
-// Implementation deferred until the handoff integration scaffolding lands in
-// Phase G: this file requires the same VirtualTime + mock-daemon harness used
-// by `starting-handoff.test.ts` (Phase C) and `handoff-escalation.test.ts`
-// (Phase E), neither of which exists yet. The Phase A2 unit coverage in
-// `tests/unit/jobs/shell/launch-quiesce.test.ts` plus
-// `tests/unit/transport/http/server.test.ts` is sufficient to gate AC4 at
-// the contract boundary; this file exists so the cross-domain assertions
-// have a registered home before the integration scaffolding arrives.
+//   1. The incumbent's hooks.onShutdown('handoff') aborts the in-memory
+//      session WITHOUT persisting an abort marker to the journal.
+//   2. The replacement core's startup recovery (`discussRecovery.runStartup`)
+//      reads the same journal, sees the session as live (no abort marker),
+//      and re-attaches it in its fresh discussRegistry.
+//
+// Unit-level coverage already exists for piece (1) in
+// `tests/unit/discuss/shell/discuss-manager-lifecycle.test.ts:249`. This file
+// adds end-to-end coverage of the lifecycle wiring + recovery composition,
+// closing the cross-domain integration gap left open by Phase A2.
 
-describe.skip('discuss handoff (AC4 cross-domain — pending Phase G scaffolding)', () => {
-  it('seeds a discuss session, triggers handoff, asserts state rehydrates on the replacement daemon', () => {
-    // 1. Seed a discuss session on incumbent.
-    // 2. Trigger handoff via transport.shutdown.
-    // 3. Bind replacement daemon, wait for runStartupRecovery.
-    // 4. Assert recoverPersistedDiscussFn rehydrated the session and that
-    //    no `discuss.aborted` terminal was written by the old daemon.
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { decideSessionCreate } from '#src/discuss/state-machine.js';
+import { attachSession, getSession } from '#src/discuss/shell/registry.js';
+import type { DiscussCreateInput } from '#src/discuss/session-types.js';
+import type { InvocationContext } from '#src/runtime/invocation-context.js';
+
+import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
+
+const SEED_TS = '2026-04-27T00:00:00.000Z';
+const PROJECT_ROOT = '/handoff-test-project';
+const SESSION_ID = 'handoff-session';
+const TOPIC = 'should the new daemon rehydrate this discuss session?';
+
+function defaultAgents(): Array<DiscussCreateInput['agents'][number]> {
+  return [
+    { name: 'alpha', persona: '# Alpha', participation: 'required' },
+    { name: 'beta', persona: '# Beta', participation: 'required' },
+  ];
+}
+
+function defaultAgentExecution(agents: ReturnType<typeof defaultAgents>) {
+  return Object.fromEntries(
+    agents.map((agent) => [agent.name, { manual: false, provider: 'codex' as const, model: 'gpt-5' }] as const),
+  );
+}
+
+function makeInvocationContext(pluginRoot: string): InvocationContext {
+  return { projectRoot: PROJECT_ROOT, pluginRoot, coralEnv: {} };
+}
+
+const harnesses: HandoffCoresHarness[] = [];
+
+afterEach(async () => {
+  for (const harness of harnesses.splice(0)) {
+    await harness.cleanup();
+  }
+});
+
+describe('discuss handoff (cross-domain integration)', () => {
+  it('handoff shutdown aborts the session in memory and leaves the journal abort-free', async () => {
+    const harness = createHandoffCoresHarness();
+    harnesses.push(harness);
+
+    const incumbent = await harness.bootCore({ instanceId: 'incumbent' });
+    const ctx = makeInvocationContext(incumbent.core.identity.pluginRoot);
+    const source = incumbent.core.resolveProjectSource(PROJECT_ROOT);
+    const store = incumbent.core.getDiscussStoreForSource(source);
+    const context = incumbent.core.getDiscussContext(ctx);
+
+    const agents = defaultAgents();
+    const created = decideSessionCreate(
+      { topic: TOPIC, agents, min_bid_delay_ms: 0 },
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
+      1,
+      SEED_TS,
+      { agentExecution: defaultAgentExecution(agents) },
+    );
+    if (!created.ok) {
+      throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
+    }
+
+    const snapshot = await store.append(SESSION_ID, null, created.value);
+    const liveSession = attachSession(context, snapshot);
+    expect(liveSession.controller.signal.aborted).toBe(false);
+
+    const eventsBefore = store.readSessionEvents(SESSION_ID).map((event) => event.kind);
+    expect(eventsBefore).toEqual(['session.created', 'bidding.opened']);
+
+    await incumbent.shutdown('replaced');
+    expect(incumbent.core.runtimeState.getLifecycle()).toBe('stopped');
+
+    expect(liveSession.controller.signal.aborted).toBe(true);
+
+    const eventsAfter = store.readSessionEvents(SESSION_ID).map((event) => event.kind);
+    expect(eventsAfter).toEqual(['session.created', 'bidding.opened']);
   });
 
-  it('does not write hooks.onShutdown(handoff) discuss-store mutations on the old daemon', () => {
-    // hooks.onShutdown('handoff') must skip persistAbortEnd; only abort
-    // markers are written. This test asserts the journal does not contain
-    // a discuss abort-end event from the old daemon's lifecycle.
+  it('replacement core recovery rehydrates the still-live discuss session from the shared journal', async () => {
+    const harness = createHandoffCoresHarness();
+    harnesses.push(harness);
+
+    const incumbent = await harness.bootCore({ instanceId: 'incumbent' });
+    {
+      const ctx = makeInvocationContext(incumbent.core.identity.pluginRoot);
+      const source = incumbent.core.resolveProjectSource(PROJECT_ROOT);
+      const store = incumbent.core.getDiscussStoreForSource(source);
+      const context = incumbent.core.getDiscussContext(ctx);
+
+      const agents = defaultAgents();
+      const created = decideSessionCreate(
+        { topic: TOPIC, agents, min_bid_delay_ms: 0 },
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
+        1,
+        SEED_TS,
+        { agentExecution: defaultAgentExecution(agents) },
+      );
+      if (!created.ok) {
+        throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
+      }
+      const snapshot = await store.append(SESSION_ID, null, created.value);
+      attachSession(context, snapshot);
+    }
+
+    await incumbent.shutdown('replaced');
+
+    const replacement = await harness.bootCore({ instanceId: 'replacement' });
+    const replacementCtx = makeInvocationContext(replacement.core.identity.pluginRoot);
+    const replacementContext = replacement.core.getDiscussContext(replacementCtx);
+
+    const rehydrated = getSession(replacementContext, SESSION_ID);
+    expect(rehydrated).toBeDefined();
+    expect(rehydrated?.controller.signal.aborted).toBe(false);
+    expect(rehydrated?.snapshot.sessionId).toBe(SESSION_ID);
+    expect(rehydrated?.abortEnded).toBe(false);
   });
 });
