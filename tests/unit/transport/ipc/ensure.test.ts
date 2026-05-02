@@ -8,7 +8,7 @@
 //   - Health unreachable + no `coordinator.json` → spawn fresh
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -430,5 +430,98 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('replacement-coordinator');
     expect(bindCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  describe('coordinator.log rotation on spawn', () => {
+    function runDir(): string {
+      return coordinatorPaths('prod').runDir;
+    }
+
+    function logPath(): string {
+      return join(runDir(), 'coordinator.log');
+    }
+
+    function archivePath(): string {
+      return `${logPath()}.1`;
+    }
+
+    async function triggerFreshSpawn(root: string): Promise<void> {
+      vi.useFakeTimers();
+      mockState.health.mockImplementation(async () => {
+        if (mockState.health.mock.calls.length < 3) {
+          throw createErrnoError('ECONNREFUSED');
+        }
+        return {
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'replacement-coordinator',
+          namespace: pluginRootNamespace(root),
+        };
+      });
+      mockState.spawn.mockImplementation(() => {
+        writeDiscovery(root, { instanceId: 'replacement-coordinator' });
+        return { unref: vi.fn() };
+      });
+
+      const { ensure } = await importEnsure();
+      const ensuredPromise = ensure(root);
+      await vi.advanceTimersByTimeAsync(800);
+      await ensuredPromise;
+    }
+
+    it('leaves a small log alone (no archive created)', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      mkdirSync(runDir(), { recursive: true });
+      writeFileSync(logPath(), 'small log content', 'utf-8');
+
+      await triggerFreshSpawn(root);
+
+      expect(existsSync(archivePath())).toBe(false);
+      expect(readFileSync(logPath(), 'utf-8')).toContain('small log content');
+    });
+
+    it('archives a log over threshold to .1 and starts a fresh log', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      mkdirSync(runDir(), { recursive: true });
+      const sentinel = 'OLD-CONTENT-MARKER';
+      const padding = 'x'.repeat(3 * 1024 * 1024);
+      writeFileSync(logPath(), `${sentinel}\n${padding}`, 'utf-8');
+
+      await triggerFreshSpawn(root);
+
+      expect(existsSync(archivePath())).toBe(true);
+      expect(readFileSync(archivePath(), 'utf-8')).toContain(sentinel);
+      expect(statSync(logPath()).size).toBe(0);
+    });
+
+    it('discards an existing .1 when rotating (single backup retained)', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      mkdirSync(runDir(), { recursive: true });
+      writeFileSync(archivePath(), 'STALE-ARCHIVE-MARKER', 'utf-8');
+      const sentinel = 'CURRENT-LOG-MARKER';
+      const padding = 'y'.repeat(3 * 1024 * 1024);
+      writeFileSync(logPath(), `${sentinel}\n${padding}`, 'utf-8');
+
+      await triggerFreshSpawn(root);
+
+      const archived = readFileSync(archivePath(), 'utf-8');
+      expect(archived).toContain(sentinel);
+      expect(archived).not.toContain('STALE-ARCHIVE-MARKER');
+    });
+
+    it('handles missing log (first boot) without error', async () => {
+      makeHome();
+      const root = createPluginRoot();
+
+      await triggerFreshSpawn(root);
+
+      expect(existsSync(archivePath())).toBe(false);
+      expect(existsSync(logPath())).toBe(true);
+    });
   });
 });

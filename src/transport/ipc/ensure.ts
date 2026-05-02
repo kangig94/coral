@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -24,6 +24,7 @@ import {
 
 export const STARTUP_POLL_MS = 200;
 export const STARTUP_TIMEOUT_MS = 60_000;
+export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 
 export type DesiredCoordinator = {
   version: string;
@@ -177,10 +178,27 @@ function isCompatibleHealth(health: RawCoordinatorHealth, desired: DesiredCoordi
   );
 }
 
+function rotateLogIfLarge(runDir: string): void {
+  const path = join(runDir, 'coordinator.log');
+  const archive = `${path}.1`;
+  try {
+    if (statSync(path).size < LOG_ROTATE_THRESHOLD_BYTES) return;
+    try {
+      unlinkSync(archive);
+    } catch {
+      // no prior archive
+    }
+    renameSync(path, archive);
+  } catch {
+    // no current log, or fs error: fail-open and let openSync create a fresh one
+  }
+}
+
 function spawnCoordinator(backendBin: string, runDir: string): void {
   let stderr: 'ignore' | number = 'ignore';
   try {
     mkdirSync(runDir, { recursive: true });
+    rotateLogIfLarge(runDir);
     stderr = openSync(join(runDir, 'coordinator.log'), 'a');
   } catch {
     // fail-open: spawn without log if dir creation fails
