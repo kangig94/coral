@@ -87,6 +87,7 @@ function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionE
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',
     backendNamespace: 'invariant-ns',
+    providerContinuity: null,
     createdAt: NOW.toISOString(),
     lastUsedAt: NOW.toISOString(),
     version: 1,

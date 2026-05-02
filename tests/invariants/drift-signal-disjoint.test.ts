@@ -83,6 +83,7 @@ describe('drift signal split', () => {
           ].join('\n'),
         }),
       ],
+      entityGraph: null,
     });
     const store = createCorpusAuthorityBaselineStore(db);
     const before = [...store.rebuild(scan).entries()].sort();

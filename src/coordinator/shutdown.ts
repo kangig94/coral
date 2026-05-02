@@ -57,7 +57,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
-  expansionLifecycleService?: ExpansionLifecycleService | null;
+  expansionLifecycleService: ExpansionLifecycleService | null;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };

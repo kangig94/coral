@@ -247,6 +247,7 @@ export class SessionManager {
       cwd: options.cwd,
       projectRoot: options.projectRoot,
       backendNamespace: options.backendNamespace,
+      providerContinuity: null,
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -295,7 +296,7 @@ export class SessionManager {
 
     const nextEntry: SessionEntry = {
       ...currentEntry,
-      providerContinuity: snapshot.providerContinuity ?? undefined,
+      providerContinuity: snapshot.providerContinuity,
       conversationRef: snapshot.conversationRef ?? undefined,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
@@ -430,7 +431,7 @@ export class SessionManager {
     const nextEntry: SessionEntry = {
       ...currentEntry,
       conversationRef: snapshot.conversationRef ?? undefined,
-      providerContinuity: snapshot.providerContinuity ?? undefined,
+      providerContinuity: snapshot.providerContinuity,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),

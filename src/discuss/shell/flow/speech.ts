@@ -32,6 +32,7 @@ export async function collectSpeech(
     selfName: winnerName,
     state: snapshot.state,
     priorSpeech: null,
+    mustAnswer: null,
   });
 
   const attempt = await executeAgentAttempt(ctx, {

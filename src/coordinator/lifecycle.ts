@@ -317,7 +317,7 @@ export type LifecycleDeps = {
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
-  readonly expansionLifecycleService?: ExpansionLifecycleService | null;
+  readonly expansionLifecycleService: ExpansionLifecycleService | null;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;

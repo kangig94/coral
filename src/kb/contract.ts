@@ -160,7 +160,7 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   recordIndexSyncFailure(reason: string): KbIndexState;
   recordReindexSuccess(
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
-    externalMutation?: KbIndexMutationLane | null,
+    externalMutation?: KbIndexMutationLane,
   ): KbIndexState;
   getCorpusStateSnapshot(): KbCorpusSnapshot;
   captureCorpusSnapshot(): KbCorpusSnapshot;

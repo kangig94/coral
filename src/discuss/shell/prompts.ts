@@ -3,8 +3,8 @@ import type { AgentState, DiscussState } from '../session-types.js';
 export type PromptContext = {
   selfName: string;
   state: DiscussState;
-  priorSpeech?: { speaker: string; content: string } | null;
-  mustAnswer?: string | null;
+  priorSpeech: { speaker: string; content: string } | null;
+  mustAnswer: string | null;
 };
 
 function getAgent(selfName: string, agents: Record<string, AgentState>): AgentState {
@@ -50,7 +50,7 @@ function priorSpeechBlock(ctx: PromptContext): string {
   return `Most recent speech from ${ctx.priorSpeech.speaker}:\n${ctx.priorSpeech.content}`;
 }
 
-function mustAnswerBlock(mustAnswer?: string | null): string {
+function mustAnswerBlock(mustAnswer: string | null): string {
   if (!mustAnswer) {
     return '';
   }

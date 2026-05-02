@@ -347,7 +347,7 @@ class KbRuntimeImpl implements KbRuntime {
 
   recordReindexSuccess(
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
-    externalMutation: KbIndexMutationLane | null = null,
+    externalMutation?: KbIndexMutationLane,
   ): KbIndexState {
     const state = this.readIndexState();
     if (!indexStateMatchesSnapshot(state, startState)) {
@@ -355,7 +355,7 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.manifestAuthority.seedFromFullCollectors(this);
-    const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation);
+    const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation ?? null);
     this.writeIndexState(nextState);
     this.authorityBaselineRefresh.rebuildAuthorityBaselineFromDisk();
     return nextState;

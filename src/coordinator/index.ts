@@ -47,7 +47,7 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked'
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked' | 'expansionLifecycleService'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;

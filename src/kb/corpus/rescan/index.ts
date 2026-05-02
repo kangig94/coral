@@ -65,7 +65,7 @@ export async function performRescan(
   const index = buildKbIndex(finalScan, notes, sources, communities, principles);
 
   kb.writeIndex(index);
-  kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
+  kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined);
 
   if (topologyRefresh.shouldPersistState) {
     const currentState = readCurateState(curateDb(kb));

@@ -149,6 +149,7 @@ export class CorpusAuthorityBaselineRefresh {
               slug: target.slug,
             }),
           ],
+          entityGraph: null,
         }),
       )[0],
       target.entryId,

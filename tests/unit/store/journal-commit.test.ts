@@ -94,6 +94,7 @@ function sessionEntry(sessionId: string): SessionEntry {
     cwd: `/workspace/${sessionId}`,
     projectRoot: `/workspace/${sessionId}`,
     backendNamespace: 'tests',
+    providerContinuity: null,
     createdAt: NOW.toISOString(),
     lastUsedAt: NOW.toISOString(),
     version: 1,

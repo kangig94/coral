@@ -101,6 +101,7 @@ export interface ProviderTerminal {
   model?: string;
   outcome: ProviderTerminalOutcome;
   durationMs?: number;
+  /** @wire node:child_process — provider exit code; mirrors child_process exit semantics. */
   exitCode?: number | null;
   usage?: UsageSummary;
   warnings?: string[];
@@ -127,7 +128,7 @@ export type ProviderContinuityEventBody = {
   kind: 'continuity';
   conversationRef: string | null;
   resumable: boolean;
-  providerContinuity?: ProviderContinuityBlob | null;
+  providerContinuity: ProviderContinuityBlob | null;
 };
 
 export type ProviderTerminalEventBody = {
@@ -225,7 +226,7 @@ export const providerContinuityEventBodySchema = z
     kind: z.literal('continuity'),
     conversationRef: z.string().nullable(),
     resumable: z.boolean(),
-    providerContinuity: z.record(z.string(), z.unknown()).nullable().optional(),
+    providerContinuity: z.record(z.string(), z.unknown()).nullable(),
   })
   .strict();
 

@@ -26,7 +26,7 @@ function installGatedRescan(): RescanGate {
     void startState;
     signals.push(options?.signal);
     // Mark the index state as fresh so subsequent freshness checks short-circuit.
-    kb.recordReindexSuccess(startState, null);
+    kb.recordReindexSuccess(startState);
     return new Promise((resolve) => {
       calls.push({ resolve });
     });

@@ -57,11 +57,13 @@ export interface SessionProbeResult {
   activeTurnId: string | null;
 }
 
+/** @wire anthropic:claude — turn/start request body. */
 export interface TurnStartParams {
   brokerSessionKey: string;
   brokerTurnId: string;
   prompt: string;
   model?: string;
+  /** @wire anthropic:claude — `null` requests the API default. */
   maxThinkingTokens?: number | null;
 }
 

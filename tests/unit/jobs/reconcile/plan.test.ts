@@ -227,6 +227,7 @@ function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
     cwd: overrides.cwd ?? '/workspace',
     projectRoot: overrides.projectRoot ?? '/workspace',
     backendNamespace: overrides.backendNamespace ?? 'test-ns',
+    providerContinuity: overrides.providerContinuity ?? null,
     createdAt: overrides.createdAt ?? NOW,
     lastUsedAt: overrides.lastUsedAt ?? NOW,
     version: overrides.version ?? 1,

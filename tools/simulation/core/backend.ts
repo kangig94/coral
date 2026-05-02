@@ -437,6 +437,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     eventBus,
     providerRegistry,
     providerHostManager,
+    expansionLifecycleService: null,
     getConsumerStuck: () => [],
     getMutationBlocked: () => ({ blocked: false }),
     resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),

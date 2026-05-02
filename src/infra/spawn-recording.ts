@@ -5,6 +5,7 @@ type SpawnRecordingEvent = {
   timestamp: number;
   type: 'stdout' | 'stderr' | 'stdin' | 'close' | 'error';
   data?: string;
+  /** @wire node:child_process — code/signal are mutually exclusive on close (one is null). */
   code?: number | null;
   signal?: string | null;
 };
