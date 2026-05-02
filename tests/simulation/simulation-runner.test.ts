@@ -1,16 +1,32 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runScenario } from '#tools/simulation/runner.js';
-import { simulationDocumentSchema } from '#tools/simulation/scenario-schema.js';
+import { simulationDocumentSchema, type SimulationDocument } from '#tools/simulation/scenario-schema.js';
 import type { SimulationWorld } from '#tools/simulation/adversarial.js';
 
 const FIRST_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000002';
 const FIRST_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000003';
 const SECOND_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000004';
 const SECOND_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000005';
-const EXAMPLE_SCENARIOS = ['lifecycle-complete.yaml', 'lifecycle-abort.yaml', 'lifecycle-reset.yaml'];
+
+const SCENARIO_DIR = join(process.cwd(), 'tools/simulation/scenarios');
+
+// Discovers every yaml in `scenarios/`. Each scenario is parsed once and
+// produces two cases: a schema round-trip and an end-to-end run. Scenarios
+// declaring `expectedFailure` in their document assert against that
+// declaration instead of `result.passed === true` — keeping the contract
+// next to the scenario rather than in a sidecar registry.
+function loadAllScenarios(): Array<{ name: string; doc: SimulationDocument }> {
+  return readdirSync(SCENARIO_DIR)
+    .filter((f) => f.endsWith('.yaml'))
+    .sort()
+    .map((f) => ({
+      name: f.replace('.yaml', ''),
+      doc: simulationDocumentSchema.parse(yaml.parse(readFileSync(join(SCENARIO_DIR, f), 'utf8'))),
+    }));
+}
 
 const worlds: SimulationWorld[] = [];
 
@@ -318,12 +334,43 @@ describe('scenario runner', () => {
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)?.phase).toBe('completed');
   });
 
-  it('round-trips example scenario YAML files through parse, validate, and re-serialize', () => {
-    for (const fileName of EXAMPLE_SCENARIOS) {
-      const raw = readFileSync(join(process.cwd(), 'tools/simulation/scenarios', fileName), 'utf8');
-      const validated = simulationDocumentSchema.parse(yaml.parse(raw));
-      const reparsed = simulationDocumentSchema.parse(yaml.parse(yaml.stringify(validated)));
-      expect(reparsed).toEqual(validated);
+  describe('auto-discovered scenarios', () => {
+    const scenarios = loadAllScenarios();
+
+    it('discovery surfaces at least one scenario', () => {
+      expect(scenarios.length).toBeGreaterThan(0);
+    });
+
+    for (const { name, doc } of scenarios) {
+      it(`${name} round-trips through parse, validate, and re-serialize`, () => {
+        const reparsed = simulationDocumentSchema.parse(yaml.parse(yaml.stringify(doc)));
+        expect(reparsed).toEqual(doc);
+      });
+
+      const expected = doc.expectedFailure;
+      const label = expected ? `${name} (expected failure)` : `${name} runs to completion with all steps passing`;
+      it(label, async () => {
+        const { result, world } = await runScenario(doc);
+        worlds.push(world);
+
+        if (expected) {
+          const failedStep = result.steps.find((s) => !s.ok);
+          expect(failedStep).toBeDefined();
+          expect(failedStep!.stepIndex).toBe(expected.stepIndex);
+          expect(failedStep!.detail).toMatchObject({ failureKind: expected.failureKind });
+          return;
+        }
+
+        const failures = result.steps.filter((s) => !s.ok);
+        if (failures.length > 0) {
+          const report = failures.map(
+            (f) => `  step ${f.stepIndex} (${f.type}): ${JSON.stringify(f.detail, null, 2)}`,
+          );
+          console.log(`\n[${name}] ${failures.length} failed step(s):\n${report.join('\n')}`);
+        }
+
+        expect(result.passed).toBe(true);
+      });
     }
   });
 });

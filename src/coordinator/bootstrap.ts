@@ -127,6 +127,14 @@ export async function main(): Promise<number> {
     void coordinator.shutdown('sigint').catch(() => {});
   });
 
+  // Hold a ref'd keepalive for the duration of startup. Without it, a contender
+  // entering `bindWithHandoff`'s retry sleep can drain the event loop and exit
+  // silently with code 0: `runtime.time.sleep` uses `timer.unref()` (real.ts),
+  // and no other ref-holding I/O exists between IPC client close and the next
+  // bind attempt. After `start()` resolves the bound IPC + HTTP servers keep
+  // the loop alive on their own.
+  const startupKeepalive = setInterval(() => {}, 60_000);
+
   try {
     const info = await coordinator.start();
     backendLog.info(`Running on ${info.host}:${info.port}`);
@@ -142,6 +150,8 @@ export async function main(): Promise<number> {
 
     backendLog.error('Fatal startup error', error);
     return 1;
+  } finally {
+    clearInterval(startupKeepalive);
   }
 }
 

@@ -807,21 +807,18 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
+// Production coordinator metadata lives at `~/.coral/run/coordinator.json`
+// (per `src/infra/path/coordinator.ts`). The legacy `~/.claude/coral/installations/`
+// tree no longer carries `backend.json` after the socket-as-lock rewrite —
+// only stale `backend.lock` orphans linger there. The statusline is gated to
+// the prod flavor by `hud-auto-update.mjs`, so we read prod's runDir directly.
 function resolveBackendInfoPath() {
-  const installationsDir = join(homedir(), ".claude", "coral", "installations");
+  const infoPath = join(homedir(), ".coral", "run", "coordinator.json");
   try {
-    let best = null;
-    for (const entry of readdirSync(installationsDir)) {
-      const infoPath = join(installationsDir, entry, "backend.json");
-      try {
-        const info = JSON.parse(readFileSync(infoPath, "utf-8"));
-        if (info?.pid && info?.startedAt) {
-          try { process.kill(info.pid, 0); } catch { continue; }
-          if (!best || info.startedAt > best.startedAt) best = { path: infoPath, startedAt: info.startedAt };
-        }
-      } catch { /* skip corrupt/missing */ }
-    }
-    return best?.path ?? null;
+    const info = JSON.parse(readFileSync(infoPath, "utf-8"));
+    if (!info?.pid) return null;
+    try { process.kill(info.pid, 0); } catch { return null; }
+    return infoPath;
   } catch {
     return null;
   }

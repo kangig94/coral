@@ -76,6 +76,56 @@ const ABORT_SCENARIO: SimulationDocument = {
   ],
 };
 
+const HANDOFF_SHUTDOWN_SCENARIO: SimulationDocument = {
+  world: {
+    listen: { port: 4_304 },
+    durable: [
+      {
+        pid: 30_404,
+        runtimeDelayMs: 5,
+        stdout: [{ delayMs: 20, data: 'handoff-progress\n' }],
+        exit: null,
+      },
+    ],
+    fakeProvider: {
+      progress: [{ delayMs: 5, message: 'provider-progress-pre-handoff' }],
+    },
+  },
+  steps: [
+    { type: 'boot' },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate handoff shutdown preserves running job' },
+    { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
+    { type: 'wait', until: { progressContains: 'provider-progress-pre-handoff' }, stepMs: 5, maxSteps: 5 },
+    { type: 'shutdown', reason: 'replaced' },
+    { type: 'expect', phase: 'running', runtimeRecorded: true, noRealIO: true },
+  ],
+};
+
+const HARD_SHUTDOWN_SCENARIO: SimulationDocument = {
+  world: {
+    listen: { port: 4_305 },
+    durable: [
+      {
+        pid: 30_505,
+        runtimeDelayMs: 5,
+        stdout: [{ delayMs: 20, data: 'hard-progress\n' }],
+        exit: null,
+      },
+    ],
+    fakeProvider: {
+      progress: [{ delayMs: 5, message: 'provider-progress-pre-hard' }],
+    },
+  },
+  steps: [
+    { type: 'boot' },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate hard shutdown marks running job as error' },
+    { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
+    { type: 'wait', until: { progressContains: 'provider-progress-pre-hard' }, stepMs: 5, maxSteps: 5 },
+    { type: 'shutdown', reason: 'crash' },
+    { type: 'expect', phase: 'error', runtimeRecorded: true, noRealIO: true },
+  ],
+};
+
 const RESET_SCENARIO: SimulationDocument = {
   world: {
     listen: { port: 4_303 },
@@ -349,6 +399,33 @@ describe('deterministic simulation lifecycle replay', () => {
       realFetchCalls: 0,
       violations: [],
     });
+  });
+
+  it('handoff shutdown (reason=replaced) preserves the running job phase without writing an error terminal', async () => {
+    const { result, world } = await runScenario(HANDOFF_SHUTDOWN_SCENARIO);
+    worlds.push(world);
+
+    expect(result.passed).toBe(true);
+    const launch = getLaunchReceipt(result.steps[1]);
+    expect(world.getBackendLifecycle()).toBe('stopped');
+    const status = world.getJobStatus(launch.jobId);
+    expect(status?.phase).toBe('running');
+    const replay = world.replay(launch.jobId);
+    expect(replay.some((event) => event.type === 'terminal')).toBe(false);
+  });
+
+  it('hard shutdown (reason=crash) marks the running job as error via markJobsAsError', async () => {
+    const { result, world } = await runScenario(HARD_SHUTDOWN_SCENARIO);
+    worlds.push(world);
+
+    expect(result.passed).toBe(true);
+    const launch = getLaunchReceipt(result.steps[1]);
+    expect(world.getBackendLifecycle()).toBe('stopped');
+    const status = world.getJobStatus(launch.jobId);
+    expect(status?.phase).toBe('error');
+    expect(status?.result?.outcome).toMatchObject({ kind: 'job_fault' });
+    const replay = world.replay(launch.jobId);
+    expect(replay.some((event) => event.type === 'terminal')).toBe(true);
   });
 
   it('tracks generation snapshots across repeated cycle() calls', async () => {
