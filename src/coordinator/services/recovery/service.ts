@@ -138,6 +138,16 @@ export class RecoveryService {
     requireProviderLaunchRecord(launchRecord, 'finalizeInterruptedAppServerJob');
     const status = this.deps.progressStore.readStatus(launchRecord.jobId);
     if (!status || isTerminalPhase(status.phase)) {
+      // Cross-version partial-state preservation: a pre-PR daemon wrote a
+      // terminal record before crashing mid-finalizer. The replacement
+      // recognizes it as terminal and does not re-finalize. Warn surfaces
+      // this path for operator visibility without re-running the durable
+      // mutation sequence.
+      if (status && options.reason === 'handoff') {
+        backendLog.warn(
+          `skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery — likely cross-version partial-state from pre-PR daemon`,
+        );
+      }
       return;
     }
 

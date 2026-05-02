@@ -35,7 +35,6 @@ import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
-import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
@@ -73,14 +72,19 @@ function deriveCoordinatorFlavor(options: CoordinatorServerOptions): 'prod' | 'd
   return readBuildFlavor(options.pluginRoot);
 }
 
+// Default deadline for waiting on backend boot freshness (KB readiness, store
+// projection cursors, etc.). Preserves the prior 90s budget so behavior under
+// `CORAL_BOOT_FRESHNESS_TIMEOUT_MS` unset/invalid is unchanged.
+const DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS = 90_000;
+
 function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
   const raw = runtime.env.get('CORAL_BOOT_FRESHNESS_TIMEOUT_MS');
   if (!raw) {
-    return CONTENDER_BUDGET;
+    return DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
   }
 
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : CONTENDER_BUDGET;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
 }
 
 // Bundled Orama always binds kb.fts; engines like needle bind kb.vector when
@@ -221,8 +225,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
   const providedCreateExecutionService = coreOptions.createExecutionService;
-  const providedAcquireLockFn = coreOptions.acquireLockFn;
-  const providedRemoveLockIfOwnerFn = coreOptions.removeLockIfOwnerFn;
 
   const getStoreDb = () => {
     if (storeDb !== null) {
@@ -508,20 +510,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       return recoveredDiscussResumes;
     },
-    acquireLockFn:
-      providedAcquireLockFn ??
-      (async (_pluginRoot, instanceId, version, bundleHash, flavor) => {
-        await acquireLock(flavor, bundleHash, {
-          instanceId,
-          version,
-          runtime,
-        });
-      }),
-    removeLockIfOwnerFn:
-      providedRemoveLockIfOwnerFn ??
-      ((_pluginRoot, instanceId) => {
-        releaseLock(instanceId, runtime);
-      }),
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   curateSchedulerHealth.attachRuntimeState(core.runtimeState);

@@ -13,7 +13,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
-import type { LockRecord } from '#src/infra/lock-record.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -92,18 +91,6 @@ export function readDiscoveryRecordForHome(home: string, flavor: BuildFlavor): C
   const infoPath = coordinatorFilesForHome(home, flavor).infoFile;
   try {
     return JSON.parse(readFileSync(infoPath, 'utf-8')) as CoordinatorDiscoveryRecord;
-  } catch (error: unknown) {
-    if (isNoEntryError(error) || error instanceof SyntaxError) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-export function readLockRecordForHome(home: string, flavor: BuildFlavor): LockRecord | null {
-  const lockPath = coordinatorFilesForHome(home, flavor).lockFile;
-  try {
-    return JSON.parse(readFileSync(lockPath, 'utf-8')) as LockRecord;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) {
       return null;

@@ -13,6 +13,7 @@ import { StartupInterruptedError } from '../../startup-error.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
+import type { InterruptedAppServerReason } from '../execution-policies.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,
@@ -63,12 +64,14 @@ type StartupRecoveryContext = {
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;
+  interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
   assertStartupStillActive: () => void;
+  interruptedAppServerReason: InterruptedAppServerReason;
 };
 
 export function createRecoveryCoordinator({
@@ -141,6 +144,7 @@ export function createRecoveryCoordinator({
     queuedJobs,
     runningJobs,
     assertStartupStillActive,
+    interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
     queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
 
@@ -166,7 +170,9 @@ export function createRecoveryCoordinator({
         const recovery = providerRegistry.get(launchRecord.provider)?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
           assertStartupStillActive();
-          await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
+          await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, {
+            reason: interruptedAppServerReason,
+          });
           assertStartupStillActive();
           state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
@@ -294,6 +300,7 @@ export function createRecoveryCoordinator({
   return {
     async runStartupRecovery(ctx: StartupRecoveryContext): Promise<void> {
       const { namespace, bundleHash, runtime, progressStore, assertStartupStillActive, log, cleanupStaleJobs } = ctx;
+      const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);
       const recoveryRegistry = new RecoveryRegistry(runtime.process);
@@ -342,6 +349,7 @@ export function createRecoveryCoordinator({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
           assertStartupStillActive,
+          interruptedAppServerReason,
         });
       } catch (error: unknown) {
         if (error instanceof StartupInterruptedError) {

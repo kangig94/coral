@@ -40,6 +40,7 @@ function createPorts(): HttpHandlerPorts {
         flavor: 'prod',
         namespace: 'test-namespace',
         instanceId: 'test-instance',
+        pid: 12345,
         uptimeMs: 0,
         active: 0,
         activeJobs: 0,

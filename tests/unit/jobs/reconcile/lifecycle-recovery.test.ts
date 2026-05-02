@@ -365,6 +365,7 @@ function createLifecycleHarness(
     servicesByProjectRoot?: Map<string, unknown>;
     getExecutionService?: (ctx: { projectRoot: string }) => unknown;
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
+    interruptedAppServerReason?: 'restart' | 'handoff';
   },
 ) {
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot);
@@ -417,14 +418,13 @@ function createLifecycleHarness(
     getDiscussContext: () => {
       throw new Error('Unexpected discuss context lookup');
     },
-    acquireLockFn: async () => {},
     writeBackendInfoFn: () => {},
     removeBackendInfoIfOwnerFn: () => {},
-    removeLockIfOwnerFn: () => {},
     cleanupStaleJobsFn: () => {},
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    handoffQuiescePorts: () => [],
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
@@ -451,6 +451,7 @@ function createLifecycleHarness(
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),
+        interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return [];
     },
@@ -1190,6 +1191,77 @@ describe('lifecycle recovery', () => {
         { reason: 'restart' },
       );
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14b. handoff startup recovery routes app-server jobs through finalizeInterruptedAppServerJob(handoff)', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-app-server-handoff');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-app-server-handoff');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      {
+        db: openTestStoreDb(runtime),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    const fakeService = createFakeExecutionAndRecoveryService();
+
+    progressStore.initJob({
+      jobId: 'app-server-handoff-job',
+      sessionId: 'app-server-handoff-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: 'app-server-handoff-job',
+      sessionId: 'app-server-handoff-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    progressStore.appendRuntimeStarted('app-server-handoff-job', {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: {
+        provider: 'fakeprovider',
+        leaseState: 'acquired',
+        providerContinuity: {
+          provider: 'fakeprovider',
+          threadId: 'handoff-thread-1',
+        },
+      },
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      interruptedAppServerReason: 'handoff',
+    });
+
+    try {
+      await controller.start();
+      expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: 'app-server-handoff-job' }),
+        expect.objectContaining({
+          transport: 'app-server',
+          providerMeta: expect.objectContaining({
+            providerContinuity: expect.objectContaining({ threadId: 'handoff-thread-1' }),
+          }),
+        }),
+        { reason: 'handoff' },
+      );
     } finally {
       await stopLifecycleController(controller);
     }

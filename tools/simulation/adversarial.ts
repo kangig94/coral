@@ -83,13 +83,11 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
   return {
     createServerCalls: [...hooks.createServerCalls],
     listenCalls: hooks.listenCalls.map((entry) => ({ ...entry })),
-    acquireLockCalls: hooks.acquireLockCalls.map((entry) => ({ ...entry })),
     writeBackendInfoCalls: hooks.writeBackendInfoCalls.map((entry) => ({
       pluginRoot: entry.pluginRoot,
       info: { ...entry.info },
     })),
     removeBackendInfoCalls: hooks.removeBackendInfoCalls.map((entry) => ({ ...entry })),
-    removeLockCalls: hooks.removeLockCalls.map((entry) => ({ ...entry })),
     createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };

@@ -16,11 +16,11 @@ const WARM_START_TIMEOUT_MS = 15_000;
 
 /**
  * The warm-start hook unconditionally spawns the bundled coral-backend.
- * Staleness/incumbent detection is the daemon's job (`acquireLock` ->
- * `inspectIncumbent`): a healthy same-bundle peer makes the new daemon
- * throw `BackendAlreadyRunningError` and exit, while a mismatching peer
- * triggers `requestHandoff`. The hook stays free of bundle/flavor
- * comparison so the contention contract has one canonical home.
+ * Staleness/incumbent detection is the daemon's job (`bindWithHandoff`): a
+ * healthy same-bundle peer makes the new daemon throw
+ * `BackendAlreadyRunningError` and exit, while a mismatching peer triggers
+ * IPC `transport.shutdown`. The hook stays free of bundle/flavor comparison
+ * so the contention contract has one canonical home.
  */
 describe('backend-warm-start.mjs', () => {
   function setupWarmStartFixture() {

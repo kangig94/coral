@@ -11,7 +11,6 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as ServerTestDepsMod from '#tests/unit/coordinator/server-test-deps.js';
-import type * as BackendLockMod from '#src/coordinator/lock.js';
 import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#tests/unit/coordinator/server-test-deps.js';
@@ -133,7 +132,6 @@ vi.mock('node:os', async () => {
 
 type ServerModule = typeof ServerMod;
 type BackendInfoModule = typeof ServerTestDepsMod.backendDiscovery;
-type BackendLockModule = typeof BackendLockMod;
 type LifecycleModule = typeof LifecycleMod;
 
 type FakeExecutionService = {
@@ -353,17 +351,15 @@ async function openHttpStream(
 async function loadExecutionModules(): Promise<{
   serverModule: ServerModule;
   backendInfo: BackendInfoModule;
-  backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
 }> {
   vi.resetModules();
-  const [serverModule, backendInfo, backendLock, lifecycleModule] = await Promise.all([
+  const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
     import('#src/coordinator/index.js'),
     import('#tests/unit/coordinator/server-test-deps.js').then((module) => module.backendDiscovery),
-    import('#src/coordinator/lock.js'),
     import('#src/coordinator/lifecycle.js'),
   ]);
-  return { serverModule, backendInfo, backendLock, lifecycleModule };
+  return { serverModule, backendInfo, lifecycleModule };
 }
 
 function stubLaunchRecord(
@@ -652,7 +648,7 @@ describe('execution backend server', () => {
   }
 
   async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
-    const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
+    const { serverModule, backendInfo } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
     controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
@@ -672,7 +668,6 @@ describe('execution backend server', () => {
     return {
       controller,
       backendInfo,
-      backendLock,
       started,
       baseUrl: `http://127.0.0.1:${started.port}`,
       token: started.token,
@@ -4576,9 +4571,9 @@ describe('execution backend server', () => {
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
     });
 
-    it('handoff finalizes live app-server jobs before draining provider servers', async () => {
+    it('handoff quiesces app-server jobs (no terminal mutation) before draining provider servers', async () => {
       const { lifecycleModule } = await loadExecutionModules();
-      const pluginRoot = createProjectRoot('handoff-app-server-finalization');
+      const pluginRoot = createProjectRoot('handoff-app-server-quiesce');
       const namespace = pluginRootNamespace(pluginRoot);
       const progressStore = createProgressStore();
       const jobId = 'handoff-app-server-job';
@@ -4614,6 +4609,7 @@ describe('execution backend server', () => {
 
       const fakeService = {
         finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+        quiesceAppServerJobsForHandoff: vi.fn(async (_signal: AbortSignal) => {}),
       };
       const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
@@ -4653,14 +4649,13 @@ describe('execution backend server', () => {
         getDiscussContext: () => {
           throw new Error('Unexpected discuss context lookup');
         },
-        acquireLockFn: async () => {},
         writeBackendInfoFn: vi.fn(),
         removeBackendInfoIfOwnerFn: () => {},
-        removeLockIfOwnerFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
+        handoffQuiescePorts: () => [fakeService as never],
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
@@ -4677,20 +4672,17 @@ describe('execution backend server', () => {
       await controller.shutdown('replaced');
       await controller.waitForShutdown();
 
-      expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId }),
-        expect.objectContaining({
-          transport: 'app-server',
-          providerMeta: expect.objectContaining({
-            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
-          }),
-        }),
-        { reason: 'handoff' },
-      );
+      // The dying daemon must NOT call finalizeInterruptedAppServerJob — that
+      // multi-write durable mutation is owned by the replacement daemon's
+      // startup recovery after socket bind.
+      expect(fakeService.finalizeInterruptedAppServerJob).not.toHaveBeenCalled();
+      expect(fakeService.quiesceAppServerJobsForHandoff).toHaveBeenCalledTimes(1);
       expect(providerHostManager.drainForHandoff).toHaveBeenCalledTimes(1);
-      const finalizeOrder = fakeService.finalizeInterruptedAppServerJob.mock.invocationCallOrder.at(0);
+      // Quiesce must run before provider-host drain so transport closure does
+      // not surface as a provider terminal event on the active app-server job.
+      const quiesceOrder = fakeService.quiesceAppServerJobsForHandoff.mock.invocationCallOrder.at(0);
       const drainOrder = providerHostManager.drainForHandoff.mock.invocationCallOrder.at(0);
-      expect(finalizeOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
+      expect(quiesceOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
     });
 
     it('hard shutdown kills children and marks jobs as error', async () => {
@@ -4818,7 +4810,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
         progressStore,
-        acquireLockFn: async () => {
+        listenIpcFn: async () => {
           startupBlocked.resolve();
           await releaseStartup.promise;
           throw new Error('startup interrupted for shutdown test');

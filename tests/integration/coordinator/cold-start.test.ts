@@ -4,13 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { STARTUP_DEADLINE } from '#src/coordinator/lock.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,
   createPluginFixture,
-  readLockRecordForHome,
   spawnCoordinator,
   stopCoordinator,
   storeDbPathForHome,
@@ -21,6 +19,11 @@ import {
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
+
+// Replacement bind acquires within HANDOFF_DRAIN_TIMEOUT_MS + SIGTERM_GRACE_MS +
+// SIGKILL_GRACE_MS = 40_000. Cold start has no incumbent, so acquisition is
+// near-instant; the upper bound here is just a safety ceiling.
+const STARTUP_HARD_BOUND_MS = 30_000;
 
 afterEach(async () => {
   while (coordinators.length > 0) {
@@ -36,7 +39,7 @@ afterEach(async () => {
 });
 
 describe('coordinator cold-start integration', () => {
-  it('creates discovery and lock files, applies store schemas, and remains alive well within the startup deadline', async () => {
+  it('binds the IPC socket, writes coordinator.json, applies store schemas, and remains alive within the startup bound', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected build/coral-backend.cjs to exist before running integration tests');
     }
@@ -59,18 +62,17 @@ describe('coordinator cold-start integration', () => {
 
     const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const elapsedMs = Date.now() - startedAt;
-    expect(elapsedMs).toBeLessThan(STARTUP_DEADLINE);
+    expect(elapsedMs).toBeLessThan(STARTUP_HARD_BOUND_MS);
 
-    const lock = readLockRecordForHome(home, 'prod');
-    expect(lock).toMatchObject({
-      pid: discovery.pid,
-      bundleHash: fixture.bundleHash,
-      flavor: 'prod',
-    });
+    expect(discovery.bundleHash).toBe(fixture.bundleHash);
+    expect(discovery.flavor).toBe('prod');
 
     const files = coordinatorFilesForHome(home, 'prod');
     expect(existsSync(files.infoFile)).toBe(true);
-    expect(existsSync(files.lockFile)).toBe(true);
+    expect(existsSync(files.socketPath)).toBe(true);
+    // Lockfile path is preserved on disk by the realruntime composition for
+    // legacy callers, but the socket-as-lock contract no longer writes it.
+    expect(existsSync(files.lockFile)).toBe(false);
 
     const dbPath = storeDbPathForHome(home, 'prod');
     await waitForCondition(() => existsSync(dbPath), 15_000);
@@ -91,8 +93,11 @@ describe('coordinator cold-start integration', () => {
 
     await waitForCondition(() => isProcessAlive(discovery.pid), 1_000);
     expect(isProcessAlive(discovery.pid)).toBe(true);
-    expect(discovery.bundleHash).toBe(fixture.bundleHash);
-    expect(discovery.flavor).toBe('prod');
     expect(discovery.port).toBeGreaterThan(0);
+
+    // Shutdown removes coordinator.json (Phase B+C contract).
+    await stopCoordinator(coordinators.pop()!);
+    await waitForCondition(() => !existsSync(files.infoFile), 5_000);
+    expect(existsSync(files.infoFile)).toBe(false);
   });
 });

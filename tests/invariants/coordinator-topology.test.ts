@@ -35,6 +35,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/expansion/lifecycle.ts',
   'src/coordinator/expansion/rpc.ts',
   'src/coordinator/expansion/state.ts',
+  'src/coordinator/handoff.ts',
   'src/coordinator/invocation-scope.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
@@ -49,7 +50,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/provider-hosts/recovery.ts',
   'src/coordinator/live/provider-hosts/state.ts',
   'src/coordinator/live/worker-limits.ts',
-  'src/coordinator/lock.ts',
   'src/coordinator/spawn-observer.ts',
   'src/coordinator/ownership-checker.ts',
   'src/coordinator/services/execution-policies.ts',
@@ -93,7 +93,7 @@ const CONTRACT_TARGETS = new Set([
   'src/sessions/continuity.ts',
   'src/store/consumer-contract.ts',
 ]);
-const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts']);
+const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts', 'src/transport/ipc/handoff.ts']);
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',

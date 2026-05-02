@@ -20,6 +20,7 @@ import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression } from '#src/workflow/parser.js';
@@ -2554,6 +2555,117 @@ describe('ExecutionService', () => {
           state: 'non_resumable',
         });
         expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+        stderrSpy.mockRestore();
+      });
+
+      it('warns when an already-terminal job is observed during handoff recovery (cross-version partial-state)', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `app-server-cross-version-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-cross-version', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+        });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+
+        // Pre-PR daemon wrote a terminal record before crashing mid-finalizer.
+        // Drive the job to a terminal phase so the early-return path fires.
+        progressStore.commit((c) => {
+          appendJobTerminalRecorded(c, {
+            jobId,
+            sessionId: session.sessionId,
+            namespace: TEST_BACKEND_NAMESPACE,
+            project: ctx.projectRoot,
+            terminal: { content: '', outcome: { kind: 'completed' } },
+            continuity: null,
+          });
+          return undefined;
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
+          { reason: 'handoff' },
+        );
+
+        const warnHits = stderrSpy.mock.calls.some(([chunk]) => {
+          const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : '';
+          return (
+            text.includes(jobId) &&
+            text.includes('cross-version partial-state from pre-PR daemon')
+          );
+        });
+        expect(warnHits).toBe(true);
+        stderrSpy.mockRestore();
+      });
+
+      it('does not warn for already-terminal jobs during ordinary restart recovery', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `app-server-restart-terminal-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-restart-terminal', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+        });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+
+        progressStore.commit((c) => {
+          appendJobTerminalRecorded(c, {
+            jobId,
+            sessionId: session.sessionId,
+            namespace: TEST_BACKEND_NAMESPACE,
+            project: ctx.projectRoot,
+            terminal: { content: '', outcome: { kind: 'completed' } },
+            continuity: null,
+          });
+          return undefined;
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
+          { reason: 'restart' },
+        );
+
+        const warnHits = stderrSpy.mock.calls.some(([chunk]) => {
+          const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : '';
+          return text.includes('cross-version partial-state from pre-PR daemon');
+        });
+        expect(warnHits).toBe(false);
         stderrSpy.mockRestore();
       });
     });

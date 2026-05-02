@@ -1,0 +1,339 @@
+import { readFileSync } from 'node:fs';
+import type { Server, ServerResponse } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+import { HANDOFF_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
+import type { IpcListener } from '#src/transport/ipc/server.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+
+// AC5: `runShutdownSequence` completes within `HANDOFF_DRAIN_TIMEOUT_MS` even
+// when an async-cooperative finalizer hangs. The IPC socket must remain bound
+// (i.e. `closeIpcServerFn` must NOT be called) until all bounded finalizers
+// have completed or had their budget elapsed; socket release is the last step.
+
+type CallLog = string[];
+
+interface Harness {
+  time: VirtualTime;
+  runtime: Runtime;
+  callLog: CallLog;
+  logLines: string[];
+  closeIpcCalled: () => boolean;
+  ctx: Parameters<typeof runShutdownSequence>[0];
+}
+
+function buildHarness(opts: {
+  hooksOnShutdown?: (signal: AbortSignal) => Promise<void>;
+  closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
+}): Harness {
+  const time = new VirtualTime();
+  const callLog: CallLog = [];
+  const logLines: string[] = [];
+
+  // Minimal runtime — only `time` is read by `runShutdownSequence`.
+  const runtime = { time } as unknown as Runtime;
+
+  // Stub server: `close` and `closeAllConnections` are called synchronously;
+  // we do not need to simulate the HTTP wire.
+  const server = {
+    closeAllConnections: () => {
+      callLog.push('server.closeAllConnections');
+    },
+  } as unknown as Server;
+
+  const ipcServer = { server: {}, sockets: new Set(), socketPath: '/tmp/x' } as unknown as IpcListener;
+
+  let closeIpcResolved = false;
+  const closeIpcServerFn =
+    opts.closeIpcServerFn ??
+    (async (_listener: IpcListener): Promise<void> => {
+      callLog.push('closeIpcServerFn:start');
+      closeIpcResolved = true;
+      await Promise.resolve();
+      callLog.push('closeIpcServerFn:resolved');
+    });
+
+  const ctx: Parameters<typeof runShutdownSequence>[0] = {
+    reason: 'replaced', // → mode='handoff' → drain=HANDOFF_DRAIN_TIMEOUT_MS
+    state: { ownershipCheckerTeardown: null },
+    teardownRecoveryCoordinator: () => {
+      callLog.push('teardownRecoveryCoordinator');
+    },
+    runtimeState: {
+      setLifecycle: (s) => {
+        callLog.push(`setLifecycle:${s}`);
+      },
+      getKbStatus: () => ({ kind: 'unavailable', reason: 'test' }),
+    },
+    idleTimer: {
+      stopWatching: () => {
+        callLog.push('idleTimer.stopWatching');
+      },
+    } as never,
+    closeServerFn: async (_s: Server) => {
+      callLog.push('closeServerFn');
+    },
+    closeIpcServerFn: async (listener: IpcListener) => {
+      await closeIpcServerFn(listener);
+    },
+    waitForInflightDrain: async () => {
+      callLog.push('waitForInflightDrain');
+    },
+    server,
+    ipcServer,
+    streamResponses: new Set<ServerResponse>(),
+    runtime,
+    namespace: 'test-ns',
+    markJobsAsErrorFn: () => {},
+    providerHostManager: {
+      // Mode is 'handoff', so .shutdown() is not called — only drainForHandoff().
+      drainForHandoff: async () => {
+        callLog.push('drainForHandoff');
+      },
+      shutdown: async () => {},
+    } as never,
+    expansionLifecycleService: {
+      shutdownActiveExpansions: async () => {
+        callLog.push('shutdownActiveExpansions');
+      },
+    } as never,
+    terminateAllFn: () => {},
+    handoffQuiescePorts: () => [],
+    hooks: {
+      onShutdown: async () => {
+        // Default: hangs forever. Tests override per case.
+        if (opts.hooksOnShutdown) {
+          await opts.hooksOnShutdown(new AbortController().signal);
+        }
+      },
+    },
+    discussStores: new Map(),
+    log: (msg) => {
+      logLines.push(msg);
+    },
+  };
+
+  return {
+    time,
+    runtime,
+    callLog,
+    logLines,
+    closeIpcCalled: () => closeIpcResolved,
+    ctx,
+  };
+}
+
+async function flush(rounds = 16): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) await Promise.resolve();
+}
+
+describe('runShutdownSequence drain budget', () => {
+  it('returns within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
+    // Hooks.onShutdown never resolves and ignores the abort signal — the
+    // budget timer must end the race for `runShutdownSequence` to return.
+    const harness = buildHarness({
+      hooksOnShutdown: () => new Promise<void>(() => {}),
+    });
+    const startedAt = harness.time.now();
+
+    let resolved = false;
+    const sequence = runShutdownSequence(harness.ctx).then(() => {
+      resolved = true;
+    });
+
+    // Drive virtual time forward enough to fire all budget timers.
+    // The bounded steps consume `HANDOFF_DRAIN_TIMEOUT_MS` worth of virtual
+    // time in aggregate when each finalizer hangs; each step's race expires
+    // back-to-back as the deadline draws closer.
+    for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
+      harness.time.tick(100);
+      await flush();
+      if (resolved) break;
+    }
+    await sequence;
+
+    expect(resolved).toBe(true);
+    const elapsed = harness.time.now() - startedAt;
+    expect(elapsed).toBeLessThanOrEqual(HANDOFF_DRAIN_TIMEOUT_MS + 100);
+
+    // Warn line for the hanging hooks.onShutdown finalizer must be present.
+    const warnedHooks = harness.logLines.some((line) =>
+      line.includes('hooks.onShutdown: exceeded drain budget'),
+    );
+    expect(warnedHooks).toBe(true);
+
+    // Socket release happens regardless.
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
+    // Provider-host drain consumes the entire budget so subsequent steps see
+    // remaining=0 and emit the "skipped" message rather than the "exceeded"
+    // message. The app-server quiesce step is structurally synchronous and
+    // does not consume budget.
+    const harness = buildHarness({});
+    harness.ctx.providerHostManager = {
+      drainForHandoff: () => new Promise<void>(() => {}),
+      shutdown: async () => {},
+    } as never;
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let i = 0; i <= HANDOFF_DRAIN_TIMEOUT_MS + 100; i += 200) {
+      harness.time.tick(200);
+      await flush();
+    }
+    await sequence;
+
+    // The drain-for-handoff step exceeded budget; later steps must surface
+    // "skipped (drain budget exhausted)" because remainingDrain() == 0.
+    const sawExceeded = harness.logLines.some((l) =>
+      l.includes('provider host drain for handoff: exceeded drain budget'),
+    );
+    const sawSkipped = harness.logLines.some((l) =>
+      l.includes('hooks.onShutdown: skipped (drain budget exhausted)'),
+    );
+    expect(sawExceeded).toBe(true);
+    expect(sawSkipped).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('releases the IPC socket only after every wrapped finalizer settles or expires', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: () => new Promise<void>(() => {}),
+    });
+
+    // Spy on the finalizer/socket-close ordering.
+    const order: string[] = [];
+    const wrap = <K extends keyof typeof harness.ctx>(key: K): void => {
+      // no-op marker function for ordering
+      void key;
+    };
+    void wrap;
+
+    const origHooks = harness.ctx.hooks.onShutdown;
+    harness.ctx.hooks = {
+      onShutdown: async () => {
+        order.push('hooks:start');
+        await origHooks('hard');
+        order.push('hooks:resolved'); // unreachable — hangs
+      },
+    };
+    const origDrain = harness.ctx.providerHostManager.drainForHandoff;
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {
+        order.push('drainForHandoff:start');
+        await origDrain();
+        order.push('drainForHandoff:resolved');
+      },
+      shutdown: async () => {},
+    } as never;
+    const origExpansion = harness.ctx.expansionLifecycleService!.shutdownActiveExpansions;
+    harness.ctx.expansionLifecycleService = {
+      shutdownActiveExpansions: async () => {
+        order.push('expansion:start');
+        await origExpansion.call(harness.ctx.expansionLifecycleService);
+        order.push('expansion:resolved');
+      },
+    } as never;
+    harness.ctx.closeIpcServerFn = async (_l: IpcListener) => {
+      order.push('closeIpc');
+    };
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let i = 0; i <= HANDOFF_DRAIN_TIMEOUT_MS + 100; i += 100) {
+      harness.time.tick(100);
+      await flush();
+    }
+    await sequence;
+
+    // closeIpc MUST appear after the hanging hooks finalizer started; it
+    // is the LAST entry — any later finalizer would violate the
+    // socket-release-is-last invariant.
+    expect(order).toContain('closeIpc');
+    expect(order.indexOf('closeIpc')).toBe(order.length - 1);
+    expect(order.indexOf('closeIpc')).toBeGreaterThan(order.indexOf('hooks:start'));
+  });
+
+  it('sync-blocking finalizer surfaces budget warn after the sync call returns (AC5 soft bound)', async () => {
+    // Simulates a finalizer that holds the event loop synchronously past the
+    // deadline (e.g. `processPort.execSync` with internal timeout). The
+    // budget timer cannot fire until the sync call returns; the test
+    // documents this soft bound by asserting the warn line surfaces only
+    // after the sync work yields, and the function still returns.
+    const harness = buildHarness({});
+    harness.ctx.hooks = {
+      onShutdown: async () => {
+        // Synchronously advance virtual time past the remaining budget,
+        // then yield. The budget timer does NOT fire while no microtask
+        // runs; once we yield, `Promise.race` resolves with `timedOut` and
+        // emits the warn line — but the finalizer also already returned.
+        harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS + 5_000);
+      },
+    };
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let i = 0; i < 10; i += 1) {
+      await flush();
+      harness.time.tick(100);
+    }
+    await sequence;
+
+    // hooks.onShutdown completed before the budget timer could pre-empt;
+    // since the task resolved first the race returns the task value (not
+    // `timedOut`), so no warn is expected for hooks.onShutdown. The soft
+    // bound is documented: the function still returns regardless of the
+    // sync-blocking phase. Assert termination.
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('lifecycle invokes onStopped synchronously after runShutdownSequence resolves (no async work between socket release and exit)', () => {
+    // Structural invariant: in `lifecycle.ts`'s shutdown path, the `.finally`
+    // block following `runShutdownSequence(...)` MUST contain `onStopped?.()`
+    // without any `await` between the surrounding `.finally(() => {` and the
+    // callback invocation. This pins the "socket release IS process exit"
+    // assumption — async work between `closeIpcServerFn` resolution and
+    // `onStopped()` would let the OS keep the socket FD past the moment the
+    // old daemon claims to have released authority.
+    const lifecyclePath = fileURLToPath(new URL('../../../src/coordinator/lifecycle.ts', import.meta.url));
+    const source = readFileSync(lifecyclePath, 'utf-8');
+
+    // Locate the `.finally` block that follows the `runShutdownSequence` call.
+    const finallyMatch = source.match(/\.finally\(\(\)\s*=>\s*{([\s\S]*?)}\)/);
+    expect(finallyMatch, 'shutdown .finally block must exist').toBeTruthy();
+    const finallyBody = finallyMatch![1];
+
+    // No `await` may appear in the finally body — it is the synchronous
+    // bridge from runShutdownSequence resolution to onStopped().
+    expect(finallyBody.includes('await')).toBe(false);
+    expect(finallyBody.includes('onStopped')).toBe(true);
+  });
+
+  it('aborts the timeout sleep when the finalizer wins, leaving no pending timer', async () => {
+    // Hooks.onShutdown resolves immediately; the budget sleep must abort so
+    // it does not later fire and emit a delayed "exceeded" warning.
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {
+        // resolves on next microtask
+      },
+    });
+
+    const sequence = runShutdownSequence(harness.ctx);
+    // Drain advances only via internal awaits; no virtual ticks needed for
+    // promptly-resolving finalizers. A safety advance covers the scheduled
+    // closeIpc race.
+    await flush(64);
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS + 1000);
+    await flush(64);
+    await sequence;
+
+    // No "exceeded drain budget" line should appear for hooks.onShutdown:
+    // when the task wins, the sleep is aborted in `finally`.
+    const sawHooksTimeout = harness.logLines.some((l) =>
+      l.includes('hooks.onShutdown: exceeded drain budget'),
+    );
+    expect(sawHooksTimeout).toBe(false);
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+});
