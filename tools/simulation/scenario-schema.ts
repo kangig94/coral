@@ -280,9 +280,22 @@ const stepSchema = z
   });
 export type Step = z.infer<typeof stepSchema>;
 
+/**
+ * Declares that a scenario is *expected* to surface a failed step at a known
+ * index with a known failureKind. Tests assert against this instead of
+ * `result.passed === true`. Pairs naturally with `continueOnFailure: true`
+ * so the runner doesn't bail before the failed step is recorded.
+ */
+const expectedFailureSchema = z.object({
+  stepIndex: z.number().int().nonnegative(),
+  failureKind: z.string().min(1),
+});
+export type ExpectedFailure = z.infer<typeof expectedFailureSchema>;
+
 export const simulationDocumentSchema = z.object({
   world: worldConfigSchema,
   steps: z.array(stepSchema),
   continueOnFailure: z.boolean().optional(),
+  expectedFailure: expectedFailureSchema.optional(),
 });
 export type SimulationDocument = z.infer<typeof simulationDocumentSchema>;

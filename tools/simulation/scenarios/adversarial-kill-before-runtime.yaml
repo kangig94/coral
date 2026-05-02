@@ -20,3 +20,6 @@ steps:
   - type: kill
     jobId: "00000000-0000-0000-0000-000000000003"
 continueOnFailure: true
+expectedFailure:
+  stepIndex: 2
+  failureKind: missing_runtime_pid

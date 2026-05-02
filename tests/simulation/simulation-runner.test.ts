@@ -13,13 +13,14 @@ const SECOND_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000005';
 
 const SCENARIO_DIR = join(process.cwd(), 'tools/simulation/scenarios');
 
-// Discovers every yaml in `scenarios/` except `adversarial-*`, which has its
-// own dedicated test (`simulation-adversarial.test.ts`) with expected-failure
-// handling per scenario name. Any future prefix lands in this loop
-// automatically — no manual list maintenance.
-function loadGeneralScenarios(): Array<{ name: string; doc: SimulationDocument }> {
+// Discovers every yaml in `scenarios/`. Each scenario is parsed once and
+// produces two cases: a schema round-trip and an end-to-end run. Scenarios
+// declaring `expectedFailure` in their document assert against that
+// declaration instead of `result.passed === true` — keeping the contract
+// next to the scenario rather than in a sidecar registry.
+function loadAllScenarios(): Array<{ name: string; doc: SimulationDocument }> {
   return readdirSync(SCENARIO_DIR)
-    .filter((f) => f.endsWith('.yaml') && !f.startsWith('adversarial-'))
+    .filter((f) => f.endsWith('.yaml'))
     .sort()
     .map((f) => ({
       name: f.replace('.yaml', ''),
@@ -333,8 +334,8 @@ describe('scenario runner', () => {
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)?.phase).toBe('completed');
   });
 
-  describe('auto-discovered scenarios (non-adversarial)', () => {
-    const scenarios = loadGeneralScenarios();
+  describe('auto-discovered scenarios', () => {
+    const scenarios = loadAllScenarios();
 
     it('discovery surfaces at least one scenario', () => {
       expect(scenarios.length).toBeGreaterThan(0);
@@ -346,9 +347,19 @@ describe('scenario runner', () => {
         expect(reparsed).toEqual(doc);
       });
 
-      it(`${name} runs to completion with all steps passing`, async () => {
+      const expected = doc.expectedFailure;
+      const label = expected ? `${name} (expected failure)` : `${name} runs to completion with all steps passing`;
+      it(label, async () => {
         const { result, world } = await runScenario(doc);
         worlds.push(world);
+
+        if (expected) {
+          const failedStep = result.steps.find((s) => !s.ok);
+          expect(failedStep).toBeDefined();
+          expect(failedStep!.stepIndex).toBe(expected.stepIndex);
+          expect(failedStep!.detail).toMatchObject({ failureKind: expected.failureKind });
+          return;
+        }
 
         const failures = result.steps.filter((s) => !s.ok);
         if (failures.length > 0) {
