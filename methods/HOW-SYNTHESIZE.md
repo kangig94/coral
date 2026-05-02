@@ -28,7 +28,16 @@ The caller's exit condition uses the reclassified severity as the as-returned va
 
 **Upgrade** (existing): A FRAME-level Adopt finding is always CRITICAL, regardless of reviewer's stated severity.
 
-**Downgrade**: The synthesizer may lower a finding's severity when the reviewer's assessment is unjustified.
+**Mandatory Downgrades**: The following downgrades are required, not optional. State the rationale citing the rule applied.
+
+| Condition | Downgrade |
+|-----------|-----------|
+| HIGH/CRITICAL severity paired with a mechanical/deterministic fix (no logic or structural change required — e.g., missing null check, missing import, variable rename, forward declaration, error-message wording) | → MEDIUM |
+| Finding's subject is test code (test files, fixtures, mocks, test helpers, test-only utilities) | cap at MEDIUM regardless of reviewer's label |
+
+Rationale: severity drives the caller's loop — HIGH means "fix requires re-examination next round", MEDIUM means "fix is deterministic, no re-examination needed". Mechanical corrections and test-code defects do not warrant additional review rounds.
+
+**Downgrade** (permissive): The synthesizer may lower a finding's severity when the reviewer's assessment is unjustified.
 Required: explicit rationale citing why the stated severity does not hold.
 
 | Downgrade allowed | Downgrade blocked |

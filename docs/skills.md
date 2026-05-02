@@ -11,7 +11,6 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist |
 | `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer synthesis |
 | `HOW-RESOLVE.md` | resolver | Constraint-collision resolution |
-| `HOW-COMPLETE.md` | plan | Exit evaluation |
 | `HOW-FALSIFY.md` | debugger, scanner | Hypothesis elimination |
 | `HOW-CONFIDENCE.md` | debugger | Evidence confidence grading |
 | `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence chain tracking |

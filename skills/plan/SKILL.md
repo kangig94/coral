@@ -14,7 +14,7 @@ Execute a multi-round planning session with architect/critic review.
 | -------------- | -------------------------------------------------------------------------------------------------- |
 | `<prompt>`     | Self-execute on current host (default)                                                             |
 | `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
-| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), read HOW-COMPLETE, pass `--deep` to reviewers |
+| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), pass `--deep` to reviewers |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
 
 Strip `--delegate`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
@@ -167,22 +167,9 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     **4d. Exit Condition**
 
-    **Step 1 — Completion assessment** (`--deep` only):
-    If `--deep`: Read `CORAL_METHODS/HOW-COMPLETE.md`. Evaluate coverage gaps (Counterexample Coverage),
-    effort quality (Refutation Effort), and convergence pattern (Progressive Focus).
-    Record the assessment — it informs both the verdict (Step 2) and next-round steering (Continue path).
+    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
 
-    **Step 2 — Verdict**:
-
-    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
-
-    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
-
-    **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
-
-    Apply ALL conditions in HOW-COMPLETE's Combined Exit Rule using the Step 1 assessment.
-    If any condition fails → **Continue** (→ 4a, next round).
-    Exit phase only when both Step 2 AND Step 3 pass.
+    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then exit phase. LOW/none → exit phase. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
 
     ### 4e. Execution Order
 
