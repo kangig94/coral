@@ -490,7 +490,7 @@ function flushBufferedNotifications(state: CodexTurnState, emit: (event: Provide
   }
 }
 
-function checkpoint(runtime: ProviderRuntime, state: CodexTurnState, threadId: string, turnId?: string | null): void {
+function checkpoint(runtime: ProviderRuntime, state: CodexTurnState, threadId: string, turnId?: string): void {
   runtime.continuityBridge.checkpoint({
     conversationRef: threadId,
     resumable: true,
