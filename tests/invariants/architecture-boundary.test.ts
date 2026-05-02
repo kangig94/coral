@@ -564,6 +564,19 @@ describe('architecture boundary guard', () => {
     }
     expect(violations).toEqual([]);
   });
+  it('kb/corpus/* must not import the runtime facade module', () => {
+    const runtimeFacadeImport = /from\s+['"]\.\.\/runtime(?:\.js)?['"]/u;
+    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) =>
+      filePath.endsWith('.ts'),
+    )
+      .flatMap((filePath) => {
+        const source = readFileSync(filePath, 'utf8');
+        return runtimeFacadeImport.test(source) ? [toCanonicalSrcPath(REPO_ROOT, filePath)] : [];
+      })
+      .sort();
+
+    expect(violations).toEqual([]);
+  });
   it('CorpusFileHandle is kb-domain vocabulary and stays out of src/infra/**', () => {
     const infraFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => isWithinPath(filePath, 'src/infra'));
     const violations = infraFiles.flatMap((filePath) => {
