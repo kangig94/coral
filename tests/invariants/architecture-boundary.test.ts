@@ -443,14 +443,23 @@ describe('architecture boundary guard', () => {
   it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
     expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
   });
-  it('large coordinator transport stays split by responsibility and consumer-driver helpers stay inlined', () => {
+  it('large coordinator transport and consumer-driver subsystem stay split by responsibility', () => {
     expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
     expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
-    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
+    // design-philosophy.md §9.6: cohesive subsystems with enough sibling files
+    // should subdivide under a named directory instead of growing a root magnet.
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/state.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/persistence.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/registration.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/freshness-waiter.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/authority-apply.ts');
 
     const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
     expect(durableTransportSource).not.toContain('createInterface');
     expect(durableTransportSource).not.toContain('ProviderServerEntry');
+  });
+  it('coordinator root forbids content-blank consumer-driver-support magnet', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
   });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(
