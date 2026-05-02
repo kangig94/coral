@@ -205,7 +205,21 @@ A file's name must describe what it actually does, not what its history suggests
 
 When in doubt, ask: would a reader who never opened this file guess its role from the name alone?
 
-### 9.5 Subdivision triggers
+### 9.5 Re-export discipline
+
+A module's `import { X } from 'A'; export { X };` block creates a *second* canonical home for `X`. Future contributors then face an ambiguous import path — the same type is reachable from two places, with no rule to pick between them. Both paths stay alive (neither is wrong), and over time grep can no longer tell which is the real home. This is the same anti-pattern as the magnet file (§9.3), one level up: instead of unrelated logic accumulating under a content-blank filename, unrelated *home identities* accumulate under a module's export surface.
+
+The rule:
+
+- **A module exports only what it owns.** Names defined in the module are exported; names imported from elsewhere stay local to the module's own use.
+- **Exception — a directory's `index.ts`** may publish that directory's own internal members as the public surface (e.g., `coordinator/index.ts` publishes coordinator-owned exports). It must not republish a *foreign* module's exports as its own.
+- When a type belongs to a different layer, callers import it from that layer directly. Don't add a re-export "for convenience" — convenience is exactly what dilutes the canonical home.
+
+**Counter-example we got wrong once**: `runtime/ports.ts` accumulated a re-export block aliasing nine port primitives (`TimePort`, `StoragePort`, `EnvPort`, …) from `infra/port-types.ts`. The module's actual responsibility is *runtime composition* (`Runtime`, `ProcessPort`, `IdPort`, `RuntimeObserver`); the re-export block turned it into a *second* canonical home for the primitives. Imports across the codebase split between the two paths with no consistent rule, and `runtime/ports.ts`'s identity blurred. The fix is to delete the re-export block — primitives must be imported from `infra/port-types.ts` directly.
+
+The pattern to look for: any non-`index.ts` module that contains both `import { … } from '…'` and `export { … }` of the same names. That is always either an `index.ts` re-publishing its own directory (allowed), a re-export aggregator (delete it), or a typedef-rename like `export type Y = X` (allowed — it's a new name, not a second home for the old one).
+
+### 9.6 Subdivision triggers
 
 Promote an implicit prefix cluster to an explicit subdirectory when:
 
@@ -221,7 +235,7 @@ When subdividing:
 
 Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the cluster is bounded). 2 files = no.
 
-### 9.6 Subdivision rejection (cases where subdividing makes the tree worse)
+### 9.7 Subdivision rejection (cases where subdividing makes the tree worse)
 
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
   - **Exception**: `infra/path/` is permitted as a cohesive path-composition subsystem (5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to subsystems where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
@@ -232,11 +246,11 @@ Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the
   Don't manufacture files just to mirror discuss's shape across domains that don't have the same concerns.
 - "Pure label" subdirs (e.g., grouping unrelated files into `gateway/` or `io/` because they "feel related") add navigation cost without scope clarity.
 
-### 9.7 Lifecycle/process-flow naming
+### 9.8 Lifecycle/process-flow naming
 
 When a directory owns a pipeline, name files for the stage they sit at so the directory reads top-down as the request flow. Example: `cli/` reads `bootstrap → program → commands/ → flags → parse → classify → dispatch → format → emit → follow`. Each filename answers "what stage am I at?" without ambiguity.
 
-### 9.8 Discipline is content/size, not name
+### 9.9 Discipline is content/size, not name
 
 When a file *does* drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it, not to invent a new mechanical naming rule. Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.
 
