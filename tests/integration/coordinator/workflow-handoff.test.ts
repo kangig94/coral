@@ -1,36 +1,190 @@
-import { describe, it } from 'vitest';
-
-// AC4 cross-domain coverage: workflow children/parent jobs in mid-execution
-// must survive a daemon handoff swap. The replacement daemon's
-// `workflowRecover.resumeAll` is reason-agnostic (per plan Phase C
-// "Workflow recovery is reason-agnostic" — accepts no `reason` parameter)
-// and decides relaunch vs wait-and-finalize purely from journal projection
-// state and child-job liveness.
+// Cross-domain handoff coverage for workflow recovery across a daemon swap.
+// Exercises the harness against an in-flight workflow projection: events
+// land on Core A's journal, Core A shuts down with handoff mode, Core B
+// composes against the shared store, and `workflowRecover.resumeAll`
+// (production default behavior) reads the same journal and dispatches the
+// in-progress slot.
 //
-// Implementation deferred until the handoff integration scaffolding lands
-// in Phase G: this file requires the same VirtualTime + mock-daemon harness
-// used by `starting-handoff.test.ts` (Phase C) and
-// `handoff-escalation.test.ts` (Phase E), neither of which exists yet. The
-// Phase A2 unit coverage in `tests/unit/jobs/shell/launch-quiesce.test.ts`
-// plus `tests/unit/transport/http/server.test.ts` is sufficient to gate
-// AC4 at the contract boundary; this file exists so the cross-domain
-// assertions have a registered home before the integration scaffolding
-// arrives.
+// The second skipped scenario from the original stub ("does not finalize an
+// interrupted workflow child on the old daemon") is gated by
+// `tests/unit/jobs/shell/launch-quiesce.test.ts` at the contract boundary —
+// duplicating it at integration level adds churn without surfacing new
+// behavior, so it stays unimplemented.
 
-describe.skip('workflow handoff (AC4 cross-domain — pending Phase G scaffolding)', () => {
-  it('preserves a workflow parent job across handoff so resumeAll re-runs the in-progress slot', () => {
-    // 1. Launch a workflow with two slots; complete slot 1.
-    // 2. Trigger handoff while slot 2 is mid-execution.
-    // 3. Assert no terminal record on slot 2 from the old daemon.
-    // 4. Bind replacement; assert workflowRecover.resumeAll relaunches
-    //    slot 2 cleanly.
-  });
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-  it('does not finalize an interrupted workflow child on the old daemon', () => {
-    // Quiesce-for-handoff must suppress both provider terminal recording
-    // and admission release for app-server child jobs. Workflow children
-    // running through the durable CLI path stay live by the existing
-    // handoff preservation behavior; this assertion documents the
-    // boundary so a future regression on quiesce scope is caught.
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { commitWorkflowEvents } from '#src/workflow/projections.js';
+import { workflowRecover } from '#src/workflow/recover.js';
+import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
+import { buildWorkflowPlan } from '#src/workflow/plan.js';
+import { parseExpression } from '#src/workflow/parser.js';
+import type { JobTerminal } from '#src/jobs/records.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+
+import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
+
+const PROJECT_ROOT = '/handoff-workflow-project';
+const WORKFLOW_ID = 'workflow-handoff-1';
+
+function workflowPlanForTest() {
+  return buildWorkflowPlan(WORKFLOW_ID, parseExpression('architect'), { defaultProvider: 'codex' });
+}
+
+function terminalEvent(jobId: string, content: string): WaitStreamEvent {
+  const result: JobTerminal = { content, outcome: { kind: 'completed' } };
+  return {
+    type: 'terminal',
+    jobId,
+    seq: 0,
+    remainingJobIds: [],
+    resultPath: `/tmp/coral-handoff-workflow/${jobId}/result.md`,
+    result,
+  };
+}
+
+async function* emitOnce(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent> {
+  for (const event of events) {
+    yield event;
+  }
+}
+
+const harnesses: HandoffCoresHarness[] = [];
+
+afterEach(async () => {
+  for (const harness of harnesses.splice(0)) {
+    await harness.cleanup();
+  }
+});
+
+describe('workflow handoff (cross-domain integration)', () => {
+  it('replacement recovery resumes a running workflow slot from the shared journal', async () => {
+    const harness = createHandoffCoresHarness();
+    harnesses.push(harness);
+
+    const incumbent = await harness.bootCore({ instanceId: 'incumbent' });
+    const plan = workflowPlanForTest();
+    const slotJobId = plan.slots[0].slotId;
+
+    commitWorkflowEvents(
+      harness.db,
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(WORKFLOW_ID, plan));
+        return undefined;
+      },
+      harness.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    incumbent.core.progressStore.initJob({
+      jobId: WORKFLOW_ID,
+      sessionId: 'workflow-session-1',
+      provider: 'codex',
+      projectRoot: PROJECT_ROOT,
+      backendNamespace: incumbent.core.identity.namespace,
+      jobKind: 'workflow',
+      initialPhase: 'running',
+    });
+    incumbent.core.progressStore.initJob({
+      jobId: slotJobId,
+      sessionId: 'session-slot-1',
+      provider: 'codex',
+      projectRoot: PROJECT_ROOT,
+      backendNamespace: incumbent.core.identity.namespace,
+      initialPhase: 'running',
+    });
+    harness.db
+      .prepare(
+        `INSERT INTO projection_jobs (
+           job_id, phase, session_id, provider, project_root, backend_namespace,
+           job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+         )
+         VALUES (?, 'running', ?, ?, ?, ?, 'provider', ?, ?, '2026-04-27T00:00:00.000Z', 17)
+         ON CONFLICT(job_id) DO UPDATE SET
+           phase = excluded.phase,
+           parent_workflow_job_id = excluded.parent_workflow_job_id,
+           workflow_slot = excluded.workflow_slot,
+           last_seq = excluded.last_seq`,
+      )
+      .run(
+        slotJobId,
+        'session-slot-1',
+        'codex',
+        PROJECT_ROOT,
+        incumbent.core.identity.namespace,
+        WORKFLOW_ID,
+        slotJobId,
+      );
+
+    await incumbent.shutdown('replaced');
+    expect(incumbent.core.runtimeState.getLifecycle()).toBe('stopped');
+
+    const waitRequests: WaitStreamRequest[] = [];
+    const finalizeWorkflow = vi.fn();
+    const resumedIds: string[] = [];
+
+    const replacement = await harness.bootCore({
+      instanceId: 'replacement',
+      runStartupRecoveryFn: async ({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
+        assertStartupStillActive,
+        recoverPersistedDiscussFn,
+        progressStore,
+      }) => {
+        const discussResumes = await recoverPersistedDiscussFn({
+          knownDiscussSources,
+          getDiscussStoreForSource,
+          getDiscussContext,
+          createInvocationContext,
+          assertStartupStillActive,
+        });
+
+        const stubExecution: WorkflowExecutionPort = {
+          coralDispatch: vi.fn(async () => ({
+            status: 'running' as const,
+            job: 'should-not-relaunch',
+            session: 'should-not-relaunch',
+          })),
+          resume: vi.fn(),
+          abort: vi.fn(() => ({ aborted: [], notFound: [] })),
+          awaitLaunch: vi.fn(async () => 'ready' as const),
+          waitStream: vi.fn((req: WaitStreamRequest) => {
+            waitRequests.push({
+              ...req,
+              jobIds: [...req.jobIds],
+              ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+            });
+            return emitOnce(req.jobIds.map((jobId) => terminalEvent(jobId, `result:${jobId}`)));
+          }),
+          waitForJobTerminal: vi.fn(async () => {}),
+          cleanupWorkflowSessions: vi.fn(),
+        } as unknown as WorkflowExecutionPort;
+
+        const resumed = await workflowRecover.resumeAll({
+          db: progressStore.getDb(),
+          progressStore,
+          getExecutionService: () => stubExecution,
+          createInvocationContext,
+          finalizeWorkflow,
+          time: harness.runtime.time,
+        });
+        resumedIds.push(...resumed);
+
+        return discussResumes;
+      },
+    });
+
+    expect(resumedIds).toEqual([WORKFLOW_ID]);
+    expect(waitRequests).toHaveLength(1);
+    expect(waitRequests[0]).toMatchObject({
+      jobIds: [slotJobId],
+      cursor: { afterSeq: 17 },
+    });
+    expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+
+    await replacement.shutdown('test-cleanup');
   });
 });

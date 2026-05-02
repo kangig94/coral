@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import type { CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
+import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
@@ -37,8 +37,20 @@ export interface HandoffCoresHarness {
   readonly db: Database;
   readonly homeDir: string;
   /** Compose, start, and return a coordinator core sharing the harness's runtime + store. */
-  bootCore(opts: { instanceId: string; bundleHash?: string }): Promise<BootedCore>;
+  bootCore(opts: BootCoreOptions): Promise<BootedCore>;
   cleanup(): Promise<void>;
+}
+
+export interface BootCoreOptions {
+  instanceId: string;
+  bundleHash?: string;
+  /**
+   * Override the post-discuss-recovery startup phase. Called with the same
+   * deps the production `runStartupRecoveryFn` receives; defaults to discuss
+   * recovery only. Tests that need workflow or jobs recovery wire the extra
+   * stages in here.
+   */
+  runStartupRecoveryFn?: NonNullable<CoordinatorCoreOptions['runStartupRecoveryFn']>;
 }
 
 export interface BootedCore {
@@ -88,7 +100,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const liveServers: Server[] = [];
   const liveCores: BootedCore[] = [];
 
-  async function bootCore(opts: { instanceId: string; bundleHash?: string }): Promise<BootedCore> {
+  async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
     const expansionLifecycle = new ExpansionLifecycleService({
       makeHost: () => {
         throw new Error('expansion makeHost should not be invoked in the handoff harness');
@@ -126,22 +138,24 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       registerBuiltInProvidersFn: () => {},
       // Production default `discussRecovery.runStartup` runs because we don't override
       // `recoverPersistedDiscussFn`. The startup recovery shim below forwards into it.
-      runStartupRecoveryFn: async ({
-        knownDiscussSources,
-        getDiscussStoreForSource,
-        getDiscussContext,
-        createInvocationContext,
-        assertStartupStillActive,
-        recoverPersistedDiscussFn,
-      }) => {
-        return recoverPersistedDiscussFn({
+      runStartupRecoveryFn:
+        opts.runStartupRecoveryFn ??
+        (async ({
           knownDiscussSources,
           getDiscussStoreForSource,
           getDiscussContext,
           createInvocationContext,
           assertStartupStillActive,
-        });
-      },
+          recoverPersistedDiscussFn,
+        }) => {
+          return recoverPersistedDiscussFn({
+            knownDiscussSources,
+            getDiscussStoreForSource,
+            getDiscussContext,
+            createInvocationContext,
+            assertStartupStillActive,
+          });
+        }),
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
     });
