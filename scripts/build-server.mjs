@@ -49,9 +49,8 @@ copyStoreSchemaAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
-// Sync version to .claude-plugin/ (single source of truth: package.json)
-for (const file of ['plugin.json', 'marketplace.json']) {
-  const path = `.claude-plugin/${file}`;
+// Sync manifest versions (single source of truth: package.json).
+for (const path of ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', '.codex-plugin/plugin.json']) {
   const json = JSON.parse(readFileSync(path, 'utf8'));
   let changed = false;
 
@@ -63,6 +62,17 @@ for (const file of ['plugin.json', 'marketplace.json']) {
   if (json.plugins?.[0]?.version !== undefined && json.plugins[0].version !== version) {
     json.plugins[0].version = version;
     changed = true;
+  }
+
+  if (release && path === '.claude-plugin/marketplace.json') {
+    const pluginSource = json.plugins?.[0]?.source;
+    const releaseRef = `v${version}`;
+    if (pluginSource && typeof pluginSource === 'object') {
+      if (pluginSource.ref !== releaseRef) {
+        pluginSource.ref = releaseRef;
+        changed = true;
+      }
+    }
   }
 
   if (changed) {
