@@ -1,9 +1,9 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "rootDir": "..",
-    "noEmit": true
+    "noEmit": true,
+    "rootDir": ".."
   },
-  "include": ["../src/**/*", "../tests/**/*", "../tools/**/*"],
+  "include": ["../src/**/*.ts", "../tests/**/*.ts", "../tools/**/*.ts"],
   "exclude": ["../node_modules", "../dist", "../bridge", "../build"]
 }
