@@ -25,7 +25,7 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ promote }, { update }, { deleteFn }, { readEntry }, runtime, paths, frontmatter] = await Promise.all([
+  const [{ promote }, { update }, { deleteNote }, { readEntry }, runtime, paths, frontmatter] = await Promise.all([
     import('#src/kb/ops/promote.js'),
     import('#src/kb/ops/update.js'),
     import('#src/kb/ops/delete.js'),
@@ -37,7 +37,7 @@ async function loadKbModules() {
   return {
     promote,
     update,
-    deleteFn,
+    deleteNote,
     readEntry,
     createKbRuntime: runtime.createKbRuntime,
     paths,
@@ -343,7 +343,7 @@ Original body.
   });
 
   it('deletes a note and removes its JSON index entry', async () => {
-    const { deleteFn, createKbRuntime, paths } = await loadKbModules();
+    const { deleteNote, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
@@ -368,7 +368,7 @@ Original body.
       relationships: [],
     });
 
-    const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
+    const result = await deleteNote(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });
     expect(existsSync(notePath)).toBe(false);
     expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toBeUndefined();

@@ -10,7 +10,7 @@ import { createServer, type Server as NetServer } from 'node:net';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { decode, encode, type JsonRpcRequest, type JsonRpcResponse } from '#src/transport/json-rpc.js';
+import { decode, encode, type JsonRpcRequestEnvelope, type JsonRpcResponseEnvelope } from '#src/transport/ipc/json-rpc.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -34,7 +34,7 @@ function makeSocketPath(name: string): string {
 
 async function startScriptedIncumbent(
   socketPath: string,
-  reply: (request: JsonRpcRequest) => Promise<JsonRpcResponse>,
+  reply: (request: JsonRpcRequestEnvelope) => Promise<JsonRpcResponseEnvelope>,
 ): Promise<NetServer> {
   const server = createServer((socket) => {
     let buffer = '';

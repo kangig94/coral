@@ -4,7 +4,7 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { decode, encode, type JsonRpcRequest } from '#src/transport/json-rpc.js';
+import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/json-rpc.js';
 import { subscribeIpcMethod } from '#src/transport/ipc/client.js';
 
 const tempDirs: string[] = [];
@@ -22,7 +22,7 @@ function writeFrame(socket: Socket, envelope: unknown): void {
 
 async function startSubscriptionServer(
   socketPath: string,
-  handler: (socket: Socket, request: JsonRpcRequest) => void | Promise<void>,
+  handler: (socket: Socket, request: JsonRpcRequestEnvelope) => void | Promise<void>,
 ): Promise<void> {
   mkdirSync(dirname(socketPath), { recursive: true });
   const server = createServer((socket) => {

@@ -15,7 +15,7 @@ import {
   type IncumbentHealth,
   type DesiredIncumbentIdentity,
 } from '#src/transport/ipc/handoff.js';
-import { decode, encode, type JsonRpcRequest, type JsonRpcResponse } from '#src/transport/json-rpc.js';
+import { decode, encode, type JsonRpcRequestEnvelope, type JsonRpcResponseEnvelope } from '#src/transport/ipc/json-rpc.js';
 
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];
@@ -28,7 +28,7 @@ function makeSocketPath(name: string): string {
 
 async function startScriptedServer(
   socketPath: string,
-  reply: (request: JsonRpcRequest) => Promise<JsonRpcResponse | null>,
+  reply: (request: JsonRpcRequestEnvelope) => Promise<JsonRpcResponseEnvelope | null>,
 ): Promise<NetServer> {
   mkdirSync(dirname(socketPath), { recursive: true });
   const server = createServer((socket) => {

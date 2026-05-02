@@ -44,7 +44,7 @@ export type RawCoordinatorHealth = {
   processStartedAt?: number;
 };
 
-export type BackendInfo = {
+export type VerifiedBackendInfo = {
   pid: number;
   port: number;
   socketPath: string;
@@ -70,7 +70,7 @@ export type EnsuredIpcClient = IpcClient & {
   readonly version: string;
 };
 
-function summarizeBackend(info: BackendInfo, timePort: TimePort): EnsuredIpcClient {
+function summarizeBackend(info: VerifiedBackendInfo, timePort: TimePort): EnsuredIpcClient {
   return Object.assign(createIpcClient(info.socketPath, timePort), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
@@ -107,7 +107,7 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
   );
 }
 
-function isObservedBackendInfo(value: unknown): value is BackendInfo {
+function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return (
@@ -145,21 +145,21 @@ async function readRawCoordinatorHealth(client: IpcClient): Promise<RawCoordinat
   }
 }
 
-function readDiscoverySnapshot(paths: CoordinatorPaths): BackendInfo | null {
+function readDiscoverySnapshot(paths: CoordinatorPaths): VerifiedBackendInfo | null {
   try {
     const raw = readFileSync(paths.infoFile, 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
     record.host ??= '127.0.0.1';
-    return isObservedBackendInfo(record) ? record : null;
+    return isVerifiedBackendInfo(record) ? record : null;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;
     throw error;
   }
 }
 
-function mergeDiscoveryWithHealth(info: BackendInfo, health: RawCoordinatorHealth): BackendInfo {
+function mergeDiscoveryWithHealth(info: VerifiedBackendInfo, health: RawCoordinatorHealth): VerifiedBackendInfo {
   return {
     ...info,
     version: health.version,
@@ -258,7 +258,7 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
 /**
  * After a fresh spawn (or while the incumbent is still in `starting`), poll
  * until the daemon has both bound the socket AND written `coordinator.json`
- * with a compatible health response. Returns the merged `BackendInfo` ready
+ * with a compatible health response. Returns the merged `VerifiedBackendInfo` ready
  * for `summarizeBackend`.
  */
 async function waitForBackendReady(
@@ -266,7 +266,7 @@ async function waitForBackendReady(
   desired: DesiredCoordinator,
   timeoutMs: number,
   timePort: TimePort,
-): Promise<BackendInfo> {
+): Promise<VerifiedBackendInfo> {
   const deadline = timePort.now() + timeoutMs;
   while (timePort.now() < deadline) {
     const info = readDiscoverySnapshot(paths);

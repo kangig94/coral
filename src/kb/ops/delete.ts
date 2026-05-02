@@ -5,7 +5,7 @@ import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/i
 import type { KbRuntime } from '../contract.js';
 import { assertNoteSlug } from '../validation.js';
 
-export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
+export async function deleteNote(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
   const note = assertNoteSlug(input.note, 'note');
   const notePath = rt.notePath(note);
 

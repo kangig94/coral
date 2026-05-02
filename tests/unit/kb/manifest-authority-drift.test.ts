@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { deleteFn } from '#src/kb/ops/delete.js';
+import { deleteNote } from '#src/kb/ops/delete.js';
 import { update } from '#src/kb/ops/update.js';
 import { persistPreparedSource } from '#src/kb/ops/source-store.js';
 import { promote } from '#src/kb/ops/promote.js';
@@ -453,7 +453,7 @@ describe('manifest authority drift checks', () => {
           );
         });
 
-        await deleteFn(fixture.kb, { note: 'coral-delete' });
+        await deleteNote(fixture.kb, { note: 'coral-delete' });
 
         assertAuthorityMatchesDisk(fixture.kb);
       },

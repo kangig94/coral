@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { deleteFn as kbDeleteFn } from './ops/delete.js';
+import { deleteNote } from './ops/delete.js';
 import {
   extractBody,
   extractPrincipleStatement,
@@ -375,7 +375,7 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   }
 
   return runKbAction(async () => {
-    const result = await kbDeleteFn(kbSubsystem.kb, { note: parsed.data.note });
+    const result = await deleteNote(kbSubsystem.kb, { note: parsed.data.note });
     kbSubsystem.curateScheduler.scheduleDeferredCommit();
     return result;
   });

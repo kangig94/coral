@@ -8,10 +8,10 @@ import {
   encode,
   decode,
   type JsonRpcEnvelope,
-  type JsonRpcError,
-  type JsonRpcRequest,
-  type JsonRpcResponse,
-} from '../json-rpc.js';
+  type JsonRpcErrorEnvelope,
+  type JsonRpcRequestEnvelope,
+  type JsonRpcResponseEnvelope,
+} from './json-rpc.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
@@ -48,7 +48,7 @@ export type IpcDispatchEntry = {
   dispatch(request: unknown, abortSignal?: AbortSignal): Promise<CatalogRequestExecution>;
 };
 
-function transportErrorResponse(message: string, data?: unknown): JsonRpcError {
+function transportErrorResponse(message: string, data?: unknown): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id: null,
@@ -56,7 +56,7 @@ function transportErrorResponse(message: string, data?: unknown): JsonRpcError {
   };
 }
 
-function requestErrorResponse(id: JsonRpcRequest['id'] | null, message: string, data?: unknown): JsonRpcError {
+function requestErrorResponse(id: JsonRpcRequestEnvelope['id'] | null, message: string, data?: unknown): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,
@@ -64,7 +64,7 @@ function requestErrorResponse(id: JsonRpcRequest['id'] | null, message: string, 
   };
 }
 
-function validationErrorResponse(id: JsonRpcRequest['id'], error: ZodError): JsonRpcError {
+function validationErrorResponse(id: JsonRpcRequestEnvelope['id'], error: ZodError): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,
@@ -75,7 +75,7 @@ function validationErrorResponse(id: JsonRpcRequest['id'], error: ZodError): Jso
   };
 }
 
-function methodNotFoundResponse(id: JsonRpcRequest['id']): JsonRpcError {
+function methodNotFoundResponse(id: JsonRpcRequestEnvelope['id']): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,
@@ -83,7 +83,7 @@ function methodNotFoundResponse(id: JsonRpcRequest['id']): JsonRpcError {
   };
 }
 
-function invalidRequestResponse(id: JsonRpcRequest['id'] | null): JsonRpcError {
+function invalidRequestResponse(id: JsonRpcRequestEnvelope['id'] | null): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,
@@ -243,7 +243,7 @@ export async function closeIpcServer(listener: IpcListener): Promise<void> {
 
 async function streamSubscription(
   socket: Socket,
-  request: JsonRpcRequest,
+  request: JsonRpcRequestEnvelope,
   entry: IpcDispatchEntry,
   invocation: Extract<CatalogRequestExecution, { kind: 'subscription' }>,
   controller: AbortController,
@@ -366,7 +366,7 @@ async function dispatchFrame(
     subscriptionController = new AbortController();
     const invocation = await entry.dispatch(parsed.data, subscriptionController.signal);
     if (invocation.kind === 'unary') {
-      writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponse);
+      writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope);
       socket.end();
       return;
     }

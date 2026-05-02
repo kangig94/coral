@@ -2,7 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { createRealTimePort } from '../../infra/time.js';
-import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest } from '../json-rpc.js';
+import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
 import type { TimePort } from '../../infra/port-types.js';
 
@@ -236,7 +236,7 @@ export async function requestIpcMethod<TResult>(
       });
     }
 
-    const envelope: JsonRpcRequest = {
+    const envelope: JsonRpcRequestEnvelope = {
       kind: 'request',
       id: requestId,
       method,
@@ -423,7 +423,7 @@ export async function subscribeIpcMethod<TResult>(
     }, handshakeBudget);
   }
 
-  const envelope: JsonRpcRequest = {
+  const envelope: JsonRpcRequestEnvelope = {
     kind: 'request',
     id: requestId,
     method,
