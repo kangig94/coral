@@ -16,6 +16,9 @@
 // port (`kb.time.setTimeout`, `runtime.time.setInterval`, etc.). Member
 // access on `.time.` is allowed; bare identifiers leak ambient timer state
 // past the Runtime boundary.
+//
+// Transport IPC also owns no ambient clock reads. Bare `Date.now()` under
+// `src/transport/` must be routed through an injected time port.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -31,6 +34,10 @@ const TIMER_SCOPED_ROOTS = [
   'src/workflow',
   'src/providers',
   'src/coordinator',
+  'src/transport',
+] as const;
+const DATE_NOW_SCOPED_ROOTS = [
+  'src/transport',
 ] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
@@ -133,6 +140,17 @@ function findBareTimerIdentifiers(source: string): string[] {
   return found;
 }
 
+function findBareDateNow(source: string): string[] {
+  const cleaned = stripCommentsAndStrings(source);
+  const pattern = /(^|[^.\w$])(Date)\s*\.\s*now\s*\(/gu;
+  const found: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(cleaned)) !== null) {
+    found.push(match[2]);
+  }
+  return found;
+}
+
 /**
  * Detects `import { ... randomUUID ... } from 'node:crypto'` or
  * `import { ... randomBytes ... } from 'node:crypto'`. `createHash` is
@@ -222,6 +240,20 @@ describe('domain modules use Runtime ports for ambient I/O', () => {
         const canonical = canonicalSrcPath(filePath);
         if (TIMER_EXEMPT_FILES.has(canonical)) continue;
         const identifiers = findBareTimerIdentifiers(readSource(filePath));
+        if (identifiers.length > 0) {
+          violations.push({ file: canonical, identifiers });
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('no transport file uses bare Date.now (use injected time port)', () => {
+    const violations: Array<{ file: string; identifiers: string[] }> = [];
+    for (const root of DATE_NOW_SCOPED_ROOTS) {
+      for (const filePath of listSourceFiles(root)) {
+        const canonical = canonicalSrcPath(filePath);
+        const identifiers = findBareDateNow(readSource(filePath));
         if (identifiers.length > 0) {
           violations.push({ file: canonical, identifiers });
         }

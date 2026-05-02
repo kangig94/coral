@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/path/compose.js';
@@ -21,6 +20,7 @@ import {
   requestIncumbentShutdown,
   type DesiredIncumbentIdentity,
 } from './handoff.js';
+import type { TimePort } from '../../infra/port-types.js';
 
 export const STARTUP_POLL_MS = 200;
 export const STARTUP_TIMEOUT_MS = 60_000;
@@ -70,8 +70,8 @@ export type EnsuredIpcClient = IpcClient & {
   readonly version: string;
 };
 
-function summarizeBackend(info: BackendInfo): EnsuredIpcClient {
-  return Object.assign(createIpcClient(info.socketPath), {
+function summarizeBackend(info: BackendInfo, timePort: TimePort): EnsuredIpcClient {
+  return Object.assign(createIpcClient(info.socketPath, timePort), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
     flavor: info.flavor,
@@ -244,11 +244,11 @@ async function probeSocketReleased(socketPath: string): Promise<boolean> {
   }
 }
 
-async function waitForSocketRelease(socketPath: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function waitForSocketRelease(socketPath: string, timeoutMs: number, timePort: TimePort): Promise<void> {
+  const deadline = timePort.now() + timeoutMs;
+  while (timePort.now() < deadline) {
     if (await probeSocketReleased(socketPath)) return;
-    await delay(STARTUP_POLL_MS);
+    await timePort.sleep(STARTUP_POLL_MS);
   }
   throw new BackendUnreachableError(
     'Timed out waiting for Coral coordinator socket release. Run `coral-cli backend status` to check coordinator health.',
@@ -265,17 +265,18 @@ async function waitForBackendReady(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
   timeoutMs: number,
+  timePort: TimePort,
 ): Promise<BackendInfo> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = timePort.now() + timeoutMs;
+  while (timePort.now() < deadline) {
     const info = readDiscoverySnapshot(paths);
     if (info) {
-      const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath));
+      const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
       if (health && health.status === 'ok' && isCompatibleHealth(health, desired)) {
         return mergeDiscoveryWithHealth(info, health);
       }
     }
-    await delay(STARTUP_POLL_MS);
+    await timePort.sleep(STARTUP_POLL_MS);
   }
   throw new BackendUnreachableError(
     'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
@@ -312,12 +313,13 @@ function resolvePluginRoot(pluginRoot?: string): string {
  *      - Unreachable → spawn fresh.
  *   2. Spawn the coordinator and wait for it to bind + write discovery.
  */
-export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
+export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<EnsuredIpcClient> {
   const root = resolvePluginRoot(pluginRoot);
   const flavor = readBuildFlavor(root);
   const bundleHash = readBundleHash(root);
   const namespace = pluginRootNamespace(root);
   const runtime = createRealRuntime(flavor);
+  const ipcTime = timePort ?? runtime.time;
   const paths = runtime.paths.coral.coordinator;
   const desired: DesiredCoordinator = {
     version: currentVersion(root),
@@ -328,22 +330,22 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
   const desiredIdentity: DesiredIncumbentIdentity = { bundleHash, flavor, namespace };
   const backendBin = join(root, 'bridge', 'coral-backend.cjs');
 
-  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath));
+  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, ipcTime));
 
   if (health && isCompatibleHealth(health, desired) && health.status !== 'draining') {
     const info = readDiscoverySnapshot(paths);
     if (info && health.status === 'ok') {
-      return summarizeBackend(mergeDiscoveryWithHealth(info, health));
+      return summarizeBackend(mergeDiscoveryWithHealth(info, health), ipcTime);
     }
     // Compatible incumbent is still `starting`, or `coordinator.json` lags
     // behind the bound socket; wait for the daemon to finish writing it.
-    return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS));
+    return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
   }
 
   if (health && isCompatibleHealth(health, desired) && health.status === 'draining') {
     // Compatible-but-draining: the incumbent rejects normal RPCs but health
     // still answers. Wait for the socket to be released, then spawn fresh.
-    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS);
+    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS, ipcTime);
   } else if (health && !isCompatibleHealth(health, desired)) {
     // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
@@ -351,6 +353,7 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
         socketPath: paths.socketPath,
         desired: desiredIdentity,
         timeoutMs: HEALTH_TIMEOUT_MS,
+        timePort: ipcTime,
       });
     } catch (error) {
       if (error instanceof IncumbentMatchesError) {
@@ -358,15 +361,15 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
         // re-classified as compatible. Re-converge by re-reading discovery.
         const info = readDiscoverySnapshot(paths);
         if (info) {
-          return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS));
+          return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
         }
       }
       // ignore other errors: bounded escalation happens via socket-release wait
     }
-    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS);
+    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS, ipcTime);
   }
   // else: health unreachable → fall through to spawn
 
   spawnCoordinator(backendBin, paths.runDir);
-  return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS));
+  return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
 }

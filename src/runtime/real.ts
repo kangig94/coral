@@ -44,6 +44,7 @@ import { MAX_BUFFER } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
+import { createRealTimePort } from '../infra/time.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -120,35 +121,7 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
   const capturedEnv = captureEnvState();
   const envBudgetBytes = resolveEnvBudgetBytes();
   const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
-  const time: TimePort = {
-    now: () => Date.now(),
-    sleep: (ms, options) =>
-      new Promise<void>((resolve) => {
-        const signal = options?.signal;
-        if (signal?.aborted) {
-          resolve();
-          return;
-        }
-        const timer = setTimeout(() => {
-          signal?.removeEventListener('abort', onAbort);
-          resolve();
-        }, ms);
-        timer.unref?.();
-        const onAbort = (): void => {
-          clearTimeout(timer);
-          resolve();
-        };
-        signal?.addEventListener('abort', onAbort, { once: true });
-      }),
-    setTimeout: (fn, ms) => setTimeout(fn, ms),
-    clearTimeout: (handle) => {
-      if (handle) clearTimeout(handle as NodeJS.Timeout);
-    },
-    setInterval: (fn, ms) => setInterval(fn, ms),
-    clearInterval: (handle) => {
-      if (handle) clearInterval(handle as NodeJS.Timeout);
-    },
-  };
+  const time: TimePort = createRealTimePort();
 
   const storage: StoragePort = {
     readFileSync: (path, encoding) => readFileSync(path, encoding),

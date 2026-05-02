@@ -128,6 +128,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         socketPath: opts.socketPath,
         desired: opts.desired,
         timeoutMs: Math.min(SHUTDOWN_RPC_TIMEOUT_MS, remaining),
+        timePort: opts.runtime.time,
       });
       lastHealth = shutdownResult.health ?? lastHealth;
       if (shutdownResult.verifiedIdentity && incumbent === null) {

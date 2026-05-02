@@ -1,11 +1,16 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('hook stubs no-op', () => {
   it('post-compact.mjs exits 0 on synthetic JSON stdin', () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'coral-hook-stub-'));
     const result = spawnSync('node', ['hooks/post-compact.mjs'], {
-      input: JSON.stringify({}),
+      input: JSON.stringify({ cwd: projectDir }),
       encoding: 'utf-8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     expect(result.status).toBe(0);
@@ -19,9 +24,11 @@ describe('hook stubs no-op', () => {
   });
 
   it('pre-compact.mjs exits 0 on synthetic JSON stdin', () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'coral-hook-stub-'));
     const result = spawnSync('node', ['hooks/pre-compact.mjs'], {
-      input: JSON.stringify({}),
+      input: JSON.stringify({ cwd: projectDir }),
       encoding: 'utf-8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     expect(result.status).toBe(0);
