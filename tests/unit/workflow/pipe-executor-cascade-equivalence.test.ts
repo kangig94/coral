@@ -19,6 +19,19 @@ const ctx: InvocationContext = {
   coralEnv: {},
 };
 
+// Monotonic deterministic clock — internal workflow logic compares against
+// absolute deadlines, so fixed time would stall; `Date.now()` would leak
+// wall-clock dependence.
+function makeMonotonicTime() {
+  let clock = new Date('2026-04-27T00:00:00.000Z').getTime();
+  return {
+    now: () => {
+      clock += 100;
+      return clock;
+    },
+  };
+}
+
 function running(job: string, session: string) {
   return {
     status: 'running' as const,
@@ -94,7 +107,11 @@ describe('workflow cascade equivalence golden master', () => {
       'codex',
       executionSvc,
       ctx,
-      { context: 'SHARED', ids: { uuid: () => 'workflow-test-uuid' }, time: { now: () => Date.now() } },
+      {
+        context: 'SHARED',
+        ids: { uuid: () => 'workflow-test-uuid' },
+        time: makeMonotonicTime(),
+      },
     );
 
     expect({ prompts, result }).toEqual(JSON.parse(readFileSync(GOLDEN_PATH, 'utf-8')) as unknown);
