@@ -10,12 +10,18 @@ Coral is a CLI-first plugin backed by a persistent local coordinator for orchest
 
 **Requirements:** Node.js 18+
 
-```
+```bash
+# Claude Code:
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 
-# Codex CLI (optional — enables --codex cross-model delegation):
+# Codex (also enables --codex cross-model delegation):
 npm install -g @openai/codex
+codex plugin marketplace add kangig94/coral
+# Restart Codex, then run /plugins and install Coral from the Coral marketplace.
+
+# Update the Codex marketplace and installed plugin cache:
+codex plugin marketplace upgrade coral
 ```
 
 ## Try It Now
