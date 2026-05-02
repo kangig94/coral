@@ -342,9 +342,7 @@ export interface DiscussEventEnvelope<K extends DiscussEventKind, P = DiscussPay
 
 export type SessionCreatedConfig = z.infer<typeof sessionCreatedConfigSchema>;
 
-export type SessionCreatedAgentExecutionConfig =
-  | { manual: true; provider?: undefined; model?: undefined }
-  | { manual: false; provider: string; model: string };
+export type SessionCreatedAgentExecutionConfig = z.infer<typeof sessionCreatedAgentExecutionConfigSchema>;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema> & {
   input: DiscussCreateInput;
@@ -359,9 +357,7 @@ export type ParticipantsExpelledPayload = z.infer<typeof participantsExpelledPay
 
 export type BidRoundClosedStateMutations = z.infer<typeof bidRoundClosedStateMutationsSchema>;
 
-export type BidRoundClosedOutcome =
-  | { winner: string; speaker_type: 'quota' | 'fallback' | 'cold_start' }
-  | { no_winner: true; reason: ResolveReason };
+export type BidRoundClosedOutcome = z.infer<typeof bidRoundClosedOutcomeSchema>;
 
 export type BidRoundClosedPayload = z.infer<typeof bidRoundClosedPayloadSchema> & {
   outcome: BidRoundClosedOutcome;

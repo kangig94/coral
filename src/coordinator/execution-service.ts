@@ -22,7 +22,7 @@ import type { WorkflowSessionHandle } from '../workflow/execution-contract.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
-import { SessionManager } from '../sessions/shell/store.js';
+import { SessionManager } from '../sessions/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';

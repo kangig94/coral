@@ -1,4 +1,4 @@
-import type { TimerHandle, TimePort } from '../../../src/runtime/ports.js';
+import type { TimerHandle, TimePort } from '../../../src/infra/port-types.js';
 
 export const DEFAULT_EPOCH_MS = 1_000_000;
 

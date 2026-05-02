@@ -355,7 +355,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
     expansion:
-      options.expansionLifecycleService === undefined
+      options.expansionLifecycleService === null
         ? createUnavailableExpansionRpc()
         : createExpansionRpc(options.expansionLifecycleService),
   };
@@ -519,7 +519,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
           typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
       ),
-    expansionLifecycleService: options.expansionLifecycleService ?? null,
+    expansionLifecycleService: options.expansionLifecycleService,
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
@@ -560,7 +560,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    expansionLifecycleService: options.expansionLifecycleService ?? null,
+    expansionLifecycleService: options.expansionLifecycleService,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

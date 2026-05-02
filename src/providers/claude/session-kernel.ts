@@ -1,12 +1,12 @@
 import { errorMessage } from '../../infra/error-format.js';
-import { isRecord } from '../../infra/json.js';
+import { isRecord, readString } from '../../infra/json.js';
 import type { Provider, ProviderRuntime, ProviderServerLease, ProviderTerminalEventBody } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
 import {
   bindAppServerNotificationHandler,
   buildProviderFailureMessage,
   requireAppServerLease,
-} from '../app-server/driver.js';
+} from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
@@ -21,7 +21,6 @@ import {
 import {
   buildPreparedClaudeRequest,
   readBootstrapSignature,
-  readString,
   readTurnConversationRef,
   type PreparedClaudeRequest,
 } from './request-prep.js';

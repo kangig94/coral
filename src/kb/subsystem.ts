@@ -5,7 +5,8 @@ import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
 import { createKbRuntime } from './runtime.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 import type { SpawnCliFn } from './curate/spawn-cli.js';
-import type { EnvPort, IdPort, ProcessPort, Runtime, StoragePort, TimePort } from '../runtime/ports.js';
+import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import type { IdPort, ProcessPort, Runtime } from '../runtime/ports.js';
 
 export type KnowledgeBaseRuntime = {
   kb: KbRuntime;

@@ -5,7 +5,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
-import { SimulationRuntime } from '#tools/simulation/core/backend.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
@@ -23,6 +23,19 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
 // behavior is added later, the test scaffold already exists. The distinct
 // third branch ("absent" -> relaunch) is the genuine divergence.
+
+// Monotonic deterministic clock for `resumeAll`'s `time.now`. The branch
+// decisions don't assert on elapsed time, but the underlying
+// `waitForAtoms`/drainDeadline checks compare absolute timestamps — fixed
+// time would stall those branches; `Date.now()` would leak wall-clock
+// dependence (Single Runtime World rule).
+let recoverClock = new Date('2026-04-27T00:00:00.000Z').getTime();
+const fixedTime = {
+  now: () => {
+    recoverClock += 100;
+    return recoverClock;
+  },
+};
 
 const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const storageAdapter = {
@@ -184,7 +197,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
-        time: { now: () => Date.now() },
+        time: fixedTime,
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -210,7 +223,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
-        time: { now: () => Date.now() },
+        time: fixedTime,
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -236,7 +249,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
-        time: { now: () => Date.now() },
+        time: fixedTime,
       });
 
       expect(resumed).toEqual(['workflow-1']);

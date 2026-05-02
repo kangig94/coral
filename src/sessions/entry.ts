@@ -33,7 +33,7 @@ export interface SessionEntry {
   state: SessionState;
   activeJobId?: string;
   conversationRef?: string;
-  providerContinuity?: ProviderContinuityBlob;
+  providerContinuity: ProviderContinuityBlob | null;
   model?: string;
   cwd: string;
   projectRoot: string;
@@ -56,7 +56,7 @@ export const sessionEntrySchema = z
     state: sessionStateSchema,
     activeJobId: z.string().optional(),
     conversationRef: z.string().optional(),
-    providerContinuity: z.record(z.unknown()).optional(),
+    providerContinuity: z.record(z.unknown()).nullable(),
     model: z.string().optional(),
     cwd: z.string(),
     projectRoot: z.string(),

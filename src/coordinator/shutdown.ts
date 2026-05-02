@@ -3,7 +3,8 @@ import { formatError } from '../infra/error-format.js';
 import type { KbRuntime } from '../kb/contract.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
-import type { Runtime, TimePort } from '../runtime/ports.js';
+import type { TimePort } from '../infra/port-types.js';
+import type { Runtime } from '../runtime/ports.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import type { IpcListener } from '../transport/ipc/server.js';
@@ -56,7 +57,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
-  expansionLifecycleService?: ExpansionLifecycleService | null;
+  expansionLifecycleService: ExpansionLifecycleService | null;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };

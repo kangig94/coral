@@ -4,8 +4,8 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/runtime/ports.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import type { StoragePort } from '#src/infra/port-types.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';

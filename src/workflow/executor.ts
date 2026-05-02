@@ -1,6 +1,7 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
-import type { IdPort, TimePort } from '../runtime/ports.js';
+import type { TimePort } from '../infra/port-types.js';
+import type { IdPort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
   WorkflowExecutionError,

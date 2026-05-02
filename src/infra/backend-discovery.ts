@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
-import type { CoralPaths } from './path/compose.js';
+import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';

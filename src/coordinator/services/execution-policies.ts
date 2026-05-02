@@ -46,11 +46,6 @@ export type EffectiveContinuationProfile = {
   agentName?: string;
 };
 
-// Recovery vocabulary is owned by `jobs/reconcile/interrupted-reason` so
-// jobs/ does not have to import upward from coordinator/. Re-exported here
-// for callers that already reach into execution-policies.
-export type { InterruptedAppServerReason, InterruptedProbeOutcome } from '../../jobs/reconcile/interrupted-reason.js';
-
 export function buildSessionControllerProfile(
   coralEnv: Record<string, string>,
 ): SessionAllocateOptions['controllerProfile'] | undefined {

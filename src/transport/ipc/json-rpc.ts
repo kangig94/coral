@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { JsonRpcErrorObject } from '../infra/json-rpc.js';
+import type { JsonRpcErrorObject } from '../../infra/json-rpc.js';
 
 // Coral's internal IPC speaks a *tagged* dialect of JSON-RPC: every envelope
 // carries an explicit `kind` discriminator so the inbound parser can route
@@ -9,60 +9,64 @@ import type { JsonRpcErrorObject } from '../infra/json-rpc.js';
 // envelopes narrow `id` to `string | number` — only the error variant
 // carries the spec-mandated nullable id (for parse failures where the id
 // couldn't be recovered).
+//
+// Envelope-suffixed names disambiguate from `infra/json-rpc.ts`'s standard
+// vocabulary: a caller importing both knows which dialect each name refers
+// to without aliasing.
 
-export type JsonRpcId = string | number;
+export type JsonRpcEnvelopeId = string | number;
 
-export interface JsonRpcRequest<TParams = unknown> {
+export interface JsonRpcRequestEnvelope<TParams = unknown> {
   readonly kind: 'request';
-  readonly id: JsonRpcId;
+  readonly id: JsonRpcEnvelopeId;
   readonly method: string;
   readonly params?: TParams;
 }
 
-export interface JsonRpcResponse<TResult = unknown> {
+export interface JsonRpcResponseEnvelope<TResult = unknown> {
   readonly kind: 'response';
-  readonly id: JsonRpcId;
+  readonly id: JsonRpcEnvelopeId;
   readonly result: TResult;
 }
 
-export interface JsonRpcNotification<TParams = unknown> {
+export interface JsonRpcNotificationEnvelope<TParams = unknown> {
   readonly kind: 'notification';
   readonly method: string;
   readonly params?: TParams;
 }
 
-export interface JsonRpcError {
+export interface JsonRpcErrorEnvelope {
   readonly kind: 'error';
-  readonly id: JsonRpcId | null;
+  readonly id: JsonRpcEnvelopeId | null;
   readonly error: JsonRpcErrorObject;
 }
 
 export type JsonRpcEnvelope<TRequestParams = unknown, TResponseResult = unknown, TNotificationParams = unknown> =
-  | JsonRpcRequest<TRequestParams>
-  | JsonRpcResponse<TResponseResult>
-  | JsonRpcNotification<TNotificationParams>
-  | JsonRpcError;
+  | JsonRpcRequestEnvelope<TRequestParams>
+  | JsonRpcResponseEnvelope<TResponseResult>
+  | JsonRpcNotificationEnvelope<TNotificationParams>
+  | JsonRpcErrorEnvelope;
 
-const jsonRpcIdSchema = z.union([z.string().min(1), z.number()]);
+const jsonRpcEnvelopeIdSchema = z.union([z.string().min(1), z.number()]);
 
-const jsonRpcRequestSchema = z
+const jsonRpcRequestEnvelopeSchema = z
   .object({
     kind: z.literal('request'),
-    id: jsonRpcIdSchema,
+    id: jsonRpcEnvelopeIdSchema,
     method: z.string().min(1),
     params: z.unknown().optional(),
   })
   .strict();
 
-const jsonRpcResponseSchema = z
+const jsonRpcResponseEnvelopeSchema = z
   .object({
     kind: z.literal('response'),
-    id: jsonRpcIdSchema,
+    id: jsonRpcEnvelopeIdSchema,
     result: z.unknown(),
   })
   .strict();
 
-const jsonRpcNotificationSchema = z
+const jsonRpcNotificationEnvelopeSchema = z
   .object({
     kind: z.literal('notification'),
     method: z.string().min(1),
@@ -70,10 +74,10 @@ const jsonRpcNotificationSchema = z
   })
   .strict();
 
-const jsonRpcErrorSchema = z
+const jsonRpcErrorEnvelopeSchema = z
   .object({
     kind: z.literal('error'),
-    id: jsonRpcIdSchema.nullable(),
+    id: jsonRpcEnvelopeIdSchema.nullable(),
     error: z
       .object({
         code: z.number().int(),
@@ -85,10 +89,10 @@ const jsonRpcErrorSchema = z
   .strict();
 
 const jsonRpcEnvelopeSchema = z.discriminatedUnion('kind', [
-  jsonRpcRequestSchema,
-  jsonRpcResponseSchema,
-  jsonRpcNotificationSchema,
-  jsonRpcErrorSchema,
+  jsonRpcRequestEnvelopeSchema,
+  jsonRpcResponseEnvelopeSchema,
+  jsonRpcNotificationEnvelopeSchema,
+  jsonRpcErrorEnvelopeSchema,
 ]);
 
 function parseEnvelope(value: unknown): JsonRpcEnvelope {

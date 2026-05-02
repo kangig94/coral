@@ -11,7 +11,7 @@ import {
   type AppServerContract,
   bindAppServerNotificationHandler,
   requireAppServerLease,
-} from '#src/providers/app-server/driver.js';
+} from '#src/providers/app-server.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';

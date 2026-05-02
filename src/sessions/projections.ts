@@ -28,14 +28,7 @@ export type ProjectionSessionRow = {
   lastSeq: number;
 };
 
-type SessionProjectionPatch = {
-  entry?: SessionEntry;
-  controller?: string;
-  provider?: string;
-  resumable?: boolean;
-  conversationRef?: string | null;
-  scopeKey?: string;
-};
+type SessionProjectionPatch = Partial<Omit<ProjectionSessionRow, 'lastSeq'>>;
 
 export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): ProjectionSessionRow | null {
   const row = db

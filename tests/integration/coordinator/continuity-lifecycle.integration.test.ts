@@ -220,9 +220,7 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     expect(progressStore.readStatus(decision.job)).toMatchObject({
       phase: 'completed',
-      continuity: liveSnapshot,
     });
-    expect(detail.status?.continuity).toEqual(liveSnapshot);
     expect(detail.exit?.continuity).toEqual(liveSnapshot);
     expect(terminalProgress).toMatchObject({
       type: 'terminal',
@@ -476,7 +474,7 @@ describe('coordinator continuity lifecycle integration', () => {
       content: '{"score": 55, "thought": "keep the freight window narrow"}',
       continuity: null,
     });
-    expect(progressStore.readStatus(directDecision.job)?.continuity).toBeNull();
+    expect(progressStore.loadJobProjectionDetail(directDecision.job).exit?.continuity).toBeNull();
 
     const source = runtime.paths.projectSource(ctx.projectRoot);
     const store = new DiscussSessionStore(source, {
@@ -491,7 +489,8 @@ describe('coordinator continuity lifecycle integration', () => {
       },
       jobStatusReader: {
         read: (jobId) => progressStore.readStatus(jobId),
-      },
+      readExit: () => null,
+    },
     });
     const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'null-live', model: 'gpt-5' }];
 

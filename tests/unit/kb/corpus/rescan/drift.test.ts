@@ -31,6 +31,7 @@ function noteScan(slug: string, content: string) {
         content,
       }),
     ],
+    entityGraph: null,
   });
 }
 
@@ -64,7 +65,7 @@ function detectedIncident(slug: string): DetectedIncident {
 
 describe('detectIncidentRetryDrift', () => {
   it('returns null when both queue and incidents are empty', () => {
-    const scan = createCorpusScanView({ markdownFiles: [] });
+    const scan = createCorpusScanView({ markdownFiles: [], entityGraph: null });
     expect(detectIncidentRetryDrift([], [], scan)).toBeNull();
   });
 

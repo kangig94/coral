@@ -217,12 +217,14 @@ describe('readProgressLog', () => {
     });
     const result = readProgressLog(testJobId);
     expect(result).toHaveLength(1);
-    expect(result[0].jobId).toBe(testJobId);
-    expect(result[0].sessionId).toBe('s1');
-    expect(result[0].seq).toBe(2);
-    expect(result[0].type).toBe('progress');
-    expect(result[0].ts).toBe(NOW);
-    expect(result[0].message).toBe('working');
+    const event = result[0];
+    expect(event.jobId).toBe(testJobId);
+    expect(event.sessionId).toBe('s1');
+    expect(event.seq).toBe(2);
+    expect(event.type).toBe('progress');
+    expect(event.ts).toBe(NOW);
+    if (event.type !== 'progress') throw new Error('expected progress event');
+    expect(event.message).toBe('working');
   });
 
   it('returns empty array when the projection store has no matching job', () => {

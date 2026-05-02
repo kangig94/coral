@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { ChildProcessLike } from '#src/runtime/ports.js';
-import { SimulationRuntime, flushMicrotasks } from '#tools/simulation/core/backend.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { loadRecording } from '#src/infra/spawn-recording.js';
 import {
   EventEmitterObserver,

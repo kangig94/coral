@@ -25,7 +25,8 @@ import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
-import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
+import type { StoragePort } from '../../../src/infra/port-types.js';
+import type { Runtime } from '../../../src/runtime/ports.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
 import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
@@ -39,20 +40,9 @@ import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/store/read-port.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
-import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
+import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
-
-export { InMemoryStorage } from './memory-storage.js';
-export {
-  type ChildOutputChunk,
-  type MockDurableScript,
-  type MockKillAction,
-  type MockSpawnScript,
-} from './mock-process.js';
-export { InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
-export { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
-export { SimulationRuntime } from '../runtime.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];
@@ -447,6 +437,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     eventBus,
     providerRegistry,
     providerHostManager,
+    expansionLifecycleService: null,
     getConsumerStuck: () => [],
     getMutationBlocked: () => ({ blocked: false }),
     resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),

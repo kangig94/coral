@@ -2,7 +2,7 @@ import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { TimePort } from '../runtime/ports.js';
+import type { TimePort } from '../infra/port-types.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';

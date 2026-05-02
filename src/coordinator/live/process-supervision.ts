@@ -1,5 +1,6 @@
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../infra/process-constants.js';
-import type { ChildProcessLike, Runtime } from '../../runtime/ports.js';
+import type { ChildProcessLike } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {

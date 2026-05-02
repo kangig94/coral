@@ -1,4 +1,4 @@
-import type { EnvPort } from '../runtime/ports.js';
+import type { EnvPort } from '../infra/port-types.js';
 
 export const DEFAULT_STALE_CHECK_INTERVAL_MS = 500;
 export const DEFAULT_STALE_TIMEOUT_MS = 900_000;

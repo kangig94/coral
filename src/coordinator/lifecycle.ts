@@ -23,13 +23,13 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState, type ShutdownMode, HANDOFF_DRAIN_TIMEOUT_MS } from './shutdown.js';
 import type { HandoffQuiescePort } from './execution-service.js';
-import type { InterruptedAppServerReason } from './services/execution-policies.js';
+import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
 import {
   bindWithHandoff,
   BackendAlreadyRunningError,
   HandoffEscalationError,
-  IncumbentMatchesError,
 } from './handoff.js';
+import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
@@ -317,7 +317,7 @@ export type LifecycleDeps = {
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
-  readonly expansionLifecycleService?: ExpansionLifecycleService | null;
+  readonly expansionLifecycleService: ExpansionLifecycleService | null;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;

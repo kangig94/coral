@@ -64,5 +64,3 @@ export const workflowCompiler = {
   },
   readPlan: readWorkflowProjection,
 } as const;
-
-export { WorkflowInputError };

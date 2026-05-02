@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';

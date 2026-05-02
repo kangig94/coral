@@ -48,10 +48,13 @@ export interface ThreadResumeResponse {
   thread: ThreadInfo;
 }
 
+/** @wire openai:codex — turn/start request body. */
 export interface TurnStartParams {
   threadId: string;
   input: UserInput[];
+  /** @wire openai:codex — `null` requests the API default model. */
   model?: string | null;
+  /** @wire openai:codex — `null` requests the API default effort. */
   effort?: string | null;
   serviceTier?: 'fast' | 'flex';
   outputSchema?: unknown;

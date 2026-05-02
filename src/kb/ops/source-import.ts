@@ -1,7 +1,8 @@
 import { basename, delimiter, extname, join } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
-import type { EnvPort, IdPort, ProcessPort, StoragePort, TimePort } from '../../runtime/ports.js';
+import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
+import type { IdPort, ProcessPort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
 import { sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';

@@ -9,7 +9,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';

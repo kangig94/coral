@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 
 /** Persisted install metadata for the needle engine: `{version, method}` JSON. */
 export type InstallMeta = {

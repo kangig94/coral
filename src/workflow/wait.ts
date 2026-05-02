@@ -1,5 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { TimePort } from '../runtime/ports.js';
+import type { TimePort } from '../infra/port-types.js';
 import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {

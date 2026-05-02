@@ -1,8 +1,9 @@
 import type { PersistedDiscussSnapshot } from '../events.js';
 import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
-import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
-import type { JobStatus } from '../../jobs/records.js';
+import type { EnvPort, TimePort } from '../../infra/port-types.js';
+import type { IdPort } from '../../runtime/ports.js';
+import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 
 export type AgentConfig = {
@@ -35,6 +36,7 @@ export type LiveDiscussSession = {
 
 export type DiscussJobStatusReader = {
   read(jobId: string): JobStatus | null;
+  readExit(jobId: string): JobExit | null;
 };
 
 export type DiscussRuntimePorts = {

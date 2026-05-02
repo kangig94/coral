@@ -33,7 +33,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDriver } from './consumer-driver.js';
+import { ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
@@ -47,7 +47,7 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked'
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked' | 'expansionLifecycleService'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;

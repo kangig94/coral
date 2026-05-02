@@ -14,7 +14,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';

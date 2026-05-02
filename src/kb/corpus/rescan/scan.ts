@@ -114,7 +114,7 @@ export function createCorpusEntityGraphScan(input: { content: string; path?: str
 /** Builds the detector view over scanned markdown files plus the optional entity-graph artifact. */
 export function createCorpusScanView(input: {
   markdownFiles: readonly CorpusMarkdownFileScan[];
-  entityGraph?: CorpusEntityGraphScan | null;
+  entityGraph: CorpusEntityGraphScan | null;
 }): CorpusScanView {
   const activeEntryIds = new Set<KbEntryId>();
   const principleSlugs = new Set<string>();
@@ -134,7 +134,7 @@ export function createCorpusScanView(input: {
 
   return {
     markdownFiles: [...input.markdownFiles],
-    entityGraph: input.entityGraph ?? null,
+    entityGraph: input.entityGraph,
     activeEntryIds,
     principleSlugs,
   };

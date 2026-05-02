@@ -3,13 +3,10 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isRecord } from '#src/infra/json.js';
+import { buildClaudeChildEnv } from '#src/providers/claude-appserver/child-env.js';
+import { hashSortedEnv } from '#src/providers/claude/request-prep.js';
 import { buildClaudeChildArgs, createClaudeBrokerServer } from '#src/providers/claude-appserver/server.js';
-import {
-  buildClaudeChildEnv,
-  hashClaudeChildEnv,
-  type ClaudeBrokerChild,
-} from '#src/providers/claude-appserver/controller.js';
-import { createBrokerSession, type ClaudeBrokerSession } from '#src/providers/claude-appserver/broker-pool.js';
+import { createBrokerSession } from '#src/providers/claude-appserver/broker-pool.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -17,6 +14,7 @@ import {
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
 } from '#src/providers/claude-appserver/protocol.js';
+import type { ClaudeBrokerChild, ClaudeBrokerSession } from '#src/providers/claude-appserver/session-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const BOOTSTRAP: SessionEnsureParams = {
@@ -1316,7 +1314,7 @@ describe('broker: per-controller env', () => {
       expect(childEnv.TEST_CONTROLLER_ONLY).toBe('present');
       expect(childEnv.CORAL_SESSION_VALUE).toBe('allowed');
       expect(childEnv.CORAL_CHILD).toBe('1');
-      expect(hashClaudeChildEnv(childEnv)).toMatch(/^sha256:/);
+      expect(hashSortedEnv(childEnv)).toMatch(/^sha256:/);
     } finally {
       if (originalCoral === undefined) {
         delete process.env.CORAL_TEST_STRIP_ME;

@@ -8,10 +8,10 @@
 
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
+import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   requestIncumbentShutdown,
-  IncumbentMatchesError,
   type DesiredIncumbentIdentity,
   type IncumbentHealth,
   type IncumbentIdentity,
@@ -19,10 +19,6 @@ import {
 
 const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
-export const SIGTERM_GRACE_MS = 5_000;
-export const SIGKILL_GRACE_MS = 5_000;
-
-export { IncumbentMatchesError };
 
 /**
  * Raised when the contender exhausts the bounded escalation window without
@@ -128,6 +124,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         socketPath: opts.socketPath,
         desired: opts.desired,
         timeoutMs: Math.min(SHUTDOWN_RPC_TIMEOUT_MS, remaining),
+        timePort: opts.runtime.time,
       });
       lastHealth = shutdownResult.health ?? lastHealth;
       if (shutdownResult.verifiedIdentity && incumbent === null) {

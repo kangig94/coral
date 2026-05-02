@@ -9,7 +9,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';

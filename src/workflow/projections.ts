@@ -8,7 +8,7 @@ import {
 } from '../store/append.js';
 import { nowDate } from '../infra/time.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
-import type { TimePort } from '../runtime/ports.js';
+import type { TimePort } from '../infra/port-types.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { composeReducers } from '../store/reducers.js';
 import { workflowRegistry } from './events.js';

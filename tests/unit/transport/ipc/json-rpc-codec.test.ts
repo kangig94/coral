@@ -3,15 +3,15 @@ import { describe, expect, it } from 'vitest';
 import {
   decode,
   encode,
-  type JsonRpcError,
-  type JsonRpcNotification,
-  type JsonRpcRequest,
-  type JsonRpcResponse,
-} from '#src/transport/json-rpc.js';
+  type JsonRpcErrorEnvelope,
+  type JsonRpcNotificationEnvelope,
+  type JsonRpcRequestEnvelope,
+  type JsonRpcResponseEnvelope,
+} from '#src/transport/ipc/json-rpc.js';
 
 describe('transport/json-rpc codec', () => {
   it('round-trips requests', () => {
-    const request: JsonRpcRequest<{ projectRoot: string; all: boolean }> = {
+    const request: JsonRpcRequestEnvelope<{ projectRoot: string; all: boolean }> = {
       kind: 'request',
       id: 'req-1',
       method: 'jobs.list',
@@ -25,7 +25,7 @@ describe('transport/json-rpc codec', () => {
   });
 
   it('round-trips responses', () => {
-    const response: JsonRpcResponse<{ jobs: Array<{ jobId: string; status: string }> }> = {
+    const response: JsonRpcResponseEnvelope<{ jobs: Array<{ jobId: string; status: string }> }> = {
       kind: 'response',
       id: 'req-1',
       result: {
@@ -37,7 +37,7 @@ describe('transport/json-rpc codec', () => {
   });
 
   it('round-trips notifications', () => {
-    const notification: JsonRpcNotification<{ jobId: string; message: string }> = {
+    const notification: JsonRpcNotificationEnvelope<{ jobId: string; message: string }> = {
       kind: 'notification',
       method: 'jobs.wait.progress',
       params: {
@@ -50,7 +50,7 @@ describe('transport/json-rpc codec', () => {
   });
 
   it('round-trips errors', () => {
-    const error: JsonRpcError = {
+    const error: JsonRpcErrorEnvelope = {
       kind: 'error',
       id: 'req-2',
       error: {

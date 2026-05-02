@@ -1,5 +1,5 @@
 import type { FtsRetrieval } from '../contract.js';
-import { normalizeWhitespace, denormalizeSlug } from '../text-normalization.js';
+import { normalizeWhitespace } from '../text-normalization.js';
 
 type SnippetAnchor = {
   index: number;
@@ -12,8 +12,6 @@ export type QueryContext = {
   queryTokens: readonly string[];
   fts: FtsRetrieval;
 };
-
-export { denormalizeSlug };
 
 export function hasTokenOverlap(queryTokens: readonly string[], fieldTokens: readonly string[]): boolean {
   if (queryTokens.length === 0 || fieldTokens.length === 0) {

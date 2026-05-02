@@ -74,5 +74,3 @@ export function recordingToDurableScript(recording: SpawnRecording): MockDurable
     waitForExitError: closeEvent ? undefined : (toReplayError(errorEvent) ?? undefined),
   };
 }
-
-export type { SpawnRecording } from '../../src/infra/spawn-recording.js';

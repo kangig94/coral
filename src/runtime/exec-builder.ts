@@ -1,5 +1,6 @@
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type { ChildProcessLike, ExecResult, RuntimeSpawnOptions, TimerHandle } from './ports.js';
+import type { ChildProcessLike, TimerHandle } from '../infra/port-types.js';
+import type { ExecResult, RuntimeSpawnOptions } from './ports.js';
 
 export interface BuildExecPromiseOptions {
   command: string;

@@ -11,29 +11,12 @@ import type {
   MockKillAction,
   MockSpawnScript,
 } from './mock-script-types.js';
-import type {
-  ChildProcessLike,
-  ChildReadableLike,
-  ChildStdinLike,
-  DurableExecutionTransport,
-  DurableLaunchOptions,
-  DurableLaunchResult,
-  ExecResult,
-  RuntimeExecOptions,
-  RuntimeSpawnOptions,
-  TimerHandle,
-} from '../../../src/runtime/ports.js';
+import type { ChildProcessLike, ChildReadableLike, ChildStdinLike, TimerHandle } from '../../../src/infra/port-types.js';
+import type { DurableExecutionTransport, DurableLaunchOptions, DurableLaunchResult, ExecResult, RuntimeExecOptions, RuntimeSpawnOptions } from '../../../src/runtime/ports.js';
 import { createDeferred, type Deferred } from '../../testing/deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { type VirtualTime } from './virtual-time.js';
-export type {
-  ChildOutputChunk,
-  MockDurableScript,
-  MockExecSyncScript,
-  MockKillAction,
-  MockSpawnScript,
-} from './mock-script-types.js';
 
 type ProcessExitOutcome = {
   delayMs?: number;

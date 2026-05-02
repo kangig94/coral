@@ -10,52 +10,8 @@ import {
 } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
-export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
-
-export interface ExternalError {
-  message: string;
-  stack?: string;
-}
-
-export type JobLifecycleFault =
-  | { kind: 'ghost_launch' }
-  | { kind: 'wrapper_lost' }
-  | { kind: 'wrapper_crashed'; cause: ExternalError };
-
-export type JobLaunchRejected = {
-  reason: 'busy';
-  message: string;
-  provider: string;
-  globalActive: number;
-  globalLimit: number;
-};
-
-export type JobProgressFault =
-  | { kind: 'missing_launch_record' }
-  | { kind: 'recovery_parse_failed'; cause: ExternalError };
-
-export type JobDomainProgress = {
-  kind: 'domain';
-  stage: string;
-  message: string;
-  detail?: unknown;
-};
-
-export type TerminalOutcome =
-  | { kind: 'completed' }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'failed'; causeRef: CauseRef }
-  | { kind: 'job_fault'; fault: JobLifecycleFault };
-
-export type TerminalOutcomeInput<Scope = never> =
-  | { kind: 'completed' }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> }
-  | { kind: 'job_fault'; fault: JobLifecycleFault };
-
 export const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
+export type AbortReason = z.infer<typeof abortReasonSchema>;
 
 export const externalErrorSchema = z
   .object({
@@ -63,12 +19,14 @@ export const externalErrorSchema = z
     stack: z.string().optional(),
   })
   .strict();
+export type ExternalError = z.infer<typeof externalErrorSchema>;
 
 export const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ghost_launch') }).strict(),
   z.object({ kind: z.literal('wrapper_lost') }).strict(),
   z.object({ kind: z.literal('wrapper_crashed'), cause: externalErrorSchema }).strict(),
 ]);
+export type JobLifecycleFault = z.infer<typeof jobLifecycleFaultSchema>;
 
 export const jobLaunchRejectedSchema = z
   .object({
@@ -79,11 +37,13 @@ export const jobLaunchRejectedSchema = z
     globalLimit: z.number(),
   })
   .strict();
+export type JobLaunchRejected = z.infer<typeof jobLaunchRejectedSchema>;
 
 export const jobProgressFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('missing_launch_record') }).strict(),
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
 ]);
+export type JobProgressFault = z.infer<typeof jobProgressFaultSchema>;
 
 export const jobDomainProgressSchema = z
   .object({
@@ -93,6 +53,7 @@ export const jobDomainProgressSchema = z
     detail: z.unknown().optional(),
   })
   .strict();
+export type JobDomainProgress = z.infer<typeof jobDomainProgressSchema>;
 
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
@@ -101,6 +62,18 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('failed'), causeRef: causeRefSchema }).strict(),
   z.object({ kind: z.literal('job_fault'), fault: jobLifecycleFaultSchema }).strict(),
 ]);
+export type TerminalOutcome = z.infer<typeof terminalOutcomeSchema>;
+
+// Input variant carries the unresolved `ResolvableCauseRef<Scope>` generic
+// rather than the resolved `CauseRef` shape — kept as an explicit type
+// because the resolvable form is a typed-graph builder, not a runtime
+// schema target.
+export type TerminalOutcomeInput<Scope = never> =
+  | { kind: 'completed' }
+  | { kind: 'aborted'; reason: AbortReason }
+  | { kind: 'provider_exit'; code: number; note?: string }
+  | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> }
+  | { kind: 'job_fault'; fault: JobLifecycleFault };
 
 export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
   switch (outcome.kind) {

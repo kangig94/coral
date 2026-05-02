@@ -5,7 +5,9 @@
 // shutdown contract is exactly two existing IPC methods (`transport.health`
 // and `transport.shutdown`); there is no coordinator policy here.
 
-import { createIpcClient, type IpcRequestOptions } from './client.js';
+import { createRealTimePort } from '../../infra/time.js';
+import { createIpcClient } from './client.js';
+import type { TimePort } from '../../infra/port-types.js';
 
 /**
  * Identity tuple proving "this incumbent is who it claims to be" — used to
@@ -74,8 +76,8 @@ export function isCompatibleIncumbent(health: IncumbentHealth, desired: DesiredI
   );
 }
 
-function remainingBudget(deadlineMs: number): number {
-  return Math.max(0, deadlineMs - Date.now());
+function remainingBudget(deadlineMs: number, timePort: TimePort): number {
+  return Math.max(0, deadlineMs - timePort.now());
 }
 
 /**
@@ -96,15 +98,17 @@ export async function requestIncumbentShutdown(opts: {
   socketPath: string;
   desired: DesiredIncumbentIdentity;
   timeoutMs: number;
+  timePort?: TimePort;
 }): Promise<{ health: IncumbentHealth | null; verifiedIdentity: IncumbentIdentity | null }> {
-  const client = createIpcClient(opts.socketPath);
-  const deadlineMs = Date.now() + opts.timeoutMs;
+  const timePort = opts.timePort ?? createRealTimePort();
+  const client = createIpcClient(opts.socketPath, timePort);
+  const deadlineMs = timePort.now() + opts.timeoutMs;
   let health: IncumbentHealth | null = null;
 
-  if (remainingBudget(deadlineMs) > 0) {
+  if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
       health = (await client.health<IncumbentHealth | null>({
-        timeoutMs: remainingBudget(deadlineMs),
+        timeoutMs: remainingBudget(deadlineMs, timePort),
       })) as IncumbentHealth | null;
     } catch {
       // incumbent unresponsive on IPC but socket bound; daemon escalation handles this
@@ -115,9 +119,9 @@ export async function requestIncumbentShutdown(opts: {
     throw new IncumbentMatchesError(opts.desired);
   }
 
-  if (remainingBudget(deadlineMs) > 0) {
+  if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
-      await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs) });
+      await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs, timePort) });
     } catch {
       // ignore; incumbent may already be draining or unresponsive
     }
@@ -130,7 +134,3 @@ export async function requestIncumbentShutdown(opts: {
 
   return { health, verifiedIdentity };
 }
-
-// Re-export for symmetry; some callers want to construct their own request
-// options against an existing IpcClient.
-export type { IpcRequestOptions };

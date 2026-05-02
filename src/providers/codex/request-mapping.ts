@@ -77,7 +77,7 @@ export function readCodexPersistedContinuity(
 export function buildCodexContinuity(update: {
   cwd?: string;
   threadId?: string;
-  turnId?: string | null;
+  turnId?: string;
 }): CodexPersistedContinuity {
   return {
     ...(update.cwd ? { cwd: update.cwd } : {}),
@@ -91,14 +91,14 @@ export function withCodexContinuity(
   update: {
     cwd?: string;
     threadId?: string;
-    turnId?: string | null;
+    turnId?: string;
   },
 ): CodexPersistedContinuity {
   const continuity = readCodexPersistedContinuity(persistedContinuity);
   return buildCodexContinuity({
     cwd: update.cwd ?? continuity.cwd,
     threadId: update.threadId ?? continuity.threadId,
-    turnId: update.turnId === undefined ? continuity.turnId : update.turnId,
+    turnId: update.turnId ?? continuity.turnId,
   });
 }
 

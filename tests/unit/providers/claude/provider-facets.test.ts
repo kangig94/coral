@@ -18,7 +18,7 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
     );
 
     expect(mutation).toEqual({
-      type: 'set_resumable',
+      kind: 'set_resumable',
       conversationRef: 'ref-x',
     });
   });
@@ -38,7 +38,7 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
     );
 
     expect(mutation).toEqual({
-      type: 'preserve',
+      kind: 'preserve',
     });
   });
 });

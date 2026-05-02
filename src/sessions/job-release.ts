@@ -1,7 +1,7 @@
 import type { Database } from '../store/db.js';
 
 import type { Runtime } from '../runtime/ports.js';
-import { SessionManager } from './shell/store.js';
+import { SessionManager } from './shell.js';
 
 export type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 

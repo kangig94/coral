@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../infra/json.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
 import type { KbRuntime } from '../contract.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
@@ -183,7 +184,7 @@ export function buildDiscoveryPrompt(
 ): DiscoveryPromptResult {
   const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
   const corpusPath = join(kb.envPort.tmpdir(), `coral-discovery-${kb.ids.uuid()}.md`);
-  kb.storagePort.writeFileSync(corpusPath, noteBlocks.join('\n\n'));
+  writeFileAtomic(kb, corpusPath, noteBlocks.join('\n\n'));
 
   const principleEntries = Object.entries(existingPrinciples)
     .sort(([left], [right]) => compareLocale(left, right))

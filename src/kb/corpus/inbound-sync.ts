@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import type { StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import type { GitSyncPathChange, GitSyncResult } from '../curate/git-sync.js';
 import { noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';

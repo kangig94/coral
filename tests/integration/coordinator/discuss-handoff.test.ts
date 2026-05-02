@@ -125,9 +125,9 @@ describe('discuss handoff (cross-domain integration)', () => {
     const replacementContext = replacement.core.getDiscussContext(replacementCtx);
 
     const rehydrated = getSession(replacementContext, SESSION_ID);
-    expect(rehydrated).toBeDefined();
-    expect(rehydrated?.controller.signal.aborted).toBe(false);
-    expect(rehydrated?.snapshot.sessionId).toBe(SESSION_ID);
-    expect(rehydrated?.abortEnded).toBe(false);
+    if (!rehydrated) throw new Error(`replacement core did not rehydrate session ${SESSION_ID}`);
+    expect(rehydrated.controller.signal.aborted).toBe(false);
+    expect(rehydrated.snapshot.sessionId).toBe(SESSION_ID);
+    expect(rehydrated.abortEnded).toBe(false);
   });
 });

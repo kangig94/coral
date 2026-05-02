@@ -1,5 +1,6 @@
-import type { Database } from '../store/db.js';
+import { z } from 'zod';
 
+import type { Database } from '../store/db.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
@@ -12,6 +13,33 @@ import {
   type PersistedDiscussSnapshot,
 } from './events.js';
 import type { TranscriptEntry } from './session-types.js';
+
+// Load-bearing invariants on persisted projection reads: schemaVersion (catches
+// migration drift) and the top-level identity/sequence fields. `state` and
+// `runtime` are passthrough — they are written by the typed reducer in this
+// same file, so corruption-on-read for those nested shapes is covered by the
+// same write path that produced them. The protection mirrors `jobs/projections.ts:193`
+// at the same level a full deep Zod mirror of DiscussState would add ~100 LOC
+// of duplicate type definition without catching a class of bugs that's not
+// already covered by reducer typing.
+const persistedDiscussSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    sessionId: z.string(),
+    projectRoot: z.string(),
+    updatedAt: z.string(),
+    lastAppliedSeq: z.number().int().nonnegative(),
+    state: z.object({}).passthrough(),
+    runtime: z.object({}).passthrough(),
+  })
+  .strict();
+
+function parsePersistedSnapshot(raw: string): PersistedDiscussSnapshot {
+  // Cast through `unknown` because `DiscussState` and `PersistedDiscussRuntime`
+  // are typed at the reducer write boundary; the schema deliberately stops at
+  // top-level invariants (see schema definition above).
+  return persistedDiscussSnapshotSchema.parse(JSON.parse(raw)) as unknown as PersistedDiscussSnapshot;
+}
 
 type ProjectionDiscussRow = {
   state: PersistedDiscussSnapshot;
@@ -39,7 +67,7 @@ export function readProjectionDiscuss(db: Database, discussId: string): Projecti
   }
 
   return {
-    state: JSON.parse(row.state) as PersistedDiscussSnapshot,
+    state: parsePersistedSnapshot(row.state),
     lastSeq: row.last_seq,
   };
 }
@@ -54,7 +82,7 @@ export function listProjectionDiscussSnapshots(db: Database): ProjectionDiscussR
     .all() as Array<{ state: string; last_seq: number }>;
 
   return rows.map((row) => ({
-    state: JSON.parse(row.state) as PersistedDiscussSnapshot,
+    state: parsePersistedSnapshot(row.state),
     lastSeq: row.last_seq,
   }));
 }

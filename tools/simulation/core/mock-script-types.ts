@@ -1,5 +1,6 @@
 import type { DurableCliRuntimeRecord } from '../../../src/runtime/durable-runtime.js';
-import type { ChildProcessLike, ExecResult } from '../../../src/runtime/ports.js';
+import type { ChildProcessLike } from '../../../src/infra/port-types.js';
+import type { ExecResult } from '../../../src/runtime/ports.js';
 
 export type ChildOutputChunk = {
   delayMs?: number;

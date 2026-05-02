@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import type { IdPort, Runtime, StoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -85,12 +86,11 @@ export interface ProviderServerLease {
   generation?: number;
 }
 
-export type ProviderTerminalOutcome =
-  | { kind: 'completed' }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'failed' }
-  | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
+// Provider-side terminal outcome: the slice of `TerminalOutcome` that the
+// provider kernel can directly emit before the materializer enriches it
+// with causeRef and the full fault registry. The schema below is the
+// canonical shape; this type is its compile-time mirror via z.infer.
+export type ProviderTerminalOutcome = z.infer<typeof providerTerminalOutcomeSchema>;
 
 /** Provider's raw terminal output shape — what an exec/app-server kernel returns
  * before the coordinator materializer translates it into a journal-recorded
@@ -101,6 +101,7 @@ export interface ProviderTerminal {
   model?: string;
   outcome: ProviderTerminalOutcome;
   durationMs?: number;
+  /** @wire node:child_process — provider exit code; mirrors child_process exit semantics. */
   exitCode?: number | null;
   usage?: UsageSummary;
   warnings?: string[];
@@ -127,7 +128,7 @@ export type ProviderContinuityEventBody = {
   kind: 'continuity';
   conversationRef: string | null;
   resumable: boolean;
-  providerContinuity?: ProviderContinuityBlob | null;
+  providerContinuity: ProviderContinuityBlob | null;
 };
 
 export type ProviderTerminalEventBody = {
@@ -225,7 +226,7 @@ export const providerContinuityEventBodySchema = z
     kind: z.literal('continuity'),
     conversationRef: z.string().nullable(),
     resumable: z.boolean(),
-    providerContinuity: z.record(z.string(), z.unknown()).nullable().optional(),
+    providerContinuity: z.record(z.string(), z.unknown()).nullable(),
   })
   .strict();
 

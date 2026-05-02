@@ -2,7 +2,8 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { Runtime, StoragePort } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
+import type { Runtime } from '../runtime/ports.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
 import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
 

@@ -56,7 +56,7 @@ const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/coordinator/services/kb/recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
 const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
-const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver.ts';
+const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -443,14 +443,23 @@ describe('architecture boundary guard', () => {
   it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
     expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
   });
-  it('large coordinator transport stays split by responsibility and consumer-driver helpers stay inlined', () => {
+  it('large coordinator transport and consumer-driver subsystem stay split by responsibility', () => {
     expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
     expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
-    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
+    // design-philosophy.md §9.6: cohesive subsystems with enough sibling files
+    // should subdivide under a named directory instead of growing a root magnet.
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/state.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/persistence.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/registration.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/freshness-waiter.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/authority-apply.ts');
 
     const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
     expect(durableTransportSource).not.toContain('createInterface');
     expect(durableTransportSource).not.toContain('ProviderServerEntry');
+  });
+  it('coordinator root forbids content-blank consumer-driver-support magnet', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
   });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(
@@ -553,6 +562,19 @@ describe('architecture boundary guard', () => {
     if (/from\s+['"]node:fs['"]/u.test(source)) {
       violations.push(`${autoFixPath}: imports node:fs (must route through kb.storagePort)`);
     }
+    expect(violations).toEqual([]);
+  });
+  it('kb/corpus/* must not import the runtime facade module', () => {
+    const runtimeFacadeImport = /from\s+['"]\.\.\/runtime(?:\.js)?['"]/u;
+    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) =>
+      filePath.endsWith('.ts'),
+    )
+      .flatMap((filePath) => {
+        const source = readFileSync(filePath, 'utf8');
+        return runtimeFacadeImport.test(source) ? [toCanonicalSrcPath(REPO_ROOT, filePath)] : [];
+      })
+      .sort();
+
     expect(violations).toEqual([]);
   });
   it('CorpusFileHandle is kb-domain vocabulary and stays out of src/infra/**', () => {
@@ -689,17 +711,17 @@ describe('architecture boundary guard', () => {
     expect(simulationWorld).not.toContain('createReplayCursor');
     expect(simulationWorld).not.toContain('replayFrom');
   });
-  it('infra/paths.ts is permanently retired (use infra/path/compose and per-domain path modules)', () => {
+  it('infra/paths.ts is permanently retired (use infra/path/index and per-domain path modules)', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
   });
-  it('production src/ imports infra/path/ subdir only via compose.ts (sibling files stay subdir-internal)', () => {
-    // The infra/path/ subdir is the path subsystem: compose.ts is the public
+  it('production src/ imports infra/path/ subdir only via index.ts (sibling files stay subdir-internal)', () => {
+    // The infra/path/ subdir is the path subsystem: index.ts is the public
     // composer (used by runtime port construction); root/store/coordinator/
-    // expansion are private family builders. External src/ callers must go
+    // engine are private family builders. External src/ callers must go
     // through composeCoralPaths so that flavor-aware path resolution stays
     // funneled through one entry point. KB has a documented exception for
     // root.ts (cycle-break primitive needed for kbRuntimeDir).
-    const COMPOSE_PUBLIC = 'src/infra/path/compose.ts';
+    const COMPOSE_PUBLIC = 'src/infra/path/index.ts';
     const ALLOWED_INTERNAL_IMPORTERS: Record<string, ReadonlySet<string>> = {
       'src/infra/path/root.ts': new Set(['src/kb/paths.ts', 'src/kb/env.ts', 'src/infra/project-source.ts']),
     };
@@ -722,7 +744,7 @@ describe('architecture boundary guard', () => {
   it('production homedir imports remain confined to path authority modules', () => {
     const allowed = new Set([
       'src/infra/backend-discovery.ts',
-      'src/infra/path/compose.ts',
+      'src/infra/path/index.ts',
       'src/infra/path/root.ts',
       'src/infra/plugin-registry.ts',
       'src/kb/paths.ts',

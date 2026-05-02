@@ -3,7 +3,7 @@ import { formatError } from '../../infra/error-format.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { JobStatus } from '../../jobs/records.js';
+import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussLoop from './loop.js';
@@ -26,6 +26,7 @@ type CreateDiscussRuntimeDeps = {
     };
     progressStore: {
       readStatus(jobId: string): JobStatus | null;
+      loadJobProjectionDetail(jobId: string): { exit: JobExit | null };
       getDb(): Database;
       commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
     };
@@ -126,6 +127,7 @@ export function createDiscussRuntime({ world, runtime, getExecutionService }: Cr
     const executionService = getExecutionService(ctx);
     const jobStatusReader = {
       read: (jobId: string) => world.progressStore.readStatus(jobId),
+      readExit: (jobId: string) => world.progressStore.loadJobProjectionDetail(jobId).exit,
     };
     const discussService: DiscussService = {
       start: (...args) => executionService.start(...args),

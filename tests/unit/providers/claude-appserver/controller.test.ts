@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { SingleSessionController, type ClaudeBrokerChild } from '#src/providers/claude-appserver/controller.js';
+import { SingleSessionController } from '#src/providers/claude-appserver/controller.js';
 import type { SessionEnsureParams } from '#src/providers/claude-appserver/protocol.js';
+import type { ClaudeBrokerChild } from '#src/providers/claude-appserver/session-contract.js';
 
 const BOOTSTRAP: Omit<SessionEnsureParams, 'brokerSessionKey'> = {
   cwd: '/workspace',

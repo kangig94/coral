@@ -1,5 +1,6 @@
 import { dirname } from 'node:path';
-import type { IdPort, StoragePort } from '../../runtime/ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { IdPort } from '../../runtime/ports.js';
 
 export type FileAtomicStorage = Pick<StoragePort, 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync'>;
 export type FileAtomicIds = Pick<IdPort, 'uuid'>;

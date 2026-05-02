@@ -33,7 +33,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
@@ -44,7 +44,8 @@ import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
+import type { PreflightRuntime } from '#src/providers/contract.js';
+import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
@@ -448,16 +449,16 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderS
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 providerContinuity: continuity,
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 providerContinuity: continuity,
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               providerContinuity: continuity,
             };
       },
@@ -507,16 +508,16 @@ function _makeSharedClaudeAppServerProvider(spec: {
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
             };
       },
@@ -2455,7 +2456,7 @@ describe('ExecutionService', () => {
               },
             },
           },
-          continuity: null,
+
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2547,7 +2548,7 @@ describe('ExecutionService', () => {
               },
             },
           },
-          continuity: null,
+
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2595,7 +2596,7 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-            continuity: null,
+
           });
           return undefined;
         });
@@ -2650,7 +2651,7 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-            continuity: null,
+
           });
           return undefined;
         });

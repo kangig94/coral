@@ -7,7 +7,7 @@ import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinato
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';

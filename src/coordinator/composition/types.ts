@@ -73,7 +73,7 @@ export type CoordinatorCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  expansionLifecycleService?: ExpansionLifecycleService;
+  expansionLifecycleService: ExpansionLifecycleService | null;
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop

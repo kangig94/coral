@@ -43,11 +43,12 @@ import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import type { SessionManager } from '#src/sessions/shell/store.js';
+import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
+import type { PreflightRuntime } from '#src/providers/contract.js';
+import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -441,16 +442,16 @@ function _makeCodexAppServerProvider(): Provider {
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 providerContinuity: continuity,
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 providerContinuity: continuity,
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               providerContinuity: continuity,
             };
       },
@@ -500,16 +501,16 @@ function _makeSharedClaudeAppServerProvider(spec: {
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
             };
       },
@@ -648,6 +649,7 @@ function makeTerminalReplay(
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
+    continuity: null,
   };
 }
 
@@ -855,6 +857,7 @@ describe('ExecutionService wait', () => {
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
         result: { content: 'done', outcome: { kind: 'completed' } },
+        continuity: null,
       },
     ];
 
@@ -1572,6 +1575,7 @@ describe('ExecutionService wait', () => {
             type: 'terminal' as const,
             ts: '',
             result: { content: 'done', outcome: { kind: 'completed' as const } },
+            continuity: null,
           },
         ];
       });

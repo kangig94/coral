@@ -213,11 +213,6 @@ describe('jobs queries', () => {
         result: {
           content: 'done',
         },
-        continuity: {
-          conversationRef: 'thread-completed',
-          resumable: true,
-          providerContinuity: { threadId: 'thread-completed' },
-        },
       },
       runtime: {
         transport: 'app-server',

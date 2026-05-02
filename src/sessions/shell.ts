@@ -1,33 +1,34 @@
 import { resolve } from 'node:path';
-import type { Database } from '../../store/db.js';
+import type { Database } from '../store/db.js';
 
-import { commit as commitJournalEvents, type CommitEventsFn } from '../../store/append.js';
-import { noProviderLookupPort } from '../../providers/catalog.js';
-import type { CoralEventInput } from '../../store/envelope.js';
-import { isNoEntryError } from '../../infra/fs-errors.js';
-import { nowDate, nowIsoString } from '../../infra/time.js';
-import { providerIdentPattern } from '../../infra/identifiers.js';
-import { pluginRootNamespace } from '../../infra/plugin-identity.js';
-import type { Runtime, IdPort, TimePort } from '../../runtime/ports.js';
-import { composeReducers } from '../../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
+import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
+import { noProviderLookupPort } from '../providers/catalog.js';
+import type { CoralEventInput } from '../store/envelope.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { nowDate, nowIsoString } from '../infra/time.js';
+import { providerIdentPattern } from '../infra/identifiers.js';
+import { pluginRootNamespace } from '../infra/plugin-identity.js';
+import type { TimePort } from '../infra/port-types.js';
+import type { Runtime, IdPort } from '../runtime/ports.js';
+import { composeReducers } from '../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import {
   DEFAULT_SESSION_CONTROLLER,
   sessionControllerFromProfile,
   sessionEntrySchema,
   type SessionEntry,
-} from '../entry.js';
-import type { SessionAllocateOptions } from '../contracts.js';
-import { sessionsRegistry } from '../events.js';
+} from './entry.js';
+import type { SessionAllocateOptions } from './contracts.js';
+import { sessionsRegistry } from './events.js';
 import type {
   SessionClaimedBody,
   SessionClaimReleasedBody,
   SessionContinuityCheckpointedBody,
   SessionOpenedBody,
-} from '../event-bodies.js';
-import type { SessionContinuityMutation } from '../continuity-mutation.js';
-import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
-import { listProjectionSessionEntries, readProjectionSession } from '../projections.js';
+} from './event-bodies.js';
+import type { SessionContinuityMutation } from './continuity-mutation.js';
+import type { ContinuitySnapshot, ProviderContinuityBlob } from './continuity.js';
+import { listProjectionSessionEntries, readProjectionSession } from './projections.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
@@ -246,6 +247,7 @@ export class SessionManager {
       cwd: options.cwd,
       projectRoot: options.projectRoot,
       backendNamespace: options.backendNamespace,
+      providerContinuity: null,
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -294,7 +296,7 @@ export class SessionManager {
 
     const nextEntry: SessionEntry = {
       ...currentEntry,
-      providerContinuity: snapshot.providerContinuity ?? undefined,
+      providerContinuity: snapshot.providerContinuity,
       conversationRef: snapshot.conversationRef ?? undefined,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
@@ -389,7 +391,7 @@ export class SessionManager {
       ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
     };
     const nextEntry: SessionEntry = (() => {
-      switch (mutation.type) {
+      switch (mutation.kind) {
         case 'set_resumable':
           return {
             ...baseNextEntry,
@@ -429,7 +431,7 @@ export class SessionManager {
     const nextEntry: SessionEntry = {
       ...currentEntry,
       conversationRef: snapshot.conversationRef ?? undefined,
-      providerContinuity: snapshot.providerContinuity ?? undefined,
+      providerContinuity: snapshot.providerContinuity,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
@@ -471,7 +473,7 @@ export class SessionManager {
     return this.finalizeJobContinuityAtomic(sessionId, {
       expectedActiveJobId,
       expectedVersion,
-      mutation: { type: 'clear_non_resumable' },
+      mutation: { kind: 'clear_non_resumable' },
     });
   }
 

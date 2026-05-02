@@ -652,7 +652,7 @@ export class LaunchOrchestrator {
         this.appServerJobs.add(jobId);
         return this.deps.acquireServer(spec, { jobId, signal });
       },
-      persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
+      persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
     };

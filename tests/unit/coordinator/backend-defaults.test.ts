@@ -43,6 +43,7 @@ function createHarness() {
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
+      expansionLifecycleService: null,
     },
     runtime,
   );

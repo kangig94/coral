@@ -29,7 +29,7 @@ import { discussRegistry } from '#src/discuss/event-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
-import { SessionManager } from '#src/sessions/shell/store.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;

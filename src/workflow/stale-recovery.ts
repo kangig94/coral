@@ -1,4 +1,4 @@
-import type { EnvPort } from '../runtime/ports.js';
+import type { EnvPort } from '../infra/port-types.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import {

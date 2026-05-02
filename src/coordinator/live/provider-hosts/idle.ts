@@ -1,5 +1,6 @@
 import type { ProviderServerHandle } from '../provider-server-transport.js';
-import type { Runtime, TimePort } from '../../../runtime/ports.js';
+import type { TimePort } from '../../../infra/port-types.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import { activeLeaseCount } from './lease.js';
 import type { HostStatsState, ProviderHostEntry } from './state.js';
 

@@ -1,9 +1,10 @@
 import { createConnection, type Socket } from 'node:net';
-import { setTimeout as delay } from 'node:timers/promises';
 import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
-import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest } from '../json-rpc.js';
+import { createRealTimePort } from '../../infra/time.js';
+import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
+import type { TimePort } from '../../infra/port-types.js';
 
 const IPC_RETRY_BACKOFF_MS = 100;
 
@@ -17,11 +18,13 @@ const IPC_RETRY_BACKOFF_MS = 100;
  */
 export type IpcRequestOptions = {
   timeoutMs?: number;
+  time?: TimePort;
 };
 
 export type IpcSubscriptionOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
+  time?: TimePort;
 };
 
 export type IpcSubscription<TResult> = AsyncIterable<TResult> & {
@@ -55,22 +58,22 @@ function setupError(socketPath: string, error: unknown): CoralSetupError {
   });
 }
 
-function remainingMs(deadlineMs: number | null): number | undefined {
+function remainingMs(deadlineMs: number | null, timePort: TimePort): number | undefined {
   if (deadlineMs === null) {
     return undefined;
   }
-  return Math.max(0, deadlineMs - Date.now());
+  return Math.max(0, deadlineMs - timePort.now());
 }
 
-async function connectSocket(socketPath: string, deadlineMs: number | null): Promise<Socket> {
+async function connectSocket(socketPath: string, deadlineMs: number | null, timePort: TimePort): Promise<Socket> {
   const attemptConnection = async (): Promise<Socket> =>
     await new Promise<Socket>((resolve, reject) => {
       const socket = createConnection(socketPath);
-      let timer: NodeJS.Timeout | null = null;
+      let timer: ReturnType<TimePort['setTimeout']> | null = null;
 
       const cleanup = () => {
         if (timer) {
-          clearTimeout(timer);
+          timePort.clearTimeout(timer);
           timer = null;
         }
         socket.off('connect', onConnect);
@@ -91,9 +94,9 @@ async function connectSocket(socketPath: string, deadlineMs: number | null): Pro
       socket.once('connect', onConnect);
       socket.once('error', onError);
 
-      const stepBudget = remainingMs(deadlineMs);
+      const stepBudget = remainingMs(deadlineMs, timePort);
       if (typeof stepBudget === 'number' && stepBudget > 0) {
-        timer = setTimeout(() => {
+        timer = timePort.setTimeout(() => {
           socket.destroy(new Error(`IPC connection timed out after ${stepBudget}ms`));
         }, stepBudget);
       } else if (typeof stepBudget === 'number' && stepBudget === 0) {
@@ -112,11 +115,11 @@ async function connectSocket(socketPath: string, deadlineMs: number | null): Pro
     }
   }
 
-  if (deadlineMs !== null && Date.now() >= deadlineMs) {
+  if (deadlineMs !== null && timePort.now() >= deadlineMs) {
     // Deadline already exceeded — do not start a fresh retry attempt.
     throw setupError(socketPath, new Error('IPC connection deadline exceeded before retry'));
   }
-  await delay(IPC_RETRY_BACKOFF_MS);
+  await timePort.sleep(IPC_RETRY_BACKOFF_MS);
 
   try {
     return await attemptConnection();
@@ -148,15 +151,16 @@ export async function requestIpcMethod<TResult>(
   params?: unknown,
   options?: IpcRequestOptions,
 ): Promise<TResult> {
+  const timePort = options?.time ?? createRealTimePort();
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   // Convert to absolute deadline at call entry so connect+request share one budget.
-  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? Date.now() + timeoutMs : null;
-  const socket = await connectSocket(socketPath, deadlineMs);
+  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  const socket = await connectSocket(socketPath, deadlineMs, timePort);
 
   return await new Promise<TResult>((resolve, reject) => {
     let settled = false;
-    let timer: NodeJS.Timeout | null = null;
+    let timer: ReturnType<TimePort['setTimeout']> | null = null;
     const framer = createLineFramer();
 
     const finish = (handler: () => void) => {
@@ -165,7 +169,7 @@ export async function requestIpcMethod<TResult>(
       }
       settled = true;
       if (timer) {
-        clearTimeout(timer);
+        timePort.clearTimeout(timer);
         timer = null;
       }
       socket.off('data', onData);
@@ -220,9 +224,9 @@ export async function requestIpcMethod<TResult>(
     socket.once('error', onError);
     socket.once('close', onClose);
 
-    const responseBudget = remainingMs(deadlineMs);
+    const responseBudget = remainingMs(deadlineMs, timePort);
     if (typeof responseBudget === 'number' && responseBudget > 0) {
-      timer = setTimeout(() => {
+      timer = timePort.setTimeout(() => {
         socket.destroy(new Error(`IPC request timed out after ${responseBudget}ms`));
       }, responseBudget);
     } else if (typeof responseBudget === 'number' && responseBudget === 0) {
@@ -232,7 +236,7 @@ export async function requestIpcMethod<TResult>(
       });
     }
 
-    const envelope: JsonRpcRequest = {
+    const envelope: JsonRpcRequestEnvelope = {
       kind: 'request',
       id: requestId,
       method,
@@ -248,15 +252,16 @@ export async function subscribeIpcMethod<TResult>(
   params?: unknown,
   options?: IpcSubscriptionOptions,
 ): Promise<IpcSubscription<TResult>> {
+  const timePort = options?.time ?? createRealTimePort();
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
-  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? Date.now() + timeoutMs : null;
-  const socket = await connectSocket(socketPath, deadlineMs);
+  const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  const socket = await connectSocket(socketPath, deadlineMs, timePort);
 
   let done = false;
   let failure: Error | null = null;
   let handshakeComplete = false;
-  let handshakeTimer: NodeJS.Timeout | null = null;
+  let handshakeTimer: ReturnType<TimePort['setTimeout']> | null = null;
   let closePromise: Promise<void> | null = null;
   let resolveClose: (() => void) | null = null;
   let resolveHandshake: (() => void) | null = null;
@@ -278,7 +283,7 @@ export async function subscribeIpcMethod<TResult>(
 
   const clearHandshakeTimer = () => {
     if (handshakeTimer) {
-      clearTimeout(handshakeTimer);
+      timePort.clearTimeout(handshakeTimer);
       handshakeTimer = null;
     }
   };
@@ -409,16 +414,16 @@ export async function subscribeIpcMethod<TResult>(
     options?.signal?.addEventListener('abort', onAbort, { once: true });
   }
 
-  const handshakeBudget = remainingMs(deadlineMs);
+  const handshakeBudget = remainingMs(deadlineMs, timePort);
   if (typeof handshakeBudget === 'number' && handshakeBudget > 0) {
-    handshakeTimer = setTimeout(() => {
+    handshakeTimer = timePort.setTimeout(() => {
       const error = new Error(`IPC subscription timed out after ${handshakeBudget}ms`);
       fail(error);
       socket.destroy(error);
     }, handshakeBudget);
   }
 
-  const envelope: JsonRpcRequest = {
+  const envelope: JsonRpcRequestEnvelope = {
     kind: 'request',
     id: requestId,
     method,
@@ -470,16 +475,19 @@ export async function subscribeIpcMethod<TResult>(
   };
 }
 
-export function createIpcClient(socketPath: string): IpcClient {
+export function createIpcClient(socketPath: string, timePort: TimePort = createRealTimePort()): IpcClient {
   return {
     socketPath,
     request: <TResult>(method: string, params?: unknown, options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, method, params, options),
+      requestIpcMethod<TResult>(socketPath, method, params, { ...options, time: options?.time ?? timePort }),
     subscribe: <TResult>(method: string, params?: unknown, options?: IpcSubscriptionOptions) =>
-      subscribeIpcMethod<TResult>(socketPath, method, params, options),
+      subscribeIpcMethod<TResult>(socketPath, method, params, { ...options, time: options?.time ?? timePort }),
     health: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, options),
+      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, { ...options, time: options?.time ?? timePort }),
     shutdown: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', undefined, options),
+      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', undefined, {
+        ...options,
+        time: options?.time ?? timePort,
+      }),
   };
 }

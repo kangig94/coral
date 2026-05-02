@@ -186,7 +186,7 @@ describe('contract schemas', () => {
       },
     });
     const continuityMutation = sessionContinuityMutationSchema.parse({
-      type: 'set_resumable',
+      kind: 'set_resumable',
       conversationRef: 'conversation-1',
       providerContinuity: {
         conversationRef: 'conversation-1',
@@ -213,7 +213,7 @@ describe('contract schemas', () => {
       },
     });
     expect(continuityMutation).toEqual({
-      type: 'set_resumable',
+      kind: 'set_resumable',
       conversationRef: 'conversation-1',
       providerContinuity: {
         conversationRef: 'conversation-1',
@@ -240,7 +240,7 @@ describe('contract schemas', () => {
       providerContinuity: 'not-an-object',
     });
     const invalidContinuityMutation = sessionContinuityMutationSchema.safeParse({
-      type: 'preserve',
+      kind: 'preserve',
       extra: true,
     });
 

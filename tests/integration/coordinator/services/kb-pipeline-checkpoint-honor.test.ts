@@ -34,7 +34,7 @@ import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import type { JobAbortRegistryPort } from '#src/jobs/contracts/abort-registry.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import type { TerminalOutcome } from '#src/jobs/outcome.js';
-import type { StoragePort } from '#src/runtime/ports.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { createDeferred } from '#tools/testing/deferred.js';

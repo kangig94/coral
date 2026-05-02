@@ -20,8 +20,17 @@ const ctx: InvocationContext = {
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
 };
+// Monotonic deterministic clock — internal workflow logic compares
+// `time.now()` against absolute deadlines (e.g. `drainDeadline`), so fixed
+// time would stall those branches; `Date.now()` would leak wall-clock
+// dependence. A counter that advances 100ms per call is enough to walk
+// every deadline forward without coupling to wall time.
+let workflowClock = new Date('2026-04-27T00:00:00.000Z').getTime();
 const workflowTime = {
-  now: () => Date.now(),
+  now: () => {
+    workflowClock += 100;
+    return workflowClock;
+  },
 };
 const workflowIds = { uuid: () => 'workflow-test-uuid' };
 

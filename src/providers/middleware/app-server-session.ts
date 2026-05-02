@@ -5,7 +5,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../contract.js';
-import { bindAppServerLease, getAppServerNotificationHandler, type AppServerContract } from '../app-server/driver.js';
+import { bindAppServerLease, getAppServerNotificationHandler, type AppServerContract } from '../app-server.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase, ProviderTransportClose } from '../protocol.js';
 
 type DownstreamStep = IteratorResult<ProviderEventBody>;
