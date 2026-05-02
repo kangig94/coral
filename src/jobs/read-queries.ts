@@ -499,7 +499,6 @@ function projectionRowToStatus(
     updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
-    ...(terminalRecord ? { continuity: terminalRecord.continuity } : {}),
   };
 }
 

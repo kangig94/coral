@@ -2456,7 +2456,7 @@ describe('ExecutionService', () => {
               },
             },
           },
-          continuity: null,
+
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2548,7 +2548,7 @@ describe('ExecutionService', () => {
               },
             },
           },
-          continuity: null,
+
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2596,7 +2596,7 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-            continuity: null,
+
           });
           return undefined;
         });
@@ -2651,7 +2651,7 @@ describe('ExecutionService', () => {
             namespace: TEST_BACKEND_NAMESPACE,
             project: ctx.projectRoot,
             terminal: { content: '', outcome: { kind: 'completed' } },
-            continuity: null,
+
           });
           return undefined;
         });

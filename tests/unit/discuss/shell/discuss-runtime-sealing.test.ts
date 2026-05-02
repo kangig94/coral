@@ -145,7 +145,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     },
     jobStatusReader: {
       read: (jobId) => progressStore.readStatus(jobId),
-    },
+    readExit: () => null,
+  },
   });
   const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
