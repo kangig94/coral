@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: "Use when implementing a plan or executing a prompt that requires verified completion."
-argument-hint: "[--red] [--codex] [--team] [task description]"
+argument-hint: "[--red] [--delegate] [--team] [task description]"
 ---
 
 # Persistent Execution with Verification
@@ -12,8 +12,8 @@ Announce at start: "Using ralph to execute this task with verification loop."
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` | Claude-native (default) |
-| `--codex` | Codex delegation |
+| `<prompt>` | Self-execute on current host (default) |
+| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
 | `--red` | Adversarial testing (spawns red-attacker in parallel) |
 | `--team` | Parallel AC execution via Agent Teams (plan mode only) |
 
@@ -82,14 +82,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Track progress by updating Task status as work proceeds. This enables resumability and gives visibility into what remains.
 
     **Dispatch** by flags to ONE execution path (read only that section, ignore others).
-    ⚠️ Re-check: does the user's original input contain `--codex`? Verify before dispatching — misrouting loses the flag silently.
+    ⚠️ Re-check: does the user's original input contain `--delegate`? Verify before dispatching — misrouting loses the flag silently.
 
     | Flags | Section |
     |-------|---------|
     | *(none)* | `<Exec_Default>` |
-    | `--codex` | `<Exec_Codex>` |
+    | `--delegate` | `<Exec_Delegate>` |
     | `--team` | `<Exec_Team>` |
-    | `--team --codex` | `<Exec_Team>` (with codex workers — see its `--codex` subsection) |
+    | `--team --delegate` | `<Exec_Team>` (with delegated workers — see its `--delegate` subsection) |
 
     ### Step 4 — Post-Implementation (strict order, fail-fast)
 
@@ -137,13 +137,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     Then continue to Step 4.
   </Exec_Default>
-  <Exec_Codex>
-    Codex-delegated execution. Replaces step-by-step Claude work with Codex calls.
+  <Exec_Delegate>
+    Delegated execution. Replaces step-by-step self-execution with calls to the other host.
+    Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
 
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
     with prompt: plan file path + acceptance criteria. Write tests to a temp directory.
 
-    **Prompt construction** — each Codex call receives a single prompt with this structure:
+    **Prompt construction** — each delegated call receives a single prompt with this structure:
     ```
     <Ralph's Role and Success_Criteria>
 
@@ -163,14 +164,14 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
        1. Group ACs in the batch by coupling: tightly coupled ACs (shared files, sequential dependency)
-          go into one Codex call; independent ACs get separate parallel calls.
-       `coral-cli codex -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d`
+          go into one delegated call; independent ACs get separate parallel calls.
+       `coral-cli <other-host> -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d`
        Do NOT pass `--session`. Collect all job IDs from the detached launch lines.
     2. `coral-cli wait --jobs "<job-id list>" --embed` → each terminal block always prints `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
-  </Exec_Codex>
+  </Exec_Delegate>
   <Exec_Team>
     Parallel execution via Agent Teams. Requires plan mode with Acceptance Criteria.
 
@@ -183,20 +184,21 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        - Their assigned AC scope only
        - Instruction to wait for SendMessage assignments
 
-       **If `--codex`**: each worker's prompt must ALSO include these Codex execution instructions:
+       **If `--delegate`**: each worker's prompt must ALSO include these delegated-execution instructions
+       (let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex):
        ```
-       For each assigned AC, delegate to Codex using this prompt structure:
+       For each assigned AC, delegate to <other-host> using this prompt structure:
          Implement <AC numbers> EXACTLY as specified in the plan.
          Read <plan file path> for full context.
          ## Acceptance Criteria (verbatim from plan — implement exactly as written)
          <AC text copied identically from plan>
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
        ⛔ Do not promote KB notes. Implementation only.
-       1. `coral-cli codex -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
+       1. `coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
           → `coral-cli wait --jobs "<job>" --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
           Do NOT pass `--session`.
        2. Verify changes yourself: read changed files, compare against AC.
-       3. If AC not met → re-run codex. If met → report completion.
+       3. If AC not met → re-run delegation. If met → report completion.
        ```
 
     3. **`--red`**: Spawn red-attacker as teammate in `ralph-workers` team.

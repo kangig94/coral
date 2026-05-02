@@ -1,7 +1,7 @@
 ---
 name: code-simplify
 description: "Use when code needs simplification — recently modified code by default, or a specified scope."
-argument-hint: "[--codex] <scope or prompt>"
+argument-hint: "[--delegate] <scope or prompt>"
 ---
 
 # Code Simplification
@@ -12,11 +12,11 @@ Simplify and refine code for clarity and maintainability while preserving functi
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` | Claude-native (default) |
-| `--codex` | Codex delegation (scope from conversation context) |
-| `--codex <prompt>` | Codex delegation |
+| `<prompt>` | Self-execute on current host (default) |
+| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate <prompt>` | Same with prompt |
 
-Strip the `--codex` flag before passing the prompt to the execution path.
+Strip the `--delegate` flag before passing the prompt to the execution path.
 
 <Code_Simplifier>
   <Role>
@@ -66,19 +66,20 @@ Strip the `--codex` flag before passing the prompt to the execution path.
          or logical grouping — whichever fits the codebase).
        - If the scope is small or tightly coupled, proceed as a single pass.
     4) Execute (based on strategy from step 3):
+       Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
        Single pass:
-       - Default: run `<Execution>` directly on the target files.
-       - `--codex`: run `coral-cli codex -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d`.
+       - Self-execute (default): run `<Execution>` directly on the target files.
+       - Delegate (`--delegate`): run `coral-cli <other-host> -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d`.
          Do NOT pass `--session`.
-         **Every codex prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
+         **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
          Then run `coral-cli wait --jobs "<job>" --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
        Parallel split:
-       - Default: spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
+       - Self-execute (default): spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-       - `--codex`: dispatch one detached `coral-cli codex -b -i ... -d` launch per file group.
-         **Every codex prompt MUST include** the same git-safety rule as the single-pass path above.
+       - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
+         **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
          Do NOT pass `--session`.
          Collect all `job`s from the detached launch lines, then run `coral-cli wait --jobs "<job-id list>" --embed` until all complete; each terminal block always prints `Result path: <path>`, which is the durable artifact location.
     5) Review each change for correctness AND justification.
@@ -93,10 +94,10 @@ Strip the `--codex` flag before passing the prompt to the execution path.
        e. Every rename must fix a genuinely misleading name — revert cosmetic renames
        f. If no files were skipped as "already clean", treat as red flag and re-examine
 
-       **Codex delegation review (critical)**:
-       When `--codex` was used, Codex operates without test feedback and frequently introduces
+       **Delegation review (critical)**:
+       When `--delegate` was used, the delegated host operates without test feedback and frequently introduces
        subtle behavioral changes disguised as simplifications. You MUST `git diff` every modified
-       file and verify line-by-line that behavior is preserved. Common Codex failure modes:
+       file and verify line-by-line that behavior is preserved. Common delegated-execution failure modes:
        g. Early-return converted to fall-through (helper wrapping `return` into a void function
           loses the caller's early exit — execution continues to the next statement)
        h. Argument/flag ordering changed (CLI arg order can be semantically significant;

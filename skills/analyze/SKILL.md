@@ -1,7 +1,7 @@
 ---
 name: analyze
-description: "Use when deep investigation is needed — project structure, requirement gaps, or root cause diagnosis. Supports --codex."
-argument-hint: "[--codex] [investigation target or question]"
+description: "Use when deep investigation is needed — project structure, requirement gaps, or root cause diagnosis. Supports --delegate."
+argument-hint: "[--delegate] [investigation target or question]"
 ---
 
 # Deep Analysis & Investigation
@@ -13,11 +13,11 @@ argument-hint: "[--codex] [investigation target or question]"
 <Argument_Routing>
   | Argument | Mode |
   |----------|------|
-  | `<prompt>` | Claude-native (default) |
-  | `--codex` | Codex delegation (context from conversation) |
-  | `--codex <prompt>` | Codex delegation |
+  | `<prompt>` | Self-execute on current host (default) |
+  | `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+  | `--delegate <prompt>` | Same with prompt |
 
-  Strip `--codex` flag before passing the prompt to the execution path.
+  Strip the `--delegate` flag before passing the prompt to the execution path.
 </Argument_Routing>
 <Protocol>
   ## Phase 1 — Create Analysis File
@@ -49,11 +49,11 @@ argument-hint: "[--codex] [investigation target or question]"
 
   ### Mode
 
-  **Claude-native (default)**: Spawn `Agent({ subagent_type: "coral:<agent>", prompt: "--deep " + prompt })`.
+  **Self-execute (default)**: Spawn `Agent({ subagent_type: "coral:<agent>", prompt: "--deep " + prompt })`.
   Wait for the agent to return its findings.
   You (the executor) post-process and append the result to the file after each step completes.
 
-  **Codex (`--codex`)**: run `coral-cli codex <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d`
+  **Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the non-current host (Codex if current is Claude; Claude if current is Codex)
   with scope, `work_dir`, and analysis file content so far.
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.

@@ -213,7 +213,7 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                    plan skill                                │  │
 │  │                                                              │  │
-│  │  Phase 1 (--codex)        Phase 2 (always)                   │  │
+│  │  Phase 1 (--delegate)     Phase 2 (always)                   │  │
 │  │  ┌──────────────────┐    ┌──────────────────┐                │  │
 │  │  │ 4a: coral-cli    │    │ 4a: architect    │                │  │
 │  │  │ codex architect  │    │     critic       │  ──parallel──  │  │

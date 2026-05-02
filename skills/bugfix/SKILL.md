@@ -1,7 +1,7 @@
 ---
 name: bugfix
 description: "Use when encountering a bug, error, or unexpected behavior that needs diagnosis and fix."
-argument-hint: "[--codex] <bug description or error message>"
+argument-hint: "[--delegate] <bug description or error message>"
 ---
 
 # Bug Debugging
@@ -12,18 +12,18 @@ Diagnose bugs, plan fixes, and execute - end-to-end.
 
 | Argument | Mode |
 |----------|------|
-| `<prompt>` | Claude-native (default) |
-| `--codex` | Codex delegation (context from conversation) |
-| `--codex <prompt>` | Codex delegation |
+| `<prompt>` | Self-execute on current host (default) |
+| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate <prompt>` | Same with prompt |
 
-Strip the `--codex` flag before passing the prompt to the execution path.
+Strip the `--delegate` flag before passing the prompt to the execution path.
 
 ## Execution
 
 1. **Diagnose**:
-   - **Default**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
+   - **Self-execute (default)**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
      Wait for the agent to return its diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Run `coral-cli codex debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d`.
+   - **Delegate (`--delegate`)**: Run `coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d` (`<other-host>` = Codex if current is Claude; Claude if current is Codex).
      Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait --jobs "<job>" --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings.
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
@@ -35,11 +35,11 @@ Strip the `--codex` flag before passing the prompt to the execution path.
    - **Multiple hypotheses survived** → present to user, ask which to pursue before proceeding.
    - **All refuted or inconclusive** → stop and report findings to user.
 
-3. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: (if --codex: "--codex ") + "--deep --no-handoff fix-{short-bug-description}" })`.
+3. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: (if --delegate: "--delegate ") + "--deep --no-handoff fix-{short-bug-description}" })`.
    The plan references `CORAL_PROJECT/plans/debug-{short-bug-description}.md` for diagnosis context.
    Plan should include: what to change, why, and how to verify the fix.
 
-4. **Execute fix**: Invoke `Skill({ skill: "coral:ralph", args: (if --codex: "--codex ") + "implement the plan from step 3" })`.
+4. **Execute fix**: Invoke `Skill({ skill: "coral:ralph", args: (if --delegate: "--delegate ") + "implement the plan from step 3" })`.
 
 5. **Project validation**: If project instructions define workflow rules (e.g., review gates,
    post-implementation steps), follow them.

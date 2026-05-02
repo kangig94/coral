@@ -222,7 +222,7 @@ argument-hint: "<problem descriptions or symptoms>"
     { question: "Direction chosen. Proceed to preplan?", header: "Next",
       options: [
         { label: "Proceed", description: "Start preplan" },
-        { label: "Proceed --codex", description: "Preplan with Codex" },
+        { label: "Proceed --delegate", description: "Preplan with delegation to the other host" },
         { label: "Continue refining", description: "Keep exploring directions" }
       ], multiSelect: false }
   ]})
