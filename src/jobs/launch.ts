@@ -71,66 +71,6 @@ export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent
   prompt?: string;
 }
 
-export interface ProviderJobLaunchRequestBody {
-  sessionId: string;
-  provider: string;
-  providerAction: ProviderAction;
-  projectRoot: string;
-  backendNamespace: string;
-  bundleHash?: string;
-  jobKind: 'provider' | 'workflow';
-  pool: string;
-  enqueueSequence: number;
-  request: {
-    prompt: string;
-    name?: string;
-    model?: string;
-    cwd: string;
-    effort?: EffortLevel;
-    bypassPermissions: boolean;
-    systemPrompt?: string;
-    conversationRef?: string;
-    instruction?: ProviderInstruction;
-    coralEnv: Record<string, string>;
-  };
-  createdAt: string;
-}
-
-export interface KbSourceImportJobLaunchRequestBody {
-  projectRoot: string;
-  backendNamespace: string;
-  bundleHash?: string;
-  jobKind: 'kb';
-  pool: string;
-  enqueueSequence: number;
-  operation: 'kb.source_import';
-  request: KbSourceImportJobRequest;
-  createdAt: string;
-}
-
-export interface KbReindexJobLaunchRequestBody {
-  projectRoot: string;
-  backendNamespace: string;
-  bundleHash?: string;
-  jobKind: 'kb';
-  pool: string;
-  enqueueSequence: number;
-  operation: 'kb.reindex';
-  request: Record<string, never>;
-  createdAt: string;
-}
-
-export type KbSourceImportJobRequest = {
-  filePath: string;
-  slug?: string;
-  readiness: SourceImportReadiness;
-};
-
-export type JobLaunchRequestBody =
-  | ProviderJobLaunchRequestBody
-  | KbSourceImportJobLaunchRequestBody
-  | KbReindexJobLaunchRequestBody;
-
 export const providerJobLaunchRequestBodySchema = z
   .object({
     sessionId: z.string(),
@@ -170,16 +110,18 @@ const kbJobLaunchBaseSchema = z.object({
   createdAt: z.string(),
 });
 
+export const kbSourceImportJobRequestSchema = z
+  .object({
+    filePath: z.string().min(1),
+    slug: z.string().optional(),
+    readiness: sourceImportReadinessSchema,
+  })
+  .strict();
+
 export const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({
     operation: z.literal('kb.source_import'),
-    request: z
-      .object({
-        filePath: z.string().min(1),
-        slug: z.string().optional(),
-        readiness: sourceImportReadinessSchema,
-      })
-      .strict(),
+    request: kbSourceImportJobRequestSchema,
   })
   .strict();
 
@@ -195,3 +137,9 @@ export const jobLaunchRequestBodySchema = z.union([
   kbSourceImportJobLaunchRequestBodySchema,
   kbReindexJobLaunchRequestBodySchema,
 ]);
+
+export type ProviderJobLaunchRequestBody = z.infer<typeof providerJobLaunchRequestBodySchema>;
+export type KbSourceImportJobLaunchRequestBody = z.infer<typeof kbSourceImportJobLaunchRequestBodySchema>;
+export type KbReindexJobLaunchRequestBody = z.infer<typeof kbReindexJobLaunchRequestBodySchema>;
+export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
+export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;

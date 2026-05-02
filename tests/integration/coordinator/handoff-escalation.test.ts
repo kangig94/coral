@@ -6,12 +6,8 @@
 // Uses VirtualTime + scripted IPC reply fakes; no real daemons spawn.
 
 import { describe, expect, it, vi } from 'vitest';
-import {
-  bindWithHandoff,
-  HandoffEscalationError,
-  SIGKILL_GRACE_MS,
-  SIGTERM_GRACE_MS,
-} from '#src/coordinator/handoff.js';
+import { bindWithHandoff, HandoffEscalationError } from '#src/coordinator/handoff.js';
+import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { IncumbentHealth, IncumbentIdentity } from '#src/transport/ipc/handoff.js';

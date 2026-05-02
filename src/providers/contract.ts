@@ -86,12 +86,11 @@ export interface ProviderServerLease {
   generation?: number;
 }
 
-export type ProviderTerminalOutcome =
-  | { kind: 'completed' }
-  | { kind: 'aborted'; reason: AbortReason }
-  | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'failed' }
-  | { kind: 'job_fault'; fault: { kind: 'wrapper_lost' } };
+// Provider-side terminal outcome: the slice of `TerminalOutcome` that the
+// provider kernel can directly emit before the materializer enriches it
+// with causeRef and the full fault registry. The schema below is the
+// canonical shape; this type is its compile-time mirror via z.infer.
+export type ProviderTerminalOutcome = z.infer<typeof providerTerminalOutcomeSchema>;
 
 /** Provider's raw terminal output shape — what an exec/app-server kernel returns
  * before the coordinator materializer translates it into a journal-recorded

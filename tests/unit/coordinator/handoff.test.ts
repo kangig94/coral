@@ -3,13 +3,8 @@
 // transport-side IPC helper; no real sockets, no real signals.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import {
-  bindWithHandoff,
-  HandoffEscalationError,
-  SIGTERM_GRACE_MS,
-  SIGKILL_GRACE_MS,
-  type HandoffOptions,
-} from '#src/coordinator/handoff.js';
+import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '#src/coordinator/handoff.js';
+import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {

@@ -1,11 +1,6 @@
 import { z } from 'zod';
 
-import { providerContinuityBlobSchema, type ProviderContinuityBlob } from './continuity.js';
-
-export type SessionContinuityMutation =
-  | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
-  | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
-  | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
+import { providerContinuityBlobSchema } from './continuity.js';
 
 export const sessionContinuityMutationSchema = z.discriminatedUnion('type', [
   z
@@ -28,3 +23,4 @@ export const sessionContinuityMutationSchema = z.discriminatedUnion('type', [
     })
     .strict(),
 ]);
+export type SessionContinuityMutation = z.infer<typeof sessionContinuityMutationSchema>;
