@@ -70,9 +70,6 @@ describe('coordinator cold-start integration', () => {
     const files = coordinatorFilesForHome(home, 'prod');
     expect(existsSync(files.infoFile)).toBe(true);
     expect(existsSync(files.socketPath)).toBe(true);
-    // Lockfile path is preserved on disk by the realruntime composition for
-    // legacy callers, but the socket-as-lock contract no longer writes it.
-    expect(existsSync(files.lockFile)).toBe(false);
 
     const dbPath = storeDbPathForHome(home, 'prod');
     await waitForCondition(() => existsSync(dbPath), 15_000);

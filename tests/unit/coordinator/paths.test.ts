@@ -56,7 +56,6 @@ describe('composeCoralPaths', () => {
       runDir: join('/tmp/coral-root', 'run'),
       socketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
-      lockFile: join('/tmp/coral-root', 'run', 'coordinator.lock'),
     });
   });
 

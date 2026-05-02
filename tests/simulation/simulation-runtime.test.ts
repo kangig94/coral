@@ -150,7 +150,6 @@ describe('simulation runtime', () => {
     expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta\ngamma'));
     expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
     expect(paths.coral.coordinator.infoFile).toBe('/tmp/sim/coral/run/coordinator.json');
-    expect(paths.coral.coordinator.lockFile).toBe('/tmp/sim/coral/run/coordinator.lock');
     expect(namespace).toMatch(/^[0-9a-f]{12}$/);
     expect(projectSource).toMatch(/^local\/project-[0-9a-f]{8}$/);
     expect(paths.projectSource('/tmp/sim/project')).toBe(projectSource);
@@ -452,7 +451,6 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
-    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.lockFile)).toBe(false);
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(true);
 
     worldA.progressStore.initJob({
