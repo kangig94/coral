@@ -247,7 +247,7 @@ function readProbeAttempts(fixture: Fixture): Array<{ kind: string; args: unknow
     .map((line) => JSON.parse(line) as { kind: string; args: unknown[] });
 }
 
-function coordinatorArtifacts(fixture: Fixture): { infoFile: string; lockFile: string; socketPath: string } {
+function coordinatorArtifacts(fixture: Fixture): { infoFile: string; socketPath: string } {
   const paths = coordinatorPaths(
     fixture.flavor,
     { HOME: fixture.home, TMPDIR: fixture.home },
@@ -257,7 +257,6 @@ function coordinatorArtifacts(fixture: Fixture): { infoFile: string; lockFile: s
   );
   return {
     infoFile: paths.infoFile,
-    lockFile: paths.lockFile,
     socketPath: paths.socketPath,
   };
 }
@@ -399,7 +398,6 @@ describe('cli library-direct reads', () => {
     const artifacts = coordinatorArtifacts(fixture);
 
     expect(existsSync(artifacts.infoFile)).toBe(false);
-    expect(existsSync(artifacts.lockFile)).toBe(false);
     expect(existsSync(artifacts.socketPath)).toBe(false);
 
     const result = runCliSubprocess(fixture, testCase.args);
@@ -412,7 +410,6 @@ describe('cli library-direct reads', () => {
     expect(result.stdout).toBe(expected);
     expect(readProbeAttempts(fixture)).toEqual([]);
     expect(existsSync(artifacts.infoFile)).toBe(false);
-    expect(existsSync(artifacts.lockFile)).toBe(false);
     expect(existsSync(artifacts.socketPath)).toBe(false);
   });
 
@@ -437,7 +434,6 @@ describe('cli library-direct reads', () => {
     );
     expect(readProbeAttempts(fixture)).toEqual([]);
     expect(existsSync(artifacts.infoFile)).toBe(false);
-    expect(existsSync(artifacts.lockFile)).toBe(false);
     expect(existsSync(artifacts.socketPath)).toBe(false);
   });
 });

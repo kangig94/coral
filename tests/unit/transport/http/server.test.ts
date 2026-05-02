@@ -4436,7 +4436,6 @@ describe('execution backend server', () => {
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
     expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
-    expect(existsSync(runtime.paths.coral.coordinator.lockFile)).toBe(false);
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
