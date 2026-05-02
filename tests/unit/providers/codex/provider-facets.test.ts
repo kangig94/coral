@@ -18,7 +18,7 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
     );
 
     expect(mutation).toEqual({
-      type: 'set_resumable',
+      kind: 'set_resumable',
       conversationRef: 'ref-x',
       providerContinuity: {
         cwd: '/workspace',
@@ -41,7 +41,7 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
     );
 
     expect(mutation).toEqual({
-      type: 'preserve',
+      kind: 'preserve',
       providerContinuity: {
         cwd: '/workspace',
       },

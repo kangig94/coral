@@ -429,16 +429,16 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderS
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 providerContinuity: continuity,
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 providerContinuity: continuity,
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               providerContinuity: continuity,
             };
       },
@@ -488,16 +488,16 @@ function makeSharedClaudeAppServerProvider(spec: {
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
-                type: 'set_resumable' as const,
+                kind: 'set_resumable' as const,
                 conversationRef: effectiveConversationRef,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
             : {
-                type: 'preserve' as const,
+                kind: 'preserve' as const,
                 ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
               }
           : {
-              type: 'clear_non_resumable' as const,
+              kind: 'clear_non_resumable' as const,
               ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
             };
       },

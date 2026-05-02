@@ -180,8 +180,8 @@ export class RecoveryService {
             { preservedConversationRef },
           ) ??
           (preservedConversationRef
-            ? { type: 'set_resumable', conversationRef: preservedConversationRef }
-            : { type: 'preserve' });
+            ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
+            : { kind: 'preserve' });
       } else {
         const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity, {
           storage: this.deps.runtime.storage,
@@ -205,8 +205,8 @@ export class RecoveryService {
             mutation =
               recovery.finalizeInterrupted?.(probeResult, continuity, { preservedConversationRef }) ??
               (preservedConversationRef
-                ? { type: 'set_resumable', conversationRef: preservedConversationRef }
-                : { type: 'preserve' });
+                ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
+                : { kind: 'preserve' });
           } finally {
             if (!liveServer) {
               lease.release();
@@ -225,19 +225,19 @@ export class RecoveryService {
               { preservedConversationRef },
             ) ??
             (preservedConversationRef
-              ? { type: 'set_resumable', conversationRef: preservedConversationRef }
-              : { type: 'preserve' });
+              ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
+              : { kind: 'preserve' });
         }
       }
     } else if (preservedConversationRef) {
       probeOutcome = 'waiting';
       mutation = {
-        type: 'set_resumable',
+        kind: 'set_resumable',
         conversationRef: preservedConversationRef,
       };
     } else {
       probeOutcome = 'waiting';
-      mutation = { type: 'clear_non_resumable' };
+      mutation = { kind: 'clear_non_resumable' };
     }
 
     const fault: SessionInterruptedFault = {
@@ -249,14 +249,14 @@ export class RecoveryService {
             ? 'missing'
             : probeOutcome === 'unavailable'
               ? 'unavailable'
-              : mutation.type === 'clear_non_resumable'
+              : mutation.kind === 'clear_non_resumable'
                 ? 'pre_checkpoint_empty'
                 : 'pre_checkpoint_preserved',
     };
 
     let reportConversationRef: string | undefined;
     if (probeOutcome === 'verified') {
-      reportConversationRef = mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
+      reportConversationRef = mutation.kind === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
     }
 
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);

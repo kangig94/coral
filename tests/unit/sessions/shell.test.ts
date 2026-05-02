@@ -371,7 +371,7 @@ describe('sessions shell store', () => {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version,
         mutation: {
-          type: 'set_resumable',
+          kind: 'set_resumable',
           conversationRef: 'thread-1',
         },
       }),
@@ -421,7 +421,7 @@ describe('sessions shell store', () => {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version - 1,
         mutation: {
-          type: 'set_resumable',
+          kind: 'set_resumable',
           conversationRef: 'thread-1',
         },
       }),

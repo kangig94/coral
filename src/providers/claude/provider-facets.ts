@@ -100,20 +100,20 @@ export const claudeRecoveryLifecycle = {
     if (probeResult.resumable) {
       if (effectiveConversationRef) {
         return {
-          type: 'set_resumable',
+          kind: 'set_resumable',
           conversationRef: effectiveConversationRef,
           ...(providerContinuity ? { providerContinuity } : {}),
         };
       }
 
       return {
-        type: 'preserve',
+        kind: 'preserve',
         ...(providerContinuity ? { providerContinuity } : {}),
       };
     }
 
     return {
-      type: 'clear_non_resumable',
+      kind: 'clear_non_resumable',
       ...(providerContinuity ? { providerContinuity } : {}),
     };
   },

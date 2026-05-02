@@ -160,7 +160,7 @@ export const codexRecoveryLifecycle = {
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
     if (probeResult.resumable && effectiveConversationRef) {
       return {
-        type: 'set_resumable',
+        kind: 'set_resumable',
         conversationRef: effectiveConversationRef,
         ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
       };
@@ -168,13 +168,13 @@ export const codexRecoveryLifecycle = {
 
     if (probeResult.resumable) {
       return {
-        type: 'preserve',
+        kind: 'preserve',
         ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
       };
     }
 
     return {
-      type: 'clear_non_resumable',
+      kind: 'clear_non_resumable',
       ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },

@@ -390,7 +390,7 @@ export class SessionManager {
       ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
     };
     const nextEntry: SessionEntry = (() => {
-      switch (mutation.type) {
+      switch (mutation.kind) {
         case 'set_resumable':
           return {
             ...baseNextEntry,
@@ -472,7 +472,7 @@ export class SessionManager {
     return this.finalizeJobContinuityAtomic(sessionId, {
       expectedActiveJobId,
       expectedVersion,
-      mutation: { type: 'clear_non_resumable' },
+      mutation: { kind: 'clear_non_resumable' },
     });
   }
 
