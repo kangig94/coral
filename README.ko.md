@@ -8,12 +8,18 @@ Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, �
 
 **요구사항:** Node.js 18+
 
-```
+```bash
+# Claude Code:
 /plugin marketplace add https://github.com/kangig94/coral
 /plugin install coral
 
-# Codex CLI (선택 — --codex 교차 모델 위임 활성화):
+# Codex (--codex 교차 모델 위임도 활성화):
 npm install -g @openai/codex
+codex plugin marketplace add kangig94/coral
+# Codex를 재시작한 뒤 /plugins를 실행하고 Coral marketplace에서 Coral을 설치하세요.
+
+# Codex marketplace와 설치된 플러그인 캐시 업데이트:
+codex plugin marketplace upgrade coral
 ```
 
 ## 바로 사용해보기

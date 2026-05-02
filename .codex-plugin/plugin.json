@@ -1,0 +1,35 @@
+{
+  "name": "coral",
+  "version": "0.6.2",
+  "description": "Structured agents with Codex and Claude CLI bridges, plus deterministic workflow orchestration.",
+  "author": {
+    "name": "kangig94",
+    "url": "https://github.com/kangig94"
+  },
+  "homepage": "https://github.com/kangig94/coral",
+  "repository": "https://github.com/kangig94/coral",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "codex",
+    "claude",
+    "workflow",
+    "bridge",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Coral",
+    "shortDescription": "Structured agents and workflow orchestration for Codex.",
+    "longDescription": "Coral bundles reusable skills, lifecycle hooks, and CLI bridges for structured multi-agent workflows across Codex and Claude.",
+    "developerName": "kangig94",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/kangig94/coral",
+    "brandColor": "#10A37F"
+  }
+}

@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -26,3 +28,27 @@ jobs:
             fi
             echo "OK: $f"
           done
+      - name: Verify release marketplace metadata
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'fs';
+
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const marketplace = JSON.parse(readFileSync('.claude-plugin/marketplace.json', 'utf8'));
+          const source = marketplace.plugins?.[0]?.source;
+          const expectedRef = `v${pkg.version}`;
+
+          if (!source || typeof source !== 'object') {
+            throw new Error('Expected .claude-plugin/marketplace.json plugins[0].source to be an object');
+          }
+
+          if (source.ref !== expectedRef) {
+            throw new Error(`Expected marketplace plugin source ref ${expectedRef}; run npm run build:release`);
+          }
+
+          if (source.sha !== undefined && !/^[0-9a-f]{40}$/i.test(source.sha)) {
+            throw new Error('Marketplace plugin source sha must be a 40-character git SHA');
+          }
+
+          console.log(`OK: marketplace source ref ${expectedRef}`);
+          NODE
