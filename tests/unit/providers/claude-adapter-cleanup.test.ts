@@ -1,109 +1,53 @@
 import { describe, expect, it, vi } from 'vitest';
-import { join } from 'node:path';
-import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
-import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
-import { claudeArtifactCleanup } from '#src/providers/claude/provider-facets.js';
 
-function makeDirent(name: string, kind: 'file' | 'dir'): DirentLike {
+import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
+import { claudeArtifactCapability } from '#src/providers/claude/provider-facets.js';
+
+function makeRuntime(): {
+  runtime: ArtifactCleanupRuntime;
+  unlinkSync: ReturnType<typeof vi.fn>;
+} {
+  const unlinkSync = vi.fn();
   return {
-    name,
-    isDirectory: () => kind === 'dir',
-    isFile: () => kind === 'file',
+    runtime: {
+      storage: { unlinkSync },
+      env: { homedir: () => '/home/user' },
+    } as unknown as ArtifactCleanupRuntime,
+    unlinkSync,
   };
 }
 
-function makeRuntime(
-  tree: Record<string, DirentLike[]>,
-  homedir = '/home/user',
-): {
-  runtime: ArtifactCleanupRuntime;
-  unlinkSync: ReturnType<typeof vi.fn>;
-  existsSync: ReturnType<typeof vi.fn>;
-} {
-  const unlinkSync = vi.fn();
-  const existsSync = vi.fn((path: string) => Object.prototype.hasOwnProperty.call(tree, path));
-  const readdirSync = vi.fn((path: string) => tree[path] ?? []);
+describe('claudeArtifactCapability.discardArtifacts', () => {
+  it('is a no-op for an empty handle list', async () => {
+    const { runtime, unlinkSync } = makeRuntime();
 
-  const storage = {
-    existsSync,
-    readdirSync,
-    unlinkSync,
-  } as unknown as StoragePort;
+    await expect(claudeArtifactCapability.discardArtifacts([], runtime)).resolves.toEqual({
+      kind: 'skipped_no_handles',
+    });
 
-  const env = {
-    homedir: () => homedir,
-  } as unknown as EnvPort;
-
-  return { runtime: { storage, env }, unlinkSync, existsSync };
-}
-
-describe('claudeProvider.artifactCleanup.cleanupSessions', () => {
-  const projectsDir = '/home/user/.claude/projects';
-
-  it('is a no-op for an empty ref list', async () => {
-    const { runtime, unlinkSync, existsSync } = makeRuntime({});
-    await claudeArtifactCleanup.cleanupSessions(runtime, []);
-    expect(unlinkSync).not.toHaveBeenCalled();
-    expect(existsSync).not.toHaveBeenCalled();
-  });
-
-  it('returns early when the projects directory does not exist', async () => {
-    const { runtime, unlinkSync } = makeRuntime({});
-    await claudeArtifactCleanup.cleanupSessions(runtime, ['ref-a']);
     expect(unlinkSync).not.toHaveBeenCalled();
   });
 
-  it('unlinks matching .jsonl files across all project subdirectories', async () => {
-    const tree = {
-      [projectsDir]: [
-        makeDirent('-home-user-proj-a', 'dir'),
-        makeDirent('-home-user-proj-b', 'dir'),
-        makeDirent('stray-file', 'file'),
-      ],
-      [join(projectsDir, '-home-user-proj-a')]: [makeDirent('ref-a.jsonl', 'file'), makeDirent('other.jsonl', 'file')],
-      [join(projectsDir, '-home-user-proj-b')]: [makeDirent('ref-b.jsonl', 'file'), makeDirent('subdir', 'dir')],
-    };
-    const { runtime, unlinkSync } = makeRuntime(tree);
+  it('unlinks only recorded handles passed by the caller', async () => {
+    const { runtime, unlinkSync } = makeRuntime();
 
-    await claudeArtifactCleanup.cleanupSessions(runtime, ['ref-a', 'ref-b']);
+    await expect(
+      claudeArtifactCapability.discardArtifacts(['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'], runtime),
+    ).resolves.toEqual({ kind: 'discarded' });
 
-    expect(unlinkSync).toHaveBeenCalledTimes(2);
-    expect(unlinkSync).toHaveBeenCalledWith(join(projectsDir, '-home-user-proj-a', 'ref-a.jsonl'));
-    expect(unlinkSync).toHaveBeenCalledWith(join(projectsDir, '-home-user-proj-b', 'ref-b.jsonl'));
-  });
-
-  it('skips non-directory entries at the projects root', async () => {
-    const tree = {
-      [projectsDir]: [makeDirent('some-file', 'file')],
-    };
-    const { runtime, unlinkSync } = makeRuntime(tree);
-
-    await claudeArtifactCleanup.cleanupSessions(runtime, ['ref-a']);
-    expect(unlinkSync).not.toHaveBeenCalled();
-  });
-
-  it('does not unlink non-matching filenames or nested directories named like a target', async () => {
-    const tree = {
-      [projectsDir]: [makeDirent('-proj', 'dir')],
-      [join(projectsDir, '-proj')]: [makeDirent('other.jsonl', 'file'), makeDirent('ref-a.jsonl', 'dir')],
-    };
-    const { runtime, unlinkSync } = makeRuntime(tree);
-
-    await claudeArtifactCleanup.cleanupSessions(runtime, ['ref-a']);
-    expect(unlinkSync).not.toHaveBeenCalled();
+    expect(unlinkSync.mock.calls).toEqual([['/tmp/ref-a.jsonl'], ['/tmp/ref-b.jsonl']]);
   });
 
   it('swallows unlink failures and continues', async () => {
-    const tree = {
-      [projectsDir]: [makeDirent('-proj', 'dir')],
-      [join(projectsDir, '-proj')]: [makeDirent('ref-a.jsonl', 'file'), makeDirent('ref-b.jsonl', 'file')],
-    };
-    const { runtime, unlinkSync } = makeRuntime(tree);
+    const { runtime, unlinkSync } = makeRuntime();
     unlinkSync.mockImplementationOnce(() => {
       throw new Error('EACCES');
     });
 
-    await expect(claudeArtifactCleanup.cleanupSessions(runtime, ['ref-a', 'ref-b'])).resolves.toBeUndefined();
+    await expect(
+      claudeArtifactCapability.discardArtifacts(['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'], runtime),
+    ).resolves.toEqual({ kind: 'discarded' });
+
     expect(unlinkSync).toHaveBeenCalledTimes(2);
   });
 });

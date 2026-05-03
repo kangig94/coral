@@ -9,7 +9,9 @@ import {
   type BackendInfo,
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
+import { none } from '../../../src/providers/capability.js';
 import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
+import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
@@ -220,10 +222,10 @@ function failureCauseForSimulationOutcome(
 export function createFakeProvider(
   runtime: SimulationRuntime,
   scenario: FakeProviderScenario | undefined,
-): ProviderSpec {
+): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  return {
+  return defineProvider({
     name: providerName,
     ...(preflightError
       ? {
@@ -335,7 +337,9 @@ export function createFakeProvider(
         };
       },
     },
-  };
+  })
+    .artifacts(none(`Simulation provider ${providerName} declares no provider artifacts.`))
+    .build();
 }
 
 export type SimulationHookLog = {
@@ -553,6 +557,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: createProjectionSessionLookup(storeDb),
+        coordinatorCommit: (cb) => progressStore.commit(cb),
       });
       assertStartupStillActive();
 

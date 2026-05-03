@@ -2,6 +2,7 @@ import type { JobContinuitySnapshot } from './continuity.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { RetentionPolicy } from '../sessions/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
@@ -104,6 +105,7 @@ export interface JobLaunch {
     systemPrompt?: string;
     conversationRef?: string;
     instruction?: ProviderInstruction;
+    retention?: RetentionPolicy;
     coralEnv?: Record<string, string>;
     filePath?: string;
     slug?: string;

@@ -138,7 +138,16 @@ export type ProviderTerminalEventBody = {
   failureCause?: ProviderFailureCause;
 };
 
-export type ProviderEventBody = ProviderProgressEventBody | ProviderContinuityEventBody | ProviderTerminalEventBody;
+export type ProviderArtifactHandleEventBody = {
+  kind: 'artifact_handle';
+  handle: string;
+};
+
+export type ProviderEventBody =
+  | ProviderProgressEventBody
+  | ProviderContinuityEventBody
+  | ProviderArtifactHandleEventBody
+  | ProviderTerminalEventBody;
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
 
@@ -230,6 +239,13 @@ export const providerContinuityEventBodySchema = z
   })
   .strict();
 
+export const providerArtifactHandleEventBodySchema = z
+  .object({
+    kind: z.literal('artifact_handle'),
+    handle: z.string().min(1),
+  })
+  .strict();
+
 export const providerTerminalEventBodySchema = z
   .object({
     kind: z.literal('terminal'),
@@ -271,7 +287,7 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
-  storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync'>;
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync' | 'readdirSync'>;
   env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
@@ -317,10 +333,12 @@ export interface ProviderRecoveryContract {
     exitCode: number | null;
     signal: string | null;
     providerMeta?: Record<string, unknown>;
+    env: Pick<Runtime['env'], 'homedir' | 'get' | 'fullSnapshot'>;
     fallbackConversationRef?: string;
-    storage: Pick<StoragePort, 'readFileSync'>;
+    storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
   }): Promise<{
     terminal: ProviderTerminalEventBody;
+    artifactHandles?: readonly ProviderArtifactHandleInput[];
     continuity?: {
       conversationRef: string | null;
       resumable: boolean;
@@ -337,10 +355,32 @@ export interface ProviderRecoveryContract {
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
 
-export interface ProviderArtifactCleanup {
-  readonly name: string;
-  cleanupSessions(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void>;
+export type ProviderArtifactHandle = string;
+
+export type ProviderArtifactHandleInput = {
+  readonly handle: ProviderArtifactHandle;
+  readonly sourceJobId?: string;
+};
+
+export type DiscardOutcome =
+  | { readonly kind: 'discarded'; readonly details?: Record<string, unknown> }
+  | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
+  | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
+
+export interface ProviderManagedArtifactCapability {
+  readonly kind: 'managed';
+  discardArtifacts(
+    handles: readonly ProviderArtifactHandle[],
+    runtime: ArtifactCleanupRuntime,
+  ): Promise<DiscardOutcome>;
 }
+
+export interface ProviderNoArtifactCapability {
+  readonly kind: 'none';
+  readonly reason: string;
+}
+
+export type ProviderArtifactCapability = ProviderManagedArtifactCapability | ProviderNoArtifactCapability;
 
 export interface ProviderSpec {
   readonly name: string;
@@ -348,7 +388,6 @@ export interface ProviderSpec {
   readonly preflight?: (runtime: PreflightRuntime) => Promise<void>;
   readonly appServer?: ProviderAppServerContract;
   readonly recovery?: ProviderRecoveryContract;
-  readonly cleanup?: ProviderArtifactCleanup;
 }
 
 export function compose(middleware: readonly ProviderMiddleware[], provider: Provider): Provider;

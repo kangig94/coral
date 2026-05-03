@@ -1,13 +1,18 @@
 import { join } from 'node:path';
 
+import { discardRecordedArtifacts, managed } from '../capability.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import type {
-  ArtifactCleanupRuntime,
   PreflightRuntime,
+  ProviderArtifactHandleInput,
   ProviderAppServerContract,
   ProviderRecoveryContract,
+  ProviderRequest,
+  ProviderRuntime,
   ProviderServerLease,
 } from '../contract.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeContinuity,
@@ -17,6 +22,106 @@ import {
   withClaudeContinuity,
 } from './request-mapping.js';
 import { readTurnConversationRef } from './request-prep.js';
+
+type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
+type ClaudeArtifactLocatorEnv = Pick<Runtime['env'], 'homedir'>;
+
+export type ClaudeArtifactLocatorResult =
+  | { readonly kind: 'match'; readonly artifact: ProviderArtifactHandleInput }
+  | { readonly kind: 'no_match'; readonly diagnostic: string }
+  | { readonly kind: 'ambiguous'; readonly diagnostic: string; readonly matches: readonly string[] };
+
+export function resolveClaudeProjectsRoot(env: ClaudeArtifactLocatorEnv): string {
+  return join(env.homedir(), '.claude', 'projects');
+}
+
+export function locateClaudeJsonlArtifact(options: {
+  readonly conversationRef: string;
+  readonly projectsRoot: string;
+  readonly storage: ClaudeArtifactLocatorStorage;
+}): ClaudeArtifactLocatorResult {
+  const matches = collectClaudeJsonlMatches(options.storage, options.projectsRoot, options.conversationRef);
+  if (matches.length === 0) {
+    return {
+      kind: 'no_match',
+      diagnostic: `No JSONL found matching conversation ${options.conversationRef} under ${options.projectsRoot}.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      kind: 'ambiguous',
+      diagnostic: `${matches.length} JSONL files matched conversation ${options.conversationRef} under ${options.projectsRoot}; cannot choose one.`,
+      matches,
+    };
+  }
+  const [handle] = matches;
+  return {
+    kind: 'match',
+    artifact: {
+      handle,
+    },
+  };
+}
+
+export function locateClaudeJsonlArtifactFromRuntime(
+  conversationRef: string,
+  runtime: Pick<ProviderRuntime, 'env' | 'storage'>,
+): ClaudeArtifactLocatorResult | null {
+  if (!runtime.env) {
+    return null;
+  }
+  return locateClaudeJsonlArtifact({
+    conversationRef,
+    projectsRoot: resolveClaudeProjectsRoot(runtime.env),
+    storage: runtime.storage,
+  });
+}
+
+function collectClaudeJsonlMatches(
+  storage: ClaudeArtifactLocatorStorage,
+  projectsRoot: string,
+  conversationRef: string,
+): readonly string[] {
+  if (!safeExists(storage, projectsRoot)) {
+    return [];
+  }
+
+  const target = `${conversationRef}.jsonl`;
+  const matches: string[] = [];
+  for (const projectEntry of safeReadDir(storage, projectsRoot)) {
+    if (!projectEntry.isDirectory()) {
+      continue;
+    }
+
+    const projectDir = join(projectsRoot, projectEntry.name);
+    for (const artifactEntry of safeReadDir(storage, projectDir)) {
+      if (artifactEntry.isFile() && artifactEntry.name === target) {
+        matches.push(join(projectDir, artifactEntry.name));
+      }
+    }
+  }
+  return matches.sort();
+}
+
+function safeExists(storage: ClaudeArtifactLocatorStorage, path: string): boolean {
+  try {
+    return storage.existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
+  try {
+    return storage.readdirSync(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+export const claudeArtifactCapability = managed({
+  discardArtifacts: discardRecordedArtifacts,
+});
 
 async function brokerRpc<R = unknown>(
   lease: ProviderServerLease,
@@ -57,6 +162,9 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const claudeRecoveryLifecycle = {
+  buildRecoveryMeta(request: ProviderRequest) {
+    return request.conversationRef ? { conversationRef: request.conversationRef } : {};
+  },
   async probe(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
     if (!persistedContinuity.brokerSessionKey) {
@@ -117,42 +225,4 @@ export const claudeRecoveryLifecycle = {
       ...(providerContinuity ? { providerContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;
-
-async function cleanupSessions(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void> {
-  if (conversationRefs.length === 0) {
-    return;
-  }
-
-  const projectsDir = join(runtime.env.homedir(), '.claude', 'projects');
-  if (!runtime.storage.existsSync(projectsDir)) {
-    return;
-  }
-
-  const targets = new Set(conversationRefs.map((id) => `${id}.jsonl`));
-  const dirs = runtime.storage.readdirSync(projectsDir, { withFileTypes: true });
-  for (const dir of dirs) {
-    if (!dir.isDirectory()) {
-      continue;
-    }
-
-    const dirPath = join(projectsDir, dir.name);
-    const entries = runtime.storage.readdirSync(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile() || !targets.has(entry.name)) {
-        continue;
-      }
-
-      try {
-        runtime.storage.unlinkSync(join(dirPath, entry.name));
-      } catch {
-        /* best-effort */
-      }
-    }
-  }
-}
-
-export const claudeArtifactCleanup = {
-  name: 'claude',
-  cleanupSessions,
-} as const;
+} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'probe' | 'finalizeInterrupted'>;

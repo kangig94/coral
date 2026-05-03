@@ -401,7 +401,6 @@ function createWorkflowExecutionPort(
       );
     },
     waitForJobTerminal: async () => {},
-    cleanupWorkflowSessions: () => {},
   };
 }
 
@@ -541,9 +540,7 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
     launchOrchestrator: {
       markJobRunning() {},
     } as never,
-    executionPort: {
-      cleanupWorkflowSessions() {},
-    } as never,
+    executionPort: {} as never,
   });
 
   (

@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
+import { readProjectionSessionEntry } from '#src/sessions/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -20,6 +21,9 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
     provider: overrides.provider,
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
+    retention: overrides.retention ?? 'retain',
+    artifactHandles: overrides.artifactHandles ?? [],
+    retentionDiscard: overrides.retentionDiscard ?? { attempts: [] },
     cwd: overrides.cwd ?? '/tmp/project',
     projectRoot: overrides.projectRoot ?? '/tmp/project',
     backendNamespace: overrides.backendNamespace ?? 'ns-a',
@@ -39,6 +43,317 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
 }
 
 describe('sessions reducer equivalence', () => {
+  it('projects session.opened retention and recorded artifact handles through entry JSON', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      const reducers = composeReducers(sessionsRegistry);
+      const upcasters = createDefaultUpcasterRegistry();
+      const openedEntry = sessionEntry({
+        sessionId: 'session-artifact',
+        provider: 'codex',
+        retention: 'discard_provider_artifacts_on_terminal',
+      });
+      const artifactEntry = sessionEntry({
+        ...openedEntry,
+        version: 2,
+        artifactHandles: [
+          {
+            provider: 'codex',
+            handle: '/tmp/codex/rollout.jsonl',
+            sourceJobId: 'job-artifact',
+            recordedAt: NOW.toISOString(),
+          },
+        ],
+      });
+
+      commitInputs(
+        db,
+        [
+          {
+            type: 'session.opened',
+            stream: { kind: 'session', id: 'session-artifact' },
+            refs: { sessionId: 'session-artifact' },
+            bodyVersion: 1,
+            body: {
+              entry: openedEntry,
+              controller: 'default',
+              provider: 'codex',
+              scope_key: 'scope-artifact',
+            },
+          },
+          {
+            type: 'session.artifact.handle.recorded',
+            stream: { kind: 'session', id: 'session-artifact' },
+            refs: { sessionId: 'session-artifact', jobId: 'job-artifact' },
+            bodyVersion: 1,
+            body: {
+              entry: artifactEntry,
+              provider: 'codex',
+              handle: '/tmp/codex/rollout.jsonl',
+              sourceJobId: 'job-artifact',
+            },
+          },
+        ],
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+      );
+
+      const row = db
+        .prepare(
+          `SELECT entry
+             FROM projection_sessions
+            WHERE session_id = ?
+            LIMIT 1`,
+        )
+        .get('session-artifact') as { entry: string } | undefined;
+      if (!row) {
+        throw new Error('Expected session projection row');
+      }
+      const projected = JSON.parse(row.entry) as SessionEntry;
+
+      expect(projected).toMatchObject({
+        sessionId: 'session-artifact',
+        retention: 'discard_provider_artifacts_on_terminal',
+        artifactHandles: [
+          {
+            provider: 'codex',
+            handle: '/tmp/codex/rollout.jsonl',
+            sourceJobId: 'job-artifact',
+            recordedAt: NOW.toISOString(),
+          },
+        ],
+        version: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('projects retention discard outbox events through entry JSON and rebuilds the same state', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      const reducers = composeReducers(sessionsRegistry);
+      const upcasters = createDefaultUpcasterRegistry();
+      const openedEntry = sessionEntry({
+        sessionId: 'session-retention-discard',
+        provider: 'codex',
+        retention: 'discard_provider_artifacts_on_terminal',
+      });
+      const handles = ['/tmp/codex/rollout-retention.jsonl'];
+
+      const appended = commitInputs(
+        db,
+        [
+          {
+            type: 'session.opened',
+            stream: { kind: 'session', id: openedEntry.sessionId },
+            refs: { sessionId: openedEntry.sessionId },
+            bodyVersion: 1,
+            body: {
+              entry: openedEntry,
+              controller: 'default',
+              provider: 'codex',
+              scope_key: 'scope-retention-discard',
+            },
+          },
+          {
+            type: 'session.retention.discard.requested',
+            stream: { kind: 'session', id: openedEntry.sessionId },
+            refs: { sessionId: openedEntry.sessionId },
+            bodyVersion: 1,
+            body: {
+              sessionId: openedEntry.sessionId,
+              attempt: 1,
+              handles,
+            },
+          },
+          {
+            type: 'session.retention.discard.completed',
+            stream: { kind: 'session', id: openedEntry.sessionId },
+            refs: { sessionId: openedEntry.sessionId },
+            bodyVersion: 1,
+            body: {
+              sessionId: openedEntry.sessionId,
+              attempt: 1,
+              handles,
+              outcome: 'discarded',
+            },
+          },
+        ],
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+      );
+
+      const before = readProjectionSessionEntry(db, openedEntry.sessionId);
+      expect(before?.retentionDiscard).toEqual({
+        attempts: [
+          {
+            attempt: 1,
+            handles,
+            status: 'completed',
+            outcome: 'discarded',
+          },
+        ],
+      });
+
+      rebuildProjections({
+        db,
+        cutoffSeq: appended.at(-1)?.seq ?? 0,
+        reducers,
+        upcasters,
+      });
+
+      expect(readProjectionSessionEntry(db, openedEntry.sessionId)?.retentionDiscard).toEqual(before?.retentionDiscard);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('parses pre-feature projection_sessions.entry JSON with retention defaults', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      const legacyEntry = {
+        sessionId: 'session-legacy-row',
+        provider: 'codex',
+        name: 'legacy',
+        state: 'pending',
+        cwd: '/tmp/project',
+        projectRoot: '/tmp/project',
+        backendNamespace: 'ns-a',
+        providerContinuity: null,
+        createdAt: NOW.toISOString(),
+        lastUsedAt: NOW.toISOString(),
+        version: 1,
+      };
+
+      db.prepare(
+        `INSERT INTO projection_sessions (
+           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('session-legacy-row', 'default', 'codex', 0, null, 'legacy-scope', JSON.stringify(legacyEntry), 1);
+
+      expect(readProjectionSessionEntry(db, 'session-legacy-row')).toMatchObject({
+        sessionId: 'session-legacy-row',
+        retention: 'retain',
+        artifactHandles: [],
+        retentionDiscard: { attempts: [] },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('parses reducer-written projection_sessions.entry JSON with retention discard state', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      const projectedEntry = {
+        sessionId: 'session-reducer-written-row',
+        provider: 'codex',
+        name: 'reducer written',
+        state: 'pending',
+        retention: 'discard_provider_artifacts_on_terminal',
+        artifactHandles: [],
+        retentionDiscard: {
+          attempts: [
+            {
+              attempt: 1,
+              handles: ['/tmp/reducer-written.jsonl'],
+              status: 'completed',
+              outcome: 'discarded',
+            },
+          ],
+        },
+        cwd: '/tmp/project',
+        projectRoot: '/tmp/project',
+        backendNamespace: 'ns-a',
+        providerContinuity: null,
+        createdAt: NOW.toISOString(),
+        lastUsedAt: NOW.toISOString(),
+        version: 1,
+      };
+
+      db.prepare(
+        `INSERT INTO projection_sessions (
+           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        'session-reducer-written-row',
+        'default',
+        'codex',
+        0,
+        null,
+        'reducer-written-scope',
+        JSON.stringify(projectedEntry),
+        1,
+      );
+
+      expect(readProjectionSessionEntry(db, 'session-reducer-written-row')?.retentionDiscard).toEqual(
+        projectedEntry.retentionDiscard,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('replays pre-feature session.opened events with retention defaults', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      const reducers = composeReducers(sessionsRegistry);
+      const upcasters = createDefaultUpcasterRegistry();
+      const legacyEntry = {
+        sessionId: 'session-legacy-opened',
+        provider: 'claude',
+        name: 'legacy opened',
+        state: 'pending',
+        cwd: '/tmp/project',
+        projectRoot: '/tmp/project',
+        backendNamespace: 'ns-a',
+        providerContinuity: null,
+        createdAt: NOW.toISOString(),
+        lastUsedAt: NOW.toISOString(),
+        version: 1,
+      };
+
+      const appended = commitInputs(
+        db,
+        [
+          {
+            type: 'session.opened',
+            stream: { kind: 'session', id: 'session-legacy-opened' },
+            refs: { sessionId: 'session-legacy-opened' },
+            bodyVersion: 1,
+            body: {
+              entry: legacyEntry,
+              controller: 'default',
+              provider: 'claude',
+              scope_key: 'legacy-scope',
+            },
+          },
+        ],
+        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+      );
+
+      rebuildProjections({
+        db,
+        cutoffSeq: appended.at(-1)?.seq ?? 0,
+        reducers,
+        upcasters,
+      });
+
+      expect(readProjectionSessionEntry(db, 'session-legacy-opened')).toMatchObject({
+        sessionId: 'session-legacy-opened',
+        retention: 'retain',
+        artifactHandles: [],
+        retentionDiscard: { attempts: [] },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {

@@ -1,17 +1,19 @@
 import type { SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
+import { none } from '#src/providers/capability.js';
 import type {
   PreflightRuntime,
   ProviderAppServerContract,
-  ProviderArtifactCleanup,
+  ProviderArtifactCapability,
+  ProviderArtifactHandleInput,
   ProviderEventBody,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
   ProviderServerLease,
   ProviderServerSpec,
-  ProviderSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
+import { defineProvider, type ProviderDefinition } from '#src/providers/define.js';
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
 
 type TestProviderInvocation = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
@@ -43,6 +45,7 @@ type TestArtifactRecovery = {
           resumable: boolean;
           providerContinuity?: ProviderContinuityBlob;
         };
+        artifactHandles?: readonly ProviderArtifactHandleInput[];
       }
   >;
   buildRecoveryMeta?(request: ProviderRequest): Record<string, unknown>;
@@ -58,7 +61,7 @@ export type Provider = {
   preflight?(runtime: PreflightRuntime): Promise<void>;
   appServerLifecycle?: TestAppServerLifecycle;
   artifactRecovery?: TestArtifactRecovery;
-  artifactCleanup?: ProviderArtifactCleanup;
+  artifactCapability?: ProviderArtifactCapability;
 };
 
 function inferSubscriptionPhase(name: string): ProviderAppServerContract['subscriptionPhase'] {
@@ -75,7 +78,7 @@ function normalizeRecoveryResult(
   return result;
 }
 
-export function toProviderSpec(provider: Provider | ProviderSpec | undefined): ProviderSpec | undefined {
+export function defineFakeProvider(provider: Provider | ProviderDefinition | undefined): ProviderDefinition | undefined {
   if (!provider) {
     return undefined;
   }
@@ -120,12 +123,21 @@ export function toProviderSpec(provider: Provider | ProviderSpec | undefined): P
         }
       : undefined;
 
-  return {
+  const artifactCapability =
+    provider.artifactCapability ?? none(`Test provider ${provider.name} declares no provider artifacts.`);
+  const definition = defineProvider({
     name: provider.name,
     run: provider.execute,
     ...(provider.preflight ? { preflight: provider.preflight } : {}),
     ...(appServer ? { appServer } : {}),
     ...(recovery ? { recovery } : {}),
-    ...(provider.artifactCleanup ? { cleanup: provider.artifactCleanup } : {}),
-  };
+  })
+    .artifacts(artifactCapability)
+    .build();
+
+  return definition;
+}
+
+export function toProviderSpec(provider: Provider | ProviderDefinition | undefined): ProviderDefinition | undefined {
+  return defineFakeProvider(provider);
 }

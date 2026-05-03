@@ -1,12 +1,51 @@
 import { describe, expect, it } from 'vitest';
 
 import { createBuiltInProviderRegistry, registerBuiltInProviders } from '#src/providers/bootstrap.js';
+import { none } from '#src/providers/capability.js';
 import type { ProviderSpec } from '#src/providers/contract.js';
+import { defineProvider } from '#src/providers/define.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 
 function providerNames(providers: ProviderSpec[]): string[] {
   return providers.map((provider) => provider.name);
 }
+
+function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
+  return {
+    name,
+    isDirectory: () => kind === 'dir',
+    isFile: () => kind === 'file',
+  };
+}
+
+function recoveryStorage(options: {
+  readonly files?: Record<string, string>;
+  readonly tree?: Record<string, DirentLike[]>;
+}): Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'> {
+  const files = options.files ?? {};
+  const tree = options.tree ?? {};
+  return {
+    readFileSync: (path) => files[path] ?? '',
+    existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
+    readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
+    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+  };
+}
+
+function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
+  return {
+    homedir: () => homedir,
+    get: () => undefined,
+    fullSnapshot: () => ({}),
+  };
+}
+
+type RecoveryLocatorCase = {
+  readonly label: string;
+  readonly tree: Record<string, DirentLike[]>;
+  readonly expected: readonly { readonly handle: string }[] | undefined;
+};
 
 describe('registerBuiltInProviders', () => {
   it('registers claude and codex provider specs', () => {
@@ -33,7 +72,7 @@ describe('registerBuiltInProviders', () => {
     expect(typeof claude?.recovery?.probe).toBe('function');
     expect(typeof claude?.recovery?.finalizeInterrupted).toBe('function');
     expect(typeof claude?.recovery?.finalizeFromArtifacts).toBe('function');
-    expect(typeof claude?.cleanup?.cleanupSessions).toBe('function');
+    expect(claude?.artifacts.kind).toBe('managed');
 
     expect(codex).toBeDefined();
     expect(typeof codex?.run).toBe('function');
@@ -46,7 +85,124 @@ describe('registerBuiltInProviders', () => {
     expect(typeof codex?.recovery?.probe).toBe('function');
     expect(typeof codex?.recovery?.finalizeInterrupted).toBe('function');
     expect(typeof codex?.recovery?.finalizeFromArtifacts).toBe('function');
+    expect(codex?.artifacts.kind).toBe('managed');
   });
+
+  const codexRecoveryCases: RecoveryLocatorCase[] = [
+    {
+      label: 'no match',
+      tree: {
+        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
+        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
+        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
+        '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-other-thread.jsonl', 'file')],
+      },
+      expected: undefined,
+    },
+    {
+      label: 'single match',
+      tree: {
+        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
+        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
+        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
+        '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-thread-from-meta.jsonl', 'file')],
+      },
+      expected: [{ handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl' }],
+    },
+    {
+      label: 'ambiguous match',
+      tree: {
+        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
+        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
+        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
+        '/home/user/.codex/sessions/2026/05/04': [
+          dirent('rollout-a-thread-from-meta.jsonl', 'file'),
+          dirent('rollout-b-thread-from-meta.jsonl', 'file'),
+        ],
+      },
+      expected: undefined,
+    },
+  ];
+
+  it.each(codexRecoveryCases)(
+    'finalizeCodexFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
+    async ({
+      tree,
+      expected,
+    }) => {
+      const codex = createBuiltInProviderRegistry().get('codex');
+
+      const result = await codex?.recovery?.finalizeFromArtifacts({
+        stdoutPath: '/tmp/stdout',
+        stderrPath: '/tmp/stderr',
+        exitCode: 0,
+        signal: null,
+        providerMeta: { threadId: 'thread-from-meta' },
+        fallbackConversationRef: 'fallback-thread',
+        env: recoveryEnv(),
+        storage: recoveryStorage({ tree }),
+      });
+
+      expect(result?.artifactHandles).toEqual(expected);
+    },
+  );
+
+  const claudeRecoveryCases: RecoveryLocatorCase[] = [
+    {
+      label: 'no match',
+      tree: {
+        '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+        '/home/user/.claude/projects/-workspace': [dirent('other-session.jsonl', 'file')],
+      },
+      expected: undefined,
+    },
+    {
+      label: 'single match',
+      tree: {
+        '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+        '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
+      },
+      expected: [{ handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl' }],
+    },
+    {
+      label: 'ambiguous match',
+      tree: {
+        '/home/user/.claude/projects': [dirent('-workspace-a', 'dir'), dirent('-workspace-b', 'dir')],
+        '/home/user/.claude/projects/-workspace-a': [dirent('conversation-from-meta.jsonl', 'file')],
+        '/home/user/.claude/projects/-workspace-b': [dirent('conversation-from-meta.jsonl', 'file')],
+      },
+      expected: undefined,
+    },
+  ];
+
+  it.each(claudeRecoveryCases)(
+    'finalizeClaudeFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
+    async ({
+      tree,
+      expected,
+    }) => {
+      const claude = createBuiltInProviderRegistry().get('claude');
+
+      const result = await claude?.recovery?.finalizeFromArtifacts({
+        stdoutPath: '/tmp/stdout',
+        stderrPath: '/tmp/stderr',
+        exitCode: 0,
+        signal: null,
+        providerMeta: { conversationRef: 'conversation-from-meta' },
+        fallbackConversationRef: 'fallback-conversation',
+        env: recoveryEnv(),
+        storage: recoveryStorage({
+          files: {
+            '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok' }),
+            '/tmp/stderr': '',
+          },
+          tree,
+        }),
+      });
+
+      expect(result?.artifactHandles).toEqual(expected);
+    },
+  );
 
   it('is idempotent per registry instance', () => {
     const registry = new ProviderRegistry();
@@ -60,19 +216,23 @@ describe('registerBuiltInProviders', () => {
   it('fails when a conflicting provider is already registered', () => {
     const registry = new ProviderRegistry();
 
-    registry.register({
-      name: 'codex',
-      run: async function* () {
-        yield {
-          kind: 'terminal',
-          terminal: {
-            content: 'conflict',
-            outcome: { kind: 'completed' as const },
-          },
-          diagnostics: {},
-        };
-      },
-    });
+    registry.register(
+      defineProvider({
+        name: 'codex',
+        run: async function* () {
+          yield {
+            kind: 'terminal',
+            terminal: {
+              content: 'conflict',
+              outcome: { kind: 'completed' as const },
+            },
+            diagnostics: {},
+          };
+        },
+      })
+        .artifacts(none('conflict fixture declares no provider artifacts'))
+        .build(),
+    );
 
     expect(() => registerBuiltInProviders(registry)).toThrow(/already registered/i);
   });

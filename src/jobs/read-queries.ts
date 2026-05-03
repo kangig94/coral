@@ -55,6 +55,7 @@ type JobLaunchProjection = {
           content: string;
           channel: 'prompt' | 'system';
         };
+        retention?: 'retain' | 'discard_provider_artifacts_on_terminal';
         coralEnv: Record<string, string>;
       }
     | {
@@ -377,6 +378,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       systemPrompt: body.request.systemPrompt,
       conversationRef: body.request.conversationRef,
       instruction: body.request.instruction,
+      retention: body.request.retention,
       coralEnv: { ...body.request.coralEnv },
     },
     ...refs,

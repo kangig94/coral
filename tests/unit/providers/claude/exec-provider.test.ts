@@ -6,6 +6,7 @@ import type {
   ProviderRuntime,
   ProviderServerLease,
 } from '#src/providers/contract.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 
 const kernelInvocations = {
   exec: 0,
@@ -104,6 +105,31 @@ function makeRuntime(
   } as ProviderRuntime & {
     acquireServer: ReturnType<typeof vi.fn>;
     runCli: ReturnType<typeof vi.fn>;
+  };
+}
+
+function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
+  return {
+    name,
+    isDirectory: () => kind === 'dir',
+    isFile: () => kind === 'file',
+  };
+}
+
+function artifactStorage(tree: Record<string, DirentLike[]>): ProviderRuntime['storage'] {
+  return {
+    existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
+    readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
+    readFileSync: () => '',
+    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+  };
+}
+
+function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
+  return {
+    homedir: () => homedir,
+    get: () => undefined,
+    fullSnapshot: () => ({}),
   };
 }
 
@@ -257,6 +283,59 @@ describe('claude exec-provider dispatcher', () => {
     expect(runtime.runCli).not.toHaveBeenCalled();
     expect(terminal.terminal).toMatchObject({
       content: 'broker resume result',
+      outcome: { kind: 'completed' },
+    });
+  });
+
+  it('emits the concrete Claude JSONL artifact handle during normal live execution', async () => {
+    const { claude } = await loadProvider();
+    const projectsRoot = '/home/user/.claude/projects';
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: 'broker-live',
+            bootstrapSignature: BASE_BOOTSTRAP_SIGNATURE,
+            sessionId: 'conversation-live',
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-live' };
+        }
+
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+    const runtime = makeRuntime(lease, {
+      env: env(),
+      storage: artifactStorage({
+        [projectsRoot]: [dirent('-workspace', 'dir')],
+        [`${projectsRoot}/-workspace`]: [dirent('conversation-live.jsonl', 'file')],
+      }),
+    });
+
+    const eventsPromise = collect(claude(makeRequest(), runtime));
+
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+    });
+    lease.emit({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: 'broker-live',
+        brokerTurnId: 'turn-live',
+        result: 'broker live result',
+      },
+    });
+
+    const events = await eventsPromise;
+
+    expect(events).toContainEqual({
+      kind: 'artifact_handle',
+      handle: `${projectsRoot}/-workspace/conversation-live.jsonl`,
+    });
+    expect(getTerminal(events).terminal).toMatchObject({
+      content: 'broker live result',
       outcome: { kind: 'completed' },
     });
   });

@@ -12,6 +12,7 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -219,6 +220,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
+    recordRecoveredArtifactHandles: vi.fn(async () => ({ ok: true as const, nextVersion: 1 })),
     ...overrides,
   };
 }
@@ -387,6 +389,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: modules.sessionQueriesModule.createProjectionSessionLookup(progressStore.getDb()),
+        coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
       });
       assertStartupStillActive();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();

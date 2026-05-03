@@ -161,7 +161,6 @@ describe('workflow handoff (cross-domain integration)', () => {
             return emitOnce(req.jobIds.map((jobId) => terminalEvent(jobId, `result:${jobId}`)));
           }),
           waitForJobTerminal: vi.fn(async () => {}),
-          cleanupWorkflowSessions: vi.fn(),
         } as unknown as WorkflowExecutionPort;
 
         const resumed = await workflowRecover.resumeAll({

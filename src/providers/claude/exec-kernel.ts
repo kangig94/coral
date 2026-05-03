@@ -1,4 +1,4 @@
-import type { EffortLevel, Provider } from '../contract.js';
+import type { EffortLevel, Provider, ProviderEventBody, ProviderRuntime } from '../contract.js';
 import type { ProviderCliRunner } from '../protocol.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
@@ -9,6 +9,7 @@ import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
 import { buildPreparedClaudeRequest } from './request-prep.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './exec-types.js';
+import { locateClaudeJsonlArtifactFromRuntime } from './provider-facets.js';
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
@@ -73,6 +74,7 @@ export const claudeExecKernel: Provider = (request, runtime) =>
           conversationRef: result.sessionId,
         }),
       });
+      emitClaudeArtifactHandle(result.sessionId, runtime, emit);
     }
 
     emit({
@@ -100,6 +102,26 @@ export const claudeExecKernel: Provider = (request, runtime) =>
       diagnostics: buildJobDiagnostics({}),
     });
   });
+
+function emitClaudeArtifactHandle(
+  conversationRef: string,
+  runtime: ProviderRuntime,
+  emit: (event: ProviderEventBody) => void,
+): void {
+  const result = locateClaudeJsonlArtifactFromRuntime(conversationRef, runtime);
+  if (!result) {
+    return;
+  }
+  if (result.kind === 'match') {
+    emit({
+      kind: 'artifact_handle',
+      handle: result.artifact.handle,
+    });
+    return;
+  }
+
+  emit({ kind: 'progress', message: result.diagnostic });
+}
 
 function emitProgress(
   line: string,

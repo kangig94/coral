@@ -1,7 +1,7 @@
 import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import type { ProviderInstruction } from '../providers/contract.js';
-import type { SessionControllerProfile, SessionEntry } from './entry.js';
+import type { RetentionPolicy, SessionControllerProfile, SessionEntry } from './entry.js';
 
 export type SessionAllocateOptions = {
   provider: string;
@@ -15,9 +15,19 @@ export type SessionAllocateOptions = {
   bypassPermissions?: boolean;
   systemPrompt?: string;
   controllerProfile?: SessionControllerProfile;
+  retention?: RetentionPolicy;
 };
 
 export type SessionJobContinuityCheckpointResult = { ok: true; nextVersion: number } | { ok: false };
+export type SessionArtifactHandleRecordResult = { ok: true; nextVersion: number } | { ok: false };
+
+export type SessionArtifactHandleRecordOptions = {
+  expectedActiveJobId: string;
+  expectedVersion: number;
+  provider: string;
+  handle: string;
+  sourceJobId?: string;
+};
 
 export interface SessionJobReadPort {
   get(provider: string, sessionId: string): SessionEntry | null;
@@ -33,6 +43,10 @@ export interface SessionJobClaimPort extends SessionJobReadPort {
       snapshot: ContinuitySnapshot;
     },
   ): Promise<SessionJobContinuityCheckpointResult>;
+  recordArtifactHandleAtomic(
+    sessionId: string,
+    options: SessionArtifactHandleRecordOptions,
+  ): Promise<SessionArtifactHandleRecordResult>;
   releaseJobClaimAtomic(
     sessionId: string,
     options: {
@@ -77,4 +91,8 @@ export interface SessionRecoveryPort {
       mutation: SessionContinuityMutation;
     },
   ): Promise<boolean>;
+  recordArtifactHandleAtomic(
+    sessionId: string,
+    options: SessionArtifactHandleRecordOptions,
+  ): Promise<SessionArtifactHandleRecordResult>;
 }

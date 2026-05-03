@@ -1,5 +1,5 @@
 import type { ProviderCatalog } from './catalog.js';
-import type { ProviderSpec } from './contract.js';
+import type { ProviderDefinition } from './define.js';
 
 const RESERVED_TOOL_NAMES = new Set([
   'wait',
@@ -27,9 +27,9 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_abort',
 ]);
 export class ProviderRegistry implements ProviderCatalog {
-  private providers = new Map<string, ProviderSpec>();
+  private providers = new Map<string, ProviderDefinition>();
 
-  register(spec: ProviderSpec): void {
+  register(spec: ProviderDefinition): void {
     if (RESERVED_TOOL_NAMES.has(spec.name)) {
       throw new Error(`Provider name "${spec.name}" is reserved`);
     }
@@ -39,11 +39,11 @@ export class ProviderRegistry implements ProviderCatalog {
     this.providers.set(spec.name, spec);
   }
 
-  get(name: string): ProviderSpec | undefined {
+  get(name: string): ProviderDefinition | undefined {
     return this.providers.get(name);
   }
 
-  getAll(): ProviderSpec[] {
+  getAll(): ProviderDefinition[] {
     return [...this.providers.values()];
   }
 }

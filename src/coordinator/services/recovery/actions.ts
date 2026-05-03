@@ -15,6 +15,7 @@ import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.j
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { recordJobRecoveryFaultTerminal, recordProviderTerminal } from '../terminal-materializer.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
+import type { CommitEventsFn } from '../../../store/append.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
@@ -34,6 +35,7 @@ type RecoveryActionContext = {
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
+  coordinatorCommit: CommitEventsFn;
 };
 
 export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionContext): void {
@@ -48,6 +50,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
     getRecoveryService,
     sessionLookup,
     emitSessionReleased,
+    coordinatorCommit,
   } = ctx;
 
   switch (action.type) {
@@ -70,6 +73,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
           runtime,
           emitSessionReleased,
           db: progressStore.getDb(),
+          commitEvents: coordinatorCommit,
           sessionId: action.status.sessionId,
           jobId: action.status.jobId,
         });
@@ -121,6 +125,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         runtime,
         emitSessionReleased,
         db: progressStore.getDb(),
+        commitEvents: coordinatorCommit,
         sessionId: action.sessionId,
         jobId: action.jobId,
       });
@@ -187,8 +192,9 @@ export function finalizeDeadAdoptedJob({
   log,
 }: FinalizeDeadAdoptedJobContext): void {
   const sessionId = launchRecord.sessionId;
-  if (sessionId === null) {
-    log(`Skipped provider recovery for job ${jobId}: launch record has no session id\n`);
+  const providerName = launchRecord.provider;
+  if (sessionId === null || providerName === null) {
+    log(`Skipped provider recovery for job ${jobId}: launch record is not a provider session launch\n`);
     return;
   }
 
@@ -201,10 +207,23 @@ export function finalizeDeadAdoptedJob({
           stderrPath: runtimeRecord.stderrPath,
           exitCode: exitRecord.exitCode,
           signal: exitRecord.signal,
+          providerMeta: runtimeRecord.providerMeta,
+          env: runtime.env,
           fallbackConversationRef: launchRecord.request.conversationRef,
           storage: runtime.storage,
         })
-        .then((result) => {
+        .then(async (result) => {
+          if (result.artifactHandles && result.artifactHandles.length > 0) {
+            const recorded = await service.recordRecoveredArtifactHandles(sessionId, {
+              jobId,
+              provider: providerName,
+              handles: result.artifactHandles,
+            });
+            if (!recorded.ok) {
+              log(`Recovered artifact handle recording went stale for job ${jobId}; continuing terminal recovery\n`);
+            }
+          }
+
           const status = progressStore.readStatus(jobId);
           recordProviderTerminal(
             progressStore,
@@ -279,6 +298,9 @@ export function finalizeDeadAdoptedJob({
     return;
   }
 
+  // No exit metadata means no stdout/stderr artifact locator inputs exist here.
+  // AC4 excludes this wrapper_lost branch from authoritative handle recording;
+  // retention enforcement later records the durable skipped_no_handles outcome.
   service.completeRecoveredJob(
     jobId,
     sessionId,

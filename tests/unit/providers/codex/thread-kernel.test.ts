@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
 import type { AppServerNotificationMessage } from '#src/providers/protocol.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import {
   PRE_TURN_MAILBOX_CAP,
   applyCodexNotificationForTest,
@@ -27,6 +28,7 @@ function makeRuntime(
     cwd: '/workspace/persisted',
     threadId: 'persisted-thread',
   },
+  overrides: Partial<Pick<ProviderRuntime, 'env' | 'storage'>> = {},
 ): ProviderRuntime {
   return {
     signal: new AbortController().signal,
@@ -42,13 +44,48 @@ function makeRuntime(
     acquireServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');
     }),
-    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    ...(overrides.env ? { env: overrides.env } : {}),
     persistedContinuity,
     continuityBridge: {
       checkpoint: () => {},
       transportClosed: () => {},
     },
     kbRoot: '/mock/kb',
+  };
+}
+
+function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
+  return {
+    name,
+    isDirectory: () => kind === 'dir',
+    isFile: () => kind === 'file',
+  };
+}
+
+function artifactStorage(
+  tree: Record<string, DirentLike[]>,
+  operations: string[] = [],
+): ProviderRuntime['storage'] {
+  return {
+    existsSync: (path) => {
+      operations.push(`exists:${path}`);
+      return Object.prototype.hasOwnProperty.call(tree, path);
+    },
+    readdirSync: ((path: string) => {
+      operations.push(`readdir:${path}`);
+      return tree[path] ?? [];
+    }) as unknown as StoragePort['readdirSync'],
+    readFileSync: () => '',
+    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+  };
+}
+
+function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
+  return {
+    homedir: () => homedir,
+    get: () => undefined,
+    fullSnapshot: () => ({}),
   };
 }
 
@@ -164,5 +201,153 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
 
     expect(events).toEqual([]);
+  });
+
+  it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', () => {
+    const root = '/home/user/.codex/sessions';
+    const day = `${root}/2026/05/04`;
+    const operations: string[] = [];
+    const runtime = makeRuntime(
+      {
+        cwd: '/workspace/persisted',
+        threadId: 'thread-1',
+      },
+      {
+        env: env(),
+        storage: artifactStorage(
+          {
+            [root]: [dirent('2026', 'dir')],
+            [`${root}/2026`]: [dirent('05', 'dir')],
+            [`${root}/2026/05`]: [dirent('04', 'dir')],
+            [day]: [dirent('rollout-2026-05-04T00-00-00-thread-1.jsonl', 'file')],
+          },
+          operations,
+        ),
+      },
+    );
+    const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-1' }), runtime);
+    state.threadId = 'thread-1';
+    state.threadIds.add('thread-1');
+    state.turnId = 'turn-1';
+    const events: ProviderEventBody[] = [];
+    const emit = (event: ProviderEventBody) => {
+      operations.push(`emit:${event.kind}`);
+      events.push(event);
+    };
+
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-1',
+            status: 'completed',
+          },
+        },
+      },
+      emit,
+    );
+
+    expect(events).toContainEqual({
+      kind: 'artifact_handle',
+      handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+    });
+    expect(operations.indexOf(`exists:${root}`)).toBeGreaterThanOrEqual(0);
+    expect(operations.indexOf(`exists:${root}`)).toBeLessThan(operations.indexOf('emit:artifact_handle'));
+  });
+
+  it('does not emit a rollout artifact handle when the JSONL is not on disk at turn completion', () => {
+    const root = '/home/user/.codex/sessions';
+    const day = `${root}/2026/05/04`;
+    const runtime = makeRuntime(
+      {
+        cwd: '/workspace/persisted',
+        threadId: 'thread-not-flushed',
+      },
+      {
+        env: env(),
+        storage: artifactStorage({
+          [root]: [dirent('2026', 'dir')],
+          [`${root}/2026`]: [dirent('05', 'dir')],
+          [`${root}/2026/05`]: [dirent('04', 'dir')],
+          [day]: [],
+        }),
+      },
+    );
+    const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-not-flushed' }), runtime);
+    state.threadId = 'thread-not-flushed';
+    state.threadIds.add('thread-not-flushed');
+    state.turnId = 'turn-1';
+    const events: ProviderEventBody[] = [];
+    const emit = (event: ProviderEventBody) => {
+      events.push(event);
+    };
+
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-not-flushed',
+          turn: {
+            id: 'turn-1',
+            status: 'completed',
+          },
+        },
+      },
+      emit,
+    );
+
+    expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([]);
+  });
+
+  it('does not re-emit the fixed rollout artifact handle on later turn completions', () => {
+    const root = '/home/user/.codex/sessions';
+    const day = `${root}/2026/05/04`;
+    const runtime = makeRuntime(
+      {
+        cwd: '/workspace/persisted',
+        threadId: 'thread-1',
+      },
+      {
+        env: env(),
+        storage: artifactStorage({
+          [root]: [dirent('2026', 'dir')],
+          [`${root}/2026`]: [dirent('05', 'dir')],
+          [`${root}/2026/05`]: [dirent('04', 'dir')],
+          [day]: [dirent('rollout-2026-05-04T00-00-00-thread-1.jsonl', 'file')],
+        }),
+      },
+    );
+    const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-1' }), runtime);
+    state.threadId = 'thread-1';
+    state.threadIds.add('thread-1');
+    state.turnId = 'turn-1';
+    const events: ProviderEventBody[] = [];
+    const emit = (event: ProviderEventBody) => {
+      events.push(event);
+    };
+    const completed = {
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-1',
+          status: 'completed',
+        },
+      },
+    } satisfies AppServerNotificationMessage;
+
+    applyCodexNotificationForTest(state, completed, emit);
+    applyCodexNotificationForTest(state, completed, emit);
+
+    expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([
+      {
+        kind: 'artifact_handle',
+        handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+      },
+    ]);
   });
 });

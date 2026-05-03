@@ -17,12 +17,13 @@ import { describeSessionInterrupted, type SessionInterruptedFault } from '../../
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import type { SessionEntry } from '../../sessions/entry.js';
+import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
-export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool'> & {
+export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
   sessionId?: string;
   effort?: EffortLevel;
+  retention?: RetentionPolicy;
 };
 
 export const FINALIZE_CONTINUITY_MAX_RETRIES = 2;

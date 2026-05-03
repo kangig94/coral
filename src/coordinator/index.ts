@@ -62,6 +62,7 @@ import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-fi
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
+import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -313,6 +314,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       eventBus,
       reducers,
       providers: providerLookupPortFromCatalog(providerRegistry),
+      observer: lifecycleReactor.observe,
     });
     const expansionManifestCatalog = createExpansionManifestCatalog({
       db: storeDb,
@@ -381,7 +383,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const getCurrentJournalSeq = () =>
     (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
   const getSessionLookup = () => createProjectionSessionLookup(getQueryDb());
-
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();
     const appended = commitJournalEvents(db, cb, {
@@ -396,8 +397,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
     publishJobEvents(appended);
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
+    lifecycleReactor.observe(appended);
     return appended;
   };
+  const lifecycleReactor = createLifecycleReactor({
+    db: getQueryDb,
+    providers: providerRegistry,
+    runtime,
+    commitEvents: coordinatorCommit,
+  });
   core = createCoordinatorCore({
     ...coreOptions,
     providerRegistry,
@@ -566,7 +574,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: getSessionLookup(),
+        coordinatorCommit,
       });
+      assertStartupStillActive();
+
+      await lifecycleReactor.scanStartup();
       assertStartupStillActive();
 
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({

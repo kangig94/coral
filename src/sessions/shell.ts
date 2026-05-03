@@ -14,13 +14,19 @@ import { composeReducers } from '../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import {
   DEFAULT_SESSION_CONTROLLER,
+  type ProviderArtifactHandle,
   sessionControllerFromProfile,
   sessionEntrySchema,
   type SessionEntry,
 } from './entry.js';
-import type { SessionAllocateOptions } from './contracts.js';
+import type {
+  SessionAllocateOptions,
+  SessionArtifactHandleRecordOptions,
+  SessionArtifactHandleRecordResult,
+} from './contracts.js';
 import { sessionsRegistry } from './events.js';
 import type {
+  SessionArtifactHandleRecordedBody,
   SessionClaimedBody,
   SessionClaimReleasedBody,
   SessionContinuityCheckpointedBody,
@@ -35,6 +41,7 @@ type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) =>
 type SessionStoreEventBody =
   | SessionOpenedBody
   | SessionContinuityCheckpointedBody
+  | SessionArtifactHandleRecordedBody
   | SessionClaimedBody
   | SessionClaimReleasedBody;
 
@@ -108,6 +115,27 @@ function sessionCheckpointedEvent(
   };
 }
 
+function sessionArtifactHandleRecordedEvent(
+  entry: SessionEntry,
+  artifact: ProviderArtifactHandle,
+): CoralEventInput<SessionArtifactHandleRecordedBody> {
+  return {
+    type: 'session.artifact.handle.recorded',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: {
+      sessionId: entry.sessionId,
+      ...(artifact.sourceJobId !== undefined ? { jobId: artifact.sourceJobId } : {}),
+    },
+    bodyVersion: 1,
+    body: {
+      entry,
+      provider: artifact.provider,
+      handle: artifact.handle,
+      ...(artifact.sourceJobId !== undefined ? { sourceJobId: artifact.sourceJobId } : {}),
+    },
+  };
+}
+
 function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimedBody> {
   return {
     type: 'session.claimed',
@@ -134,6 +162,11 @@ function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEve
   };
 }
 
+/**
+ * Non-production, test-only session appender. It intentionally does not install
+ * the lifecycle post-commit observer; production session lifecycle facts must
+ * flow through the coordinator-bound commit function supplied to forProduction.
+ */
 function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn {
   const reducers = composeReducers(sessionsRegistry);
   const upcasters = createDefaultUpcasterRegistry();
@@ -179,7 +212,7 @@ export class SessionManager {
   static forProduction(
     workingDirectory: string,
     runtime: SessionRuntime,
-    commitEvents: CommitEventsFn | undefined,
+    commitEvents: CommitEventsFn,
     releaseEmitter: SessionReleasedEmitter,
     options: SessionManagerOptions,
   ): SessionManager {
@@ -243,6 +276,9 @@ export class SessionManager {
       provider: options.provider,
       name: options.name,
       state: 'pending',
+      retention: options.retention ?? 'retain',
+      artifactHandles: [],
+      retentionDiscard: { attempts: [] },
       model: options.model,
       cwd: options.cwd,
       projectRoot: options.projectRoot,
@@ -383,33 +419,45 @@ export class SessionManager {
     if (currentEntry.activeJobId !== expectedActiveJobId) return false;
     if (currentEntry.version !== expectedVersion) return false;
 
-    const baseNextEntry: SessionEntry = {
+    const checkpointBaseEntry: SessionEntry = {
       ...currentEntry,
-      activeJobId: undefined,
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
       ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
     };
-    const nextEntry: SessionEntry = (() => {
+    const checkpointEntry: SessionEntry = (() => {
       switch (mutation.kind) {
         case 'set_resumable':
           return {
-            ...baseNextEntry,
+            ...checkpointBaseEntry,
             conversationRef: mutation.conversationRef,
             state: 'ready',
           };
         case 'clear_non_resumable':
           return {
-            ...baseNextEntry,
+            ...checkpointBaseEntry,
             conversationRef: undefined,
             state: 'non_resumable',
           };
         case 'preserve':
-          return baseNextEntry;
+          return checkpointBaseEntry;
       }
     })();
 
-    this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)));
+    const releaseEntry: SessionEntry = {
+      ...checkpointEntry,
+      activeJobId: undefined,
+      version: this.bumpVersion(checkpointEntry),
+    };
+    const checkpointEvent = sessionCheckpointedEvent(checkpointEntry, snapshotFromEntry(checkpointEntry));
+    const claimReleasedEvent = sessionClaimReleasedEvent(releaseEntry, expectedActiveJobId);
+
+    this.commitEvents((c) => {
+      c.append(checkpointEvent);
+      c.append(claimReleasedEvent);
+      return undefined;
+    });
+    this.populateCache(sessionId, releaseEntry);
     this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
     return true;
   }
@@ -438,6 +486,33 @@ export class SessionManager {
     };
 
     const stored = this.appendEntryEvent(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot));
+    return { ok: true, nextVersion: stored.version };
+  }
+
+  async recordArtifactHandleAtomic(
+    sessionId: string,
+    options: SessionArtifactHandleRecordOptions,
+  ): Promise<SessionArtifactHandleRecordResult> {
+    const { expectedActiveJobId, expectedVersion, provider, handle, sourceJobId } = options;
+    const currentEntry = this.readEntry(sessionId, { forceFresh: true });
+    if (!currentEntry) return { ok: false };
+    if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
+    if (currentEntry.version !== expectedVersion) return { ok: false };
+
+    const artifact: ProviderArtifactHandle = {
+      provider,
+      handle,
+      ...(sourceJobId !== undefined ? { sourceJobId } : {}),
+      recordedAt: nowIsoString(this.time),
+    };
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      artifactHandles: [...currentEntry.artifactHandles, artifact],
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(currentEntry),
+    };
+
+    const stored = this.appendEntryEvent(nextEntry, sessionArtifactHandleRecordedEvent(nextEntry, artifact));
     return { ok: true, nextVersion: stored.version };
   }
 

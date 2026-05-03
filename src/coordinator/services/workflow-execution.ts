@@ -16,7 +16,6 @@ import {
   WorkflowExecutionError,
   type PipelineResult,
   type StepDetail,
-  type WorkflowSessionHandle,
   type WorkflowExecutionPort,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
@@ -29,7 +28,6 @@ import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.j
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
 import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
 import { SessionClaimError } from '../../jobs/session-claim.js';
-import { dispatchWorkflowSessionCleanup, toArtifactCleanupRuntime } from '../workflow-cleanup.js';
 import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
@@ -62,6 +60,8 @@ export class WorkflowExecutionService {
     }
 
     const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
+    // The workflow-level session uses model='workflow' and owns no provider artifact,
+    // so the SessionManager default retention='retain' is intentional here.
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
       name: `workflow-${this.deps.runtime.time.now()}`,
@@ -133,16 +133,6 @@ export class WorkflowExecutionService {
 
     this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx, workDir);
     return { status: 'running', job: jobId, session: session.sessionId };
-  }
-
-  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void {
-    dispatchWorkflowSessionCleanup(sessions, {
-      resolveConversationRef: (providerName, sessionId) =>
-        this.deps.sessionManager.get(providerName, sessionId)?.conversationRef,
-      get: (providerName) => this.deps.providerRegistry.get(providerName),
-      cleanupRuntime: toArtifactCleanupRuntime(this.deps.runtime),
-      onError: (message) => backendLog.warn(message),
-    });
   }
 
   private commitWorkflowJobTerminal(sessionId: string, jobId: string, intent: WorkflowFinalizationIntent): void {

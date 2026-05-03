@@ -52,6 +52,7 @@ function makeTierRuntime(
       readFileSync: readFileSyncImpl,
       statSync: statSyncImpl,
       existsSync: () => true,
+      readdirSync: (() => []) as ProviderRuntime['storage']['readdirSync'],
     },
   };
 }

@@ -17,6 +17,7 @@ import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { ProviderCatalog } from '../../../providers/catalog.js';
+import type { ProviderArtifactHandleInput } from '../../../providers/contract.js';
 import type { ExecutionProviderServerAttachment, ExecutionProviderHostManager } from '../../contracts.js';
 import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
@@ -315,6 +316,37 @@ export class RecoveryService {
     }
 
     return jobId;
+  }
+
+  async recordRecoveredArtifactHandles(
+    sessionId: string,
+    input: {
+      readonly jobId: string;
+      readonly provider: string;
+      readonly handles: readonly ProviderArtifactHandleInput[];
+    },
+  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }> {
+    const session = this.deps.sessionManager.get(input.provider, sessionId);
+    if (!session) {
+      return { ok: false };
+    }
+
+    let expectedVersion = session.version;
+    for (const artifact of input.handles) {
+      const recorded = await this.deps.sessionManager.recordArtifactHandleAtomic(sessionId, {
+        expectedActiveJobId: input.jobId,
+        expectedVersion,
+        provider: input.provider,
+        handle: artifact.handle,
+        sourceJobId: artifact.sourceJobId ?? input.jobId,
+      });
+      if (!recorded.ok) {
+        return { ok: false };
+      }
+      expectedVersion = recorded.nextVersion;
+    }
+
+    return { ok: true, nextVersion: expectedVersion };
   }
 
   adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void } {

@@ -179,9 +179,7 @@ function toText(chunk: string | Uint8Array): string {
 // must call `loadMainModuleFresh()` to re-evaluate captured env.
 let cachedMainModule: MainModule | null = null;
 async function loadMainModule(): Promise<MainModule> {
-  if (cachedMainModule === null) {
-    cachedMainModule = await import('#src/cli/program.js');
-  }
+  cachedMainModule ??= await import('#src/cli/program.js');
   return cachedMainModule;
 }
 async function loadMainModuleFresh(): Promise<MainModule> {
@@ -1075,7 +1073,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {});
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { retention: 'retain' });
   });
 
   it.each([
@@ -1116,6 +1114,7 @@ describe('cli main routing', () => {
       model: 'gpt-5',
       owner: 'owner-1',
       bypassPermissions: true,
+      retention: 'discard_provider_artifacts_on_terminal',
     });
   });
 
@@ -1132,7 +1131,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:architect', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:architect' });
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      agent: 'coral:architect',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('preserves explicit coral:debugger for codex agent launches', async () => {
@@ -1148,7 +1150,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:debugger', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:debugger' });
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      agent: 'coral:debugger',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('dispatches provider agent launches for the claude provider', async () => {
@@ -1164,7 +1169,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'claude', 'debugger', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', { agent: 'debugger' });
+    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', {
+      agent: 'debugger',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('keeps detach launches on the one-shot path with text output', async () => {
@@ -1289,6 +1297,7 @@ describe('cli main routing', () => {
 
     expect(mockState.createSession).toHaveBeenCalledWith('codex', 'check func(x) behavior', {
       agent: 'architect',
+      retention: 'discard_provider_artifacts_on_terminal',
     });
   });
 
@@ -1313,6 +1322,7 @@ describe('cli main routing', () => {
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'first content second content', {
         agent: 'architect',
+        retention: 'discard_provider_artifacts_on_terminal',
       });
     } finally {
       unlinkSync(firstFile);
@@ -1341,6 +1351,7 @@ describe('cli main routing', () => {
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hello func(x)', {
         agent: 'architect',
+        retention: 'discard_provider_artifacts_on_terminal',
       });
     } finally {
       unlinkSync(materializedPromptFile);

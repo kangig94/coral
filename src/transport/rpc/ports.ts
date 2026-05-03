@@ -11,7 +11,7 @@ import type { ToolDomainResult } from '../tool-result.js';
 
 export type SessionStartInput = Pick<
   JobLaunchRequest,
-  'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
+  'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'retention'
 >;
 
 export type SessionResumeInput = Pick<

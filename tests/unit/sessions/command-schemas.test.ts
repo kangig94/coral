@@ -14,9 +14,30 @@ describe('session wire schemas', () => {
       'projectRoot',
       'prompt',
       'provider',
+      'retention',
       'systemPrompt',
       'workDir',
     ]);
+  });
+
+  it('sessionCreateSchema strictly validates retention policy values', () => {
+    expect(
+      sessionCreateSchema.parse({
+        provider: 'codex',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        retention: 'discard_provider_artifacts_on_terminal',
+      }).retention,
+    ).toBe('discard_provider_artifacts_on_terminal');
+
+    expect(() =>
+      sessionCreateSchema.parse({
+        provider: 'codex',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        retention: 'discard',
+      }),
+    ).toThrow();
   });
 
   it('sessionMessageSchema exposes the documented field set', () => {

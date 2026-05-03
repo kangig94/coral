@@ -18,7 +18,6 @@ import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
-import type { WorkflowSessionHandle } from '../workflow/execution-contract.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
@@ -174,7 +173,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         awaitLaunch: (jobId, timeoutMs) => this.waitService.awaitLaunch(jobId, timeoutMs),
         waitStream: (req) => this.waitService.waitStream(req),
         waitForJobTerminal: (jobId, timeoutMs) => this.waitService.waitForJobTerminal(jobId, timeoutMs),
-        cleanupWorkflowSessions: (sessions) => this.workflowService.cleanupWorkflowSessions(sessions),
       },
     });
     this.abortService = new JobAbortService({
@@ -244,10 +242,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.launchService.list(providerName);
   }
 
-  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void {
-    this.workflowService.cleanupWorkflowSessions(sessions);
-  }
-
   abort(jobIds: string[]): AbortResult {
     return this.abortService.abort(jobIds);
   }
@@ -272,6 +266,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     options?: TerminalWriteOptions,
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
+  }
+
+  async recordRecoveredArtifactHandles(
+    sessionId: string,
+    input: Parameters<RecoveryCapableService['recordRecoveredArtifactHandles']>[1],
+  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }> {
+    return this.recoveryService.recordRecoveredArtifactHandles(sessionId, input);
   }
 
   async interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void> {

@@ -1,6 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
+import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
+import {
+  claudeArtifactCapability,
+  claudeRecoveryLifecycle,
+  locateClaudeJsonlArtifact,
+} from '#src/providers/claude/provider-facets.js';
+import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
+
+function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
+  return {
+    name,
+    isDirectory: () => kind === 'dir',
+    isFile: () => kind === 'file',
+  };
+}
+
+function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, 'existsSync' | 'readdirSync'> {
+  return {
+    existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
+    readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
+  };
+}
 
 describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
   it('uses the preserved conversation ref when the session is resumable without a bootstrap signature', () => {
@@ -40,5 +61,65 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
     expect(mutation).toEqual({
       kind: 'preserve',
     });
+  });
+});
+
+describe('locateClaudeJsonlArtifact', () => {
+  const root = '/home/user/.claude/projects';
+
+  it('returns no_match when no project JSONL matches the conversation ref', () => {
+    const storage = storageForTree({
+      [root]: [dirent('-workspace-a', 'dir')],
+      [`${root}/-workspace-a`]: [dirent('other-session.jsonl', 'file')],
+    });
+
+    expect(locateClaudeJsonlArtifact({ conversationRef: 'session-1', projectsRoot: root, storage })).toMatchObject({
+      kind: 'no_match',
+      diagnostic: expect.stringContaining('session-1'),
+    });
+  });
+
+  it('returns the concrete project JSONL path for a single conversation ref match', () => {
+    const storage = storageForTree({
+      [root]: [dirent('-workspace-a', 'dir')],
+      [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
+    });
+
+    expect(locateClaudeJsonlArtifact({ conversationRef: 'session-1', projectsRoot: root, storage })).toEqual({
+      kind: 'match',
+      artifact: {
+        handle: `${root}/-workspace-a/session-1.jsonl`,
+      },
+    });
+  });
+
+  it('returns ambiguous when multiple project JSONL files match the conversation ref', () => {
+    const storage = storageForTree({
+      [root]: [dirent('-workspace-a', 'dir'), dirent('-workspace-b', 'dir')],
+      [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
+      [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
+    });
+
+    expect(locateClaudeJsonlArtifact({ conversationRef: 'session-1', projectsRoot: root, storage })).toMatchObject({
+      kind: 'ambiguous',
+      diagnostic: expect.stringContaining('2 JSONL'),
+      matches: [`${root}/-workspace-a/session-1.jsonl`, `${root}/-workspace-b/session-1.jsonl`],
+    });
+  });
+});
+
+describe('claudeArtifactCapability', () => {
+  it('discards only the recorded handles it is given', async () => {
+    const unlinkSync = vi.fn();
+    const runtime = {
+      storage: { unlinkSync },
+      env: { homedir: () => '/home/user' },
+    } as unknown as ArtifactCleanupRuntime;
+
+    await expect(
+      claudeArtifactCapability.discardArtifacts(['/tmp/session-a.jsonl', '/tmp/session-b.jsonl'], runtime),
+    ).resolves.toEqual({ kind: 'discarded' });
+
+    expect(unlinkSync.mock.calls).toEqual([['/tmp/session-a.jsonl'], ['/tmp/session-b.jsonl']]);
   });
 });

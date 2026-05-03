@@ -1,4 +1,3 @@
-
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -168,7 +167,6 @@ function createHarness(options: {
       return emit(req.jobIds.map((jobId) => terminal(jobId, `result:${jobId}`)));
     }),
     waitForJobTerminal: vi.fn(async () => {}),
-    cleanupWorkflowSessions: vi.fn(),
   };
 
   const createInvocationContext = (projectRoot: string): InvocationContext => ({

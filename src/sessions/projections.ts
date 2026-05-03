@@ -6,13 +6,18 @@ import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
   DEFAULT_SESSION_CONTROLLER,
+  type RetentionDiscardAttempt,
   sessionControllerFromProfile,
   sessionEntrySchema,
   type SessionEntry,
 } from './entry.js';
 import type {
+  SessionArtifactHandleRecordedBody,
   SessionClaimedBody,
   SessionContinuityCheckpointedBody,
+  SessionRetentionDiscardCompletedBody,
+  SessionRetentionDiscardFailedBody,
+  SessionRetentionDiscardRequestedBody,
   SessionInterruptedBody,
   SessionOpenedBody,
 } from './event-bodies.js';
@@ -194,6 +199,12 @@ export const reduceSessionContinuityCheckpointed: Reducer<SessionContinuityCheck
   });
 };
 
+export const reduceSessionArtifactHandleRecorded: Reducer<SessionArtifactHandleRecordedBody> = (db, event) => {
+  upsertProjectionSession(db, event, {
+    entry: event.body.entry,
+  });
+};
+
 export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
@@ -203,6 +214,54 @@ export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => 
 export const reduceSessionClaimReleased: Reducer<SessionClaimedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
+  });
+};
+
+function upsertRetentionDiscardAttempt(
+  db: Database,
+  event: { stream: { id: string }; seq: number },
+  attempt: RetentionDiscardAttempt,
+): void {
+  const previous = readProjectionSession(db, event.stream.id);
+  if (previous === null) {
+    throw prematureProjectionSessionEvent(event.stream.id);
+  }
+
+  const attempts = previous.entry.retentionDiscard.attempts.filter((entry) => entry.attempt !== attempt.attempt);
+  upsertProjectionSession(db, event, {
+    entry: {
+      ...previous.entry,
+      retentionDiscard: {
+        attempts: [...attempts, attempt].sort((left, right) => left.attempt - right.attempt),
+      },
+    },
+  });
+}
+
+export const reduceSessionRetentionDiscardRequested: Reducer<SessionRetentionDiscardRequestedBody> = (db, event) => {
+  upsertRetentionDiscardAttempt(db, event, {
+    attempt: event.body.attempt,
+    handles: event.body.handles,
+    status: 'requested',
+  });
+};
+
+export const reduceSessionRetentionDiscardCompleted: Reducer<SessionRetentionDiscardCompletedBody> = (db, event) => {
+  upsertRetentionDiscardAttempt(db, event, {
+    attempt: event.body.attempt,
+    handles: event.body.handles,
+    status: 'completed',
+    outcome: event.body.outcome,
+  });
+};
+
+export const reduceSessionRetentionDiscardFailed: Reducer<SessionRetentionDiscardFailedBody> = (db, event) => {
+  upsertRetentionDiscardAttempt(db, event, {
+    attempt: event.body.attempt,
+    handles: event.body.handles,
+    status: 'failed',
+    reason: event.body.reason,
+    ...(event.body.causeRef === undefined ? {} : { causeRef: event.body.causeRef }),
   });
 };
 

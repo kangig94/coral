@@ -198,9 +198,7 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
 // need module-load-time env capture must call `loadFollowModuleFresh()`.
 let cachedFollowModule: FollowModule | null = null;
 async function loadFollowModule(): Promise<FollowModule> {
-  if (cachedFollowModule === null) {
-    cachedFollowModule = await import('#src/cli/follow.js');
-  }
+  cachedFollowModule ??= await import('#src/cli/follow.js');
   return cachedFollowModule;
 }
 async function loadFollowModuleFresh(): Promise<FollowModule> {

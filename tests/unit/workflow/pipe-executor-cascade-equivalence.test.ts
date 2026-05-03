@@ -83,7 +83,6 @@ function createExecutionService(): WorkflowExecutionPort & {
       return emit([terminal('job-3', { content: 'FINAL' }), terminal('job-4', { content: 'LIT B' })]);
     }),
     waitForJobTerminal: vi.fn(async () => {}),
-    cleanupWorkflowSessions: vi.fn(),
   };
 }
 

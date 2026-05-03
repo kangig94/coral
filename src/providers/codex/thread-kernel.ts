@@ -23,6 +23,7 @@ import {
   type CodexServiceTier,
 } from './request-mapping.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse, Turn } from './protocol.js';
+import { locateCodexRolloutArtifactFromRuntime } from './provider-facets.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -52,6 +53,8 @@ export type CodexTurnState = {
   turnId: string | null;
   turnStartRequested: boolean;
   checkpointedTurnId: string | null;
+  artifactHandleEmissionAttempted: boolean;
+  artifactLocatorRuntime: Pick<ProviderRuntime, 'env' | 'storage'>;
   bufferedNotifications: AppServerNotificationMessage[];
   bufferedNotificationsDropped: number;
   preTurnMailbox: {
@@ -115,6 +118,11 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     turnId: null,
     turnStartRequested: false,
     checkpointedTurnId: null,
+    artifactHandleEmissionAttempted: false,
+    artifactLocatorRuntime: {
+      env: runtime.env,
+      storage: runtime.storage,
+    },
     bufferedNotifications: [],
     bufferedNotificationsDropped: 0,
     preTurnMailbox: {
@@ -163,6 +171,27 @@ function emitProgress(emit: (event: ProviderEventBody) => void, message: string 
     kind: 'progress',
     message,
   });
+}
+
+function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event: ProviderEventBody) => void): void {
+  if (state.artifactHandleEmissionAttempted || !state.threadId) {
+    return;
+  }
+  state.artifactHandleEmissionAttempted = true;
+
+  const result = locateCodexRolloutArtifactFromRuntime(state.threadId, state.artifactLocatorRuntime);
+  if (!result) {
+    return;
+  }
+  if (result.kind === 'match') {
+    emit({
+      kind: 'artifact_handle',
+      handle: result.artifact.handle,
+    });
+    return;
+  }
+
+  emitProgress(emit, result.diagnostic);
 }
 
 function extractThreadId(message: AppServerNotificationMessage): string | null {
@@ -443,6 +472,7 @@ function applyNotificationCore(
         return;
       }
       emitProgress(emit, `Turn ${turn?.status === 'completed' ? 'completed' : (turn?.status ?? 'finished')}.`);
+      emitCodexRolloutArtifactHandleOnce(state, emit);
       completeTurn(state, turn);
       return;
     }

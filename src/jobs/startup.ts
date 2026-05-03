@@ -5,6 +5,7 @@ import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionLookup } from '../sessions/lookup.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
+import type { CommitEventsFn } from '../store/append.js';
 
 export type JobsStartupContext = {
   namespace: string;
@@ -18,6 +19,7 @@ export type JobsStartupContext = {
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;
+  coordinatorCommit: CommitEventsFn;
   /**
    * Why the recovery is finalizing app-server jobs:
    * - `'restart'` (default): ordinary process restart recovery.

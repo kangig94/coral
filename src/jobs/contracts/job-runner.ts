@@ -1,5 +1,5 @@
 import type { ProviderRequest, ProviderSpec } from '../../providers/contract.js';
-import type { SessionEntry } from '../../sessions/entry.js';
+import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
 import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
 import type { LaunchDecision } from '../launch.js';
@@ -32,7 +32,13 @@ export interface ProviderJobLaunchPort {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts?: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string },
+    opts?: {
+      pool?: LaunchPool;
+      projectRoot?: string;
+      parentWorkflowJobId?: string;
+      workflowSlotId?: string;
+      retention?: RetentionPolicy;
+    },
   ): LaunchDecision;
 }
 

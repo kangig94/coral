@@ -76,7 +76,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/workflow-recovery-finalizer.ts',
   'src/coordinator/shutdown.ts',
   'src/coordinator/startup-error.ts',
-  'src/coordinator/workflow-cleanup.ts',
 ]);
 
 const DOMAIN_API_TARGETS = new Set<string>();
@@ -107,7 +106,6 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/lifecycle.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
-  'src/coordinator/workflow-cleanup.ts',
   'src/coordinator/shutdown.ts',
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
@@ -144,7 +142,6 @@ describe('coordinator topology invariants', () => {
     expect(COORDINATOR_FILE_SET.has('src/coordinator/contracts.ts')).toBe(true);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/event-bus.ts')).toBe(true);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/execution-service.ts')).toBe(true);
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/workflow-cleanup.ts')).toBe(true);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/live/discuss-runtime.ts')).toBe(false);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/info.ts')).toBe(false);
   });

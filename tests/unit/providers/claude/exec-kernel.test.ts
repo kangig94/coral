@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { claudeExecKernel, isClaudeExecParseError } from '#src/providers/claude/exec-kernel.js';
 import { buildPreparedClaudeRequest } from '#src/providers/claude/request-prep.js';
@@ -58,6 +59,31 @@ function makeRuntime(runCliImpl?: ProviderRuntime['runCli']): ProviderRuntime & 
       transportClosed,
     },
     kbRoot: '/mock/kb',
+  };
+}
+
+function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
+  return {
+    name,
+    isDirectory: () => kind === 'dir',
+    isFile: () => kind === 'file',
+  };
+}
+
+function artifactStorage(tree: Record<string, DirentLike[]>): ProviderRuntime['storage'] {
+  return {
+    existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
+    readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
+    readFileSync: () => '',
+    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+  };
+}
+
+function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
+  return {
+    homedir: () => homedir,
+    get: () => undefined,
+    fullSnapshot: () => ({}),
   };
 }
 
@@ -169,6 +195,36 @@ describe('claude exec-kernel', () => {
       content: 'line one\nline two',
       outcome: { kind: 'completed' },
       usage: { costUsd: 0.01 },
+    });
+  });
+
+  it('emits the concrete forked Claude JSONL artifact handle when result.sessionId identifies it', async () => {
+    const projectsRoot = '/home/user/.claude/projects';
+    const runtime = makeRuntime(async () => ({
+      stdout: JSON.stringify({
+        type: 'result',
+        result: 'fork output',
+        session_id: 'fork-session-jsonl',
+      }),
+      stderr: '',
+      code: 0,
+      aborted: false,
+    }));
+    runtime.env = env();
+    runtime.storage = artifactStorage({
+      [projectsRoot]: [dirent('-workspace', 'dir')],
+      [`${projectsRoot}/-workspace`]: [dirent('fork-session-jsonl.jsonl', 'file')],
+    });
+
+    const events = await collectProviderEvents(claudeExecKernel(makeRequest(), runtime));
+
+    expect(events).toContainEqual({
+      kind: 'artifact_handle',
+      handle: `${projectsRoot}/-workspace/fork-session-jsonl.jsonl`,
+    });
+    expect(getTerminal(events).terminal).toMatchObject({
+      content: 'fork output',
+      outcome: { kind: 'completed' },
     });
   });
 

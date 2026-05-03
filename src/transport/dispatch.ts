@@ -1,4 +1,5 @@
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
+import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -8,6 +9,8 @@ import type { HttpHandlerPorts } from './server-ports.js';
 import type { RpcMethodSpec } from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
+
+type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
 function decodePathSegment(segment: string): string | null {
   try {
@@ -98,6 +101,14 @@ type CommonSessionInput = {
   systemPrompt?: string;
 };
 
+type CreateSessionInputFields = CommonSessionInput & {
+  retention?: RetentionPolicy;
+};
+
+function isRetentionPolicy(value: unknown): value is RetentionPolicy {
+  return value === 'retain' || value === 'discard_provider_artifacts_on_terminal';
+}
+
 function commonSessionInputFields(parsed: Record<string, unknown>): CommonSessionInput {
   const result: CommonSessionInput = {};
   if (typeof parsed.model === 'string') result.model = parsed.model;
@@ -105,6 +116,12 @@ function commonSessionInputFields(parsed: Record<string, unknown>): CommonSessio
   if (typeof parsed.effort === 'string') result.effort = parsed.effort;
   if (typeof parsed.bypassPermissions === 'boolean') result.bypassPermissions = parsed.bypassPermissions;
   if (typeof parsed.systemPrompt === 'string') result.systemPrompt = parsed.systemPrompt;
+  return result;
+}
+
+function createSessionInputFields(parsed: Record<string, unknown>): CreateSessionInputFields {
+  const result: CreateSessionInputFields = commonSessionInputFields(parsed);
+  if (isRetentionPolicy(parsed.retention)) result.retention = parsed.retention;
   return result;
 }
 
@@ -140,7 +157,7 @@ export async function executeCatalogRequest(
         {
           prompt: parsed.prompt,
           ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
-          ...commonSessionInputFields(parsed),
+          ...createSessionInputFields(parsed),
         },
         ctx,
       );

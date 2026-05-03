@@ -8,6 +8,7 @@ import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/sess
 import type { WatchState } from '../discuss/watch.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { JobStatus, JobsListResponse } from '../jobs/records.js';
+import type { RetentionPolicy } from '../sessions/entry.js';
 import type {
   KbDiagnoseInput,
   KbDiagnoseResult,
@@ -61,6 +62,7 @@ type SessionRequestOptions = {
 
 type CreateSessionRequestOptions = SessionRequestOptions & {
   agent?: string;
+  retention?: RetentionPolicy;
 };
 
 type WorkflowRequestOptions = {

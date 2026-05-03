@@ -2,6 +2,7 @@ import type { Database } from '../store/db.js';
 
 import type { Runtime } from '../runtime/ports.js';
 import { SessionManager } from './shell.js';
+import type { CommitEventsFn } from '../store/append.js';
 
 export type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 
@@ -15,11 +16,12 @@ export function releaseSessionJobClaim(options: {
   projectRoot: string;
   runtime: Runtime;
   db: Database;
+  commitEvents: CommitEventsFn;
   emitSessionReleased: SessionReleasedEmitter;
   sessionId: string;
   jobId: string;
 }): void {
-  SessionManager.forProduction(options.projectRoot, options.runtime, undefined, options.emitSessionReleased, {
+  SessionManager.forProduction(options.projectRoot, options.runtime, options.commitEvents, options.emitSessionReleased, {
     db: options.db,
   }).releaseJob(options.sessionId, options.jobId);
 }

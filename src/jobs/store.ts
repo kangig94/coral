@@ -10,6 +10,7 @@ import {
   type CommitClosureResult,
   type CommitContext,
   type CommitEventsFn,
+  type PostCommitObserver,
 } from '../store/append.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { UpcasterRegistry } from '../store/upcaster-registry.js';
@@ -38,6 +39,7 @@ export type JobStoreOptions = {
    * `permissiveProviderLookupPort` from `tests/helpers/append-context.ts`.
    */
   providers: ProviderLookupPort;
+  observer?: PostCommitObserver;
 };
 
 function formatElapsed(ms: number): string {
@@ -75,6 +77,7 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
+  private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
@@ -93,6 +96,7 @@ export class JobStore implements JobProgressStore {
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
     this.eventBus = eventBus;
+    this.observer = options.observer;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
     this.db = db;
@@ -293,7 +297,11 @@ export class JobStore implements JobProgressStore {
         return cb(tracked);
       }) ?? [];
 
-    return this.publishAppendedEvents(appended, previousByJob);
+    const published = this.publishAppendedEvents(appended, previousByJob);
+    if (published.length > 0) {
+      this.observer?.(published);
+    }
+    return published;
   }
 
   initJob(opts: InitJobOptions): void {

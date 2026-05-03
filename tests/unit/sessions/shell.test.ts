@@ -16,7 +16,7 @@ vi.mock('node:os', async () => {
 
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { commit } from '#src/store/append.js';
+import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
@@ -71,6 +71,7 @@ describe('sessions shell store', () => {
     db: ReturnType<typeof openStoreDatabase>;
     mgr: SessionManager;
     workDir: string;
+    appendedBatches: AppendedEvent[][];
   } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
@@ -78,19 +79,23 @@ describe('sessions shell store', () => {
     const db = openSessionDb();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createDefaultUpcasterRegistry();
-    const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
-      commit(db, cb, {
+    const appendedBatches: AppendedEvent[][] = [];
+    const coordinatorCommit: CommitEventsFn = (cb) => {
+      const appended = commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
         upcasters,
         providers: permissiveProviderLookupPort,
       });
+      appendedBatches.push(appended);
+      return appended;
     };
 
     return {
       db,
       mgr: new SessionManager(workDir, runtime, coordinatorCommit, undefined, db),
       workDir,
+      appendedBatches,
     };
   }
 
@@ -107,12 +112,16 @@ describe('sessions shell store', () => {
     });
 
     expect(entry.state).toBe('pending');
+    expect(entry.retention).toBe('retain');
+    expect(entry.artifactHandles).toEqual([]);
     expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
       provider: 'codex',
       name: 'alpha',
       state: 'pending',
+      retention: 'retain',
+      artifactHandles: [],
       model: 'gpt-5',
       cwd: workDir,
       version: 1,
@@ -152,6 +161,8 @@ describe('sessions shell store', () => {
           provider: 'codex',
           name: 'alpha',
           state: 'pending',
+          retention: 'retain',
+          artifactHandles: [],
           version: 1,
         },
         provider: 'codex',
@@ -195,6 +206,48 @@ describe('sessions shell store', () => {
     expect(entry.projectRoot).toBe('/my/project');
     expect(entry.backendNamespace).toBe('ns-beta');
     expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
+  });
+
+  it('allocate captures explicit retention in session.opened', () => {
+    const { db, mgr, workDir } = setupWithJournal('allocate-retention');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-a',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
+
+    try {
+      expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+        retention: 'discard_provider_artifacts_on_terminal',
+        artifactHandles: [],
+      });
+
+      const row = db
+        .prepare(
+          `SELECT body
+             FROM events
+            WHERE stream_kind = 'session' AND stream_id = ? AND type = 'session.opened'
+            LIMIT 1`,
+        )
+        .get(entry.sessionId) as { body: Uint8Array | Buffer } | undefined;
+      if (!row) {
+        throw new Error('Expected session.opened event row');
+      }
+
+      expect(JSON.parse(new TextDecoder().decode(row.body))).toMatchObject({
+        entry: {
+          sessionId: entry.sessionId,
+          retention: 'discard_provider_artifacts_on_terminal',
+          artifactHandles: [],
+        },
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('string allocation derives projectRoot from cwd', () => {
@@ -382,6 +435,57 @@ describe('sessions shell store', () => {
     });
   });
 
+  it('finalizeJobContinuityAtomic appends checkpoint and claim release in one commit and caches release entry', async () => {
+    const { appendedBatches, mgr, workDir } = setupWithJournal('finalize-dual-event');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    appendedBatches.length = 0;
+    await expect(
+      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        mutation: {
+          kind: 'set_resumable',
+          conversationRef: 'thread-1',
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(appendedBatches).toHaveLength(1);
+    expect(appendedBatches[0].map((event) => event.type)).toEqual([
+      'session.continuity.checkpointed',
+      'session.claim.released',
+    ]);
+    expect(appendedBatches[0][0].body).toMatchObject({
+      entry: {
+        sessionId: entry.sessionId,
+        activeJobId: 'job-1',
+        version: claimed.version + 1,
+      },
+    });
+    expect(appendedBatches[0][1].body).toMatchObject({
+      entry: {
+        sessionId: entry.sessionId,
+        activeJobId: undefined,
+        version: claimed.version + 2,
+      },
+      jobId: 'job-1',
+    });
+
+    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+      activeJobId: undefined,
+      state: 'ready',
+      conversationRef: 'thread-1',
+      version: claimed.version + 2,
+    });
+  });
+
   it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
     const { mgr, workDir } = setup('finalize-non-resumable');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
@@ -514,6 +618,94 @@ describe('sessions shell store', () => {
       version: claimed.version,
     });
     expect(current?.conversationRef).toBeUndefined();
+  });
+
+  it('recordArtifactHandleAtomic appends a lifecycle event and advances the expected version', async () => {
+    const { db, mgr, workDir } = setupWithJournal('record-artifact-handle');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-a',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    try {
+      await expect(
+        mgr.recordArtifactHandleAtomic(entry.sessionId, {
+          expectedActiveJobId: 'job-1',
+          expectedVersion: claimed.version,
+          provider: 'codex',
+          handle: '/tmp/codex/rollout.jsonl',
+          sourceJobId: 'job-1',
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        nextVersion: claimed.version + 1,
+      });
+
+      expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+        activeJobId: 'job-1',
+        version: claimed.version + 1,
+        artifactHandles: [
+          {
+            provider: 'codex',
+            handle: '/tmp/codex/rollout.jsonl',
+            sourceJobId: 'job-1',
+          },
+        ],
+      });
+
+      const rows = db
+        .prepare(
+          `SELECT type, refs, body
+             FROM events
+            WHERE stream_kind = 'session' AND stream_id = ?
+            ORDER BY seq ASC`,
+        )
+        .all(entry.sessionId) as Array<{ type: string; refs: string | null; body: Uint8Array | Buffer }>;
+
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.claimed',
+        'session.artifact.handle.recorded',
+      ]);
+      const artifactRow = rows[2];
+      if (!artifactRow) {
+        throw new Error('Expected session.artifact.handle.recorded event row');
+      }
+      expect(artifactRow.refs === null ? null : JSON.parse(artifactRow.refs)).toEqual({
+        sessionId: entry.sessionId,
+        jobId: 'job-1',
+      });
+      expect(JSON.parse(new TextDecoder().decode(artifactRow.body))).toMatchObject({
+        provider: 'codex',
+        handle: '/tmp/codex/rollout.jsonl',
+        sourceJobId: 'job-1',
+        entry: {
+          sessionId: entry.sessionId,
+          retention: 'discard_provider_artifacts_on_terminal',
+          artifactHandles: [
+            {
+              provider: 'codex',
+              handle: '/tmp/codex/rollout.jsonl',
+              sourceJobId: 'job-1',
+            },
+          ],
+          version: claimed.version + 1,
+        },
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('releaseJobClaimAtomic clears the claim only at the latest version and does not write continuity', async () => {
