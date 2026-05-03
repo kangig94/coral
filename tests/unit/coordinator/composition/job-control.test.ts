@@ -19,7 +19,7 @@ function createControlHarness(): {
     listExecutionServices: () => [],
     getLifecycleController: () => null,
     backendNamespace: 'test-ns',
-    progressStore: {} as never,
+    getProgressStore: () => ({} as never),
     internalJobAbortRegistry,
   });
   return { control, internalJobAbortRegistry };

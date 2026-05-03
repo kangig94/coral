@@ -14,7 +14,6 @@
 // `WorkflowView.slotOutcomes`, which together are the inputs that CLI
 // presentation composes from.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -27,10 +26,9 @@ import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
-import type { StoragePort } from '#src/infra/port-types.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -48,13 +46,6 @@ const WORKFLOW_SESSION_ID = 'wf-session-1';
 const SLOT_A = `${WORKFLOW_ID}:0:0`;
 const SLOT_B = `${WORKFLOW_ID}:1:0`;
 const SLOT_C = `${WORKFLOW_ID}:1:1`;
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 function workflowPlan(): {
   slots: Array<{
     slotId: string;
@@ -145,7 +136,7 @@ function setup(): {
   store: CoralStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
   // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });

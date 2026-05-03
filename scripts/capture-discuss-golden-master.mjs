@@ -89,6 +89,7 @@ async function main() {
     target: 'node18',
     format: 'esm',
     external: ['node:*', 'better-sqlite3'],
+    loader: { '.sql': 'text' },
   };
   await Promise.all([
     esbuild.build({

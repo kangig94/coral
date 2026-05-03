@@ -1,29 +1,22 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 describe('jobs reducer equivalence', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
@@ -172,7 +165,7 @@ describe('jobs reducer equivalence', () => {
   it('job.launch.rejected byte-identical after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
@@ -274,7 +267,7 @@ describe('jobs reducer equivalence', () => {
   it('job.aborted byte-identical after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 

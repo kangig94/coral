@@ -195,13 +195,11 @@ async function createWritableKbRuntime() {
   const [
     { createRealRuntime },
     { openStoreDatabase },
-    { ensureStoreSchemasDir },
     { createKbRuntime },
     { kbRuntimeDir },
   ] = await Promise.all([
     import('#src/runtime/real.js'),
     import('#src/store/db.js'),
-    import('#src/store/schema-loader.js'),
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
   ]);
@@ -210,7 +208,6 @@ async function createWritableKbRuntime() {
   const db = openStoreDatabase({
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
   const kb = createKbRuntime({
     markdownRoot: runtime.paths.coral.corpus.kbRoot,

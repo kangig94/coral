@@ -188,14 +188,17 @@ function runWithBridge(next: Provider, request: ProviderRequest, runtime: Provid
   return next(request, runtime);
 }
 
+type AbortSignalListener = Parameters<AbortSignal['addEventListener']>[1];
+type AbortSignalListenerOptions = Parameters<AbortSignal['addEventListener']>[2];
+
 function createAbortAwareSignal(signal: AbortSignal): AbortSignal {
   return new Proxy(signal, {
     get(target, prop, receiver) {
       if (prop === 'addEventListener') {
         return (
           type: 'abort',
-          listener: EventListenerOrEventListenerObject,
-          options?: boolean | AddEventListenerOptions,
+          listener: AbortSignalListener,
+          options?: AbortSignalListenerOptions,
         ): void => {
           if (type === 'abort' && target.aborted) {
             notifyAbortListener(target, listener);
@@ -212,7 +215,7 @@ function createAbortAwareSignal(signal: AbortSignal): AbortSignal {
   });
 }
 
-function notifyAbortListener(signal: AbortSignal, listener: EventListenerOrEventListenerObject): void {
+function notifyAbortListener(signal: AbortSignal, listener: AbortSignalListener): void {
   const event = new Event('abort');
   if (typeof listener === 'function') {
     listener.call(signal, event);

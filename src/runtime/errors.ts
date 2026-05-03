@@ -20,6 +20,9 @@ export type SerializedCoralSetupError = CoralSetupErrorInit;
 
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
+  | 'startup_not_ready'
+  | 'store_schema_outdated'
+  | 'store_reset_lock_contended'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'unknown_expansion'
@@ -74,6 +77,19 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Another coral-cli expansion equip is in progress for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+  },
+  startup_not_ready: {
+    userMessage: 'Coral backend is still starting.',
+    remediation: 'The Coral backend is still starting; retry shortly.',
+  },
+  store_schema_outdated: {
+    userMessage: 'Coral backend store schema is outdated.',
+    remediation: 'Start the Coral backend daemon (`coral-cli backend start`) to reinitialize the store.',
+  },
+  store_reset_lock_contended: {
+    userMessage: 'Another Coral process is initializing the backend store.',
+    remediation:
+      'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>

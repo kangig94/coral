@@ -138,6 +138,7 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
       format: 'cjs',
       outfile: invocationCjsPath,
       external: [],
+      loader: { '.sql': 'text' },
     });
   });
 

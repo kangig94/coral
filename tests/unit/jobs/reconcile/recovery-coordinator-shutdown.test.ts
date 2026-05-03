@@ -80,6 +80,43 @@ function createProjectRoot(name: string): string {
   return projectRoot;
 }
 
+function createStoreServicesHarness(progressStore: { getDb(): { close(): void } }): {
+  storeServicesRef: never;
+  createStoreServicesFromDbFn: (storeDb: { close(): void }) => never;
+} {
+  const services = {
+    storeDb: progressStore.getDb(),
+    progressStore,
+    expansionManifestCatalog: null,
+    expansionStateStore: null,
+    expansionLifecycleService: null,
+    consumerDriver: null,
+  };
+  let current: typeof services | null = null;
+  return {
+    storeServicesRef: {
+      tryGet: () => current,
+      get: () => {
+        if (current === null) throw new Error('store services not set');
+        return current;
+      },
+      set: (next: typeof services) => {
+        current = next;
+      },
+      clear: () => {
+        current = null;
+      },
+    } as never,
+    createStoreServicesFromDbFn: (storeDb) => {
+      if (storeDb !== services.storeDb) {
+        storeDb.close();
+      }
+      current = services;
+      return services as never;
+    },
+  };
+}
+
 function createLaunchCoordinator(
   modules: LoadedModules,
   runtime: Runtime,
@@ -257,7 +294,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
   const eventBus = new modules.eventBusModule.TypedEventBus();
   const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
-    db: openTestStoreDb(runtime),
+    db: openTestStoreDb(runtime, ':memory:'),
     eventBus,
     providers: permissiveProviderLookupPort,
   });
@@ -278,6 +315,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       await options.workflowResumeImpl();
     }
   });
+  const storeServices = createStoreServicesHarness(progressStore);
 
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
@@ -295,7 +333,8 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     backendPid: 1234,
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
-    progressStore,
+    storeServicesRef: storeServices.storeServicesRef,
+    createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
     streamResponses: new Set(),
     discussStores: new Map(),
     eventBus,
@@ -318,7 +357,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
-    expansionLifecycleService: null,
     handoffQuiescePorts: () => [],
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
@@ -459,7 +497,8 @@ describe('recovery coordinator shutdown', () => {
 
   it('cleans up an adopted running job on shutdown after the recovery poller is live and suppresses late completion', async () => {
     const modules = await loadModules();
-    const runtime = new SimulationRuntime();
+    const virtualRuntime = new SimulationRuntime();
+    const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
     const pluginRoot = createProjectRoot('plugin-after-poller');
     const projectRoot = createProjectRoot('project-after-poller');
     const cleanupSpy = vi.fn();
@@ -516,7 +555,7 @@ describe('recovery coordinator shutdown', () => {
       expect(harness.setLifecycle).not.toHaveBeenCalledWith('running');
 
       pidAlive = false;
-      runtime.time.tick(recoveryPollMs + 1);
+      virtualRuntime.time.tick(recoveryPollMs + 1);
 
       expect(harness.fakeService.completeRecoveredJob).not.toHaveBeenCalled();
       expect(harness.writeBackendInfoFn).not.toHaveBeenCalled();

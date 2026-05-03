@@ -22,7 +22,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
+import type {
+  CoordinatorCoreOptions,
+  CoordinatorCoreResult,
+  CoordinatorStoreServices,
+} from '#src/coordinator/composition/types.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
@@ -30,7 +34,16 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
 export interface HandoffCoresHarness {
   readonly runtime: Runtime;
@@ -74,6 +87,30 @@ function createMemoryExpansionState(rows: readonly ExpansionStateRow[] = []): Ex
   } as ExpansionStateStore;
 }
 
+function createHarnessStoreServices(
+  runtime: Runtime,
+  db: Database,
+  namespace: string,
+  expansionLifecycleService: ExpansionLifecycleService,
+  expansionStateStore: ExpansionStateStore,
+): CoordinatorStoreServices {
+  return {
+    storeDb: db,
+    progressStore: new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+      db,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+      providers: permissiveProviderLookupPort,
+    }),
+    expansionManifestCatalog: createExpansionManifestCatalog({
+      db,
+      now: () => new Date(runtime.time.now()).toISOString(),
+    }),
+    expansionStateStore,
+    expansionLifecycleService,
+    consumerDriver: null,
+  };
+}
+
 interface CreateHarnessOptions {
   flavor?: 'prod' | 'dev';
 }
@@ -81,6 +118,7 @@ interface CreateHarnessOptions {
 export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): HandoffCoresHarness {
   const homeDir = mkdtempSync(join(tmpdir(), 'coral-handoff-cores-'));
   const flavor = options.flavor ?? 'prod';
+  const backendNamespace = 'handoff-cores';
 
   const previousHome = process.env.HOME;
   process.env.HOME = homeDir;
@@ -94,25 +132,33 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const db = openStoreDatabase({
     path: ':memory:',
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   const liveServers: Server[] = [];
   const liveCores: BootedCore[] = [];
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
+    const expansionStateStore = createMemoryExpansionState();
     const expansionLifecycle = new ExpansionLifecycleService({
       makeHost: () => {
         throw new Error('expansion makeHost should not be invoked in the handoff harness');
       },
-      state: createMemoryExpansionState(),
+      state: expansionStateStore,
       bundledLoaders: {},
       manifest: [],
       now: () => new Date('2026-04-27T00:00:00.000Z').toISOString(),
     });
+    const storeServices = createHarnessStoreServices(
+      runtime,
+      db,
+      backendNamespace,
+      expansionLifecycle,
+      expansionStateStore,
+    );
 
     const core = createCoordinatorCore({
       runtime,
+      backendNamespace,
       bootSnapshot: {
         version: 'test-version',
         bundleHash: opts.bundleHash ?? 'test-bundle',
@@ -122,8 +168,12 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         now: () => Date.now(),
         log: () => {},
       },
-      storeDb: db,
-      expansionLifecycleService: expansionLifecycle,
+      createStoreServicesFromDbFn: (openedDb) => {
+        if (openedDb !== db) {
+          openedDb.close();
+        }
+        return storeServices;
+      },
       createKbSubsystemFn: async () => {
         throw new Error('handoff-cores harness runs without a KB subsystem');
       },
@@ -159,6 +209,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
     });
+    setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 
     liveServers.push(core.server);
 

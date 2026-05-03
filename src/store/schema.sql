@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
--- Rows: schema_version, journal_version, coordinator_id, created_ts
+-- Rows: journal_version, coordinator_id, created_ts
 
 -- Corpus version state (owned by KB authority).
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
@@ -203,7 +203,6 @@ CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '1'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
@@ -240,3 +239,9 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   initialized
 ) VALUES
   (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, 0);
+
+CREATE TABLE IF NOT EXISTS expansion_manifest_catalog (
+  id            TEXT PRIMARY KEY,
+  manifest_json TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);

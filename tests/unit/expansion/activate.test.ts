@@ -51,15 +51,35 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
 
 describe('expansion activation', () => {
   const originalFlavor = process.env.CORAL_FLAVOR;
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  let testHome = '';
 
   beforeEach(() => {
     mockState.ensure.mockReset();
     mockState.readDiscoveryRecord.mockReset();
     mockState.createIpcClient.mockReset();
+    testHome = mkdtempSync(join(tmpdir(), 'coral-activate-home-'));
+    process.env.HOME = testHome;
+    process.env.USERPROFILE = testHome;
     delete process.env.CORAL_FLAVOR;
   });
 
   afterEach(() => {
+    if (testHome) {
+      rmSync(testHome, { recursive: true, force: true });
+      testHome = '';
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
     if (originalFlavor === undefined) {
       delete process.env.CORAL_FLAVOR;
     } else {

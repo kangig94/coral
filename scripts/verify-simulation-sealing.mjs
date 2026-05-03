@@ -69,6 +69,9 @@ function getRelativeImportTypeSpecifier(node) {
 function resolveRelativeSourcePath(sourceFilePath, sourceCanonicalPath, specifier, productionFiles) {
   const resolvedBase = resolve(dirname(sourceFilePath), specifier);
   const extension = extname(resolvedBase);
+  if (extension === '.sql') {
+    return null;
+  }
   const candidates =
     extension === '.js'
       ? [resolvedBase.slice(0, -3) + '.ts']
@@ -157,6 +160,9 @@ function parseSourceEdges(sourceFilePath, productionFiles) {
     }
 
     const target = resolveRelativeSourcePath(sourceFilePath, sourceCanonicalPath, specifier, productionFiles);
+    if (target === null) {
+      return;
+    }
     const edge = edges.get(target) ?? {
       source: sourceCanonicalPath,
       target,

@@ -1,16 +1,31 @@
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import type { Expansion } from '#src/expansion/contract.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { JobStore } from '#src/jobs/store.js';
 import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { Disposable } from '#src/runtime/ports.js';
+import type { Disposable, Runtime } from '#src/runtime/ports.js';
+import type { Database } from '#src/store/db.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
 
@@ -116,12 +131,36 @@ function heldBy(kb: KbRuntime, name: typeof KB_FTS_CAPABILITY | typeof KB_VECTOR
   return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
 }
 
+function createStoreServices(
+  runtime: Runtime,
+  db: Database,
+  lifecycle: ExpansionLifecycleService,
+  state: ExpansionStateStore,
+): CoordinatorStoreServices {
+  return {
+    storeDb: db,
+    progressStore: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+      providers: permissiveProviderLookupPort,
+    }),
+    expansionManifestCatalog: createExpansionManifestCatalog({
+      db,
+      now: () => FIXED_NOW,
+    }),
+    expansionStateStore: state,
+    expansionLifecycleService: lifecycle,
+    consumerDriver: null,
+  };
+}
+
 describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
   it('aggregates a single failure into a thrown Error', async () => {
     const { makeHost } = createTestRuntime();
+    const state = createMemoryState();
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
-      state: createMemoryState(),
+      state,
       bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [THROWING_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
@@ -200,10 +239,16 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
 describe('coordinator degraded-KB propagation for bundled fallback failures', () => {
   it('sets kb init error and keeps non-KB IPC online when recoverOnBoot fallback throws', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const { kb, makeHost, runtime } = createTestRuntime();
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const tempHome = mkdtempSync(join(tmpdir(), 'coral-bundled-equip-home-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    const { kb, makeHost, runtime } = createTestRuntime({ runtime: createRealRuntime('prod') });
+    const state = createMemoryState();
     const lifecycle = new ExpansionLifecycleService({
       makeHost,
-      state: createMemoryState(),
+      state,
       bundledLoaders: TEST_BUNDLED_LOADERS,
       manifest: [THROWING_BUNDLED_ENTRY],
       now: () => FIXED_NOW,
@@ -220,7 +265,7 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         now: () => 1_000,
         log: () => {},
       },
-      expansionLifecycleService: lifecycle,
+      createStoreServicesFromDbFn: (storeDb) => createStoreServices(runtime, storeDb, lifecycle, state),
       createKbSubsystemFn: async (): Promise<never> => {
         await lifecycle.recoverOnBoot();
         throw new Error('recoverOnBoot unexpectedly resolved');
@@ -280,6 +325,17 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         await core.lifecycleController.waitForShutdown();
       }
       stderrSpy.mockRestore();
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      if (originalUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = originalUserProfile;
+      }
+      rmSync(tempHome, { recursive: true, force: true });
     }
   });
 });

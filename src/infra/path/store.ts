@@ -7,6 +7,7 @@ export interface StorePaths {
   dbDir: string;
   dbFile: string;
   walFile: string;
+  shmFile: string;
 }
 
 export interface StorePathOptions {
@@ -18,5 +19,6 @@ export function storePaths(flavor: BuildFlavor, opts?: StorePathOptions): StoreP
   const dbDir = join(coralRoot(opts?.baseDir), base);
   const dbFile = join(dbDir, 'store.db');
   const walFile = join(dbDir, 'store.db-wal');
-  return { dbDir, dbFile, walFile };
+  const shmFile = join(dbDir, 'store.db-shm');
+  return { dbDir, dbFile, walFile, shmFile };
 }

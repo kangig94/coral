@@ -3,7 +3,6 @@ declare const __VERSION__: string;
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import { providerLookupPortFromCatalog } from '../../providers/catalog.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import type { CoordinatorIdentity } from '../lifecycle.js';
@@ -14,16 +13,9 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
-import { JobStore } from '../../jobs/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './defaults.js';
-import { composeReducers } from '../../store/reducers.js';
-import { openBackendStoreDb } from '../../store/db.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
-import { jobsRegistry } from '../../jobs/events.js';
-import { sessionsRegistry } from '../../sessions/events.js';
-import { discussRegistry as discussStoreRegistry } from '../../discuss/event-registry.js';
-import { workflowRegistry } from '../../workflow/events.js';
+import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
@@ -39,7 +31,7 @@ export interface CoordinatorWorld {
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
   readonly discussRegistry: DiscussContextRegistry;
-  readonly progressStore: JobStore;
+  readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
   readonly pluginRoot: string;
   readonly now: () => number;
@@ -76,11 +68,7 @@ export function createCoordinatorWorld(
   // backendLog.init must complete before constructing singletons; do not move it below this point.
   const idleTimer = defaultsPlan.eager.createIdleTimer();
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
-  const progressStoreEventBus = options.progressStore?.getEventBus();
-  const eventBus =
-    options.eventBus ??
-    (progressStoreEventBus instanceof TypedEventBus ? progressStoreEventBus : undefined) ??
-    new TypedEventBus();
+  const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
@@ -88,14 +76,7 @@ export function createCoordinatorWorld(
     homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore =
-    options.progressStore ??
-    new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
-      db: options.storeDb ?? openBackendStoreDb(runtime),
-      eventBus,
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-      providers: providerLookupPortFromCatalog(providerRegistry),
-    });
+  const storeServicesRef = createStoreServicesRef();
   const providerHostManager =
     options.providerHostManager ??
     createProviderHostManager({
@@ -129,7 +110,7 @@ export function createCoordinatorWorld(
     providerRegistry,
     pluginRegistry,
     discussRegistry,
-    progressStore,
+    storeServicesRef,
     providerHostManager,
     pluginRoot,
     now,

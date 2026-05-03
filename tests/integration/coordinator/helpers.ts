@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -60,10 +59,6 @@ export function createPluginFixture(
     }) + '\n',
     'utf-8',
   );
-
-  cpSync(join(process.cwd(), 'dist', 'store', 'schemas'), join(root, 'dist', 'store', 'schemas'), {
-    recursive: true,
-  });
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(

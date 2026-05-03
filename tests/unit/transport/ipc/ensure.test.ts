@@ -17,7 +17,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 
 const mockState = vi.hoisted(() => ({
-  spawn: vi.fn(() => ({ unref: vi.fn() })),
+  spawn: vi.fn(() => ({ pid: 12_345, unref: vi.fn() })),
   health: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
@@ -263,7 +263,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { unref: vi.fn() };
+      return { pid: 12_345, unref: vi.fn() };
     });
 
     const { ensure } = await importEnsure();
@@ -319,7 +319,7 @@ describe('ipc ensure', () => {
         token: 'new-token',
         instanceId: 'new-coordinator',
       });
-      return { unref: vi.fn() };
+      return { pid: 12_345, unref: vi.fn() };
     });
 
     const { ensure } = await importEnsure();
@@ -360,7 +360,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { unref: vi.fn() };
+      return { pid: 12_345, unref: vi.fn() };
     });
 
     const { ensure } = await importEnsure();
@@ -420,7 +420,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { unref: vi.fn() };
+      return { pid: 12_345, unref: vi.fn() };
     });
 
     const { ensure } = await importEnsure();
@@ -462,7 +462,7 @@ describe('ipc ensure', () => {
       });
       mockState.spawn.mockImplementation(() => {
         writeDiscovery(root, { instanceId: 'replacement-coordinator' });
-        return { unref: vi.fn() };
+        return { pid: 12_345, unref: vi.fn() };
       });
 
       const { ensure } = await importEnsure();

@@ -44,6 +44,13 @@ function buildHarness(opts: {
   } as unknown as Server;
 
   const ipcServer = { server: {}, sockets: new Set(), socketPath: '/tmp/x' } as unknown as IpcListener;
+  const storeServices = {
+    expansionLifecycleService: {
+      shutdownActiveExpansions: async () => {
+        callLog.push('shutdownActiveExpansions');
+      },
+    },
+  };
 
   let closeIpcResolved = false;
   const closeIpcServerFn =
@@ -94,10 +101,11 @@ function buildHarness(opts: {
       },
       shutdown: async () => {},
     } as never,
-    expansionLifecycleService: {
-      shutdownActiveExpansions: async () => {
-        callLog.push('shutdownActiveExpansions');
-      },
+    storeServicesRef: {
+      tryGet: () => storeServices,
+      get: () => storeServices,
+      set: () => {},
+      clear: () => {},
     } as never,
     terminateAllFn: () => {},
     handoffQuiescePorts: () => [],
@@ -225,11 +233,12 @@ describe('runShutdownSequence drain budget', () => {
       },
       shutdown: async () => {},
     } as never;
-    const origExpansion = harness.ctx.expansionLifecycleService!.shutdownActiveExpansions;
-    harness.ctx.expansionLifecycleService = {
+    const storeServices = harness.ctx.storeServicesRef.get();
+    const origExpansion = storeServices.expansionLifecycleService!.shutdownActiveExpansions;
+    storeServices.expansionLifecycleService = {
       shutdownActiveExpansions: async () => {
         order.push('expansion:start');
-        await origExpansion.call(harness.ctx.expansionLifecycleService);
+        await origExpansion.call(storeServices.expansionLifecycleService);
         order.push('expansion:resolved');
       },
     } as never;

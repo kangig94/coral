@@ -16,6 +16,7 @@ export type ExpansionArgs = z.infer<typeof expansionArgsSchema>;
 
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
 const UNKNOWN_ERROR_REMEDIATION = 'Retry with --verbose or check the coordinator logs.';
+const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
 
 function nextCause(error: unknown): unknown {
   if (error instanceof Error) {
@@ -87,6 +88,20 @@ function finalizeInstallError(error: InstallError): InstallError {
   return installErrorSchema.parse(error);
 }
 
+function readDefaultExpansionCatalogForInstallErrorRendering() {
+  try {
+    return readDefaultExpansionCatalog();
+  } catch (error) {
+    if (serializeCoralSetupError(error) !== null) {
+      return [];
+    }
+    if (error instanceof Error && CATALOG_UNAVAILABLE_MESSAGE.test(error.message)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 function bindingRequiredInstallError(
   structured: NonNullable<ReturnType<typeof serializeCoralSetupError>>,
 ): InstallError | null {
@@ -99,7 +114,7 @@ function bindingRequiredInstallError(
     typeof structured.context?.requiredBy === 'string' ? structured.context.requiredBy : 'this expansion';
   const parsedBinding = kbCapabilityNameSchema.safeParse(binding);
   const peers = parsedBinding.success
-    ? readDefaultExpansionCatalog()
+    ? readDefaultExpansionCatalogForInstallErrorRendering()
         .filter((entry) => entry.fills?.includes(parsedBinding.data))
         .map((entry) => entry.id)
     : [];

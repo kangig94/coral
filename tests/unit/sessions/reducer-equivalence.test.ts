@@ -1,24 +1,17 @@
-import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'sessionId' | 'provider'>): SessionEntry {
@@ -49,7 +42,7 @@ describe('sessions reducer equivalence', () => {
   it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
       const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
@@ -211,7 +204,7 @@ describe('sessions reducer equivalence', () => {
   it('round-trips canonical session.opened rows without rewriting scope_key or body_version', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
       const scopeKey = 'canonical-scope';

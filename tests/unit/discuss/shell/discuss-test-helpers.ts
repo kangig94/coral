@@ -207,7 +207,7 @@ export function createDiscussHarness(
     runtime,
     createDefaultUpcasterRegistry(),
     {
-      db: openTestStoreDb(runtime),
+      db: openTestStoreDb(runtime, ':memory:'),
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     },

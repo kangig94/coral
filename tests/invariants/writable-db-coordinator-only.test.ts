@@ -9,7 +9,7 @@ const SRC_ROOT = join(REPO_ROOT, 'src');
 type DbOpenCall = {
   relativePath: string;
   line: number;
-  callee: 'openStoreDatabase' | 'openBackendStoreDb';
+  callee: 'openStoreDatabase' | 'openBackendStoreDb' | 'openWritableStoreDbNoReset';
   staticallyReadOnlyOrMemory: boolean;
 };
 
@@ -17,8 +17,8 @@ const EXPLICIT_ALLOWLIST = new Set([
   // Store factory internals are the source of truth for opening backend-store DBs.
   'src/store/db.ts:openStoreDatabase',
   // CLI install path persists the installed-expansion manifest catalog after
-  // installer success (Stage 2 Phase 4A — ExpansionManifestCatalog).
-  'src/cli/expansion/install.ts:openBackendStoreDb',
+  // installer success using the no-reset catalog writer.
+  'src/cli/expansion/install.ts:openWritableStoreDbNoReset',
 ]);
 
 function listSourceFiles(dir: string): string[] {
@@ -100,13 +100,23 @@ function collectDbOpenCalls(): DbOpenCall[] {
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
         const callee = node.expression.text;
-        if (callee === 'openStoreDatabase' || callee === 'openBackendStoreDb') {
+        if (
+          callee === 'openStoreDatabase' ||
+          callee === 'openBackendStoreDb' ||
+          callee === 'openWritableStoreDbNoReset'
+        ) {
+          const optionsArg = callee === 'openWritableStoreDbNoReset' ? node.arguments[1] : node.arguments[0];
           const position = source.getLineAndCharacterOfPosition(node.getStart(source));
           calls.push({
             relativePath,
             line: position.line + 1,
             callee,
-            staticallyReadOnlyOrMemory: callee === 'openStoreDatabase' && staticallyReadOnlyOrMemory(node.arguments[0]),
+            staticallyReadOnlyOrMemory:
+              callee === 'openStoreDatabase'
+                ? staticallyReadOnlyOrMemory(optionsArg)
+                : callee === 'openWritableStoreDbNoReset'
+                  ? staticallyReadOnlyOrMemory(optionsArg)
+                  : false,
           });
         }
       }
@@ -137,8 +147,7 @@ describe('writable DB opens stay coordinator-owned', () => {
     const readStoreCalls = collectDbOpenCalls().filter((call) => call.relativePath === 'src/cli/read-store.ts');
 
     expect(readStoreCalls).toEqual([
-      expect.objectContaining({ callee: 'openStoreDatabase', staticallyReadOnlyOrMemory: true }),
-      expect.objectContaining({ callee: 'openStoreDatabase', staticallyReadOnlyOrMemory: true }),
+      expect.objectContaining({ callee: 'openWritableStoreDbNoReset', staticallyReadOnlyOrMemory: true }),
     ]);
   });
 

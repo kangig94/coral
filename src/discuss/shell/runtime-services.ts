@@ -24,12 +24,6 @@ type CreateDiscussRuntimeDeps = {
     discussRegistry: {
       contexts: Map<string, DiscussContext>;
     };
-    progressStore: {
-      readStatus(jobId: string): JobStatus | null;
-      loadJobProjectionDetail(jobId: string): { exit: JobExit | null };
-      getDb(): Database;
-      commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
-    };
     resolveProjectSource: (projectRoot: string) => string;
     eventBus: {
       emit(
@@ -39,6 +33,12 @@ type CreateDiscussRuntimeDeps = {
     };
   };
   runtime: Runtime;
+  getProgressStore: () => {
+    readStatus(jobId: string): JobStatus | null;
+    loadJobProjectionDetail(jobId: string): { exit: JobExit | null };
+    getDb(): Database;
+    commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
+  };
   getExecutionService: (ctx: InvocationContext) => {
     start(...args: unknown[]): Promise<DiscussLaunchDecision>;
     resumeBySessionId(...args: unknown[]): Promise<DiscussLaunchDecision>;
@@ -46,7 +46,12 @@ type CreateDiscussRuntimeDeps = {
   };
 };
 
-export function createDiscussRuntime({ world, runtime, getExecutionService }: CreateDiscussRuntimeDeps): {
+export function createDiscussRuntime({
+  world,
+  runtime,
+  getProgressStore,
+  getExecutionService,
+}: CreateDiscussRuntimeDeps): {
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readHelpersDeps: DiscussReadHelpersDeps;
@@ -70,7 +75,7 @@ export function createDiscussRuntime({ world, runtime, getExecutionService }: Cr
   function createJournal(): DiscussSessionJournal {
     return {
       append(_source, _snapshot, events) {
-        world.progressStore.commit((c) => {
+        getProgressStore().commit((c) => {
           for (const event of events) {
             c.append(toJournalInput(event));
           }
@@ -78,20 +83,20 @@ export function createDiscussRuntime({ world, runtime, getExecutionService }: Cr
         });
       },
       readSnapshot(sessionId) {
-        return readProjectionDiscuss(world.progressStore.getDb(), sessionId)?.state ?? null;
+        return readProjectionDiscuss(getProgressStore().getDb(), sessionId)?.state ?? null;
       },
       readEvents(sessionId) {
-        return readDiscussEventLog(world.progressStore.getDb(), sessionId, readCtx);
+        return readDiscussEventLog(getProgressStore().getDb(), sessionId, readCtx);
       },
       listSnapshots(source) {
-        return listProjectionDiscussSnapshots(world.progressStore.getDb())
+        return listProjectionDiscussSnapshots(getProgressStore().getDb())
           .map((row) => row.state)
           .filter((snapshot) => snapshotBelongsToSource(snapshot, source));
       },
       listSources() {
         return [
           ...new Set(
-            listProjectionDiscussSnapshots(world.progressStore.getDb()).map((row) =>
+            listProjectionDiscussSnapshots(getProgressStore().getDb()).map((row) =>
               world.resolveProjectSource(row.state.projectRoot),
             ),
           ),
@@ -126,8 +131,8 @@ export function createDiscussRuntime({ world, runtime, getExecutionService }: Cr
     const store = getDiscussStore(ctx.projectRoot);
     const executionService = getExecutionService(ctx);
     const jobStatusReader = {
-      read: (jobId: string) => world.progressStore.readStatus(jobId),
-      readExit: (jobId: string) => world.progressStore.loadJobProjectionDetail(jobId).exit,
+      read: (jobId: string) => getProgressStore().readStatus(jobId),
+      readExit: (jobId: string) => getProgressStore().loadJobProjectionDetail(jobId).exit,
     };
     const discussService: DiscussService = {
       start: (...args) => executionService.start(...args),

@@ -1,8 +1,6 @@
 import {
-  existsSync as _existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync as _readFileSync,
   readdirSync,
   rmSync,
 } from 'node:fs';

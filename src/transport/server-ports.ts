@@ -4,6 +4,7 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
 
 export interface AdminControlPort {
+  getLifecycleState?(): 'starting' | 'running' | 'draining' | 'stopped';
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
   isLaunchFenceActive(): boolean;

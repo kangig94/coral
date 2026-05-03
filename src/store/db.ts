@@ -1,11 +1,31 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
+import { backendLog } from '../infra/backend-log.js';
+import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
-import { applyStoreSchemas, assertSupportedStoreSchema, ensureStoreSchemasDir } from './schema-loader.js';
+import schemaSource from './schema.sql';
+
+// Signed 32-bit djb2-style hash of the bundled schema, stored as
+// `PRAGMA user_version` after schema application. Any meaningful edit to
+// `schema.sql` is overwhelmingly likely to produce a different marker on
+// disk (32-bit collisions are theoretically possible but irrelevant at
+// real-world schema-iteration counts). Boot-time mismatch detection is a
+// single integer compare; the value itself has no meaning beyond "this DB
+// matches this build's schema". SQLite's `user_version` is a signed 32-bit
+// field — the hash is kept signed (no `>>> 0`) so the value round-trips
+// through the PRAGMA without truncation.
+function schemaMarkerHash(input: string): number {
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) {
+    h = ((h << 5) + h + input.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+const EXPECTED_SCHEMA_MARKER = schemaMarkerHash(schemaSource);
 
 /**
  * Result of a `Statement.run(...)` invocation.
@@ -48,7 +68,6 @@ type ReadonlyStoreOptions = {
   readonly storage: StoragePort;
   readonly readonly: true;
   readonly busyTimeoutMs?: number;
-  readonly schemasDir?: string;
 };
 
 type WritableStoreOptions = {
@@ -56,7 +75,6 @@ type WritableStoreOptions = {
   readonly storage: StoragePort;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
-  readonly schemasDir: string;
 };
 
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
@@ -96,6 +114,118 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
   }
 }
 
+type StoreSchemaClassification =
+  | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
+  | { kind: 'legacy'; userVersion: 0; storedVersion: number }
+  | { kind: 'current'; userVersion: number; storedVersion: number }
+  | { kind: 'mismatch'; userVersion: number; storedVersion: number };
+
+const USER_TABLE_EXISTS_SQL =
+  "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
+
+const CORAL_LEGACY_TABLES = [
+  'events',
+  'projection_jobs',
+  'projection_sessions',
+  'projection_discuss',
+  'projection_workflows',
+  'meta',
+  'kb_corpus_state',
+  'kb_corpus_authority_baseline',
+  'consumer_cursors',
+  'expansion_state',
+  'kb_curate_scheduler',
+  'kb_curate_active_claim',
+  'kb_curate_community_summary_input_fingerprints',
+  'kb_curate_retry_queue',
+  'kb_curate_discovery_backlog',
+  'kb_curate_discovery_backlog_notes',
+  'expansion_manifest_catalog',
+] as const;
+
+function readUserVersion(db: Database): number {
+  const row = db.prepare<[], { user_version?: unknown }>('PRAGMA user_version').get();
+  return typeof row?.user_version === 'number' ? row.user_version : 0;
+}
+
+function hasUserTable(db: Database): boolean {
+  return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
+}
+
+function readLegacyMetaSchemaVersion(db: Database): number | null {
+  try {
+    const row = db
+      .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
+      .get();
+    if (typeof row?.value !== 'string') return null;
+    const parsed = Number(row.value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch (error: unknown) {
+    if (error instanceof Error && /no such table: meta/i.test(error.message)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function hasCoralLegacyTable(db: Database): boolean {
+  const quotedNames = CORAL_LEGACY_TABLES.map((name) => `'${name}'`).join(', ');
+  return (
+    db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`)
+      .get() !== undefined
+  );
+}
+
+function classifyStoreSchema(db: Database): StoreSchemaClassification {
+  const userVersion = readUserVersion(db);
+  if (userVersion === EXPECTED_SCHEMA_MARKER) {
+    return {
+      kind: 'current',
+      userVersion: EXPECTED_SCHEMA_MARKER,
+      storedVersion: EXPECTED_SCHEMA_MARKER,
+    };
+  }
+
+  if (userVersion === 0) {
+    if (!hasUserTable(db)) {
+      return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
+    }
+    const legacyMetaVersion = readLegacyMetaSchemaVersion(db);
+    if (legacyMetaVersion !== null || hasCoralLegacyTable(db)) {
+      return { kind: 'legacy', userVersion: 0, storedVersion: legacyMetaVersion ?? 0 };
+    }
+  }
+
+  return { kind: 'mismatch', userVersion, storedVersion: userVersion };
+}
+
+function storeSchemaOutdatedError(path: string, classification: StoreSchemaClassification): Error {
+  return documentedCoralSetupError({
+    code: 'store_schema_outdated',
+    path,
+    storedVersion: classification.storedVersion,
+    currentVersion: EXPECTED_SCHEMA_MARKER,
+    classification: classification.kind,
+  });
+}
+
+export function applyBundledStoreSchema(db: Database): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(schemaSource);
+    db.exec(`PRAGMA user_version = ${EXPECTED_SCHEMA_MARKER}`);
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Preserve the original schema-application failure.
+    }
+    throw error;
+  }
+}
+
 export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
@@ -105,60 +235,257 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
 
   const db = new DatabaseSync(options.path, { readOnly: readonly }) as unknown as Database;
 
-  applyJournalPragmas(db, {
-    kind: readonly ? 'readonly' : 'writable',
-    busyTimeoutMs: options.busyTimeoutMs,
-  });
+  try {
+    if (readonly) {
+      applyJournalPragmas(db, {
+        kind: 'readonly',
+        busyTimeoutMs: options.busyTimeoutMs,
+      });
+    }
 
-  if (options.readonly !== true) {
-    applyStoreSchemas({
-      db,
-      storage: options.storage,
-      schemasDir: options.schemasDir,
-    });
+    const classification = classifyStoreSchema(db);
+    if (classification.kind === 'current') {
+      if (!readonly) {
+        applyJournalPragmas(db, {
+          kind: 'writable',
+          busyTimeoutMs: options.busyTimeoutMs,
+        });
+      }
+      return db;
+    }
+
+    if (readonly) {
+      throw storeSchemaOutdatedError(options.path, classification);
+    }
+
+    if (classification.kind === 'fresh') {
+      applyJournalPragmas(db, {
+        kind: 'writable',
+        busyTimeoutMs: options.busyTimeoutMs,
+      });
+      applyBundledStoreSchema(db);
+      return db;
+    }
+
+    throw storeSchemaOutdatedError(options.path, classification);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
+
+export type BackendStoreResetAuthority = Readonly<{
+  socketPath: string;
+  storeDbPath: string;
+  bundleHash: string;
+  flavor: Runtime['flavor'];
+  namespace: string;
+  acquiredViaHandoff: boolean;
+  issuedAt: number;
+  [BACKEND_STORE_RESET_AUTHORITY_BRAND]: true;
+}>;
+
+type BackendStorePathOptions = {
+  readonly path?: string;
+  readonly busyTimeoutMs?: number;
+};
+
+type BackendStoreIdentityOptions = {
+  readonly bundleHash: string;
+  readonly namespace: string;
+};
+
+type BackendStoreResetAuthorityOptions = BackendStorePathOptions & BackendStoreIdentityOptions;
+
+type OpenOrResetBackendStoreOptions = BackendStorePathOptions & Partial<BackendStoreIdentityOptions>;
+
+type StoreFileSet = {
+  readonly dbDir: string;
+  readonly dbFile: string;
+  readonly walFile: string;
+  readonly shmFile: string;
+};
+
+function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
+  if (options.path === ':memory:') {
+    return ':memory:';
+  }
+  return resolve(options.path ?? runtime.paths.coral.store.dbFile);
+}
+
+function resolveStoreFileSet(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): StoreFileSet {
+  if (options.path === undefined) {
+    const store = runtime.paths.coral.store;
+    return {
+      dbDir: store.dbDir,
+      dbFile: store.dbFile,
+      walFile: store.walFile,
+      shmFile: store.shmFile,
+    };
   }
 
+  const dbFile = resolveStoreDbPath(runtime, options);
+  return {
+    dbDir: dirname(dbFile),
+    dbFile,
+    walFile: `${dbFile}-wal`,
+    shmFile: `${dbFile}-shm`,
+  };
+}
+
+export function createBackendStoreResetAuthority(
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'time'>,
+  handoff: { readonly acquiredViaHandoff: boolean },
+  options: BackendStoreResetAuthorityOptions,
+): BackendStoreResetAuthority {
+  return {
+    socketPath: runtime.paths.coral.coordinator.socketPath,
+    storeDbPath: resolveStoreDbPath(runtime, options),
+    bundleHash: options.bundleHash,
+    flavor: runtime.flavor,
+    namespace: options.namespace,
+    acquiredViaHandoff: handoff.acquiredViaHandoff,
+    issuedAt: runtime.time.now(),
+    [BACKEND_STORE_RESET_AUTHORITY_BRAND]: true,
+  };
+}
+
+function assertResetAuthority(
+  runtime: Pick<Runtime, 'flavor' | 'paths'>,
+  authority: BackendStoreResetAuthority,
+  options: OpenOrResetBackendStoreOptions,
+): void {
+  const expectedStoreDbPath = resolveStoreDbPath(runtime, options);
+  const expectedBundleHash = options.bundleHash ?? authority.bundleHash;
+  const expectedNamespace = options.namespace ?? authority.namespace;
+  const expected = {
+    socketPath: runtime.paths.coral.coordinator.socketPath,
+    storeDbPath: expectedStoreDbPath,
+    bundleHash: expectedBundleHash,
+    flavor: runtime.flavor,
+    namespace: expectedNamespace,
+  };
+
+  const mismatches: string[] = [];
+  if (authority.socketPath !== expected.socketPath) mismatches.push('socketPath');
+  if (authority.storeDbPath !== expected.storeDbPath) mismatches.push('storeDbPath');
+  if (authority.bundleHash !== expected.bundleHash) mismatches.push('bundleHash');
+  if (authority.flavor !== expected.flavor) mismatches.push('flavor');
+  if (authority.namespace !== expected.namespace) mismatches.push('namespace');
+
+  if (mismatches.length > 0) {
+    throw documentedCoralSetupError({
+      code: 'store_schema_outdated',
+      reason: 'reset_authority_mismatch',
+      mismatches,
+      expected,
+      authority: {
+        socketPath: authority.socketPath,
+        storeDbPath: authority.storeDbPath,
+        bundleHash: authority.bundleHash,
+        flavor: authority.flavor,
+        namespace: authority.namespace,
+        acquiredViaHandoff: authority.acquiredViaHandoff,
+        issuedAt: authority.issuedAt,
+      },
+    });
+  }
+}
+
+function warnBackendStoreReset(classification: StoreSchemaClassification): void {
+  backendLog.warn(
+    `Backend store schema mismatch (stored marker ${classification.storedVersion}, expected ${EXPECTED_SCHEMA_MARKER}); ` +
+      'resetting backend store. In-flight job, discuss, and workflow state will be ' +
+      'lost (KB markdown corpus is unaffected).',
+  );
+}
+
+function unlinkStoreFiles(storage: StoragePort, files: StoreFileSet): void {
+  storage.rmSync(files.dbFile, { force: true });
+  storage.rmSync(files.walFile, { force: true });
+  storage.rmSync(files.shmFile, { force: true });
+}
+
+function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'>): StoreSchemaClassification {
+  // Fresh case: file doesn't exist. Skip the open entirely — opening
+  // readonly would error, and opening writable would create the file as a
+  // side effect of classification.
+  if (path !== ':memory:' && !storage.existsSync(path)) {
+    return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
+  }
+  const db = new DatabaseSync(path, { readOnly: true }) as unknown as Database;
   try {
-    assertSupportedStoreSchema(db);
-  } catch (error) {
-    if (options.path === ':memory:') {
-      db.close();
+    return classifyStoreSchema(db);
+  } finally {
+    db.close();
+  }
+}
+
+export function openOrResetBackendStoreDb(
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
+  authority: BackendStoreResetAuthority,
+  options: OpenOrResetBackendStoreOptions = {},
+): Database {
+  const files = resolveStoreFileSet(runtime, options);
+  if (files.dbFile === ':memory:') {
+    throw new Error('openOrResetBackendStoreDb requires a real filesystem store path.');
+  }
+
+  assertResetAuthority(runtime, authority, options);
+  runtime.storage.mkdirSync(files.dbDir, { recursive: true });
+
+  let releaseLock: (() => void) | null = null;
+  try {
+    const lockPath = join(files.dbDir, 'store.db.reset.lock');
+    try {
+      releaseLock = acquireDirectoryLockSync(lockPath, 250);
+    } catch (error: unknown) {
+      if (isDirectoryLockTimeoutError(error)) {
+        throw documentedCoralSetupError({
+          code: 'store_reset_lock_contended',
+          lockPath,
+          dbDir: files.dbDir,
+        });
+      }
       throw error;
     }
 
-    db.close();
-    throw new Error(
-      `Store schema at ${options.path} is not readable by this Coral build. Reset local Coral store data and rebuild.`,
-      { cause: error },
-    );
-  }
+    const classification = classifyStoreFile(files.dbFile, runtime.storage);
+    if (classification.kind === 'legacy' || classification.kind === 'mismatch') {
+      warnBackendStoreReset(classification);
+      unlinkStoreFiles(runtime.storage, files);
+    }
 
-  return db;
+    return openStoreDatabase({
+      path: files.dbFile,
+      storage: runtime.storage,
+      busyTimeoutMs: options.busyTimeoutMs,
+    });
+  } finally {
+    releaseLock?.();
+  }
 }
 
-type OpenBackendStoreOptions = {
-  readonly path?: string;
-};
-
-export function openBackendStoreDb(
+export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
-  options: OpenBackendStoreOptions = {},
+  options: BackendStorePathOptions = {},
 ): Database {
-  const storeDbPath = options.path ?? runtime.paths.coral.store.dbFile;
-
-  if (storeDbPath !== ':memory:') {
-    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
+  const storeDbPath = resolveStoreDbPath(runtime, options);
+  if (storeDbPath === ':memory:') {
+    return openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      busyTimeoutMs: options.busyTimeoutMs,
+    });
   }
 
-  // existsSync intentionally queries the real fs: node:sqlite itself opens
-  // through ambient `node:fs`, so the directory's existence on disk is what
-  // determines whether the disk path or the in-memory fallback is viable.
-  // Tests with a virtual StoragePort rely on this real-fs check to fall back
-  // to `:memory:` when their virtual mkdir never landed on disk.
+  runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
   return openStoreDatabase({
-    path: storeDbPath === ':memory:' ? ':memory:' : existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
+    path: storeDbPath,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
+    busyTimeoutMs: options.busyTimeoutMs,
   });
 }
 

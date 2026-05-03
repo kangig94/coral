@@ -1,5 +1,6 @@
 import type { Database, Statement } from '../store/db.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
+import { serializeCoralSetupError } from '../runtime/errors.js';
 import { BUNDLED_ENGINES } from './bundled.js';
 import type { EngineManifest } from './contract.js';
 import { parseEngineManifest } from './manifest-schema.js';
@@ -50,6 +51,10 @@ function parsePersistedManifest(row: ManifestCatalogRow): EngineManifest {
   }
 }
 
+function isCatalogTableUnavailable(error: unknown): boolean {
+  return error instanceof Error && /no such table:\s*expansion_manifest_catalog/i.test(error.message);
+}
+
 function readRows(db: ManifestCatalogReadDb): ManifestCatalogRow[] {
   try {
     return db
@@ -58,8 +63,14 @@ function readRows(db: ManifestCatalogReadDb): ManifestCatalogRow[] {
         ManifestCatalogRow
       >('SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog ORDER BY id')
       .all();
-  } catch {
-    return [];
+  } catch (error) {
+    if (serializeCoralSetupError(error) !== null) {
+      throw error;
+    }
+    if (isCatalogTableUnavailable(error)) {
+      return [];
+    }
+    throw error;
   }
 }
 

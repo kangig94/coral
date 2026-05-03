@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,7 +7,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
@@ -37,11 +35,6 @@ const fixedTime = {
   },
 };
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 const PROJECT_ROOT = '/tmp/coral-workflow-project';
 const BACKEND_NAMESPACE = 'workflow-test-ns';
 
@@ -83,7 +76,7 @@ function createHarness(options: {
   projectionLastSeq?: number;
 }) {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+  applyBundledStoreSchema(db);
 
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {

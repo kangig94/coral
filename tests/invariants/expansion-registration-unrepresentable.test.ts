@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
@@ -7,8 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
-import type { StoragePort } from '#src/infra/port-types.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 
 // Type-level claims (cursor-expansion is structurally unrepresentable through
 // `ExpansionHost.registerConsumer`) live at
@@ -17,16 +16,9 @@ import { applyStoreSchemas } from '#src/store/schema-loader.js';
 // `tsc -p tsconfig.test.json` during `npm test`.
 
 const REPO_ROOT = process.cwd();
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   return db;
 }
 

@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,8 +6,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { StoragePort } from '#src/infra/port-types.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -17,13 +15,6 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
 
 afterEach(() => {
@@ -32,7 +23,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   return db;
 }
 

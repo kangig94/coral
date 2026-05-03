@@ -4,25 +4,16 @@
 // producer with synthetic launches and asserts the field appears whenever the
 // launch belongs to a workflow.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/infra/port-types.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 interface PersistedRefs {
   jobId?: string;
   parentJobId?: string;
@@ -46,7 +37,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   openDbs.add(db);
   return db;
 }

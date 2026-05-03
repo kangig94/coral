@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -7,25 +6,17 @@ import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinato
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
-import type { StoragePort } from '#src/infra/port-types.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: readFileSync as StoragePort['readFileSync'],
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 function createShell(): {
   shell: KbOperationJobShell;
   abortRegistry: AbortRegistry;
   progressStore: JobStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
     db,

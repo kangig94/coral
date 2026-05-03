@@ -38,6 +38,7 @@ describe('composeCoralPaths', () => {
       dbDir: join('/tmp/coral-root', 'data', 'store'),
       dbFile: join('/tmp/coral-root', 'data', 'store', 'store.db'),
       walFile: join('/tmp/coral-root', 'data', 'store', 'store.db-wal'),
+      shmFile: join('/tmp/coral-root', 'data', 'store', 'store.db-shm'),
     });
   });
 
@@ -56,6 +57,7 @@ describe('composeCoralPaths', () => {
       runDir: join('/tmp/coral-root', 'run'),
       socketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
+      startupErrorFile: join('/tmp/coral-root', 'run', 'startup-error.json'),
     });
   });
 

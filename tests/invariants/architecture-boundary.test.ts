@@ -674,7 +674,7 @@ describe('architecture boundary guard', () => {
     expect(collectTestQuarantineResidue()).toEqual([]);
   });
   it('store schema baseline no longer contains projection_kb residue', () => {
-    const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schemas/001_initial.sql'), 'utf8');
+    const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');
 
     expect(initialSchema).not.toContain('projection_kb');
   });

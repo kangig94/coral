@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -22,7 +21,6 @@ function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => 
   const db = openStoreDatabase({
     path: storePaths(resolveBuildFlavor(process.env)).dbFile,
     storage: nodeStoreStorage,
-    schemasDir: ensureStoreSchemasDir(nodeStoreStorage),
   });
 
   try {

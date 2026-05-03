@@ -11,7 +11,6 @@ import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, Disposable } from '#src/runtime/ports.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '#src/store/consumer-contract.js';
 import { SimulationRuntime } from '../../tools/simulation/runtime.js';
 
@@ -135,7 +134,6 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
       const db = openStoreDatabase({
         path: ':memory:',
         storage: runtime.storage,
-        schemasDir: ensureStoreSchemasDir(runtime.storage),
       });
       return createTestKbRuntime({
         markdownRoot: runtime.paths.coral.corpus.kbRoot,

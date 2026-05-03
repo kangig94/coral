@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -6,20 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
-import type { StoragePort } from '#src/infra/port-types.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 describe('events queries', () => {
   let db: Database;
   let appended: ReturnType<typeof commitInputs>;
@@ -27,7 +18,7 @@ describe('events queries', () => {
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
-    applyStoreSchemas({ db, storage: nodeStorage });
+    applyBundledStoreSchema(db);
     applyTestCounterSchema(db);
 
     const inputs: CoralEventInput[] = [

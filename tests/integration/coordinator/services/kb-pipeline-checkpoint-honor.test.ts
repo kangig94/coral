@@ -16,7 +16,12 @@
 // pool unit config (parallel workers) makes that pattern fragile; the
 // integration config runs single-fork with a 120s timeout.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,8 +39,7 @@ import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import type { JobAbortRegistryPort } from '#src/jobs/contracts/abort-registry.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import type { TerminalOutcome } from '#src/jobs/outcome.js';
-import type { StoragePort } from '#src/infra/port-types.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -96,12 +100,7 @@ function makeWorld(): ServiceWorld {
   // JobStore + AbortRegistry composed against the same DB.
   const jobsDb = newRawDatabase(':memory:');
   openDbs.push(jobsDb);
-  const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-    existsSync,
-    readFileSync: readFileSync as StoragePort['readFileSync'],
-    readdirSync: readdirSync as StoragePort['readdirSync'],
-  };
-  applyStoreSchemas({ db: jobsDb, storage: nodeStorage });
+  applyBundledStoreSchema(jobsDb);
   const runtime = new SimulationRuntime();
   // Mirror the on-disk runtime/markdown roots into the in-memory storage so
   // `runtime.storage.*` can read/write the staged source file the test

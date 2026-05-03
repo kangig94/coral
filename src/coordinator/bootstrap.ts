@@ -3,40 +3,20 @@ import '../runtime/suppress-experimental-warnings.js';
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import { dirname, join, resolve } from 'node:path';
+import { dirname } from 'node:path';
 
 import { BackendAlreadyRunningError } from './handoff.js';
 import { StartupInterruptedError } from './startup-error.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';
+import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
+import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { nowDate } from '../infra/time.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import type { StoragePort } from '../infra/port-types.js';
-
-function resolveSmokeSchemasDir(storage: Pick<StoragePort, 'existsSync'>): string {
-  const entryPath = process.argv[1];
-  if (!entryPath) {
-    throw new Error('missing entry path');
-  }
-
-  const bundleDir = dirname(resolve(entryPath));
-  const candidates = [
-    join(bundleDir, 'store', 'schemas'),
-    join(bundleDir, '..', 'dist', 'store', 'schemas'),
-    join(bundleDir, '..', 'store', 'schemas'),
-  ];
-
-  for (const candidate of candidates) {
-    if (storage.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(`bundle schemas not found: ${candidates.join(', ')}`);
-}
+import { serializeCoralSetupError } from '../runtime/errors.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -47,16 +27,14 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const storePath = argv[pathIdx + 1];
-    const { openStoreDatabase } = await import('../store/db.js');
+    const { openWritableStoreDbNoReset } = await import('../store/db.js');
     const { commit } = await import('../store/append.js');
     const { composeReducers } = await import('../store/reducers.js');
     const { createDefaultUpcasterRegistry } = await import('../store/upcaster-registry.js');
     const { getEvent } = await import('../store/event-queries.js');
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const db = openStoreDatabase({
+    const db = openWritableStoreDbNoReset(runtime, {
       path: storePath,
-      storage: runtime.storage,
-      schemasDir: resolveSmokeSchemasDir(runtime.storage),
     });
 
     try {
@@ -97,6 +75,38 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const message = errorMessage(error);
     backendLog.error('smoke open-store failed', message);
     return 1;
+  }
+}
+
+function writeStartupErrorSentinel(pluginRoot: string, error: unknown): void {
+  const setupError = serializeCoralSetupError(error);
+  if (!setupError) return;
+
+  const attemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
+  if (!attemptId) return;
+
+  try {
+    const flavor = resolveBuildFlavor(process.env);
+    const runtime = createRealRuntime(flavor);
+    const startupErrorFile = runtime.paths.coral.coordinator.startupErrorFile;
+    const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
+    const sentinel = {
+      version: 1,
+      attemptId,
+      pid: process.pid,
+      startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now(),
+      socketPath: runtime.paths.coral.coordinator.socketPath,
+      bundleHash: readBundleHash(pluginRoot),
+      flavor,
+      namespace: pluginRootNamespace(pluginRoot),
+      error: setupError,
+    };
+    const tmp = `${startupErrorFile}.tmp-${process.pid}-${attemptId}`;
+    runtime.storage.mkdirSync(dirname(startupErrorFile), { recursive: true });
+    runtime.storage.writeFileSync(tmp, JSON.stringify(sentinel) + '\n');
+    runtime.storage.renameSync(tmp, startupErrorFile);
+  } catch (sentinelError: unknown) {
+    backendLog.error('Failed to write startup setup-error sentinel', sentinelError);
   }
 }
 
@@ -149,6 +159,7 @@ export async function main(): Promise<number> {
     }
 
     backendLog.error('Fatal startup error', error);
+    writeStartupErrorSentinel(__PLUGIN_ROOT__, error);
     return 1;
   } finally {
     clearInterval(startupKeepalive);

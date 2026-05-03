@@ -1,4 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from '#src/store/db.js';
@@ -10,9 +15,8 @@ import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
-import type { StoragePort } from '#src/infra/port-types.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
@@ -32,17 +36,6 @@ import { createDeferred, type Deferred } from '#tools/testing/deferred.js';
 
 const BASE_CREATED_AT = '2026-04-19T00:00:00.000Z';
 const BASE_UPDATED_AT = '2026-04-19T00:00:00.000Z';
-
-const nodeStorage = {
-  existsSync(path: string): boolean {
-    return existsSync(path);
-  },
-  readFileSync(path: string, encoding: BufferEncoding): string {
-    return readFileSync(path, encoding);
-  },
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 type ProjectionRow = {
   snapshot_id: string;
   content_seq: number;
@@ -213,10 +206,7 @@ describe('Corpus notify crash replay', () => {
 
     const primaryDb = newRawDatabase(dbPath);
     createProjectionTable(primaryDb);
-    applyStoreSchemas({
-      db: primaryDb,
-      storage: nodeStorage,
-    });
+    applyBundledStoreSchema(primaryDb);
 
     const primaryDriver = new ConsumerDriver({
       db: primaryDb,

@@ -13,13 +13,18 @@ import {
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
-import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
+import type {
+  CoordinatorCoreOptions,
+  CoordinatorCoreResult,
+  CoordinatorStoreServices,
+  StoreServicesRef,
+} from './composition/types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
-import { openBackendStoreDb } from '../store/db.js';
+import type { Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { readJobEvents, loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
@@ -55,10 +60,12 @@ import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
+import { JobStore } from '../jobs/store.js';
+import { TypedEventBus } from './event-bus.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked' | 'expansionLifecycleService'
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked' | 'createStoreServicesFromDbFn'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -96,6 +103,17 @@ function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
+}
+
+export async function finalizeStoreServices(ref: StoreServicesRef): Promise<void> {
+  const services = ref.tryGet();
+  if (services === null) {
+    return;
+  }
+
+  await services.consumerDriver?.shutdown();
+  services.storeDb.close();
+  ref.clear();
 }
 
 const BUILTIN_CAPABILITY_DESCRIPTORS = [
@@ -240,36 +258,69 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
+  const eventBus = coreOptions.eventBus ?? new TypedEventBus();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
   // rendering causeRef chains as bare type names.
   assertDescriberCoverage(reducers.describerKeys);
   const upcasters = createDefaultUpcasterRegistry();
   const readCtx = { schemas: reducers.schemas, upcasters };
-  let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
-  let consumerDriver: ConsumerDriver | null = null;
+  let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
   const providedCreateExecutionService = coreOptions.createExecutionService;
 
-  const getStoreDb = () => {
-    if (storeDb !== null) {
-      return storeDb;
+  const getStoreServices = (): CoordinatorStoreServices => {
+    const services = core?.storeServicesRef.tryGet() ?? null;
+    if (services === null) {
+      throw documentedCoralSetupError('startup_not_ready');
     }
-
-    storeDb = openBackendStoreDb(runtime);
-    return storeDb;
+    return services;
   };
-  const getQueryDb = () => options.progressStore?.getDb() ?? getStoreDb();
+  const getStoreDb = () => {
+    return getStoreServices().storeDb;
+  };
+  const getQueryDb = () => getStoreDb();
 
   const getConsumerDriver = () => {
-    if (consumerDriver !== null) {
-      return consumerDriver;
+    const consumerDriver = getStoreServices().consumerDriver;
+    if (consumerDriver === null) {
+      throw documentedCoralSetupError('startup_not_ready');
     }
+    return consumerDriver;
+  };
 
-    consumerDriver = new ConsumerDriver({
-      db: getStoreDb(),
+  const getExpansionLifecycleService = () => {
+    const expansionLifecycleService = getStoreServices().expansionLifecycleService;
+    if (expansionLifecycleService === null) {
+      throw documentedCoralSetupError('startup_not_ready');
+    }
+    return expansionLifecycleService;
+  };
+  let currentKbRuntime: KbRuntime | null = null;
+  let resolveLifecyclePhase: (() => 'starting' | 'running' | 'draining' | 'stopped') | null = null;
+  // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
+  // rebuild kicks so a draining instance does not start fresh KB work. Boot's
+  // blocking `wait: true` on the next coordinator picks up the staleness.
+  const corpusRescanAbort = new AbortController();
+  const createStoreServicesFromDbFn = (storeDb: Database): CoordinatorStoreServices => {
+    if (core === null) {
+      throw documentedCoralSetupError('startup_not_ready');
+    }
+    const progressStore = new JobStore(core.identity.namespace, runtime, upcasters, {
+      db: storeDb,
+      eventBus,
+      reducers,
+      providers: providerLookupPortFromCatalog(providerRegistry),
+    });
+    const expansionManifestCatalog = createExpansionManifestCatalog({
+      db: storeDb,
+      now: () => nowDate(runtime.time).toISOString(),
+    });
+    const expansionStateStore = new ExpansionStateStore(storeDb);
+    const consumerDriver = new ConsumerDriver({
+      db: storeDb,
       now: () => nowDate(runtime.time),
       time: runtime.time,
       corpusProjectionReader: {
@@ -296,38 +347,36 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         kbRuntime.recordIndexSyncSuccess();
       },
     });
-    return consumerDriver;
-  };
-  let currentKbRuntime: KbRuntime | null = null;
-  let resolveLifecyclePhase: (() => 'starting' | 'running' | 'draining' | 'stopped') | null = null;
-  // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
-  // rebuild kicks so a draining instance does not start fresh KB work. Boot's
-  // blocking `wait: true` on the next coordinator picks up the staleness.
-  const corpusRescanAbort = new AbortController();
-  const expansionManifestCatalog = createExpansionManifestCatalog({
-    db: getStoreDb(),
-    now: () => nowDate(runtime.time).toISOString(),
-  });
-  const expansionLifecycleService = new ExpansionLifecycleService({
-    makeHost: (manifest, scope) => {
-      const kbRuntime = currentKbRuntime;
-      if (kbRuntime === null) {
-        throw documentedCoralSetupError('expansion_runtime_unavailable', { name: manifest.id });
-      }
+    const expansionLifecycleService = new ExpansionLifecycleService({
+      makeHost: (manifest, scope) => {
+        const kbRuntime = currentKbRuntime;
+        if (kbRuntime === null) {
+          throw documentedCoralSetupError('expansion_runtime_unavailable', { name: manifest.id });
+        }
 
-      return createHostFactory({
-        runtime,
-        kbRuntime,
-        consumerDriver: getConsumerDriver(),
-      })(manifest, scope);
-    },
-    state: new ExpansionStateStore(getStoreDb()),
-    manifest: expansionManifestCatalog.listManifests(),
-    manifestCatalog: expansionManifestCatalog,
-    now: () => nowDate(runtime.time).toISOString(),
-    resolveKbRuntime: () => currentKbRuntime,
-    getLifecyclePhase: () => resolveLifecyclePhase?.() ?? 'starting',
-  });
+        return createHostFactory({
+          runtime,
+          kbRuntime,
+          consumerDriver,
+        })(manifest, scope);
+      },
+      state: expansionStateStore,
+      manifest: expansionManifestCatalog.listManifests(),
+      manifestCatalog: expansionManifestCatalog,
+      now: () => nowDate(runtime.time).toISOString(),
+      resolveKbRuntime: () => currentKbRuntime,
+      getLifecyclePhase: () => resolveLifecyclePhase?.() ?? 'starting',
+    });
+
+    return {
+      storeDb,
+      progressStore,
+      expansionManifestCatalog,
+      expansionStateStore,
+      expansionLifecycleService,
+      consumerDriver,
+    };
+  };
 
   const getCurrentJournalSeq = () =>
     (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -349,12 +398,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
     return appended;
   };
-  const core = createCoordinatorCore({
+  core = createCoordinatorCore({
     ...coreOptions,
-    ...(coreOptions.progressStore === undefined ? { storeDb: coreOptions.storeDb ?? getStoreDb() } : {}),
     providerRegistry,
+    eventBus,
     runtime,
-    expansionLifecycleService,
+    createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => currentKbRuntime?.mutationLockDiagnostics() ?? { blocked: false },
     createKbSubsystemFn: async (ctx) => {
@@ -383,7 +432,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       currentKbRuntime = kbSubsystem.kb;
       initializeCapabilityCatalog(
         kbSubsystem.kb.capabilityRegistry,
-        expansionManifestCatalog.listManifests(),
+        getStoreServices().expansionManifestCatalog.listManifests(),
         BUILTIN_CAPABILITY_DESCRIPTORS,
       );
       if (kbSubsystem.curateScheduler) {
@@ -403,7 +452,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await kbSubsystem.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal });
       const driver = getConsumerDriver();
       // Boot step 3: replay installed-tier rows + apply bundled fallback to fill empty bindings.
-      await expansionLifecycleService.recoverOnBoot();
+      await getExpansionLifecycleService().recoverOnBoot();
       // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
       await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
       // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
@@ -550,25 +599,23 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     },
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
-  curateSchedulerHealth.attachRuntimeState(core.runtimeState);
-  resolveLifecyclePhase = () => core.runtimeState.getLifecycle();
+  const coordinatorCore = core;
+  curateSchedulerHealth.attachRuntimeState(coordinatorCore.runtimeState);
+  resolveLifecyclePhase = () => coordinatorCore.runtimeState.getLifecycle();
 
   return {
-    server: core.server,
-    start: () => core.lifecycleController.start(),
+    server: coordinatorCore.server,
+    start: () => coordinatorCore.lifecycleController.start(),
     shutdown: (reason) => {
       corpusRescanAbort.abort();
-      return core.lifecycleController.shutdown(reason);
+      return coordinatorCore.lifecycleController.shutdown(reason);
     },
     waitForShutdown: async () => {
-      await core.lifecycleController.waitForShutdown();
+      await coordinatorCore.lifecycleController.waitForShutdown();
       corpusRescanAbort.abort();
-      await consumerDriver?.shutdown();
-      storeDb?.close();
-      consumerDriver = null;
-      storeDb = null;
+      await finalizeStoreServices(coordinatorCore.storeServicesRef);
     },
-    getLifecycle: () => core.runtimeState.getLifecycle(),
-    getIdleTimer: () => core.idleTimer,
+    getLifecycle: () => coordinatorCore.runtimeState.getLifecycle(),
+    getIdleTimer: () => coordinatorCore.idleTimer,
   };
 }

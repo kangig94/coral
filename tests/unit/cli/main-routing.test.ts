@@ -16,7 +16,6 @@ import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from
 import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 const mockState = vi.hoisted(() => ({
@@ -239,7 +238,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const db = openStoreDatabase({
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {

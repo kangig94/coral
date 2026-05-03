@@ -21,6 +21,7 @@ const SUBSYSTEM_PREFIXES = [
   'cli',
   'infra',
   'shared',
+  'types',
   'providers',
   'workflow',
   'kb',

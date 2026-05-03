@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -7,24 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (p: string, opts: { withFileTypes: true }) => fs.readdirSync(p, opts),
-  readFileSync: (p: string, enc: 'utf-8') => fs.readFileSync(p, enc),
-};
-
 describe('rebuildProjections replay identity', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
       const upcasters = createDefaultUpcasterRegistry();
@@ -73,7 +65,7 @@ describe('rebuildProjections replay identity', () => {
   it('does NOT touch kb_corpus_state (Corpus control state)', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers();
       const upcasters = createDefaultUpcasterRegistry();
 
@@ -136,7 +128,7 @@ describe('rebuildProjections replay identity', () => {
   it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
 
       db.prepare(
         `INSERT INTO events (

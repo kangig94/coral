@@ -339,7 +339,9 @@ async function dispatchFrame(
     return;
   }
 
-  if (!rpcPorts.admin.isLifecycleRunning() || rpcPorts.admin.isDrainRequested()) {
+  const lifecycleState =
+    rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
+  if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
     writeEnvelope(socket, {
       kind: 'response',
       id: request.id,

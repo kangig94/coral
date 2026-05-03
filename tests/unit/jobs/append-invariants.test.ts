@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -11,20 +9,14 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
 const NOW = new Date('2026-04-19T00:00:00.000Z');
-
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+  applyBundledStoreSchema(db);
   return db;
 }
 

@@ -9,7 +9,7 @@ import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { openBackendStoreDb } from '../../store/db.js';
+import { openWritableStoreDbNoReset } from '../../store/db.js';
 import {
   installErrorSchema,
   installResponseSchema,
@@ -72,7 +72,7 @@ async function applyPostInstallCatalogActions(
     return result;
   }
 
-  const db = openBackendStoreDb(runtime);
+  const db = openWritableStoreDbNoReset(runtime);
   try {
     const catalog = createExpansionManifestCatalog({ db });
     for (const action of structuredActions) {

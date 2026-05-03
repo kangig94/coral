@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
+import { rawSqlPlugin } from './raw-sql-plugin.js';
 
 const alias = {
   '#src': fileURLToPath(new URL('../src', import.meta.url)),
@@ -13,6 +14,7 @@ const alias = {
 // IPC, backend bundle build, or flavor isolation.
 export default defineConfig({
   root: fileURLToPath(new URL('..', import.meta.url)),
+  plugins: [rawSqlPlugin()],
   resolve: { alias },
   test: {
     include: ['tests/e2e/lifecycle/**/*.test.ts', 'tests/e2e/**/lifecycle/**/*.test.ts'],

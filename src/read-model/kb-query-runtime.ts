@@ -20,6 +20,7 @@ import type { ExpansionHost } from '../expansion/contract.js';
 import { validateManifestCompleteness } from '../expansion/manifest-completeness.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import { serializeCoralSetupError } from '../runtime/errors.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -30,6 +31,9 @@ import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
+
+const MANIFEST_CATALOG_UNAVAILABLE_MESSAGE =
+  /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
@@ -130,6 +134,13 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
   });
 }
 
+function isManifestCatalogUnavailableError(error: unknown): boolean {
+  if (serializeCoralSetupError(error) !== null) {
+    return false;
+  }
+  return error instanceof Error && MANIFEST_CATALOG_UNAVAILABLE_MESSAGE.test(error.message);
+}
+
 /**
  * Loads bundled read-side capabilities onto a read-only KB runtime once per
  * `kb` instance. Read-side CLI does not run the coordinator's bundled
@@ -145,7 +156,10 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
   let manifestCatalog: ReturnType<typeof createExpansionManifestCatalog>;
   try {
     manifestCatalog = createExpansionManifestCatalog({ readDb: getDefaultKbQueryDb(context) });
-  } catch {
+  } catch (error) {
+    if (!isManifestCatalogUnavailableError(error)) {
+      throw error;
+    }
     manifestCatalog = createExpansionManifestCatalog();
   }
   initializeCapabilityCatalog(kb.capabilityRegistry, manifestCatalog.listManifests(), [

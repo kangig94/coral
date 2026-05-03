@@ -129,7 +129,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime), providers: permissiveProviderLookupPort },
+    { db: openTestStoreDb(runtime, ':memory:'), providers: permissiveProviderLookupPort },
   );
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),

@@ -18,7 +18,6 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -58,7 +57,6 @@ describe('sessions shell resolve', () => {
     return openStoreDatabase({
       path: storePaths(resolveBuildFlavor(process.env)).dbFile,
       storage: runtime.storage,
-      schemasDir: ensureStoreSchemasDir(runtime.storage),
     });
   }
 

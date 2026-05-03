@@ -76,7 +76,8 @@ describe('workflow handoff (cross-domain integration)', () => {
       harness.runtime.time,
       permissiveProviderLookupPort,
     );
-    incumbent.core.progressStore.initJob({
+    const progressStore = incumbent.core.storeServicesRef.get().progressStore;
+    progressStore.initJob({
       jobId: WORKFLOW_ID,
       sessionId: 'workflow-session-1',
       provider: 'codex',
@@ -85,7 +86,7 @@ describe('workflow handoff (cross-domain integration)', () => {
       jobKind: 'workflow',
       initialPhase: 'running',
     });
-    incumbent.core.progressStore.initJob({
+    progressStore.initJob({
       jobId: slotJobId,
       sessionId: 'session-slot-1',
       provider: 'codex',

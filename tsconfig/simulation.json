@@ -4,6 +4,6 @@
     "noEmit": true,
     "rootDir": ".."
   },
-  "include": ["../tools/simulation/**/*.ts"],
+  "include": ["../tools/simulation/**/*.ts", "../src/types/**/*.d.ts"],
   "exclude": ["../node_modules", "../dist", "../bridge", "../build"]
 }

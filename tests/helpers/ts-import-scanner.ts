@@ -60,7 +60,11 @@ function getRelativeModuleSpecifier(moduleSpecifier: ts.Expression | undefined):
     return null;
   }
 
-  return moduleSpecifier.text.startsWith('.') ? moduleSpecifier.text : null;
+  if (!moduleSpecifier.text.startsWith('.')) {
+    return null;
+  }
+  const extension = extname(moduleSpecifier.text);
+  return extension === '' || extension === '.js' || extension === '.ts' ? moduleSpecifier.text : null;
 }
 
 export function getRelativeImportTypeSpecifier(node: ts.ImportTypeNode): string | null {
