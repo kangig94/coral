@@ -9,6 +9,12 @@ import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';
 import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';
 import type { EngineArtifactRegistration } from '#src/kb/corpus/artifact-registry.js';
+import {
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '#src/kb/capability/constants.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import type { RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
@@ -22,7 +28,7 @@ function javascriptDataUrl(source: string): string {
 
 const SYNTHETIC_EMBEDDER_SOURCE = `
   export default (host) => {
-    host.bind(host.kb.embedding, {
+    host.bind('kb.embedding', {
       read: () => ({
         name: 'synthetic-embedding',
         model: 'synthetic',
@@ -42,8 +48,8 @@ const SYNTHETIC_EMBEDDER_SOURCE = `
 
 const SYNTHETIC_VECTOR_SOURCE = `
   export default (host) => {
-    host.require(host.kb.embedding);
-    host.bind(host.kb.vector, {
+    host.require('kb.embedding');
+    host.bind('kb.vector', {
       read: () => ({
         search: async () => ({ hits: [] }),
       }),
@@ -97,7 +103,7 @@ function partialRoleExpansionSource(): string {
 const SYNTHETIC_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
   ...BUNDLED_LOADERS,
   'orama-fts-only': (host) => {
-    host.bind(host.kb.fts, {
+    host.bind(KB_FTS_CAPABILITY, {
       read: () => ({
         search: async () => ({ hits: [], exhausted: true }),
         tokenize: () => [],
@@ -114,7 +120,7 @@ const SYNTHETIC_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
     } as never);
   },
   'bundled-vector': (host) => {
-    host.bind(host.kb.vector, {
+    host.bind(KB_VECTOR_CAPABILITY, {
       read: () => ({
         search: async () => ({ hits: [] }),
       }),
@@ -152,7 +158,7 @@ const FAKE_EMBEDDER_ENTRY = {
   specifier: '#tests/fakes/fake-embedder.js',
   tier: 'installed',
   description: 'fake embedder',
-  fills: ['kb.embedding'],
+  fills: [KB_EMBEDDING_CAPABILITY],
 } as const;
 
 const NEEDLE_ENTRY = {
@@ -161,8 +167,8 @@ const NEEDLE_ENTRY = {
   specifier: '#src/engines/needle/expansion.js',
   tier: 'installed',
   description: 'Needle vector backend',
-  onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
-  fills: ['kb.vector'],
+  onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
+  fills: [KB_VECTOR_CAPABILITY],
 } as const;
 
 const GEMINI_SYNTHETIC_ENTRY = {
@@ -171,7 +177,7 @@ const GEMINI_SYNTHETIC_ENTRY = {
   specifier: javascriptDataUrl(SYNTHETIC_EMBEDDER_SOURCE),
   tier: 'installed',
   description: 'synthetic installed embedder',
-  fills: ['kb.embedding'],
+  fills: [KB_EMBEDDING_CAPABILITY],
 } as const;
 
 const NEEDLE_SYNTHETIC_ENTRY = {
@@ -180,8 +186,8 @@ const NEEDLE_SYNTHETIC_ENTRY = {
   specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
   tier: 'installed',
   description: 'synthetic installed vector backend',
-  onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
-  fills: ['kb.vector'],
+  onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
+  fills: [KB_VECTOR_CAPABILITY],
 } as const;
 
 const BUNDLED_FTS_SYNTHETIC_ENTRY = {
@@ -190,7 +196,7 @@ const BUNDLED_FTS_SYNTHETIC_ENTRY = {
   specifier: UNUSED_BUNDLED_SPECIFIER,
   tier: 'bundled',
   description: 'synthetic bundled FTS backend',
-  fills: ['kb.fts'],
+  fills: [KB_FTS_CAPABILITY],
 } as const;
 
 const BUNDLED_VECTOR_SYNTHETIC_ENTRY = {
@@ -199,7 +205,7 @@ const BUNDLED_VECTOR_SYNTHETIC_ENTRY = {
   specifier: UNUSED_BUNDLED_SPECIFIER,
   tier: 'bundled',
   description: 'synthetic bundled vector backend',
-  fills: ['kb.vector'],
+  fills: [KB_VECTOR_CAPABILITY],
 } as const;
 
 const ORAMA_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'orama');
@@ -249,6 +255,10 @@ function createLifecycleHarness(
 
 function lifecycleScopes(lifecycle: ExpansionLifecycleService): Map<string, Disposable[]> {
   return (lifecycle as unknown as { scopes: Map<string, Disposable[]> }).scopes;
+}
+
+function heldBy(kb: KbRuntime, name: typeof KB_EMBEDDING_CAPABILITY | typeof KB_VECTOR_CAPABILITY | typeof KB_FTS_CAPABILITY): string | undefined {
+  return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
 }
 
 afterEach(() => {
@@ -363,7 +373,7 @@ describe('ExpansionLifecycleService', () => {
 
     await lifecycle.equip('test-embedder');
 
-    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
     expect(state.snapshot()).toEqual([
       {
         id: 'test-embedder',
@@ -379,7 +389,7 @@ describe('ExpansionLifecycleService', () => {
 
     await lifecycle.unequip('test-embedder');
 
-    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
     expect(state.snapshot()).toEqual([]);
     expect(lifecycle.info('test-embedder')).toMatchObject({
       id: 'test-embedder',
@@ -396,7 +406,7 @@ describe('ExpansionLifecycleService', () => {
 
     await expect(lifecycle.equip('test-embedder')).rejects.toThrow('row write failed');
 
-    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
     expect(state.snapshot()).toEqual([]);
     expect(lifecycle.has('test-embedder')).toBe(false);
   });
@@ -422,7 +432,7 @@ describe('ExpansionLifecycleService', () => {
     await lifecycle.recoverOnBoot();
 
     expect(state.snapshot()).toEqual([{ id: 'needle', version: '0.2.0', installed_at: FIXED_NOW }]);
-    expect(kb.vector.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBeUndefined();
     expect(lifecycle.info('needle')).toMatchObject({
       id: 'needle',
       version: '0.2.0',
@@ -436,7 +446,7 @@ describe('ExpansionLifecycleService', () => {
 
     await lifecycle.recoverOnBoot();
 
-    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
     expect(lifecycle.list()).toEqual([]);
   });
 
@@ -449,36 +459,49 @@ describe('ExpansionLifecycleService', () => {
 
     expect(first.equipped).toEqual(['orama']);
     expect(first.failed.size).toBe(0);
-    expect(kb.fts.heldBy).toBe('orama');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama');
     expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
 
     const second = await lifecycle.applyBundledFallback();
 
     expect(second.equipped).toEqual([]);
     expect(second.failed.size).toBe(0);
-    expect(kb.fts.heldBy).toBe('orama');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama');
     expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
 
     await lifecycle.equip('test-embedder');
-    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
 
     await lifecycle.unequip('test-embedder');
-    expect(kb.embedding.heldBy).toBeUndefined();
-    expect(kb.fts.heldBy).toBe('orama');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama');
     expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
 
     const afterUnrelatedUnequip = await lifecycle.applyBundledFallback();
 
     expect(afterUnrelatedUnequip.equipped).toEqual([]);
     expect(afterUnrelatedUnequip.failed.size).toBe(0);
-    expect(kb.fts.heldBy).toBe('orama');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama');
     expect(lifecycleScopes(lifecycle).get('orama')).toHaveLength(1);
   });
 
   it('rejects unequipping a binding provider required by an active engine', async () => {
-    const expected = documentedCoralSetupError('binding_required_by_active_engine', {
-      binding: 'kb.embedding',
-      requiredBy: 'needle',
+    const expected = documentedCoralSetupError({
+      code: 'capability_required_by_active_engine',
+      target: 'gemini',
+      capabilities: [
+        {
+          capability: KB_EMBEDDING_CAPABILITY,
+          dependents: [
+            {
+              expansion: 'needle',
+              edgeKind: 'read',
+              source: 'onboarding',
+              state: 'active',
+            },
+          ],
+        },
+      ],
     });
     const { kb, lifecycle } = createLifecycleHarness({
       manifest: [GEMINI_SYNTHETIC_ENTRY, NEEDLE_SYNTHETIC_ENTRY],
@@ -492,8 +515,8 @@ describe('ExpansionLifecycleService', () => {
       message: expected.message,
       context: expected.context,
     });
-    expect(kb.embedding.heldBy).toBe('gemini');
-    expect(kb.vector.heldBy).toBe('needle');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
   });
 
   it('re-runs bundled fallback after unequipping an installed engine and refills an empty slot', async () => {
@@ -512,16 +535,16 @@ describe('ExpansionLifecycleService', () => {
 
     await lifecycle.recoverOnBoot();
 
-    expect(kb.embedding.heldBy).toBe('gemini');
-    expect(kb.vector.heldBy).toBe('needle');
-    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama-fts-only');
     expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
 
     await lifecycle.unequip('needle');
 
-    expect(kb.embedding.heldBy).toBe('gemini');
-    expect(kb.vector.heldBy).toBe('bundled-vector');
-    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('bundled-vector');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama-fts-only');
     expect(lifecycleScopes(lifecycle).get('bundled-vector')).toHaveLength(1);
     expect(state.snapshot()).toEqual([{ id: 'gemini', version: '0.0.0', installed_at: FIXED_NOW }]);
   });
@@ -554,7 +577,7 @@ describe('ExpansionLifecycleService', () => {
           },
         };
         host.registerConsumer(provider.consumer, host.scope);
-        host.bind(host.kb.embedding, provider);
+        host.bind('kb.embedding', provider);
       };
     `;
     const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
@@ -564,7 +587,7 @@ describe('ExpansionLifecycleService', () => {
       specifier,
       tier: 'installed',
       description: 'dispose spy',
-      fills: ['kb.embedding'],
+      fills: [KB_EMBEDDING_CAPABILITY],
     } as const;
 
     try {
@@ -590,21 +613,21 @@ describe('ExpansionLifecycleService', () => {
       specifier: '#tests/fakes/fake-embedder.js',
       tier: 'installed',
       description: 'second fake embedder',
-      fills: ['kb.embedding'],
+      fills: [KB_EMBEDDING_CAPABILITY],
     } as const;
     const { kb, lifecycle } = createLifecycleHarness({
       manifest: [FAKE_EMBEDDER_ENTRY, SECOND_EMBEDDER],
     });
 
     await lifecycle.equip('test-embedder');
-    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
 
     await expect(lifecycle.equip('second-embedder')).rejects.toMatchObject({
       code: 'binding_occupied',
       context: { binding: 'kb.embedding', heldBy: 'test-embedder' },
     });
     // First embedder remains bound; the failed second equip rolled back its scope.
-    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
   });
 
   it('accepts installed-not-active in expansion schemas and allows lastError on the view', () => {
@@ -633,7 +656,7 @@ describe('ExpansionLifecycleService', () => {
     const TRACED_SOURCE = `
       globalThis.__cluster_T_import_attempted__ = true;
       export default (host) => {
-        host.bind(host.kb.embedding, {
+        host.bind('kb.embedding', {
           read: () => ({
             name: 'traced',
             model: 'traced',
@@ -653,7 +676,7 @@ describe('ExpansionLifecycleService', () => {
       specifier: javascriptDataUrl(TRACED_SOURCE),
       tier: 'installed',
       description: 'traced equip',
-      fills: ['kb.embedding'],
+      fills: [KB_EMBEDDING_CAPABILITY],
     } as const;
     const globalState = globalThis as Record<string, unknown>;
 
@@ -669,7 +692,7 @@ describe('ExpansionLifecycleService', () => {
       });
 
       expect(globalState.__cluster_T_import_attempted__).toBeUndefined();
-      expect(kb.embedding.heldBy).toBeUndefined();
+      expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
       expect(state.snapshot()).toEqual([]);
       expect(lifecycle.has('traced-embedder')).toBe(false);
     } finally {
@@ -692,7 +715,7 @@ describe('ExpansionLifecycleService', () => {
     const SLOW_SOURCE = `
       export default async (host) => {
         await globalThis[${JSON.stringify(gateKey)}];
-        host.bind(host.kb.embedding, {
+        host.bind('kb.embedding', {
           read: () => ({
             name: 'slow',
             model: 'slow',
@@ -712,7 +735,7 @@ describe('ExpansionLifecycleService', () => {
       specifier: javascriptDataUrl(SLOW_SOURCE),
       tier: 'installed',
       description: 'slow equip',
-      fills: ['kb.embedding'],
+      fills: [KB_EMBEDDING_CAPABILITY],
     } as const;
 
     try {
@@ -734,7 +757,7 @@ describe('ExpansionLifecycleService', () => {
       await equipPromise;
       await shutdownPromise;
 
-      expect(kb.embedding.heldBy).toBeUndefined();
+      expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
       // Equip past the fence completed normally (state row written), shutdown
       // then disposed the scope cooperatively.
       expect(state.snapshot()).toEqual([{ id: 'slow-embedder', version: '0.0.0', installed_at: FIXED_NOW }]);
@@ -756,8 +779,8 @@ describe('ExpansionLifecycleService', () => {
       specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
       tier: 'installed',
       description: 'user vector engine',
-      onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
-      fills: ['kb.vector'],
+      onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
+      fills: [KB_VECTOR_CAPABILITY],
     } as const;
 
     const { kb, state, lifecycle } = createLifecycleHarness({
@@ -791,12 +814,12 @@ describe('ExpansionLifecycleService', () => {
     expect(userWon !== fallbackWon).toBe(true);
 
     if (userWon) {
-      expect(kb.vector.heldBy).toBe('needle');
+      expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
       expect(lifecycleScopes(lifecycle).get('needle')).toHaveLength(1);
       expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
       expect(state.snapshot().some((row) => row.id === 'needle')).toBe(true);
     } else {
-      expect(kb.vector.heldBy).toBe('bundled-vector');
+      expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('bundled-vector');
       expect(lifecycleScopes(lifecycle).get('bundled-vector')).toHaveLength(1);
       expect(lifecycleScopes(lifecycle).get('needle')).toBeUndefined();
       expect(state.snapshot().some((row) => row.id === 'needle')).toBe(false);
@@ -826,14 +849,14 @@ describe('ExpansionLifecycleService', () => {
     const unequipResult = await unequipPromise;
 
     expect(unequipResult).not.toMatchObject({ failed: expect.anything() });
-    expect(kb.embedding.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
     expect(state.snapshot()).toEqual([]);
     expect(lifecycleScopes(lifecycle).get('test-embedder')).toBeUndefined();
 
     // Run the inverse direction too: the post-condition must hold under
     // both orderings.
     await lifecycle.equip('test-embedder');
-    expect(kb.embedding.heldBy).toBe('test-embedder');
+    expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
     expect(state.snapshot()).toHaveLength(1);
   });
 
@@ -844,7 +867,7 @@ describe('ExpansionLifecycleService', () => {
       specifier: javascriptDataUrl(partialRoleExpansionSource()),
       tier: 'installed',
       description: 'partial installed role expansion',
-      provides: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO],
+      provides: { retrievalRoles: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO] },
     } as const;
     const { kb, state, lifecycle } = createLifecycleHarness({
       manifest: [PARTIAL_INSTALLED_ENTRY] as unknown as readonly EngineManifest[],
@@ -870,7 +893,7 @@ describe('ExpansionLifecycleService', () => {
       specifier: UNUSED_BUNDLED_SPECIFIER,
       tier: 'bundled',
       description: 'partial bundled role expansion',
-      provides: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO],
+      provides: { retrievalRoles: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO] },
     } as const;
     const { kb, lifecycle } = createLifecycleHarness({
       manifest: [PARTIAL_BUNDLED_ENTRY, BUNDLED_FTS_SYNTHETIC_ENTRY] as unknown as readonly EngineManifest[],
@@ -886,7 +909,7 @@ describe('ExpansionLifecycleService', () => {
         missing: 'partial-two',
       },
     });
-    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama-fts-only');
     expect(lifecycleScopes(lifecycle).get('partial-bundled')).toBeUndefined();
     expect(lifecycleScopes(lifecycle).get('orama-fts-only')).toHaveLength(1);
     expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'partial-one')).toBe(false);

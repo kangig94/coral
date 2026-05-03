@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { EntityGraph, KbEntryId, KbIndex, KbMatchSurface, KbResult, KbSearchScope } from '../entry-types.js';
 import type { Disposable } from '../../runtime/ports.js';
+import { kbCapabilityNameSchema, type KbCapabilityName } from '../capability/contract.js';
 
 export type RetrievalScope = KbSearchScope;
 export type RetrievalKind = KbResult['kind'];
@@ -20,10 +21,6 @@ export interface RetrievedDocument {
   readonly principles: readonly string[];
 }
 
-export const kbBindingNameSchema = z.union([z.literal('kb.fts'), z.literal('kb.embedding'), z.literal('kb.vector')]);
-
-export type KbBindingName = z.infer<typeof kbBindingNameSchema>;
-
 const kbSearchScopeSchema = z.enum(['notes', 'sources', 'communities', 'all'] satisfies [
   KbSearchScope,
   KbSearchScope,
@@ -38,7 +35,7 @@ export interface RetrievalRoleDescriptor {
   readonly phase: 'retrieval-source';
   readonly supportsScopes: readonly KbSearchScope[];
   // Optional in inputs; always non-undefined ([]) after normalizeRetrievalRoleDescriptor.
-  readonly requires?: readonly KbBindingName[];
+  readonly requires?: readonly KbCapabilityName[];
   readonly provides: 'retrieval-source';
 }
 
@@ -49,7 +46,7 @@ export const retrievalRoleDescriptorSchema: z.ZodType<RetrievalRoleDescriptor> =
     tags: z.array(z.string().min(1)),
     phase: z.literal('retrieval-source'),
     supportsScopes: z.array(kbSearchScopeSchema),
-    requires: z.array(kbBindingNameSchema).optional(),
+    requires: z.array(kbCapabilityNameSchema).optional(),
     provides: z.literal('retrieval-source'),
   })
   .strict();

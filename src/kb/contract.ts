@@ -1,4 +1,3 @@
-import type { RuntimeBinding } from '../runtime/binding.js';
 import type { ConsumerRegistration, CorpusStateReadPort, JournalConsumerReadPort } from '../store/consumer-contract.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import type { IdPort, ProcessPort } from '../runtime/ports.js';
@@ -10,8 +9,9 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
-import type { FtsSearchResult, RoleCatalogView, RoleRegistry, VectorRetrieval } from './search/contract.js';
+import type { FtsSearchResult, RoleCatalogView, RoleRegistry } from './search/contract.js';
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
+import type { KbCapabilityCatalogView, KbCapabilityRegistry } from './capability/contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -115,9 +115,7 @@ export interface KbEngineRuntimeBase {
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly projectionArtifacts: KbProjectionArtifactPort;
   readonly corpusProjectionReader: KbCorpusProjectionReader;
-  readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
-  readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
-  readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;
+  readonly capabilities: KbCapabilityCatalogView;
   readonly roleCatalog: RoleCatalogView;
 }
 
@@ -132,6 +130,7 @@ export interface KbEngineRuntime extends KbEngineRuntimeBase {
  * compose at the subsystem level instead.
  */
 export interface KbRuntime extends KbEngineRuntimeBase {
+  readonly capabilityRegistry: KbCapabilityRegistry;
   readonly roleRegistry: RoleRegistry;
   readonly markdownRoot: string;
   readonly engineArtifactRegistry: EngineArtifactRegistry;

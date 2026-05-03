@@ -2,9 +2,10 @@ import { CommanderError } from 'commander';
 import { z, ZodError } from 'zod';
 
 import { installErrorSchema, type InstallError } from '../../expansion/rpc-contract.js';
-import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
+import { readDefaultExpansionCatalog } from './catalog.js';
 
 export const expansionArgsSchema = z
   .object({
@@ -96,7 +97,12 @@ function bindingRequiredInstallError(
   const binding = typeof structured.context?.binding === 'string' ? structured.context.binding : 'unknown-binding';
   const requiredBy =
     typeof structured.context?.requiredBy === 'string' ? structured.context.requiredBy : 'this expansion';
-  const peers = BUNDLED_ENGINES.filter((entry) => entry.fills?.includes(binding)).map((entry) => entry.id);
+  const parsedBinding = kbCapabilityNameSchema.safeParse(binding);
+  const peers = parsedBinding.success
+    ? readDefaultExpansionCatalog()
+        .filter((entry) => entry.fills?.includes(parsedBinding.data))
+        .map((entry) => entry.id)
+    : [];
   const availablePeers = peers.length > 0 ? peers.join(', ') : 'none';
 
   return finalizeInstallError({

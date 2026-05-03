@@ -948,7 +948,7 @@ describe('architecture boundary guard', () => {
     expect(source).not.toMatch(/\bOpenAICompatibleProvider\b/u);
     expect(source).not.toMatch(/\bLocalOnnxProvider\b/u);
     expect(source).not.toMatch(/['"]gemini['"]/u);
-    expect(source).toMatch(/host\.require\(host\.kb\.embedding\)/u);
+    expect(source).toMatch(/host\.require\(KB_EMBEDDING_CAPABILITY\)/u);
   });
   it('kb domain modules do not compose runtimes or load engines', () => {
     // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)

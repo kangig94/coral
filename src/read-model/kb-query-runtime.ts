@@ -13,11 +13,18 @@ import {
   sourcePathFromName,
 } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import { BUNDLED_ENGINES, loadBundledEngine } from '../expansion/bundled.js';
+import { loadBundledEngine } from '../expansion/bundled.js';
 import { createExpansionHost, disposeExpansionScope } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
 import { validateManifestCompleteness } from '../expansion/manifest-completeness.js';
+import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
+import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+} from '../kb/capability/constants.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
@@ -126,7 +133,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
 /**
  * Loads bundled read-side capabilities onto a read-only KB runtime once per
  * `kb` instance. Read-side CLI does not run the coordinator's bundled
- * fallback, so this is the dual; without it `kb.fts.read()` throws
+ * fallback, so this is the dual; without it reading the kb.fts capability throws
  * `binding_empty` and the search degrades silently.
  */
 export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQueryContext): Promise<void> {
@@ -135,6 +142,17 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
   }
 
   const runtime = resolveQueryRuntime(context);
+  let manifestCatalog = createExpansionManifestCatalog();
+  try {
+    manifestCatalog = createExpansionManifestCatalog({ readDb: getDefaultKbQueryDb(context) });
+  } catch {
+    manifestCatalog = createExpansionManifestCatalog();
+  }
+  initializeCapabilityCatalog(kb.capabilityRegistry, manifestCatalog.listManifests(), [
+    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  ]);
 
   const noopDriver = {
     register(_reg: ConsumerRegistration): ConsumerHandle {
@@ -181,7 +199,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     },
   };
 
-  for (const entry of BUNDLED_ENGINES) {
+  for (const entry of manifestCatalog.listManifests()) {
     if (entry.tier !== 'bundled') {
       continue;
     }
@@ -196,7 +214,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     });
     try {
       await loadBundledEngine(entry, host);
-      validateManifestCompleteness(entry, kb.roleRegistry);
+      validateManifestCompleteness(entry, kb.roleRegistry, kb.capabilityRegistry);
     } catch (error) {
       await disposeExpansionScope(scope);
       throw error;

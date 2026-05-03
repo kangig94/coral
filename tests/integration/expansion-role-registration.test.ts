@@ -5,6 +5,7 @@ import { createScope } from '#src/expansion/scope.js';
 import { searchKb } from '#src/kb/ops/search.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import dummyExpansion from '#tests/fixtures/dummy-retrieval-role/expansion.js';
 import dummyManifest from '#tests/fixtures/dummy-retrieval-role/manifest.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
@@ -50,13 +51,15 @@ describe('expansion retrieval role registration integration', () => {
       }),
       consumer: { id: 'integration-vector', kind: 'stateless', registrationKind: 'stateless' },
     };
-    kb.embedding.bind(embedding, bindingScope, 'integration-embedding');
-    kb.vector.bind(vector, bindingScope, 'integration-vector');
+    kb.capabilityRegistry
+      .runtimeView()
+      .bind(KB_EMBEDDING_CAPABILITY, embedding, bindingScope, 'integration-embedding');
+    kb.capabilityRegistry.runtimeView().bind(KB_VECTOR_CAPABILITY, vector, bindingScope, 'integration-vector');
 
     const expansionScope = createScope();
     const host = makeHost(dummyManifest, expansionScope);
     await dummyExpansion(host);
-    validateManifestCompleteness(dummyManifest, kb.roleRegistry);
+    validateManifestCompleteness(dummyManifest, kb.roleRegistry, kb.capabilityRegistry);
 
     const response = await searchKb(kb, 'dummy external role', 5, 'all', 'hybrid');
     const dummyResult = response.results.find((result) => result.note === 'dummy-test-role');

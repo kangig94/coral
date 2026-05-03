@@ -35,7 +35,18 @@ import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
-import type { KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { VectorRetrieval } from '../kb/search/contract.js';
+import type { RegisteredKbCapability } from '../kb/capability/contract.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '../kb/capability/constants.js';
+import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
@@ -87,15 +98,30 @@ function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
 }
 
+const BUILTIN_CAPABILITY_DESCRIPTORS = [
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+] as const;
+
+function isTrustedCorpusCapability(record: RegisteredKbCapability): boolean {
+  if (record.origin !== 'builtin') {
+    return false;
+  }
+  const { name } = record.descriptor;
+  return name === KB_FTS_CAPABILITY || name === KB_VECTOR_CAPABILITY;
+}
+
 // Bundled Orama always binds kb.fts; engines like needle bind kb.vector when
-// equipped. Unbound bindings throw 'binding_empty' from `read()` — catch and
-// skip so 'all-equipped' is best-effort over what's currently equipped.
-export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'fts' | 'vector'>): string[] {
-  const corpusBindings = [kb.fts, kb.vector] as const;
+// equipped. Unbound capabilities throw 'binding_empty' from `read()` — catch
+// and skip so 'all-equipped' is best-effort over what's currently equipped.
+export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
+  const runtimeView = kb.capabilityRegistry.runtimeView();
+  const corpusBindings = runtimeView.list().filter(isTrustedCorpusCapability);
   const ids: string[] = [];
-  for (const binding of corpusBindings) {
+  for (const record of corpusBindings) {
     try {
-      ids.push(binding.read().consumer.id);
+      ids.push(runtimeView.read<Backed<FtsRetrieval | VectorRetrieval>>(record.descriptor.name).consumer.id);
     } catch {
       // binding_empty — corpus consumer not currently equipped; skip.
     }
@@ -123,7 +149,7 @@ function isBindingEmpty(error: unknown): boolean {
 // (spec §6.4 readiness table) instead of leaking a raw `binding_empty` from the
 // runtime-binding internal helper.
 export async function waitForCorpusReadiness(params: {
-  kb: Pick<KbRuntime, 'fts' | 'vector'>;
+  kb: Pick<KbRuntime, 'capabilityRegistry'>;
   readiness: SourceImportReadiness;
   snapshot: KbCorpusSnapshot;
   timeoutMs: number;
@@ -136,7 +162,7 @@ export async function waitForCorpusReadiness(params: {
     case 'base-search': {
       let consumerId: string;
       try {
-        consumerId = kb.fts.read().consumer.id;
+        consumerId = kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id;
       } catch (error) {
         if (isBindingEmpty(error)) {
           throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.fts' });
@@ -149,7 +175,9 @@ export async function waitForCorpusReadiness(params: {
     case 'active-vector': {
       let consumerId: string;
       try {
-        consumerId = kb.vector.read().consumer.id;
+        consumerId = kb.capabilityRegistry
+          .runtimeView()
+          .read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY).consumer.id;
       } catch (error) {
         if (isBindingEmpty(error)) {
           throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.vector' });
@@ -277,6 +305,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   // rebuild kicks so a draining instance does not start fresh KB work. Boot's
   // blocking `wait: true` on the next coordinator picks up the staleness.
   const corpusRescanAbort = new AbortController();
+  const expansionManifestCatalog = createExpansionManifestCatalog({
+    db: getStoreDb(),
+    now: () => nowDate(runtime.time).toISOString(),
+  });
   const expansionLifecycleService = new ExpansionLifecycleService({
     makeHost: (manifest, scope) => {
       const kbRuntime = currentKbRuntime;
@@ -291,6 +323,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       })(manifest, scope);
     },
     state: new ExpansionStateStore(getStoreDb()),
+    manifest: expansionManifestCatalog.listManifests(),
+    manifestCatalog: expansionManifestCatalog,
     now: () => nowDate(runtime.time).toISOString(),
     resolveKbRuntime: () => currentKbRuntime,
     getLifecyclePhase: () => resolveLifecyclePhase?.() ?? 'starting',
@@ -348,6 +382,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         },
       });
       currentKbRuntime = kbSubsystem.kb;
+      initializeCapabilityCatalog(
+        kbSubsystem.kb.capabilityRegistry,
+        expansionManifestCatalog.listManifests(),
+        BUILTIN_CAPABILITY_DESCRIPTORS,
+      );
       if (kbSubsystem.curateScheduler) {
         kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
           scheduler: kbSubsystem.curateScheduler,
@@ -374,7 +413,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await driver.waitFreshUntil(
         'corpus',
         corpusSnapshot,
-        kbSubsystem.kb.fts.read().consumer.id,
+        kbSubsystem.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id,
         bootFreshnessTimeoutMs,
       );
       if (kbSubsystem.curateScheduler) {

@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import { CoralSetupError } from '../../runtime/errors.js';
 import type { Backed, EmbeddingService, KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext } from '../../store/consumer-contract.js';
 import type { KbProjectionInput } from '../../kb/projection-input-contract.js';
@@ -85,17 +84,6 @@ type StagedVectorEntry = {
 
 const SHARED_NEEDLE_BACKENDS = new WeakMap<object, NeedleBackend>();
 let needleBackendStagingHookForTests: NeedleBackendStagingHook | null = null;
-
-async function resolveRuntimeNeedleEmbedder(runtime: KbEngineRuntime): Promise<ResolvedNeedleEmbedder | null> {
-  try {
-    return resolveBoundNeedleEmbedder(runtime.embedding.read());
-  } catch (error) {
-    if (error instanceof CoralSetupError && error.code === 'binding_empty') {
-      return null;
-    }
-    throw error;
-  }
-}
 
 function needleHandleDir(runtimeDir: string, handleToken: string): string {
   return join(needleIndexDir(runtimeDir), 'handles', handleToken);
@@ -243,7 +231,7 @@ export class NeedleBackend implements NeedleBackendContract {
   private addonPath: string;
   private pluginRoot?: string;
   private storeFactory?: NeedleBackendOptions['storeFactory'];
-  private readonly boundEmbedder?: ResolvedNeedleEmbedder;
+  private boundEmbedder?: ResolvedNeedleEmbedder;
   private activeHandle: ActiveNeedleHandle | null = null;
   private readonly retiredHandles = new Set<ActiveNeedleHandle>();
 
@@ -258,13 +246,16 @@ export class NeedleBackend implements NeedleBackendContract {
     this.boundEmbedder = options.embedder;
   }
 
-  configure(options: NeedleBackendOptions): void {
+  configure(options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder }): void {
     this.addonPath = options.addonPath;
     if (options.pluginRoot !== undefined) {
       this.pluginRoot = options.pluginRoot;
     }
     if (options.storeFactory !== undefined) {
       this.storeFactory = options.storeFactory;
+    }
+    if (options.embedder !== undefined) {
+      this.boundEmbedder = options.embedder;
     }
   }
 
@@ -340,7 +331,7 @@ export class NeedleBackend implements NeedleBackendContract {
       return;
     }
 
-    const embedder = this.boundEmbedder ?? (await resolveRuntimeNeedleEmbedder(this.runtime));
+    const embedder = this.boundEmbedder ?? null;
     if (embedder === null) {
       throw new Error('KB needle backend requires an embedding provider configuration.');
     }
@@ -655,7 +646,10 @@ export class NeedleBackend implements NeedleBackendContract {
 }
 
 /** Returns the shared KB needle backend for a runtime so coordinator wiring stays single-instance. */
-export function createNeedleBackend(runtime: KbEngineRuntime, options: NeedleBackendOptions): NeedleBackend {
+export function createNeedleBackend(
+  runtime: KbEngineRuntime,
+  options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder },
+): NeedleBackend {
   const existing = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (existing !== undefined) {
     existing.configure(options);

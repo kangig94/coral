@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadExpansions } from '#src/expansion/loader.js';
+import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -10,8 +12,12 @@ const GEMINI_ENTRY = {
   specifier: '#src/engines/gemini/expansion.js',
   tier: 'installed' as const,
   description: 'Google Gemini embedding API',
-  fills: ['kb.embedding'],
+  fills: [KB_EMBEDDING_CAPABILITY],
 };
+
+function readEmbedding(kb: KbRuntime): Backed<EmbeddingService> {
+  return kb.capabilityRegistry.runtimeView().read<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY);
+}
 
 describe('gemini expansion', () => {
   it('equips and binds kb.embedding with a stateless consumer', async () => {
@@ -24,13 +30,13 @@ describe('gemini expansion', () => {
     const [scope] = await loadExpansions(makeHost, [GEMINI_ENTRY]);
 
     try {
-      expect(kb.embedding.heldBy).toBe('gemini');
-      expect(kb.embedding.read().consumer).toMatchObject({
+      expect(kb.capabilityRegistry.runtimeView().status(KB_EMBEDDING_CAPABILITY)?.heldBy).toBe('gemini');
+      expect(readEmbedding(kb).consumer).toMatchObject({
         id: 'gemini',
         kind: 'stateless',
         registrationKind: 'stateless',
       });
-      expect(kb.embedding.read().read()).toMatchObject({
+      expect(readEmbedding(kb).read()).toMatchObject({
         name: 'gemini',
         model: 'gemini-embedding-001',
         dims: 3072,

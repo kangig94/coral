@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 
 import type { Expansion } from '#src/expansion/contract.js';
+import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '#src/kb/embedding-vector.js';
@@ -262,7 +263,7 @@ const onnxExpansion: Expansion = async (host) => {
   };
 
   host.registerConsumer({ id: consumer.id, kind: consumer.kind }, host.scope);
-  host.bind(host.kb.embedding, provider);
+  host.bind(KB_EMBEDDING_CAPABILITY, provider);
 };
 
 export function __setOnnxExpansionTestHooks(hooks: OnnxExpansionTestHooks | null): void {

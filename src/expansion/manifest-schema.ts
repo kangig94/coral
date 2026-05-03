@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { retrievalRoleDescriptorSchema } from '../kb/search/contract.js';
+import { kbCapabilityDescriptorSchema, kbCapabilityNameSchema } from '../kb/capability/contract.js';
 import type { EngineManifest } from './contract.js';
 
 const onboardingStepSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('require-binding'),
-      binding: z.string().min(1),
+      binding: kbCapabilityNameSchema,
     })
     .strict(),
   z
@@ -24,6 +25,25 @@ const onboardingStepSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+const manifestProvidesSchema = z
+  .object({
+    retrievalRoles: z.array(retrievalRoleDescriptorSchema).optional(),
+    capabilities: z.array(kbCapabilityDescriptorSchema).optional(),
+  })
+  .strict()
+  .superRefine((provides, ctx) => {
+    for (const [index, descriptor] of (provides.capabilities ?? []).entries()) {
+      if (descriptor.namespace !== 'kb' && !descriptor.name.startsWith('kb.')) {
+        continue;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['capabilities', index, 'name'],
+        message: 'capability_namespace_reserved',
+      });
+    }
+  });
+
 export const engineManifestSchema = z
   .object({
     id: z.string().min(1),
@@ -35,8 +55,8 @@ export const engineManifestSchema = z
     // manifest validation only verifies the declarative catalog fields.
     installer: z.any().optional(),
     onboarding: z.array(onboardingStepSchema).optional(),
-    fills: z.array(z.string().min(1)).optional(),
-    provides: z.array(retrievalRoleDescriptorSchema).optional(),
+    fills: z.array(kbCapabilityNameSchema).optional(),
+    provides: manifestProvidesSchema.optional(),
   })
   .strict() satisfies z.ZodType<EngineManifest>;
 

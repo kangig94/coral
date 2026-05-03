@@ -44,7 +44,16 @@ export type DocumentedCoralSetupErrorCode =
   | 'kb_unavailable'
   | 'binding_occupied'
   | 'binding_required'
-  | 'binding_required_by_active_engine'
+  | 'capability_name_occupied'
+  | 'capability_namespace_reserved'
+  | 'capability_fill_unknown'
+  | 'capability_fill_undeclared'
+  | 'capability_require_undeclared'
+  | 'capability_descriptor_mismatch'
+  | 'capability_descriptor_unregistered'
+  | 'capability_required_by_active_engine'
+  | 'capability_catalog_remove_blocked'
+  | 'require_binding_unknown'
   | 'role_id_occupied'
   | 'role_descriptor_mismatch'
   | 'role_descriptor_unregistered'
@@ -195,11 +204,58 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: (context) =>
       `Bind '${stringContextValue(context, 'binding', 'unknown')}' before loading '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
   },
-  binding_required_by_active_engine: {
+  capability_name_occupied: {
+    userMessage: (context) => `Capability '${stringContextValue(context, 'name', 'unknown')}' is already registered.`,
+    remediation: 'Use a unique capability name or remove the existing manifest declaration before registering another.',
+  },
+  capability_namespace_reserved: {
     userMessage: (context) =>
-      `Binding '${stringContextValue(context, 'binding', 'unknown')}' is required by active engine '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
-    remediation: (context) =>
-      `Unequip '${stringContextValue(context, 'requiredBy', 'this expansion')}' before unequipping the engine that fills '${stringContextValue(context, 'binding', 'unknown')}'.`,
+      `Capability '${stringContextValue(context, 'name', 'unknown')}' uses the reserved 'kb' namespace.`,
+    remediation:
+      "External manifests must declare capabilities outside the 'kb.*' namespace; only built-in KB composition may register 'kb.*' capabilities.",
+  },
+  capability_fill_unknown: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' fills unknown capability '${stringContextValue(context, 'name', 'unknown')}'.`,
+    remediation: 'Declare the capability in a manifest or use an existing capability from the catalog.',
+  },
+  capability_fill_undeclared: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' tried to bind undeclared capability '${stringContextValue(context, 'name', 'unknown')}'.`,
+    remediation: 'Add the capability to the manifest fills list before binding it at runtime.',
+  },
+  capability_require_undeclared: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' tried to read undeclared capability '${stringContextValue(context, 'name', 'unknown')}'.`,
+    remediation: 'Add the capability to onboarding require-binding or retrieval role requirements before reading it.',
+  },
+  capability_descriptor_mismatch: {
+    userMessage: (context) =>
+      `Capability '${stringContextValue(context, 'name', 'unknown')}' does not match the registered descriptor.`,
+    remediation:
+      'Update the manifest descriptor to match the registered capability exactly, or remove the stale declaration before re-registering.',
+  },
+  capability_descriptor_unregistered: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' declared capability '${stringContextValue(context, 'name', 'unknown')}' but it was not registered.`,
+    remediation: 'Run capability catalog initialization before validating manifest completeness.',
+  },
+  capability_required_by_active_engine: {
+    userMessage: (context) =>
+      `Capability removal for '${stringContextValue(context, 'target', 'this expansion')}' is blocked by an active engine dependency.`,
+    remediation: 'Unequip active dependent engines before removing the capability provider.',
+  },
+  capability_catalog_remove_blocked: {
+    userMessage: (context) =>
+      `Catalog removal for '${stringContextValue(context, 'target', 'this expansion')}' is blocked by remaining capability dependents.`,
+    remediation:
+      'Remove or update every manifest that reads or fills the target capabilities before removing this catalog entry.',
+  },
+  require_binding_unknown: {
+    userMessage: (context) =>
+      `Onboarding requires unknown capability '${stringContextValue(context, 'name', 'unknown')}'.`,
+    remediation:
+      'Declare the capability in the catalog or update the onboarding requirement to use an existing capability.',
   },
   role_id_occupied: {
     userMessage: (context) =>
@@ -237,19 +293,53 @@ function renderDocumentedSpec(
   return typeof value === 'function' ? value(context) : value;
 }
 
+export type DocumentedCoralSetupErrorObjectInit = {
+  readonly code: DocumentedCoralSetupErrorCode;
+  readonly context?: CoralSetupErrorContext;
+  readonly userMessage?: string;
+  readonly remediation?: string;
+} & Record<string, unknown>;
+
+export function documentedCoralSetupError(init: DocumentedCoralSetupErrorObjectInit): CoralSetupError;
 export function documentedCoralSetupError(
   code: DocumentedCoralSetupErrorCode,
   context?: CoralSetupErrorContext,
+  overrides?: Partial<Pick<CoralSetupErrorInit, 'userMessage' | 'remediation'>>,
+): CoralSetupError;
+export function documentedCoralSetupError(
+  codeOrInit: DocumentedCoralSetupErrorCode | DocumentedCoralSetupErrorObjectInit,
+  context?: CoralSetupErrorContext,
   overrides: Partial<Pick<CoralSetupErrorInit, 'userMessage' | 'remediation'>> = {},
 ): CoralSetupError {
+  const { code, effectiveContext, effectiveOverrides } =
+    typeof codeOrInit === 'string'
+      ? { code: codeOrInit, effectiveContext: context, effectiveOverrides: overrides }
+      : normalizeDocumentedSetupErrorInit(codeOrInit);
   const spec = DOCUMENTED_CORAL_SETUP_ERRORS[code];
 
   return new CoralSetupError({
     code,
-    userMessage: overrides.userMessage ?? renderDocumentedSpec(spec.userMessage, context),
-    remediation: overrides.remediation ?? renderDocumentedSpec(spec.remediation, context),
-    ...(context === undefined ? {} : { context }),
+    userMessage: effectiveOverrides.userMessage ?? renderDocumentedSpec(spec.userMessage, effectiveContext),
+    remediation: effectiveOverrides.remediation ?? renderDocumentedSpec(spec.remediation, effectiveContext),
+    ...(effectiveContext === undefined ? {} : { context: effectiveContext }),
   });
+}
+
+function normalizeDocumentedSetupErrorInit(init: DocumentedCoralSetupErrorObjectInit): {
+  readonly code: DocumentedCoralSetupErrorCode;
+  readonly effectiveContext: CoralSetupErrorContext | undefined;
+  readonly effectiveOverrides: Partial<Pick<CoralSetupErrorInit, 'userMessage' | 'remediation'>>;
+} {
+  const { code, context, userMessage, remediation, ...contextFields } = init;
+  const effectiveContext = context ?? (Object.keys(contextFields).length === 0 ? undefined : contextFields);
+  return {
+    code,
+    effectiveContext,
+    effectiveOverrides: {
+      ...(userMessage === undefined ? {} : { userMessage }),
+      ...(remediation === undefined ? {} : { remediation }),
+    },
+  };
 }
 
 export class CoralSetupError extends Error {

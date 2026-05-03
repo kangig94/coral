@@ -11,6 +11,15 @@ import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
+import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '#src/kb/capability/constants.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
@@ -45,14 +54,38 @@ function createMockKb(order?: string[]) {
   const vectorRetrieval: VectorRetrieval = {
     search: vi.fn(async () => ({ hits: [] })),
   };
-  const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-  vector.bind(
+  const capabilityRegistry = createCapabilityRegistry();
+  capabilityRegistry.registerBuiltin(
+    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
+  );
+  capabilityRegistry.registerBuiltin(
+    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
+  );
+  capabilityRegistry.registerBuiltin(
+    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
+  );
+  capabilityRegistry.runtimeView().bind(
+    KB_VECTOR_CAPABILITY,
     { read: () => vectorRetrieval, consumer: baseConsumer },
     { [Symbol.dispose]() {} },
     MOCK_BASE_CONSUMER_ID,
   );
-  const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
-  const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+  capabilityRegistry.runtimeView().bind(
+    KB_FTS_CAPABILITY,
+    {
+      read: () => ({
+        search: vi.fn(async () => ({ hits: [], exhausted: true })),
+        tokenize: vi.fn(() => []),
+        warnings: vi.fn(() => []),
+      }),
+      consumer: baseConsumer,
+    },
+    { [Symbol.dispose]() {} },
+    MOCK_BASE_CONSUMER_ID,
+  );
   const roleRegistry = createRoleRegistry();
   const runtimeDir = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-kb-runtime-'));
   tempRoots.push(runtimeDir);
@@ -61,6 +94,8 @@ function createMockKb(order?: string[]) {
     runtimeDir,
     roleRegistry,
     roleCatalog: roleRegistry.catalogView(),
+    capabilityRegistry,
+    capabilities: capabilityRegistry.catalogView(),
     engineArtifactRegistry: new EngineArtifactRegistry(),
     corpusAuthorityBaseline: {
       ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
@@ -88,9 +123,6 @@ function createMockKb(order?: string[]) {
         communityFresh: false,
       })),
     },
-    vector,
-    fts,
-    embedding,
     retryPendingCorpusPublication: vi.fn(async () => {
       order?.push('retryPendingCorpusPublication');
     }),

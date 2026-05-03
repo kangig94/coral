@@ -1,7 +1,8 @@
 import type { Database } from '../../src/store/db.js';
 
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
-import type { KbRuntime } from '#src/kb/contract.js';
+import type { Backed, FtsRetrieval, KbRuntime } from '#src/kb/contract.js';
+import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '#src/store/read-port.js';
 import { normalizeCorpusCursor, readCorpusState } from '#src/kb/state/corpus-state.js';
@@ -55,7 +56,7 @@ export function createCorpusApplyContext(
 }
 
 export async function applyBoundCorpusConsumerForTest(kb: KbRuntime, db: Database): Promise<void> {
-  const consumer = kb.fts.read().consumer;
+  const consumer = kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer;
   const controller = new AbortController();
   if ('apply' in consumer && typeof consumer.apply === 'function') {
     const ctx = {

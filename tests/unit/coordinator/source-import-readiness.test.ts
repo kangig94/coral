@@ -1,18 +1,36 @@
 import { describe, expect, it } from 'vitest';
 
 import { waitForCorpusReadiness } from '#src/coordinator/index.js';
-import type { KbCorpusSnapshot } from '#src/kb/contract.js';
-import type { RuntimeBinding } from '#src/runtime/binding.js';
+import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
+import type { VectorRetrieval } from '#src/kb/search/contract.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '#src/kb/capability/constants.js';
+import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
+import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { documentedCoralSetupError } from '#src/runtime/errors.js';
 
-function makeBoundBinding<T>(name: string, consumerId: string): RuntimeBinding<T> {
-  return {
-    name,
-    heldBy: 'test-holder',
-    read: () =>
-      ({
-        // The waiter only reads `.consumer.id`; other fields are unused.
+function makeKb(bindings: { readonly fts?: string; readonly vector?: string }): Pick<KbRuntime, 'capabilityRegistry'> {
+  const registry = createCapabilityRegistry();
+  registry.registerBuiltin(
+    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
+  );
+  registry.registerBuiltin(
+    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
+  );
+  registry.registerBuiltin(BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR, createRuntimeBinding(KB_EMBEDDING_CAPABILITY));
+  const scope = { [Symbol.dispose]() {} };
+  const bindConsumer = (name: typeof KB_FTS_CAPABILITY | typeof KB_VECTOR_CAPABILITY, consumerId: string): void => {
+    registry.runtimeView().bind(
+      name,
+      {
         read: (() => {
           throw new Error('unused in tests');
         }) as never,
@@ -24,24 +42,18 @@ function makeBoundBinding<T>(name: string, consumerId: string): RuntimeBinding<T
           corpusInterest: 'content',
           apply: async () => {},
         },
-      }) as unknown as T,
-    bind: () => {
-      throw new Error('unused in tests');
-    },
+      },
+      scope,
+      'test-holder',
+    );
   };
-}
-
-function makeUnboundBinding<T>(name: string): RuntimeBinding<T> {
-  return {
-    name,
-    heldBy: undefined,
-    read: () => {
-      throw documentedCoralSetupError('binding_empty', { binding: name });
-    },
-    bind: () => {
-      throw new Error('unused in tests');
-    },
-  };
+  if (bindings.fts !== undefined) {
+    bindConsumer(KB_FTS_CAPABILITY, bindings.fts);
+  }
+  if (bindings.vector !== undefined) {
+    bindConsumer(KB_VECTOR_CAPABILITY, bindings.vector);
+  }
+  return { capabilityRegistry: registry };
 }
 
 const SNAPSHOT: KbCorpusSnapshot = {
@@ -57,8 +69,7 @@ describe('waitForCorpusReadiness', () => {
     const calls: string[] = [];
     await waitForCorpusReadiness({
       kb: {
-        fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-        vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
       },
       readiness: 'commit',
       snapshot: SNAPSHOT,
@@ -75,8 +86,7 @@ describe('waitForCorpusReadiness', () => {
     const calls: string[] = [];
     await waitForCorpusReadiness({
       kb: {
-        fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-        vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
       },
       readiness: 'base-search',
       snapshot: SNAPSHOT,
@@ -93,8 +103,7 @@ describe('waitForCorpusReadiness', () => {
     const calls: string[] = [];
     await waitForCorpusReadiness({
       kb: {
-        fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-        vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
       },
       readiness: 'active-vector',
       snapshot: SNAPSHOT,
@@ -114,8 +123,7 @@ describe('waitForCorpusReadiness', () => {
 
     const waitPromise = waitForCorpusReadiness({
       kb: {
-        fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-        vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
       },
       readiness: 'all-equipped',
       snapshot: SNAPSHOT,
@@ -151,8 +159,7 @@ describe('waitForCorpusReadiness', () => {
     const calls: string[] = [];
     await waitForCorpusReadiness({
       kb: {
-        fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-        vector: makeUnboundBinding('kb.vector'),
+        ...makeKb({ fts: 'fts-consumer' }),
       },
       readiness: 'all-equipped',
       snapshot: SNAPSHOT,
@@ -172,8 +179,7 @@ describe('waitForCorpusReadiness', () => {
     await expect(
       waitForCorpusReadiness({
         kb: {
-          fts: makeUnboundBinding('kb.fts'),
-          vector: makeBoundBinding('kb.vector', 'vector-consumer'),
+          ...makeKb({ vector: 'vector-consumer' }),
         },
         readiness: 'base-search',
         snapshot: SNAPSHOT,
@@ -191,8 +197,7 @@ describe('waitForCorpusReadiness', () => {
     await expect(
       waitForCorpusReadiness({
         kb: {
-          fts: makeBoundBinding('kb.fts', 'fts-consumer'),
-          vector: makeUnboundBinding('kb.vector'),
+          ...makeKb({ fts: 'fts-consumer' }),
         },
         readiness: 'active-vector',
         snapshot: SNAPSHOT,

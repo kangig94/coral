@@ -51,7 +51,7 @@ describe('store schema idempotency', () => {
     }
   });
 
-  it('001_initial.sql creates the expected baseline schema state', () => {
+  it('store schema migrations create the expected baseline schema state', () => {
     const db = newRawDatabase(':memory:');
 
     try {
@@ -68,6 +68,7 @@ describe('store schema idempotency', () => {
       expect(objects).toContain('kb_corpus_state');
       expect(objects).toContain('consumer_cursors');
       expect(objects).toContain('kb_curate_scheduler');
+      expect(objects).toContain('expansion_manifest_catalog');
 
       const meta = (
         db.prepare('SELECT key, value FROM meta ORDER BY key').all() as { key: string; value: string }[]
@@ -76,7 +77,7 @@ describe('store schema idempotency', () => {
         value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value,
       }));
       expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(meta.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
+      expect(meta.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
 
       expect(
         db
@@ -107,6 +108,7 @@ describe('store schema idempotency', () => {
         'registered_at',
         'registration_kind',
       ]);
+      expect(tableColumns(db, 'expansion_manifest_catalog')).toEqual(['id', 'manifest_json', 'updated_at']);
 
       expect(tableColumns(db, 'expansion_state')).toEqual(['id', 'version', 'installed_at']);
 

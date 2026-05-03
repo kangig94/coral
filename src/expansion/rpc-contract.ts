@@ -7,7 +7,13 @@
  * `ExpansionLifecycleService`) lives at `src/coordinator/expansion/rpc.ts`.
  */
 import { z } from 'zod';
-import { retrievalRoleDescriptorSchema, type RetrievalRoleDescriptor } from '../kb/search/contract.js';
+import { retrievalRoleDescriptorSchema } from '../kb/search/contract.js';
+import {
+  kbCapabilityDescriptorSchema,
+  kbCapabilityNameSchema,
+  type KbCapabilityStatus,
+} from '../kb/capability/contract.js';
+import type { EngineManifestProvides } from './contract.js';
 
 const expansionCatalogStatusLiterals = [
   'inactive',
@@ -21,8 +27,22 @@ const expansionCatalogStatusLiterals = [
 ] as const;
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
-const postInstallActionLiterals = ['register_expansion'] as const;
-const providesSchema: z.ZodType<readonly RetrievalRoleDescriptor[]> = z.array(retrievalRoleDescriptorSchema);
+const providesSchema: z.ZodType<EngineManifestProvides> = z
+  .object({
+    retrievalRoles: z.array(retrievalRoleDescriptorSchema).optional(),
+    capabilities: z.array(kbCapabilityDescriptorSchema).optional(),
+  })
+  .strict();
+const capabilityStatusSchema: z.ZodType<KbCapabilityStatus> = z
+  .object({
+    name: kbCapabilityNameSchema,
+    namespace: z.enum(['kb', 'external']),
+    declared: z.boolean(),
+    bound: z.boolean(),
+    heldBy: z.string().min(1).optional(),
+    declaredByManifest: z.string().min(1).optional(),
+  })
+  .strict();
 
 const catalogEntryCommonShape = {
   id: z.string(),
@@ -60,7 +80,18 @@ const onboardingChoiceSchema = z
   })
   .strict();
 
-const postInstallSchema = z.array(z.enum(postInstallActionLiterals)).min(1);
+const postInstallSchema = z
+  .array(
+    z.union([
+      z.literal('register_expansion'),
+      z
+        .object({
+          action: z.literal('register_expansion'),
+          manifestPath: z.string().min(1),
+        })
+        .strict(),
+    ]),
+  );
 
 export const onboardingSchema = z
   .object({
@@ -142,7 +173,8 @@ export interface ExpansionView {
   readonly tier: 'bundled' | 'installed';
   readonly status: ExpansionStatus;
   readonly lastError?: string;
-  readonly provides?: readonly RetrievalRoleDescriptor[];
+  readonly provides?: EngineManifestProvides;
+  readonly capabilityStatus?: readonly KbCapabilityStatus[];
 }
 
 export const expansionViewSchema = z
@@ -152,6 +184,7 @@ export const expansionViewSchema = z
     status: expansionStatusSchema,
     lastError: z.string().min(1).optional(),
     provides: providesSchema.optional(),
+    capabilityStatus: z.array(capabilityStatusSchema).optional(),
   })
   .strict() satisfies z.ZodType<ExpansionView>;
 
@@ -162,6 +195,7 @@ const installExpansionViewSchema = z
     tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
     provides: providesSchema.optional(),
+    capabilityStatus: z.array(capabilityStatusSchema).optional(),
   })
   .strict();
 

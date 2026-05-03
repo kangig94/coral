@@ -1,6 +1,7 @@
 import { CoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
 import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
-import type { FtsRetrieval, KbRuntime } from '../contract.js';
+import type { Backed, EmbeddingService, FtsRetrieval, KbRuntime } from '../contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
 import type { EntityGraph, KbIndex, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
 import { normalizeWhitespace } from '../text-normalization.js';
 import { isGraphSearchFresh } from '../search/graph-retrieval.js';
@@ -23,9 +24,12 @@ import type {
 } from '../search/contract.js';
 import { defaultFusionProfile } from '../search/default-fusion-profile.js';
 
-export type VectorBindingName = 'kb.embedding' | 'kb.vector';
+export type VectorBindingName = typeof KB_VECTOR_CAPABILITY | typeof KB_EMBEDDING_CAPABILITY;
 
-const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set(['kb.embedding', 'kb.vector']);
+const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set([
+  KB_VECTOR_CAPABILITY,
+  KB_EMBEDDING_CAPABILITY,
+]);
 
 const neverAbortSignal = new AbortController().signal;
 
@@ -83,7 +87,7 @@ export function isVectorBindingName(binding: string): binding is VectorBindingNa
 }
 
 function missingBindingRemediation(binding: VectorBindingName): string {
-  return binding === 'kb.embedding'
+  return binding === KB_EMBEDDING_CAPABILITY
     ? "Run `coral-cli expansion list` to find an engine that fills 'kb.embedding', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config."
     : "Run `coral-cli expansion list` to find an engine that fills 'kb.vector', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.";
 }
@@ -170,7 +174,7 @@ function createSearchExecutionContext(
   };
 
   const readFts = (): FtsRetrieval => {
-    fts ??= rt.fts.read().read();
+    fts ??= rt.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
     return fts;
   };
 
@@ -229,7 +233,11 @@ function createSearchExecutionContext(
       return queryTokens;
     },
     embedding() {
-      embeddingPromise ??= rt.embedding.read().read().embedQuery(request.rawQuery);
+      embeddingPromise ??= rt.capabilityRegistry
+        .runtimeView()
+        .read<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY)
+        .read()
+        .embedQuery(request.rawQuery);
       return embeddingPromise;
     },
     index() {

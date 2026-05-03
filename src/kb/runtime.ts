@@ -19,6 +19,15 @@ import type {
   KbRuntime,
 } from './contract.js';
 import type { VectorRetrieval } from './search/contract.js';
+import { createCapabilityRegistry } from './capability/registry.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from './capability/constants.js';
 import { createBuiltinGraphRole } from './search/graph-retrieval.js';
 import { createRoleRegistry } from './search/role-registry.js';
 import { createBuiltinTextRole } from './search/text-retrieval.js';
@@ -91,9 +100,8 @@ class KbRuntimeImpl implements KbRuntime {
   readonly spawnCli: SpawnCliFn;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
-  readonly vector: KbRuntime['vector'];
-  readonly embedding: KbRuntime['embedding'];
-  readonly fts: KbRuntime['fts'];
+  readonly capabilityRegistry: KbRuntime['capabilityRegistry'];
+  readonly capabilities: KbRuntime['capabilities'];
   readonly roleRegistry: KbRuntime['roleRegistry'];
   readonly roleCatalog: KbRuntime['roleCatalog'];
   readonly engineArtifactRegistry: EngineArtifactRegistry;
@@ -144,9 +152,21 @@ class KbRuntimeImpl implements KbRuntime {
     this.processPort = processPort;
     this.envPort = envPort;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
-    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
-    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+    const capabilityRegistry = createCapabilityRegistry();
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
+    );
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
+    );
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
+    );
+    this.capabilityRegistry = capabilityRegistry;
+    this.capabilities = capabilityRegistry.catalogView();
     const roleRegistry = createRoleRegistry();
     this.roleRegistry = roleRegistry;
     this.roleCatalog = roleRegistry.catalogView();

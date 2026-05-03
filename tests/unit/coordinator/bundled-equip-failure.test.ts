@@ -6,6 +6,8 @@ import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.
 import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import type { Expansion } from '#src/expansion/contract.js';
+import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
@@ -26,7 +28,7 @@ const TEST_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
     throw new Error('second-boom');
   },
   'partial-bundled': (host) => {
-    host.bind(host.kb.fts, {
+    host.bind(KB_FTS_CAPABILITY, {
       read: () => stubFtsRetrieval,
       consumer: {
         id: 'partial-fts',
@@ -37,7 +39,7 @@ const TEST_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
     throw new Error('mid-bind failure');
   },
   'success-engine': (host) => {
-    host.bind(host.kb.fts, {
+    host.bind(KB_FTS_CAPABILITY, {
       read: () => stubFtsRetrieval,
       consumer: {
         id: 'success-engine-base',
@@ -62,7 +64,7 @@ const THROWING_BUNDLED_ENTRY = {
   specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that throws on boot',
-  fills: ['kb.fts'],
+  fills: [KB_FTS_CAPABILITY],
 } as const;
 
 const SECOND_THROWING_BUNDLED_ENTRY = {
@@ -71,7 +73,7 @@ const SECOND_THROWING_BUNDLED_ENTRY = {
   specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'second bundled engine that throws on boot',
-  fills: ['kb.vector'],
+  fills: [KB_VECTOR_CAPABILITY],
 } as const;
 
 const PARTIAL_BIND_THEN_THROW_ENTRY = {
@@ -80,7 +82,7 @@ const PARTIAL_BIND_THEN_THROW_ENTRY = {
   specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that binds then throws',
-  fills: ['kb.fts'],
+  fills: [KB_FTS_CAPABILITY],
 } as const;
 
 const SUCCESS_BUNDLED_ENTRY = {
@@ -89,7 +91,7 @@ const SUCCESS_BUNDLED_ENTRY = {
   specifier: UNUSED_SPECIFIER,
   tier: 'bundled',
   description: 'bundled engine that binds FTS successfully',
-  fills: ['kb.fts'],
+  fills: [KB_FTS_CAPABILITY],
 } as const;
 
 function createMemoryState(rows: readonly ExpansionStateRow[] = []): ExpansionStateStore {
@@ -108,6 +110,10 @@ function createMemoryState(rows: readonly ExpansionStateRow[] = []): ExpansionSt
 
 function lifecycleScopes(lifecycle: ExpansionLifecycleService): Map<string, Disposable[]> {
   return (lifecycle as unknown as { scopes: Map<string, Disposable[]> }).scopes;
+}
+
+function heldBy(kb: KbRuntime, name: typeof KB_FTS_CAPABILITY | typeof KB_VECTOR_CAPABILITY): string | undefined {
+  return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
 }
 
 describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
@@ -154,8 +160,8 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     });
 
     await expect(lifecycle.recoverOnBoot()).resolves.toBeUndefined();
-    expect(kb.fts.heldBy).toBe('success-engine');
-    expect(lifecycle.list()).toEqual([
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('success-engine');
+    expect(lifecycle.list()).toMatchObject([
       {
         id: 'success-engine',
         version: '0.0.0',
@@ -163,7 +169,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
         status: 'active',
       },
     ]);
-    await expect(createExpansionRpc(lifecycle).listExpansion({})).resolves.toEqual({
+    await expect(createExpansionRpc(lifecycle).listExpansion({})).resolves.toMatchObject({
       expansions: [{ name: 'success-engine', tier: 'bundled', status: 'equipped' }],
     });
     expect(state.list().filter((row) => row.id === 'success-engine')).toEqual([]);
@@ -185,7 +191,7 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     expect(fallback.equipped).toEqual([]);
     expect(fallback.failed.size).toBe(1);
     expect(fallback.failed.get('partial-bundled')?.message).toBe('mid-bind failure');
-    expect(kb.fts.heldBy).toBeUndefined();
+    expect(heldBy(kb, KB_FTS_CAPABILITY)).toBeUndefined();
     expect(lifecycleScopes(lifecycle).get('partial-bundled')).toBeUndefined();
     expect(lifecycle.isActive('partial-bundled')).toBe(false);
   });

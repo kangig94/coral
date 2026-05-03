@@ -6,6 +6,8 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
+import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 import type { KbQueryContext } from '#src/read-model/kb-query-runtime.js';
 import {
   createProductionFileIndex,
@@ -322,7 +324,9 @@ describe('KB read port shape', () => {
     expect(existsSync(artifactPath)).toBe(false);
     expect(existsSync(metadataPath)).toBe(false);
     bindOramaFtsForTest(kb);
-    expect(kb.fts.read().read().warnings()).toContain('fts_index_uninitialized');
+    expect(kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().warnings()).toContain(
+      'fts_index_uninitialized',
+    );
 
     const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, host);
 

@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadExpansions } from '#src/expansion/loader.js';
+import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 import { __setOnnxExpansionTestHooks } from '#src/engines/onnx/expansion.js';
@@ -15,7 +17,7 @@ const ONNX_ENTRY = {
   specifier: '#src/engines/onnx/expansion.js',
   tier: 'installed' as const,
   description: 'Local ONNX embedding model',
-  fills: ['kb.embedding'],
+  fills: [KB_EMBEDDING_CAPABILITY],
 };
 
 const createdHomes: string[] = [];
@@ -52,6 +54,10 @@ function createFakeOrt() {
   };
 }
 
+function readEmbedding(kb: KbRuntime): Backed<EmbeddingService> {
+  return kb.capabilityRegistry.runtimeView().read<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY);
+}
+
 afterEach(() => {
   __setOnnxExpansionTestHooks(null);
   vi.unstubAllEnvs();
@@ -79,13 +85,13 @@ describe('onnx expansion', () => {
       const cachedModelPath = join(runtime.paths.coral.engine.dataDir('onnx'), 'nomic-embed-text.onnx');
       expect(downloadFile).toHaveBeenCalledTimes(1);
       expect(existsSync(cachedModelPath)).toBe(true);
-      expect(kb.embedding.heldBy).toBe('onnx');
-      expect(kb.embedding.read().consumer).toMatchObject({
+      expect(kb.capabilityRegistry.runtimeView().status(KB_EMBEDDING_CAPABILITY)?.heldBy).toBe('onnx');
+      expect(readEmbedding(kb).consumer).toMatchObject({
         id: 'onnx',
         kind: 'stateless',
         registrationKind: 'stateless',
       });
-      expect(kb.embedding.read().read()).toMatchObject({
+      expect(readEmbedding(kb).read()).toMatchObject({
         name: 'onnx',
         model: 'nomic-embed-text',
         dims: 768,

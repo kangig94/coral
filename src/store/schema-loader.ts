@@ -53,7 +53,7 @@ export interface ApplyStoreSchemasOptions {
   readonly schemasDir?: string;
 }
 
-export const CURRENT_STORE_SCHEMA_VERSION = 1;
+export const CURRENT_STORE_SCHEMA_VERSION = 2;
 
 function readCurrentVersion(db: Database): number {
   try {

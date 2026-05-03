@@ -16,7 +16,7 @@ export const dummyRetrievalRoleManifest = {
   specifier: '#tests/fixtures/dummy-retrieval-role/expansion.js',
   tier: 'installed',
   description: 'Dummy retrieval role fixture for expansion role registration tests.',
-  provides: [dummyRetrievalRoleDescriptor],
+  provides: { retrievalRoles: [dummyRetrievalRoleDescriptor] },
 } as const satisfies EngineManifest;
 
 export default dummyRetrievalRoleManifest;

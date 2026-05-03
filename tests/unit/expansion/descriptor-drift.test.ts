@@ -5,6 +5,7 @@ import type { EngineManifest } from '#src/expansion/contract.js';
 import { createScope } from '#src/expansion/scope.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
+import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -14,7 +15,7 @@ const baseDescriptor = {
   tags: ['lexical'],
   phase: 'retrieval-source',
   supportsScopes: ['notes', 'sources', 'all'],
-  requires: ['kb.fts'],
+  requires: [KB_FTS_CAPABILITY],
   provides: 'retrieval-source',
 } as const satisfies RetrievalRoleDescriptor;
 
@@ -25,7 +26,7 @@ function manifestWith(descriptor: RetrievalRoleDescriptor = baseDescriptor): Eng
     specifier: '#tests/drift-engine/expansion.js',
     tier: 'installed',
     description: 'drift engine',
-    provides: [descriptor],
+    provides: { retrievalRoles: [descriptor] },
   };
 }
 
@@ -62,7 +63,7 @@ describe('manifest descriptor drift validation', () => {
     ['tags', { ...baseDescriptor, tags: ['semantic'] }],
     ['phase', { ...baseDescriptor, phase: 'reranker' }],
     ['supportsScopes', { ...baseDescriptor, supportsScopes: ['notes'] }],
-    ['requires', { ...baseDescriptor, requires: ['kb.vector'] }],
+    ['requires', { ...baseDescriptor, requires: [KB_VECTOR_CAPABILITY] }],
     ['provides', { ...baseDescriptor, provides: 'reranker' }],
   ] as const)('rejects %s drift as role_descriptor_mismatch', (_field, liveDescriptor) => {
     expectDescriptorMismatch(liveDescriptor as unknown as RetrievalRoleDescriptor);
@@ -84,7 +85,7 @@ describe('manifest descriptor drift validation', () => {
       validateManifestCompleteness(
         {
           ...manifestWith(registeredDescriptor),
-          provides: [registeredDescriptor, missingDescriptor],
+          provides: { retrievalRoles: [registeredDescriptor, missingDescriptor] },
         },
         registry,
       ),
@@ -93,7 +94,7 @@ describe('manifest descriptor drift validation', () => {
       validateManifestCompleteness(
         {
           ...manifestWith(registeredDescriptor),
-          provides: [registeredDescriptor, missingDescriptor],
+          provides: { retrievalRoles: [registeredDescriptor, missingDescriptor] },
         },
         registry,
       );
@@ -118,7 +119,7 @@ describe('manifest descriptor drift validation', () => {
       validateManifestCompleteness(
         {
           ...manifestWith(roleA),
-          provides: [roleA, roleB, roleC],
+          provides: { retrievalRoles: [roleA, roleB, roleC] },
         },
         registry,
       );
@@ -147,10 +148,12 @@ describe('manifest descriptor drift validation', () => {
           specifier: '#tests/partial-read-side/expansion.js',
           tier: 'bundled',
           description: 'partial read-side role expansion',
-          provides: [
-            { ...baseDescriptor, id: 'read-side-one' },
-            { ...baseDescriptor, id: 'read-side-two' },
-          ],
+          provides: {
+            retrievalRoles: [
+              { ...baseDescriptor, id: 'read-side-one' },
+              { ...baseDescriptor, id: 'read-side-two' },
+            ],
+          },
         },
       ],
       loadBundledEngine: vi.fn(

@@ -4,10 +4,13 @@ import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
-import type { RetrievalRoleDescriptor } from '../../kb/search/contract.js';
+import type { KbCapabilityName, KbCapabilityStatus } from '../../kb/capability/contract.js';
+import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import { validateManifestCompleteness } from '../../expansion/manifest-completeness.js';
+import type { EngineManifestProvides } from '../../expansion/contract.js';
+import type { ExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
 import type { ExpansionStateStore } from './state.js';
 
 type ExpansionModule = {
@@ -20,7 +23,8 @@ export interface ExpansionLifecycleView {
   readonly tier: 'bundled' | 'installed';
   readonly status: 'active' | 'inactive' | 'installed-not-active';
   readonly lastError?: string;
-  readonly provides?: readonly RetrievalRoleDescriptor[];
+  readonly provides?: EngineManifestProvides;
+  readonly capabilityStatus?: readonly KbCapabilityStatus[];
 }
 
 export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
@@ -29,6 +33,7 @@ export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
+  readonly manifestCatalog?: ExpansionManifestCatalog;
   /**
    * Override map for `tier: 'bundled'` engine loaders. Defaults to the
    * production `BUNDLED_LOADERS` registry. Tests inject custom `Expansion`
@@ -85,6 +90,10 @@ export class ExpansionLifecycleService {
     return this.runSerial(name, () => this.unequipLocked(name));
   }
 
+  async removeExpansionCatalog(name: string): Promise<{ readonly status: 'removed' } | { readonly status: 'immutable' }> {
+    return this.runSerial(name, () => this.removeExpansionCatalogLocked(name));
+  }
+
   private async equipLocked(name: string): Promise<void> {
     const entry = this.manifest.find((candidate) => candidate.id === name);
     if (!entry) {
@@ -107,7 +116,8 @@ export class ExpansionLifecycleService {
     try {
       const module = (await import(entry.specifier)) as ExpansionModule;
       await module.default(host);
-      validateManifestCompleteness(entry, this.requireRoleRegistry(entry.id));
+      const kb = this.requireKbRuntime(entry.id);
+      validateManifestCompleteness(entry, kb.roleRegistry, kb.capabilityRegistry);
       this.options.state.insert({
         id: entry.id,
         version: entry.version,
@@ -159,7 +169,62 @@ export class ExpansionLifecycleService {
     await this.applyBundledFallback();
   }
 
-  private async runSerial(name: string, work: () => Promise<void>): Promise<void> {
+  private async removeExpansionCatalogLocked(
+    name: string,
+  ): Promise<{ readonly status: 'removed' } | { readonly status: 'immutable' }> {
+    const entry = this.manifest.find((candidate) => candidate.id === name);
+    if (entry === undefined) {
+      throw documentedCoralSetupError('unknown_expansion', { name });
+    }
+
+    const isStatic =
+      this.options.manifestCatalog?.isStatic(name) ?? BUNDLED_ENGINES.some((candidate) => candidate.id === name);
+    if (isStatic) {
+      return { status: 'immutable' };
+    }
+
+    this.assertNoCatalogDependents(entry);
+
+    const scopes = this.scopes.get(name);
+    if (scopes !== undefined && scopes.length > 0) {
+      for (const scope of [...scopes].reverse()) {
+        await disposeExpansionScope(scope);
+      }
+      this.scopes.delete(name);
+    }
+    this.options.state.delete(name);
+    this.failedRecovery.delete(name);
+
+    const kb = this.options.resolveKbRuntime?.() ?? null;
+    if (kb !== null) {
+      for (const fill of entry.fills ?? []) {
+        const status = kb.capabilityRegistry.runtimeView().status(fill);
+        if (status?.heldBy === entry.id) {
+          throw documentedCoralSetupError({
+            code: 'capability_catalog_remove_blocked',
+            target: entry.id,
+            capabilities: [{ capability: fill, dependents: [] }],
+          });
+        }
+      }
+      for (const descriptor of entry.provides?.capabilities ?? []) {
+        const status = kb.capabilityRegistry.runtimeView().status(descriptor.name);
+        if (status?.bound === true) {
+          throw documentedCoralSetupError({
+            code: 'capability_catalog_remove_blocked',
+            target: entry.id,
+            capabilities: [{ capability: descriptor.name, dependents: [] }],
+          });
+        }
+        kb.capabilityRegistry.unregisterManifest(descriptor.name, entry.id);
+      }
+    }
+
+    this.options.manifestCatalog?.removeInstalledEntry(name);
+    return { status: 'removed' };
+  }
+
+  private async runSerial<T>(name: string, work: () => Promise<T>): Promise<T> {
     const previous = this.engineMutex.get(name) ?? Promise.resolve();
     // Tail tracks "this call's completion ignoring its outcome" so the next
     // chained caller waits for serialization regardless of whether `work`
@@ -171,7 +236,7 @@ export class ExpansionLifecycleService {
     );
     this.engineMutex.set(name, tracked);
     try {
-      await tail;
+      return await tail;
     } finally {
       // Drop the slot only if no later caller chained behind us; an in-flight
       // successor will have replaced the value already.
@@ -224,9 +289,9 @@ export class ExpansionLifecycleService {
   /**
    * Walks bundled-tier engines in manifest order. Engines with declared fills
    * that are already fully held are skipped before import. For invoked engines,
-   * the body's `if (binding.heldBy === undefined)` guard ensures the bundled
-   * engine fills only currently-empty bindings. Per-engine failures are
-   * collected; the method itself does not throw.
+   * capability single-occupancy rejects any late conflicting bind and the
+   * partial scope is disposed. Per-engine failures are collected; the method
+   * itself does not throw.
    */
   async applyBundledFallback(): Promise<{ equipped: string[]; failed: Map<string, Error> }> {
     const equipped: string[] = [];
@@ -254,7 +319,8 @@ export class ExpansionLifecycleService {
 
         try {
           await loadBundledEngine(entry, host, this.options.bundledLoaders);
-          validateManifestCompleteness(entry, this.requireRoleRegistry(entry.id));
+          const currentKb = this.requireKbRuntime(entry.id);
+          validateManifestCompleteness(entry, currentKb.roleRegistry, currentKb.capabilityRegistry);
           if (this.didFillFallbackBinding(entry, before, kb)) {
             this.appendScope(entry.id, scope);
             this.failedRecovery.delete(entry.id);
@@ -289,6 +355,7 @@ export class ExpansionLifecycleService {
         status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
         ...(failed === undefined ? {} : { lastError: failed.message }),
         ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
+        ...this.capabilityStatusFor(manifest),
       };
     }
 
@@ -299,6 +366,7 @@ export class ExpansionLifecycleService {
       status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
       ...(failed === undefined ? {} : { lastError: failed.message }),
       ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
+      ...this.capabilityStatusFor(manifest),
     };
   }
 
@@ -342,17 +410,15 @@ export class ExpansionLifecycleService {
       return { bound: false };
     }
 
-    if (name === 'kb.vector') {
-      return kb.vector.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.vector.heldBy };
+    const parsed = kbCapabilityNameSchema.safeParse(name);
+    if (!parsed.success) {
+      return { bound: false };
     }
-    if (name === 'kb.embedding') {
-      return kb.embedding.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.embedding.heldBy };
+    const status = kb.capabilityRegistry.runtimeView().status(parsed.data);
+    if (status?.bound !== true) {
+      return { bound: false };
     }
-    if (name === 'kb.fts') {
-      return kb.fts.heldBy === undefined ? { bound: false } : { bound: true, heldBy: kb.fts.heldBy };
-    }
-
-    return { bound: false };
+    return status.heldBy === undefined ? { bound: true } : { bound: true, heldBy: status.heldBy };
   }
 
   async shutdownActiveExpansions(): Promise<void> {
@@ -389,12 +455,30 @@ export class ExpansionLifecycleService {
     this.scopes.set(id, existing);
   }
 
-  private requireRoleRegistry(name: string): KbRuntime['roleRegistry'] {
+  private requireKbRuntime(name: string): KbRuntime {
     const kb = this.options.resolveKbRuntime?.() ?? null;
     if (kb === null) {
       throw documentedCoralSetupError('expansion_runtime_unavailable', { name });
     }
-    return kb.roleRegistry;
+    return kb;
+  }
+
+  private capabilityStatusFor(manifest: EngineManifest | undefined): { capabilityStatus?: readonly KbCapabilityStatus[] } {
+    if (manifest === undefined) {
+      return {};
+    }
+    const kb = this.options.resolveKbRuntime?.() ?? null;
+    if (kb === null) {
+      return {};
+    }
+    const names = new Set<KbCapabilityName>([
+      ...(manifest.fills ?? []),
+      ...(manifest.provides?.capabilities ?? []).map((descriptor) => descriptor.name),
+    ]);
+    const statuses = [...names]
+      .map((name) => kb.capabilityRegistry.runtimeView().status(name))
+      .filter((status): status is KbCapabilityStatus => status !== undefined);
+    return statuses.length === 0 ? {} : { capabilityStatus: statuses };
   }
 
   private captureFallbackBindingHolders(
@@ -405,7 +489,7 @@ export class ExpansionLifecycleService {
       return null;
     }
 
-    const names = entry.fills && entry.fills.length > 0 ? entry.fills : ['kb.embedding', 'kb.vector', 'kb.fts'];
+    const names = entry.fills ?? [];
     const holders = new Map<string, string | undefined>();
     for (const name of names) {
       holders.set(name, this.readKnownBindingHolder(kb, name));
@@ -429,21 +513,12 @@ export class ExpansionLifecycleService {
       return true;
     }
 
-    const names = entry.fills && entry.fills.length > 0 ? entry.fills : [...before.keys()];
+    const names = entry.fills ?? [];
     return names.some((name) => before.get(name) === undefined && this.readKnownBindingHolder(kb, name) === entry.id);
   }
 
-  private readKnownBindingHolder(kb: KbRuntime, name: string): string | undefined {
-    if (name === 'kb.vector') {
-      return kb.vector.heldBy;
-    }
-    if (name === 'kb.embedding') {
-      return kb.embedding.heldBy;
-    }
-    if (name === 'kb.fts') {
-      return kb.fts.heldBy;
-    }
-    return undefined;
+  private readKnownBindingHolder(kb: KbRuntime, name: KbCapabilityName): string | undefined {
+    return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
   }
 
   /**
@@ -457,6 +532,7 @@ export class ExpansionLifecycleService {
       return;
     }
 
+    const blockers = new Map<KbCapabilityName, CapabilityDependent[]>();
     for (const candidate of this.manifest) {
       if (candidate.id === entry.id) {
         continue;
@@ -464,17 +540,99 @@ export class ExpansionLifecycleService {
       if (!this.isActive(candidate.id)) {
         continue;
       }
-      for (const step of candidate.onboarding ?? []) {
-        if (step.kind !== 'require-binding') {
+      for (const edge of readEdgesFor(candidate, 'active')) {
+        if (!fillsSet.has(edge.capability)) {
           continue;
         }
-        if (fillsSet.has(step.binding)) {
-          throw documentedCoralSetupError('binding_required_by_active_engine', {
-            binding: step.binding,
-            requiredBy: candidate.id,
-          });
-        }
+        const dependents = blockers.get(edge.capability) ?? [];
+        dependents.push(edge.dependent);
+        blockers.set(edge.capability, dependents);
       }
     }
+
+    if (blockers.size > 0) {
+      throw documentedCoralSetupError({
+        code: 'capability_required_by_active_engine',
+        target: entry.id,
+        capabilities: [...blockers.entries()].map(([capability, dependents]) => ({
+          capability,
+          dependents,
+        })),
+      });
+    }
   }
+
+  private assertNoCatalogDependents(entry: EngineManifest): void {
+    const declared = new Set((entry.provides?.capabilities ?? []).map((descriptor) => descriptor.name));
+    if (declared.size === 0) {
+      return;
+    }
+
+    const blockers = new Map<KbCapabilityName, CapabilityDependent[]>();
+    for (const candidate of this.manifest) {
+      if (candidate.id === entry.id) {
+        continue;
+      }
+      const state: CapabilityDependent['state'] = this.isActive(candidate.id) ? 'active' : 'catalog';
+      for (const edge of [...readEdgesFor(candidate, state), ...writeEdgesFor(candidate, state)]) {
+        if (!declared.has(edge.capability)) {
+          continue;
+        }
+        const dependents = blockers.get(edge.capability) ?? [];
+        dependents.push(edge.dependent);
+        blockers.set(edge.capability, dependents);
+      }
+    }
+
+    if (blockers.size > 0) {
+      throw documentedCoralSetupError({
+        code: 'capability_catalog_remove_blocked',
+        target: entry.id,
+        capabilities: [...blockers.entries()].map(([capability, dependents]) => ({
+          capability,
+          dependents,
+        })),
+      });
+    }
+  }
+}
+
+type CapabilityDependent = {
+  readonly expansion: string;
+  readonly edgeKind: 'read' | 'write';
+  readonly source: 'onboarding' | 'retrievalRole' | 'fills';
+  readonly state: 'active' | 'catalog';
+};
+
+type CapabilityEdge = {
+  readonly capability: KbCapabilityName;
+  readonly dependent: CapabilityDependent;
+};
+
+function readEdgesFor(manifest: EngineManifest, state: CapabilityDependent['state']): CapabilityEdge[] {
+  const edges: CapabilityEdge[] = [];
+  for (const step of manifest.onboarding ?? []) {
+    if (step.kind === 'require-binding') {
+      edges.push({
+        capability: step.binding,
+        dependent: { expansion: manifest.id, edgeKind: 'read', source: 'onboarding', state },
+      });
+    }
+  }
+  for (const descriptor of manifest.provides?.retrievalRoles ?? []) {
+    for (const capability of descriptor.requires ?? []) {
+      edges.push({
+        capability,
+        dependent: { expansion: manifest.id, edgeKind: 'read', source: 'retrievalRole', state },
+      });
+    }
+  }
+  return edges;
+}
+
+function writeEdgesFor(manifest: EngineManifest, state: CapabilityDependent['state']): CapabilityEdge[] {
+  return (manifest.fills ?? []).map((capability) => ({
+    capability,
+    dependent: { expansion: manifest.id, edgeKind: 'write', source: 'fills', state },
+  }));
 }

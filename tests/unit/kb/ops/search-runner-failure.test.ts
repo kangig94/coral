@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Backed, FtsRetrieval, KbRuntime } from '#src/kb/contract.js';
 import type { KbIndex, KbSearchScope } from '#src/kb/entry-types.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '#src/kb/capability/constants.js';
+import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
 import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type {
@@ -11,6 +20,7 @@ import type {
   RetrievalRoleDescriptor,
 } from '#src/kb/search/contract.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
+import { createRuntimeBinding } from '#src/runtime/binding.js';
 
 function noteHit(slug: string): RetrievalHit {
   const entryId = `note:${slug}` as const;
@@ -109,10 +119,21 @@ function runtimeWith(roles: readonly { readonly role: RetrievalRole; readonly cr
     read: () => fts,
     consumer: { id: 'failure-test-fts', kind: 'stateless', registrationKind: 'stateless' },
   };
+  const capabilityRegistry = createCapabilityRegistry();
+  capabilityRegistry.registerBuiltin(
+    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
+  );
+  capabilityRegistry.registerBuiltin(BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR, createRuntimeBinding(KB_VECTOR_CAPABILITY));
+  capabilityRegistry.registerBuiltin(
+    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+    createRuntimeBinding(KB_EMBEDDING_CAPABILITY),
+  );
+  capabilityRegistry.runtimeView().bind(KB_FTS_CAPABILITY, backedFts, { [Symbol.dispose]() {} }, 'failure-test');
 
   return {
     roleRegistry,
-    fts: { read: () => backedFts, heldBy: 'failure-test' },
+    capabilityRegistry,
     readIndex: () => indexFor(),
     readIndexOrEmpty: () => indexFor(),
     readEntityGraph: () => null,

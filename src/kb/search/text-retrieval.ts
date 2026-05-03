@@ -1,4 +1,5 @@
 import { serializeCoralSetupError } from '../../runtime/errors.js';
+import { KB_FTS_CAPABILITY } from '../capability/constants.js';
 import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
 import { denormalizeSlug, normalizeWhitespace } from '../text-normalization.js';
 import type {
@@ -10,7 +11,7 @@ import type {
   RoleQueryContext,
   RoleSearchResult,
 } from './contract.js';
-import type { FtsRetrieval, KbRuntime } from '../contract.js';
+import type { Backed, FtsRetrieval, KbRuntime } from '../contract.js';
 import {
   getEntry,
   isCommunityEntry,
@@ -37,7 +38,7 @@ const BUILTIN_TEXT_ROLE_DESCRIPTOR = {
   phase: 'retrieval-source',
   provides: 'retrieval-source',
   supportsScopes: ['notes', 'sources', 'communities', 'all'],
-  requires: ['kb.fts'],
+  requires: [KB_FTS_CAPABILITY],
 } as const satisfies RetrievalRole['descriptor'];
 
 export type ResolvedKbSearchEntry = {
@@ -211,7 +212,7 @@ function textBindingMissingDiagnostic(): RetrievalDiagnostic {
 
 function isFtsBindingMissing(error: unknown): boolean {
   const setupError = serializeCoralSetupError(error);
-  return setupError?.code === 'binding_empty' && setupError.context?.binding === 'kb.fts';
+  return setupError?.code === 'binding_empty' && setupError.context?.binding === KB_FTS_CAPABILITY;
 }
 
 function isFtsUnavailable(fts: FtsRetrieval): boolean {
@@ -245,7 +246,7 @@ function textRoleSearchResult(hits: readonly ResolvedKbSearchHit[]): RoleSearchR
 async function searchTextRoleHits(rt: KbRuntime, ctx: RoleQueryContext): Promise<RoleSearchResult> {
   let fts: FtsRetrieval;
   try {
-    fts = rt.fts.read().read();
+    fts = rt.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
   } catch (error) {
     if (isFtsBindingMissing(error)) {
       return degradedTextRoleSearchResult();

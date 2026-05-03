@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 
@@ -20,7 +21,7 @@ function descriptor(id: string): RetrievalRoleDescriptor {
     tags: ['semantic', 'lexical'],
     phase: 'retrieval-source',
     supportsScopes: ['sources', 'notes', 'all'],
-    requires: ['kb.vector', 'kb.embedding'],
+    requires: [KB_VECTOR_CAPABILITY, KB_EMBEDDING_CAPABILITY],
     provides: 'retrieval-source',
   };
 }

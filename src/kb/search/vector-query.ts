@@ -1,5 +1,6 @@
-import type { KbRuntime } from '../contract.js';
-import type { RetrievalRole, VectorRetrievalResult } from './contract.js';
+import type { Backed, KbRuntime } from '../contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
+import type { RetrievalRole, VectorRetrieval, VectorRetrievalResult } from './contract.js';
 
 export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
@@ -10,7 +11,7 @@ const BUILTIN_VECTOR_ROLE_DESCRIPTOR = {
   phase: 'retrieval-source',
   provides: 'retrieval-source',
   supportsScopes: ['notes', 'sources', 'all'],
-  requires: ['kb.embedding', 'kb.vector'],
+  requires: [KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY],
 } as const satisfies RetrievalRole['descriptor'];
 
 export function createBuiltinVectorRole(rt: KbRuntime): RetrievalRole {
@@ -20,7 +21,13 @@ export function createBuiltinVectorRole(rt: KbRuntime): RetrievalRole {
     async search(ctx) {
       const queryVector = Array.from(await ctx.embedding());
       return {
-        hits: (await rt.vector.read().read().search(queryVector, ctx.topK, ctx.scope)).hits,
+        hits: (
+          await rt.capabilityRegistry
+            .runtimeView()
+            .read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY)
+            .read()
+            .search(queryVector, ctx.topK, ctx.scope)
+        ).hits,
       };
     },
   };
