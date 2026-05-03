@@ -43,7 +43,7 @@ export interface KbQueryHost {
 
 export async function searchKnowledgeBase(args: KbSearchInput, host: KbQueryHost): Promise<KbSearchResponse> {
   const kb = await host.acquireKbRuntime({ ensureBundledEngines: true });
-  return await searchKb(kb, args.query, args.top_k ?? 20, args.scope ?? 'all', args.mode ?? 'auto');
+  return await searchKb(kb, args.query, args.top_k ?? 20, args.scope ?? 'all', args.mode ?? 'auto', args.signal);
 }
 
 export function readKnowledgeBaseEntry(selector: KbReadInput, host: KbQueryHost): KbReadResult {

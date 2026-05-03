@@ -46,8 +46,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, translated `activation`, `status`, and `statusDescription` when present |
-| `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, and the translated `activation` label |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, and `statusDescription` when present. Render `provides` as a comma-separated list of role labels, for example `provides: Text (FTS), Vector (Semantic)`, not full descriptor objects |
+| `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present as comma-separated role labels, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
 4. For each catalog entry, route inner `status` as follows:

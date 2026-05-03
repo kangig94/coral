@@ -1,6 +1,5 @@
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 import type { RetrievalDiagnostic, RetrievalEvidence } from './search/contract.js';
-import type { KbSearchIntent } from './search/query-planner.js';
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
@@ -218,7 +217,8 @@ export type KbSearchInput = {
   query: string;
   top_k?: number;
   scope?: KbSearchScope;
-  mode?: KbSearchIntent;
+  mode?: KbSearchMode;
+  signal?: AbortSignal;
 };
 
 export type KbDiagnoseInput = Record<string, never>;

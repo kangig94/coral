@@ -589,7 +589,7 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const kbSearchCommand = findCommand(program, 'kb', 'search');
 
-    mockState.kbSearch.mockResolvedValueOnce({ results: [], mode: 'text' });
+    mockState.kbSearch.mockResolvedValueOnce({ results: [], mode: 'text', retrievalDiagnostics: [] });
 
     await program.parseAsync(['node', 'coral-cli', ...argv]);
 
@@ -1624,9 +1624,13 @@ describe('cli main routing', () => {
           title: 'KB CLI Tooling',
           matchedBy: ['filename', 'content'],
           snippet: 'Use the read surface.',
+          tags: [],
+          principles: [],
+          evidence: [],
         },
       ],
       mode: 'text',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel']);
@@ -1667,6 +1671,7 @@ describe('cli main routing', () => {
       results: [],
       mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--top-k', '5', '--output-format', 'json']);
@@ -1676,6 +1681,7 @@ describe('cli main routing', () => {
       results: [],
       mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
+      retrievalDiagnostics: [],
     });
   });
 
@@ -1744,10 +1750,14 @@ describe('cli main routing', () => {
           kind: 'note',
           title: 'Hybrid Note',
           matchedBy: [],
+          tags: [],
+          principles: [],
+          evidence: [],
         },
       ],
       mode: 'hybrid',
       warning: 'Run kb_reindex again to refresh it.',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'semantic']);

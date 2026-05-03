@@ -214,7 +214,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   role_descriptor_unregistered: {
     userMessage: (context) =>
-      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' declared retrieval role '${stringContextValue(context, 'missing', 'unknown')}' but did not register it.`,
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' declared retrieval roles '${stringContextValue(context, 'missing', 'unknown')}' but did not register them.`,
     remediation:
       'Update the expansion to register every retrieval role declared in manifest.provides during startup, or remove the stale descriptor from the manifest.',
   },

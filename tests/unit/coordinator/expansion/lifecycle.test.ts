@@ -893,7 +893,7 @@ describe('ExpansionLifecycleService', () => {
     expect(lifecycle.info('partial-bundled')).toMatchObject({
       id: 'partial-bundled',
       status: 'installed-not-active',
-      lastError: expect.stringContaining("declared retrieval role 'partial-two'"),
+      lastError: expect.stringContaining("declared retrieval roles 'partial-two'"),
     });
   });
 });

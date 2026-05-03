@@ -1,4 +1,3 @@
-import type { KbRuntime } from '../contract.js';
 import { normalizeWhitespace } from '../text-normalization.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult, RetrievalDiagnostic, RetrievalRole } from './contract.js';
@@ -350,9 +349,7 @@ function graphStaleDiagnostic(): RetrievalDiagnostic {
   };
 }
 
-export function createBuiltinGraphRole(rt: KbRuntime, currentGraph: () => EntityGraph | null): RetrievalRole {
-  void rt;
-
+export function createBuiltinGraphRole(currentGraph: () => EntityGraph | null): RetrievalRole {
   return {
     id: BUILTIN_GRAPH_ROLE_DESCRIPTOR.id,
     descriptor: BUILTIN_GRAPH_ROLE_DESCRIPTOR,

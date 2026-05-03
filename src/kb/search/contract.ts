@@ -37,6 +37,7 @@ export interface RetrievalRoleDescriptor {
   readonly tags: readonly string[];
   readonly phase: 'retrieval-source';
   readonly supportsScopes: readonly KbSearchScope[];
+  // Optional in inputs; always non-undefined ([]) after normalizeRetrievalRoleDescriptor.
   readonly requires?: readonly KbBindingName[];
   readonly provides: 'retrieval-source';
 }

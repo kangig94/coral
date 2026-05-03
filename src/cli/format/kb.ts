@@ -51,7 +51,7 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatRetrievalEvidence(result: KbSearchResponse['results'][number]): string[] {
-  return (result.evidence ?? []).slice(0, MAX_RENDERED_EVIDENCE).map((evidence) => {
+  return result.evidence.slice(0, MAX_RENDERED_EVIDENCE).map((evidence) => {
     const weight = formatCompactNumber(evidence.weight);
     const contribution = formatCompactNumber(evidence.contribution);
     return `[${evidence.roleId}:#${evidence.rank}(w=${weight},c=${contribution})]`;
@@ -59,7 +59,7 @@ function formatRetrievalEvidence(result: KbSearchResponse['results'][number]): s
 }
 
 function formatRetrievalDiagnosticWarnings(data: KbSearchResponse, cliPrefix: string): string[] {
-  return (data.retrievalDiagnostics ?? [])
+  return data.retrievalDiagnostics
     .map((diagnostic) => {
       if (diagnostic.publicText !== undefined && diagnostic.publicText.length > 0) {
         return `Warning: ${normalizeKbWarning(diagnostic.publicText, cliPrefix) ?? diagnostic.publicText}`;
@@ -67,7 +67,11 @@ function formatRetrievalDiagnosticWarnings(data: KbSearchResponse, cliPrefix: st
       if (diagnostic.recoverable) {
         return undefined;
       }
-      return `Warning: role=${diagnostic.roleId} code=${diagnostic.code}`;
+      const recoveryHint =
+        diagnostic.code === 'binding_missing'
+          ? `Run 'coral-cli expansion list' to find an engine that fills the missing binding.`
+          : `Check expansion status with 'coral-cli expansion list' or run 'coral-cli kb reindex'.`;
+      return `Warning: Search role '${diagnostic.roleId}' failed (${diagnostic.code}). Results may be incomplete. ${recoveryHint}`;
     })
     .filter((warning): warning is string => warning !== undefined);
 }

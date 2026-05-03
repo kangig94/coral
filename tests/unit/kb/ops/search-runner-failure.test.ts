@@ -169,6 +169,27 @@ describe('search runner role failure isolation', () => {
     ]);
   });
 
+  it('Rule 2 returns a degraded empty text response when no lexical fallback is registered', async () => {
+    const vector = role('vector', ['semantic'], ['notes', 'sources', 'all'], async () => {
+      throw new Error('vector backend offline');
+    });
+    const rt = runtimeWith([{ role: vector, criticality: 'core' }]);
+
+    const response = await runRetrieval(rt, createSearchRequest('semantic', 5, 'all', 'vector'));
+
+    expect(response.mode).toBe('text');
+    expect(response.results).toEqual([]);
+    expect(vector.search).toHaveBeenCalledTimes(1);
+    expect(response.retrievalDiagnostics).toEqual([
+      {
+        roleId: 'vector',
+        code: 'role_failed',
+        recoverable: false,
+        publicText: 'KB vector search is unavailable for this query.',
+      },
+    ]);
+  });
+
   it('Rule 3 isolates optional graph stale-context and thrown failures as recoverable diagnostics while hybrid continues', async () => {
     const text = role('text', ['lexical'], ['notes', 'sources', 'communities', 'all'], async () => ({
       hits: [noteHit('fallback-text')],

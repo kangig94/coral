@@ -108,6 +108,32 @@ describe('manifest descriptor drift validation', () => {
     }
   });
 
+  it('reports every manifest descriptor id that was not registered', () => {
+    const registry = createRoleRegistry();
+    const roleA = { ...baseDescriptor, id: 'role-a' } satisfies RetrievalRoleDescriptor;
+    const roleB = { ...baseDescriptor, id: 'role-b' } satisfies RetrievalRoleDescriptor;
+    const roleC = { ...baseDescriptor, id: 'role-c' } satisfies RetrievalRoleDescriptor;
+
+    try {
+      validateManifestCompleteness(
+        {
+          ...manifestWith(roleA),
+          provides: [roleA, roleB, roleC],
+        },
+        registry,
+      );
+      throw new Error('expected validateManifestCompleteness to throw');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'role_descriptor_unregistered',
+        context: {
+          expansion: 'drift-engine',
+          missing: 'role-a, role-b, role-c',
+        },
+      });
+    }
+  });
+
   it('rethrows role_descriptor_unregistered from read-side bundled loading and disposes the partial role scope', async () => {
     type DisposableScope = { [Symbol.dispose](): void };
     type ExpansionHostRegister = (role: RetrievalRole, scope: DisposableScope) => unknown;

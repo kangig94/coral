@@ -105,6 +105,14 @@ describe('query planner role selection', () => {
     expect(queryPlan.primaryInvocations.map((invocation) => invocation.required)).toEqual([true, true, false]);
   });
 
+  it('maps hybrid intent with an empty registry to no primary invocations', () => {
+    expect(plan('hybrid', 'all', [])).toEqual({ primaryInvocations: [] });
+  });
+
+  it('maps vector intent with an empty registry to no primary or fallback invocations', () => {
+    expect(plan('vector', 'all', [])).toEqual({ primaryInvocations: [] });
+  });
+
   it('preserves registry order after eligibility filtering', () => {
     const queryPlan = plan('hybrid', 'all', [graphRole(), textRole(), vectorRole()]);
 

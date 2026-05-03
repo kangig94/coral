@@ -8,6 +8,7 @@ import {
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
+  kbSearchSchema,
   kbSearchQuerySchema,
 } from '#src/kb/tool-contracts.js';
 import { parseBooleanQuery } from '#src/infra/json.js';
@@ -94,6 +95,21 @@ describe('transport HTTP query parsing', () => {
     const parsed = kbPrinciplesQuerySchema.safeParse({ verbose: 'wat' });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("rejects 'auto' as a public KB search mode", () => {
+    expect(() =>
+      kbSearchSchema.parse({
+        query: 'retrieval',
+        mode: 'auto',
+      }),
+    ).toThrow();
+    expect(() =>
+      kbSearchQuerySchema.parse({
+        q: 'retrieval',
+        mode: 'auto',
+      }),
+    ).toThrow();
   });
 
   it('enforces exactly one memo delete mode in the transport schema', () => {

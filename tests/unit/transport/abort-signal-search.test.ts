@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { KbIndex, KbSearchScope } from '#src/kb/entry-types.js';
 import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js';
+import { searchKnowledgeBase, type KbQueryHost } from '#src/kb/queries.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
@@ -124,6 +125,31 @@ describe('AbortSignal propagation for KB search', () => {
     ]);
   });
 
+  it('threads the read-side KbSearchInput signal through searchKnowledgeBase', async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const textDescriptor = descriptor('text', ['lexical'], ['all']);
+    const textRole: RetrievalRole = {
+      id: 'text',
+      descriptor: textDescriptor,
+      search: vi.fn(async (ctx) => {
+        seenSignal = ctx.signal;
+        return { hits: [] };
+      }),
+    };
+    const runtime = runtimeWithBlockingRoles([{ role: textRole, criticality: 'core' }]);
+    const host = {
+      acquireKbRuntime: vi.fn(async () => runtime),
+      requireProjectRoot: vi.fn(),
+    } as unknown as KbQueryHost;
+
+    const response = await searchKnowledgeBase({ query: 'read side abort', signal: controller.signal }, host);
+
+    expect(host.acquireKbRuntime).toHaveBeenCalledWith({ ensureBundledEngines: true });
+    expect(seenSignal).toBe(controller.signal);
+    expect(response.mode).toBe('text');
+  });
+
   it('forwards the transport abort signal through the kb.entries.search dispatch case', async () => {
     const controller = new AbortController();
     const readSearch = vi.fn(async (args: Record<string, unknown>) => {
@@ -131,8 +157,8 @@ describe('AbortSignal propagation for KB search', () => {
         query: 'abort query',
         scope: 'all',
         top_k: 3,
-        mode: 'auto',
       });
+      expect(args).not.toHaveProperty('mode');
       expect(Object.prototype.propertyIsEnumerable.call(args, 'abortSignal')).toBe(false);
       expect(args.abortSignal).toBe(controller.signal);
       return { ok: true, data: { observed: true } };
@@ -145,7 +171,7 @@ describe('AbortSignal propagation for KB search', () => {
 
     const response = await executeCatalogRequest(
       { name: 'kb.entries.search' } as never,
-      { q: 'abort query', scope: 'all', top_k: 3, mode: 'auto' },
+      { q: 'abort query', scope: 'all', top_k: 3 },
       rpcPorts,
       controller.signal,
     );

@@ -10,7 +10,7 @@ export function validateManifestCompleteness(manifest: EngineManifest, roleRegis
   if (missing.length > 0) {
     throw documentedCoralSetupError('role_descriptor_unregistered', {
       expansion: manifest.id,
-      missing: missing[0],
+      missing: missing.join(', '),
     });
   }
 }

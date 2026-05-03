@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import { engineManifestSchema, parseEngineManifest, parseEngineManifests } from '#src/expansion/manifest-schema.js';
@@ -56,6 +57,25 @@ describe('engine manifest schema ingress', () => {
         },
       ]),
     ).toThrow();
+  });
+
+  it('rejects unknown KB binding names in descriptor requirements', () => {
+    try {
+      engineManifestSchema.parse({
+        ...validManifest,
+        provides: [
+          {
+            ...validDescriptor,
+            requires: ['kb.unknown'],
+          },
+        ],
+      });
+      throw new Error('expected engineManifestSchema.parse to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ZodError);
+      const issuePaths = (error as ZodError).issues.map((issue) => issue.path.join('.'));
+      expect(issuePaths).toContain('provides.0.requires.0');
+    }
   });
 
   it('keeps the production bundled engine catalog parseable', () => {

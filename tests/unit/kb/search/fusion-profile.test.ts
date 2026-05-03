@@ -77,6 +77,15 @@ describe('fusion profile precedence', () => {
     });
   });
 
+  it('throws on mutation attempts against default profile maps', () => {
+    expect(() => {
+      (defaultFusionProfile.overrides as Map<string, number>).set('graph', 999);
+    }).toThrow(TypeError);
+    expect(() => {
+      (defaultFusionProfile.classWeights as Map<string, number>).clear();
+    }).toThrow(TypeError);
+  });
+
   it('calibrates multi-tag descriptors from tags[0] only', () => {
     const profile: FusionProfile = {
       classWeights: new Map<string, number>([

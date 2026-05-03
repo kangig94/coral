@@ -32,10 +32,6 @@ export function normalizeRetrievalRoleDescriptor(descriptor: RetrievalRoleDescri
   });
 }
 
-function freezeDescriptor(descriptor: RetrievalRoleDescriptor): RetrievalRoleDescriptor {
-  return normalizeRetrievalRoleDescriptor(descriptor);
-}
-
 function freezeRecord(record: RegisteredRetrievalRole): RegisteredRetrievalRole {
   return Object.freeze(record);
 }
@@ -84,7 +80,7 @@ export function createRoleRegistry(): RoleRegistry {
       throw documentedCoralSetupError('role_id_occupied', { roleId: role.id });
     }
 
-    const descriptor = freezeDescriptor(role.descriptor);
+    const descriptor = normalizeRetrievalRoleDescriptor(role.descriptor);
     const record = freezeRecord({
       role,
       descriptor,

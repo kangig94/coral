@@ -383,7 +383,7 @@ export async function executeCatalogRequest(
         q: string;
         scope?: string;
         top_k?: number;
-        mode?: 'text' | 'vector' | 'hybrid' | 'auto';
+        mode?: 'text' | 'vector' | 'hybrid';
       };
       const searchRequest = {
         query: parsed.q,

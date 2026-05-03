@@ -81,6 +81,12 @@ function engineFacingKbRuntime(kb: KbRuntime, consumerDriver: ConsumerDriverPort
 }
 
 function descriptorsEqual(left: RetrievalRole['descriptor'], right: RetrievalRole['descriptor']): boolean {
+  // Both descriptors are pre-normalized via normalizeRetrievalRoleDescriptor,
+  // which constructs fields in a stable order (id, label, tags, phase,
+  // supportsScopes, then optional requires, then provides). JSON.stringify
+  // is stable for that input shape. If the normalizer changes field order,
+  // update this comment AND verify descriptor-drift tests still catch
+  // per-field mismatches.
   return JSON.stringify(left) === JSON.stringify(right);
 }
 

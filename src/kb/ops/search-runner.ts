@@ -356,8 +356,10 @@ function rejectedRoleResult(ctx: SearchExecutionContext, invocation: RoleInvocat
     throw error;
   }
 
-  // Rule 2/3: required non-setup failures are non-recoverable diagnostics;
-  // optional failures, setup or otherwise, are isolated as recoverable.
+  // Rule 2: required + non-setup -> non-recoverable (Rule 1 above already
+  // threw for required + setup, so this branch only handles non-setup).
+  // Rule 3: optional (any failure) -> recoverable. Combined: recoverable
+  // when !required (Rule 3) OR when required+setup which we never reach.
   const diagnostic = diagnosticFromError(invocation, error, !invocation.required || setupFailure, ctx.request.signal);
   return {
     results: [
