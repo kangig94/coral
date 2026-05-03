@@ -1,7 +1,17 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { join } from 'path';
 
 mkdirSync('build', { recursive: true });
 
@@ -115,7 +125,17 @@ renameSync(manifestTmp, manifestPath);
 
 if (release) {
   mkdirSync('bridge', { recursive: true });
-  for (const file of ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json']) {
+  const bridgeFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
+  // Sweep stale leftovers from prior releases (e.g., bridge/store/schemas/
+  // from the pre-flatten era) so bridge contains only the current bundle
+  // surface. Anything not in `bridgeFiles` is removed.
+  const expected = new Set(bridgeFiles);
+  for (const entry of readdirSync('bridge')) {
+    if (!expected.has(entry)) {
+      rmSync(join('bridge', entry), { recursive: true, force: true });
+    }
+  }
+  for (const file of bridgeFiles) {
     copyFileSync(`build/${file}`, `bridge/${file}`);
   }
   chmodSync('bridge/coral-cli.cjs', 0o755);
