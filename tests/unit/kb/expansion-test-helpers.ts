@@ -193,12 +193,14 @@ export function createCorpusHandle(
 export function bindVectorBacked(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
   const scope = createScope();
   rebind(vectorScopes, runtime, scope, (previous) => previous[Symbol.dispose]());
-  runtime.capabilityRegistry.runtimeView().bind(
-    KB_VECTOR_CAPABILITY,
-    createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
-    scope,
-    handle.id,
-  );
+  runtime.capabilityRegistry
+    .runtimeView()
+    .bind(
+      KB_VECTOR_CAPABILITY,
+      createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
+      scope,
+      handle.id,
+    );
 }
 
 export function seedNeedleRouteState(

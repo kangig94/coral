@@ -3,6 +3,7 @@ import {
   equipExpansionRequestSchema,
   listExpansionRequestSchema,
   readBindingRequestSchema,
+  removeExpansionCatalogRequestSchema,
   unequipExpansionRequestSchema,
 } from '../../expansion/rpc-contract.js';
 import { discussSeedSchema } from '../../discuss/command-schemas.js';
@@ -114,6 +115,15 @@ export const rpcCatalog = [
     authClass: 'authenticated',
     portKey: 'expansion',
     http: { method: 'DELETE', path: '/coordinator/expansion/:name' },
+  },
+  {
+    name: 'coordinator.removeExpansionCatalog',
+    kind: 'unary',
+    requestSchema: removeExpansionCatalogRequestSchema,
+    responseKind: 'json',
+    authClass: 'authenticated',
+    portKey: 'expansion',
+    http: { method: 'DELETE', path: '/coordinator/expansion/:name/catalog' },
   },
   {
     name: 'coordinator.listExpansion',

@@ -114,7 +114,7 @@ export function createCapabilityRegistry(): KbCapabilityRegistry {
         binding: eraseBinding(binding),
       });
     },
-    registerManifest(descriptor, declaredByManifest) {
+    registerManifest(descriptor: KbCapabilityDescriptor, declaredByManifest: string): void {
       const frozenDescriptor = freezeDescriptor(descriptor);
       if (frozenDescriptor.namespace === 'kb') {
         throw documentedCoralSetupError({
@@ -132,7 +132,7 @@ export function createCapabilityRegistry(): KbCapabilityRegistry {
         binding: createRuntimeBinding<unknown>(frozenDescriptor.name),
       });
     },
-    unregisterManifest(name, declaredByManifest) {
+    unregisterManifest(name: KbCapabilityName, declaredByManifest: string): boolean {
       const record = records.get(name);
       if (
         record === undefined ||

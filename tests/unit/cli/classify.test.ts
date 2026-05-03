@@ -67,6 +67,7 @@ describe('command class coverage', () => {
       { path: 'expansion equip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
       { path: 'expansion info', isLeaf: true, kind: 'class', commandClass: 'read' },
       { path: 'expansion list', isLeaf: true, kind: 'class', commandClass: 'read' },
+      { path: 'expansion remove-catalog', isLeaf: true, kind: 'class', commandClass: 'mutate' },
       { path: 'expansion unequip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
       { path: 'expansion update', isLeaf: true, kind: 'class', commandClass: 'mutate' },
     ]);

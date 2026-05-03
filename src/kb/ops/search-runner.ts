@@ -26,10 +26,7 @@ import { defaultFusionProfile } from '../search/default-fusion-profile.js';
 
 export type VectorBindingName = typeof KB_VECTOR_CAPABILITY | typeof KB_EMBEDDING_CAPABILITY;
 
-const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set([
-  KB_VECTOR_CAPABILITY,
-  KB_EMBEDDING_CAPABILITY,
-]);
+const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set([KB_VECTOR_CAPABILITY, KB_EMBEDDING_CAPABILITY]);
 
 const neverAbortSignal = new AbortController().signal;
 

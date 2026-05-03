@@ -15,11 +15,13 @@ import {
   catalogResultSchema,
   installResultSchema,
   readBindingResultSchema,
+  removeExpansionCatalogResultSchema,
   unequipExpansionResultSchema,
   type CatalogEntry,
   type InstallResponse,
   type InstallResult,
   type ReadBindingResult,
+  type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
 import { encodeInstallError } from './contract.js';
 import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
@@ -54,6 +56,8 @@ export interface CliExpansionActivation {
   update(name: string): Promise<InstallResponse>;
   activateExpansion(name: string): Promise<InstallResult>;
   deactivateExpansion(name: string): Promise<InstallResult>;
+  removeExpansionCatalog(name: string): Promise<RemoveExpansionCatalogResult>;
+  removeCatalog(name: string): Promise<InstallResponse>;
   readExpansionStatus(name?: string): Promise<ExpansionStatus>;
   readBinding(binding: string): Promise<ReadBindingResult>;
 }
@@ -108,6 +112,7 @@ function toCatalogEntry(
     version: local.version ?? entry.version,
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
     ...(provides === undefined ? {} : { provides }),
+    ...(passive?.capabilityStatus === undefined ? {} : { capabilityStatus: passive.capabilityStatus }),
   });
 }
 
@@ -157,6 +162,13 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       return installResultSchema.parse(result);
     },
 
+    async removeExpansionCatalog(name: string) {
+      const client = await ensure(resolvePluginRoot());
+      return removeExpansionCatalogResultSchema.parse(
+        await client.request('coordinator.removeExpansionCatalog', { name }),
+      );
+    },
+
     async readExpansionStatus(name?: string): Promise<ExpansionStatus> {
       const runtime = resolveRuntime();
       let record;
@@ -198,7 +210,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     },
   } satisfies Pick<
     CliExpansionActivation,
-    'activateExpansion' | 'deactivateExpansion' | 'readExpansionStatus' | 'readBinding'
+    'activateExpansion' | 'deactivateExpansion' | 'removeExpansionCatalog' | 'readExpansionStatus' | 'readBinding'
   >;
 
   return {
@@ -276,17 +288,54 @@ export function createCliExpansionActivation(): CliExpansionActivation {
           return unknownExpansionResponse(name);
         }
 
-        const passive = await lowLevel.readExpansionStatus(name);
-        const activeEntry = passive.status === 'available' ? passive.expansions[0] : undefined;
-        if (activeEntry !== undefined) {
-          await lowLevel.deactivateExpansion(name);
+        const removal = await lowLevel.removeExpansionCatalog(name);
+        if (removal.status === 'blocked') {
+          return encodeInstallError(
+            documentedCoralSetupError({
+              code: 'capability_catalog_remove_blocked',
+              target: removal.target,
+              capabilities: removal.capabilities,
+              dependents: removal.dependents,
+            }),
+          );
+        }
+        if (removal.status === 'unknown') {
+          return unknownExpansionResponse(name);
         }
 
         if (!requiresLocalInstall(entry)) {
-          return installResultSchema.parse({ status: activeEntry ? 'uninstalled' : 'not_equipped' });
+          if (removal.status === 'immutable') {
+            return encodeInstallError(documentedCoralSetupError('expansion_bundled_immutable', { name }));
+          }
+          return installResultSchema.parse({ status: 'uninstalled' });
         }
 
         return await uninstallExpansion(name, { runtime });
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async removeCatalog(name: string): Promise<InstallResponse> {
+      try {
+        const removal = await lowLevel.removeExpansionCatalog(name);
+        if (removal.status === 'removed') {
+          return installResultSchema.parse({ status: 'uninstalled' });
+        }
+        if (removal.status === 'immutable') {
+          return encodeInstallError(documentedCoralSetupError('expansion_bundled_immutable', { name }));
+        }
+        if (removal.status === 'unknown') {
+          return unknownExpansionResponse(name);
+        }
+        return encodeInstallError(
+          documentedCoralSetupError({
+            code: 'capability_catalog_remove_blocked',
+            target: removal.target,
+            capabilities: removal.capabilities,
+            dependents: removal.dependents,
+          }),
+        );
       } catch (error: unknown) {
         return encodeInstallError(error);
       }

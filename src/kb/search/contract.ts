@@ -31,15 +31,15 @@ const kbSearchScopeSchema = z.enum(['notes', 'sources', 'communities', 'all'] sa
 export interface RetrievalRoleDescriptor {
   readonly id: string;
   readonly label: string;
-  readonly tags: readonly string[];
+  readonly tags: string[];
   readonly phase: 'retrieval-source';
-  readonly supportsScopes: readonly KbSearchScope[];
+  readonly supportsScopes: KbSearchScope[];
   // Optional in inputs; always non-undefined ([]) after normalizeRetrievalRoleDescriptor.
-  readonly requires?: readonly KbCapabilityName[];
+  readonly requires?: KbCapabilityName[];
   readonly provides: 'retrieval-source';
 }
 
-export const retrievalRoleDescriptorSchema: z.ZodType<RetrievalRoleDescriptor> = z
+export const retrievalRoleDescriptorSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1),

@@ -66,7 +66,7 @@ describe('role registry runtime invariants', () => {
     expect(Object.isFrozen(record.descriptor.supportsScopes)).toBe(true);
     expect(Object.isFrozen(record.descriptor.requires)).toBe(true);
     expect(() => {
-      (record.descriptor.tags as string[]).push('x');
+      record.descriptor.tags.push('x');
     }).toThrow(TypeError);
   });
 

@@ -24,7 +24,7 @@ export interface ExpansionLifecycleView {
   readonly status: 'active' | 'inactive' | 'installed-not-active';
   readonly lastError?: string;
   readonly provides?: EngineManifestProvides;
-  readonly capabilityStatus?: readonly KbCapabilityStatus[];
+  readonly capabilityStatus?: KbCapabilityStatus[];
 }
 
 export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
@@ -90,12 +90,12 @@ export class ExpansionLifecycleService {
     return this.runSerial(name, () => this.unequipLocked(name));
   }
 
-  async removeExpansionCatalog(name: string): Promise<{ readonly status: 'removed' } | { readonly status: 'immutable' }> {
+  async removeExpansionCatalog(name: string): Promise<RemoveExpansionCatalogResult> {
     return this.runSerial(name, () => this.removeExpansionCatalogLocked(name));
   }
 
   private async equipLocked(name: string): Promise<void> {
-    const entry = this.manifest.find((candidate) => candidate.id === name);
+    const entry = this.manifestEntries().find((candidate) => candidate.id === name);
     if (!entry) {
       throw documentedCoralSetupError('unknown_expansion', { name });
     }
@@ -139,7 +139,7 @@ export class ExpansionLifecycleService {
   }
 
   private async unequipLocked(name: string): Promise<void> {
-    const entry = this.manifest.find((candidate) => candidate.id === name);
+    const entry = this.manifestEntries().find((candidate) => candidate.id === name);
     if (entry?.tier === 'bundled') {
       throw documentedCoralSetupError('expansion_bundled_immutable', { name });
     }
@@ -169,10 +169,8 @@ export class ExpansionLifecycleService {
     await this.applyBundledFallback();
   }
 
-  private async removeExpansionCatalogLocked(
-    name: string,
-  ): Promise<{ readonly status: 'removed' } | { readonly status: 'immutable' }> {
-    const entry = this.manifest.find((candidate) => candidate.id === name);
+  private async removeExpansionCatalogLocked(name: string): Promise<RemoveExpansionCatalogResult> {
+    const entry = this.manifestEntries().find((candidate) => candidate.id === name);
     if (entry === undefined) {
       throw documentedCoralSetupError('unknown_expansion', { name });
     }
@@ -183,7 +181,10 @@ export class ExpansionLifecycleService {
       return { status: 'immutable' };
     }
 
-    this.assertNoCatalogDependents(entry);
+    const blockers = this.catalogDependents(entry);
+    if (blockers.size > 0) {
+      return blockedCatalogRemoval(entry.id, blockers);
+    }
 
     const scopes = this.scopes.get(name);
     if (scopes !== undefined && scopes.length > 0) {
@@ -200,28 +201,20 @@ export class ExpansionLifecycleService {
       for (const fill of entry.fills ?? []) {
         const status = kb.capabilityRegistry.runtimeView().status(fill);
         if (status?.heldBy === entry.id) {
-          throw documentedCoralSetupError({
-            code: 'capability_catalog_remove_blocked',
-            target: entry.id,
-            capabilities: [{ capability: fill, dependents: [] }],
-          });
+          return blockedCatalogRemoval(entry.id, new Map([[fill, []]]));
         }
       }
       for (const descriptor of entry.provides?.capabilities ?? []) {
         const status = kb.capabilityRegistry.runtimeView().status(descriptor.name);
         if (status?.bound === true) {
-          throw documentedCoralSetupError({
-            code: 'capability_catalog_remove_blocked',
-            target: entry.id,
-            capabilities: [{ capability: descriptor.name, dependents: [] }],
-          });
+          return blockedCatalogRemoval(entry.id, new Map([[descriptor.name, []]]));
         }
         kb.capabilityRegistry.unregisterManifest(descriptor.name, entry.id);
       }
     }
 
-    this.options.manifestCatalog?.removeInstalledEntry(name);
-    return { status: 'removed' };
+    const removal = this.options.manifestCatalog?.removeInstalledEntry(name);
+    return removal === 'missing' ? { status: 'unknown' } : { status: 'removed' };
   }
 
   private async runSerial<T>(name: string, work: () => Promise<T>): Promise<T> {
@@ -249,7 +242,8 @@ export class ExpansionLifecycleService {
   }
 
   async recoverOnBoot(): Promise<void> {
-    const manifestOrder = new Map(this.manifest.map((entry, index) => [entry.id, index]));
+    const manifest = this.manifestEntries();
+    const manifestOrder = new Map(manifest.map((entry, index) => [entry.id, index]));
     const orderedRows = this.options.state
       .list()
       .sort(
@@ -259,11 +253,11 @@ export class ExpansionLifecycleService {
       );
 
     for (const row of orderedRows) {
-      const entry = this.manifest.find((candidate) => candidate.id === row.id);
+      const entry = manifest.find((candidate) => candidate.id === row.id);
       if (!entry) {
         this.options.state.delete(row.id);
         this.failedRecovery.delete(row.id);
-        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in BUNDLED_ENGINES`);
+        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in the manifest catalog`);
         continue;
       }
 
@@ -298,7 +292,7 @@ export class ExpansionLifecycleService {
     const failed = new Map<string, Error>();
     const kb = this.options.resolveKbRuntime?.() ?? null;
 
-    for (const entry of this.manifest) {
+    for (const entry of this.manifestEntries()) {
       if (entry.tier !== 'bundled') {
         continue;
       }
@@ -343,7 +337,7 @@ export class ExpansionLifecycleService {
   info(name: string): ExpansionLifecycleView {
     const row = this.options.state.get(name);
     const failed = this.failedRecovery.get(name);
-    const manifest = this.manifest.find((entry) => entry.id === name);
+    const manifest = this.manifestEntries().find((entry) => entry.id === name);
     const tier = manifest?.tier ?? 'installed';
     const isActive = (this.scopes.get(name) ?? []).length > 0;
 
@@ -361,7 +355,7 @@ export class ExpansionLifecycleService {
 
     return {
       id: name,
-      version: row?.version ?? 'unknown',
+      version: row?.version ?? manifest?.version ?? 'unknown',
       tier,
       status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
       ...(failed === undefined ? {} : { lastError: failed.message }),
@@ -371,12 +365,11 @@ export class ExpansionLifecycleService {
   }
 
   list(): ExpansionLifecycleView[] {
-    const manifestOrder = new Map(this.manifest.map((entry, index) => [entry.id, index]));
+    const manifest = this.manifestEntries();
+    const manifestOrder = new Map(manifest.map((entry, index) => [entry.id, index]));
     const ids = new Set<string>();
-    for (const entry of this.manifest) {
-      if (entry.tier === 'bundled' || (this.scopes.get(entry.id) ?? []).length > 0) {
-        ids.add(entry.id);
-      }
+    for (const entry of manifest) {
+      ids.add(entry.id);
     }
     for (const row of this.options.state.list()) {
       ids.add(row.id);
@@ -455,6 +448,10 @@ export class ExpansionLifecycleService {
     this.scopes.set(id, existing);
   }
 
+  private manifestEntries(): readonly EngineManifest[] {
+    return this.options.manifestCatalog?.listManifests() ?? this.manifest;
+  }
+
   private requireKbRuntime(name: string): KbRuntime {
     const kb = this.options.resolveKbRuntime?.() ?? null;
     if (kb === null) {
@@ -463,7 +460,7 @@ export class ExpansionLifecycleService {
     return kb;
   }
 
-  private capabilityStatusFor(manifest: EngineManifest | undefined): { capabilityStatus?: readonly KbCapabilityStatus[] } {
+  private capabilityStatusFor(manifest: EngineManifest | undefined): { capabilityStatus?: KbCapabilityStatus[] } {
     if (manifest === undefined) {
       return {};
     }
@@ -533,7 +530,7 @@ export class ExpansionLifecycleService {
     }
 
     const blockers = new Map<KbCapabilityName, CapabilityDependent[]>();
-    for (const candidate of this.manifest) {
+    for (const candidate of this.manifestEntries()) {
       if (candidate.id === entry.id) {
         continue;
       }
@@ -562,14 +559,14 @@ export class ExpansionLifecycleService {
     }
   }
 
-  private assertNoCatalogDependents(entry: EngineManifest): void {
+  private catalogDependents(entry: EngineManifest): Map<KbCapabilityName, CapabilityDependent[]> {
     const declared = new Set((entry.provides?.capabilities ?? []).map((descriptor) => descriptor.name));
     if (declared.size === 0) {
-      return;
+      return new Map();
     }
 
     const blockers = new Map<KbCapabilityName, CapabilityDependent[]>();
-    for (const candidate of this.manifest) {
+    for (const candidate of this.manifestEntries()) {
       if (candidate.id === entry.id) {
         continue;
       }
@@ -584,16 +581,7 @@ export class ExpansionLifecycleService {
       }
     }
 
-    if (blockers.size > 0) {
-      throw documentedCoralSetupError({
-        code: 'capability_catalog_remove_blocked',
-        target: entry.id,
-        capabilities: [...blockers.entries()].map(([capability, dependents]) => ({
-          capability,
-          dependents,
-        })),
-      });
-    }
+    return blockers;
   }
 }
 
@@ -603,6 +591,22 @@ type CapabilityDependent = {
   readonly source: 'onboarding' | 'retrievalRole' | 'fills';
   readonly state: 'active' | 'catalog';
 };
+
+type CapabilityRemovalBlocker = {
+  readonly capability: KbCapabilityName;
+  readonly dependents: CapabilityDependent[];
+};
+
+type RemoveExpansionCatalogResult =
+  | { readonly status: 'removed' }
+  | { readonly status: 'immutable' }
+  | { readonly status: 'unknown' }
+  | {
+      readonly status: 'blocked';
+      readonly target: string;
+      readonly capabilities: CapabilityRemovalBlocker[];
+      readonly dependents: (CapabilityDependent & { readonly capability: KbCapabilityName })[];
+    };
 
 type CapabilityEdge = {
   readonly capability: KbCapabilityName;
@@ -635,4 +639,22 @@ function writeEdgesFor(manifest: EngineManifest, state: CapabilityDependent['sta
     capability,
     dependent: { expansion: manifest.id, edgeKind: 'write', source: 'fills', state },
   }));
+}
+
+function blockedCatalogRemoval(
+  target: string,
+  blockers: ReadonlyMap<KbCapabilityName, readonly CapabilityDependent[]>,
+): Extract<RemoveExpansionCatalogResult, { status: 'blocked' }> {
+  const capabilities: CapabilityRemovalBlocker[] = [...blockers.entries()].map(([capability, dependents]) => ({
+    capability,
+    dependents: [...dependents],
+  }));
+  return {
+    status: 'blocked',
+    target,
+    capabilities,
+    dependents: capabilities.flatMap(({ capability, dependents }) =>
+      dependents.map((dependent) => ({ capability, ...dependent })),
+    ),
+  };
 }

@@ -9,7 +9,7 @@ export type KbCapabilityNamespace = 'kb' | 'external';
 const CAPABILITY_NAME_MAX_LENGTH = 64;
 const CAPABILITY_NAMESPACE_MAX_LENGTH = 16;
 const CAPABILITY_SEGMENT_MAX_LENGTH = 32;
-const CAPABILITY_NAME_PATTERN = /^[a-z][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+$/;
+const CAPABILITY_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$/;
 
 function isValidCapabilityName(raw: string): boolean {
   if (raw.length < 3 || raw.length > CAPABILITY_NAME_MAX_LENGTH) {
@@ -42,7 +42,7 @@ export const kbCapabilityNameSchema = z
   .string()
   .refine((value) => isValidCapabilityName(value), {
     message:
-      'Capability name must be lowercase, <=64 chars, and use dot-separated non-empty segments with optional hyphens.',
+      'Capability name must be lowercase, <=64 chars, and use dot-separated non-empty segments with optional hyphens or underscores.',
   })
   .transform((value) => canonicalizeCapabilityName(value));
 

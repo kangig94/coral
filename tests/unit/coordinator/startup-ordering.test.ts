@@ -43,17 +43,6 @@ const EMPTY_INDEX = {
 };
 
 function createMockKb(order?: string[]) {
-  const baseConsumer = {
-    id: MOCK_BASE_CONSUMER_ID,
-    authority: 'corpus' as const,
-    kind: 'apply' as const,
-    registrationKind: 'base' as const,
-    corpusInterest: 'content' as const,
-    apply: vi.fn(async () => {}),
-  };
-  const vectorRetrieval: VectorRetrieval = {
-    search: vi.fn(async () => ({ hits: [] })),
-  };
   const capabilityRegistry = createCapabilityRegistry();
   capabilityRegistry.registerBuiltin(
     BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -66,25 +55,6 @@ function createMockKb(order?: string[]) {
   capabilityRegistry.registerBuiltin(
     BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
     createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
-  );
-  capabilityRegistry.runtimeView().bind(
-    KB_VECTOR_CAPABILITY,
-    { read: () => vectorRetrieval, consumer: baseConsumer },
-    { [Symbol.dispose]() {} },
-    MOCK_BASE_CONSUMER_ID,
-  );
-  capabilityRegistry.runtimeView().bind(
-    KB_FTS_CAPABILITY,
-    {
-      read: () => ({
-        search: vi.fn(async () => ({ hits: [], exhausted: true })),
-        tokenize: vi.fn(() => []),
-        warnings: vi.fn(() => []),
-      }),
-      consumer: baseConsumer,
-    },
-    { [Symbol.dispose]() {} },
-    MOCK_BASE_CONSUMER_ID,
   );
   const roleRegistry = createRoleRegistry();
   const runtimeDir = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-kb-runtime-'));

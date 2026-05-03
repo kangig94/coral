@@ -175,9 +175,8 @@ export async function waitForCorpusReadiness(params: {
     case 'active-vector': {
       let consumerId: string;
       try {
-        consumerId = kb.capabilityRegistry
-          .runtimeView()
-          .read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY).consumer.id;
+        consumerId = kb.capabilityRegistry.runtimeView().read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY)
+          .consumer.id;
       } catch (error) {
         if (isBindingEmpty(error)) {
           throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.vector' });

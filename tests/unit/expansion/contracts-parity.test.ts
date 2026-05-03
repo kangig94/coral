@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { catalogEntryStatusSchema, installResultSchema } from '#src/expansion/rpc-contract.js';
+import {
+  catalogEntrySchema,
+  catalogEntryStatusSchema,
+  installResultSchema,
+  removeExpansionCatalogResultSchema,
+} from '#src/expansion/rpc-contract.js';
 
 const SKILL_MD = readFileSync(new URL('../../../skills/equip/SKILL.md', import.meta.url), 'utf-8');
 
@@ -56,5 +61,62 @@ describe('expansion contracts parity', () => {
     for (const status of statuses) {
       expect(SKILL_MD).toContain(`\`${status}\``);
     }
+  });
+
+  it('keeps capability descriptors and runtime status as separate catalog entry siblings', () => {
+    expect(
+      catalogEntrySchema.parse({
+        id: 'dummy-capability-provider',
+        name: 'dummy-capability-provider',
+        tier: 'installed',
+        description: 'Dummy capability provider',
+        activation: 'equip',
+        status: 'inactive',
+        provides: {
+          capabilities: [{ name: 'vendor.cache', label: 'Vendor Cache' }],
+        },
+        capabilityStatus: [
+          {
+            name: 'vendor.cache',
+            namespace: 'external',
+            declared: true,
+            bound: false,
+            declaredByManifest: 'dummy-capability-provider',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      provides: {
+        capabilities: [{ name: 'vendor.cache', namespace: 'external' }],
+      },
+      capabilityStatus: [{ name: 'vendor.cache', declared: true, bound: false }],
+    });
+  });
+
+  it('parses coordinator-internal catalog removal statuses without adding public install statuses', () => {
+    expect(removeExpansionCatalogResultSchema.parse({ status: 'removed' })).toEqual({ status: 'removed' });
+    expect(removeExpansionCatalogResultSchema.parse({ status: 'immutable' })).toEqual({ status: 'immutable' });
+    expect(
+      removeExpansionCatalogResultSchema.parse({
+        status: 'blocked',
+        target: 'provider',
+        capabilities: [
+          {
+            capability: 'vendor.cache',
+            dependents: [{ expansion: 'consumer', edgeKind: 'read', source: 'onboarding', state: 'active' }],
+          },
+        ],
+        dependents: [
+          {
+            capability: 'vendor.cache',
+            expansion: 'consumer',
+            edgeKind: 'read',
+            source: 'onboarding',
+            state: 'active',
+          },
+        ],
+      }),
+    ).toMatchObject({ status: 'blocked', dependents: [{ expansion: 'consumer' }] });
+    expect(removeExpansionCatalogResultSchema.parse({ status: 'unknown' })).toEqual({ status: 'unknown' });
   });
 });

@@ -15,6 +15,7 @@ Install and configure Coral companion tooling for Claude Code.
 - `/equip --update <pkg>` -> `coral-cli expansion update <pkg>`
 - `/equip uninstall <pkg>` -> `coral-cli expansion unequip <pkg>`
 - If this surface exposes it, `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
+- Internal catalog-removal diagnostics map to `coral-cli expansion remove-catalog <pkg>` when that CLI surface is exposed.
 
 ## Runtime Model
 
@@ -46,8 +47,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, and `statusDescription` when present. Render `provides` as a comma-separated list of role labels, for example `provides: Text (FTS), Vector (Semantic)`, not full descriptor objects |
-| `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present as comma-separated role labels, and the translated `activation` label |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, and `statusDescription` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
 4. For each catalog entry, route inner `status` as follows:
@@ -119,11 +120,11 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status         | Action                                                                                                           |
 |----------------|------------------------------------------------------------------------------------------------------------------|
-| `uninstalled`  | Confirm the installed-tier engine was removed. Any bundled fallback refill happens through the coordinator        |
+| `uninstalled`  | Confirm the installed-tier engine was removed through the coordinator-owned catalog-removal transaction           |
 | `not_equipped` | Inform user the engine was already not equipped; treat as success                                                |
 | `error`        | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. `unequip` for installed-tier engines drains the live consumer, unregisters it, deletes the installed-tier state row and local artifacts, then allows bundled fallback to refill any now-empty binding when available. For install-only packages, it removes the local binary.
+4. `unequip` for installed-tier engines asks the coordinator to remove the catalog entry transactionally, which disposes any live scope without running bundled fallback, unregisters manifest-scoped capability declarations when allowed, and then removes local artifacts. For install-only packages, it removes the local binary.
 
 ## Notes
 

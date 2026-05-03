@@ -9,7 +9,7 @@ import { needleAddonPath } from './paths.js';
 import { resolveBoundNeedleEmbedder } from './projection-identity.js';
 
 const needle: Expansion = async (host) => {
-  const embedder = host.require<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY);
+  const embedder: Backed<EmbeddingService> = host.require(KB_EMBEDDING_CAPABILITY);
   const resolvedEmbedder = resolveBoundNeedleEmbedder(embedder);
   const provider = await createNeedleBacked(host.kb, host.runtime, embedder, resolvedEmbedder);
   decorateDispose(host.scope, () => {

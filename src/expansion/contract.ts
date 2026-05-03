@@ -75,8 +75,8 @@ export type OnboardingStep =
   | { readonly kind: 'confirm-download'; readonly message: string };
 
 export interface EngineManifestProvides {
-  readonly retrievalRoles?: readonly RetrievalRoleDescriptor[];
-  readonly capabilities?: readonly KbCapabilityDescriptor[];
+  readonly retrievalRoles?: RetrievalRoleDescriptor[];
+  readonly capabilities?: KbCapabilityDescriptor[];
 }
 
 export interface EngineManifest {

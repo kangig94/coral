@@ -51,9 +51,7 @@ describe('expansion retrieval role registration integration', () => {
       }),
       consumer: { id: 'integration-vector', kind: 'stateless', registrationKind: 'stateless' },
     };
-    kb.capabilityRegistry
-      .runtimeView()
-      .bind(KB_EMBEDDING_CAPABILITY, embedding, bindingScope, 'integration-embedding');
+    kb.capabilityRegistry.runtimeView().bind(KB_EMBEDDING_CAPABILITY, embedding, bindingScope, 'integration-embedding');
     kb.capabilityRegistry.runtimeView().bind(KB_VECTOR_CAPABILITY, vector, bindingScope, 'integration-vector');
 
     const expansionScope = createScope();

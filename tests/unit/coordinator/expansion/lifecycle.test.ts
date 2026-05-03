@@ -9,11 +9,7 @@ import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';
 import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';
 import type { EngineArtifactRegistration } from '#src/kb/corpus/artifact-registry.js';
-import {
-  KB_EMBEDDING_CAPABILITY,
-  KB_FTS_CAPABILITY,
-  KB_VECTOR_CAPABILITY,
-} from '#src/kb/capability/constants.js';
+import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
@@ -257,7 +253,10 @@ function lifecycleScopes(lifecycle: ExpansionLifecycleService): Map<string, Disp
   return (lifecycle as unknown as { scopes: Map<string, Disposable[]> }).scopes;
 }
 
-function heldBy(kb: KbRuntime, name: typeof KB_EMBEDDING_CAPABILITY | typeof KB_VECTOR_CAPABILITY | typeof KB_FTS_CAPABILITY): string | undefined {
+function heldBy(
+  kb: KbRuntime,
+  name: typeof KB_EMBEDDING_CAPABILITY | typeof KB_VECTOR_CAPABILITY | typeof KB_FTS_CAPABILITY,
+): string | undefined {
   return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
 }
 
@@ -393,7 +392,7 @@ describe('ExpansionLifecycleService', () => {
     expect(state.snapshot()).toEqual([]);
     expect(lifecycle.info('test-embedder')).toMatchObject({
       id: 'test-embedder',
-      version: 'unknown',
+      version: '0.0.0',
       status: 'inactive',
     });
   });
@@ -420,7 +419,9 @@ describe('ExpansionLifecycleService', () => {
     await lifecycle.recoverOnBoot();
 
     expect(state.snapshot()).toEqual([]);
-    expect(warn).toHaveBeenCalledWith("Orphan expansion row 'ghost' deleted; expansion no longer in BUNDLED_ENGINES");
+    expect(warn).toHaveBeenCalledWith(
+      "Orphan expansion row 'ghost' deleted; expansion no longer in the manifest catalog",
+    );
   });
 
   it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
@@ -447,7 +448,14 @@ describe('ExpansionLifecycleService', () => {
     await lifecycle.recoverOnBoot();
 
     expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBeUndefined();
-    expect(lifecycle.list()).toEqual([]);
+    expect(lifecycle.list()).toMatchObject([
+      {
+        id: 'test-embedder',
+        version: '0.0.0',
+        tier: 'installed',
+        status: 'inactive',
+      },
+    ]);
   });
 
   it('skips bundled fallback when declared fills are already held', async () => {

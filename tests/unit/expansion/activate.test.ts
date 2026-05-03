@@ -157,6 +157,27 @@ describe('expansion activation', () => {
     expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'needle' });
   });
 
+  it('removes expansion catalog entries through coordinator IPC without deactivating first', async () => {
+    const activation = createCliExpansionActivation();
+    const request = vi.fn().mockResolvedValue({ status: 'removed' });
+    mockState.ensure.mockResolvedValue({ request });
+
+    await expect(activation.removeCatalog('external-cache')).resolves.toEqual({ status: 'uninstalled' });
+    expect(request).toHaveBeenCalledWith('coordinator.removeExpansionCatalog', { name: 'external-cache' });
+    expect(request).not.toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'external-cache' });
+  });
+
+  it('maps immutable catalog removal without exposing the internal status string', async () => {
+    const activation = createCliExpansionActivation();
+    const request = vi.fn().mockResolvedValue({ status: 'immutable' });
+    mockState.ensure.mockResolvedValue({ request });
+
+    await expect(activation.removeCatalog('orama')).resolves.toMatchObject({
+      status: 'error',
+      code: 'expansion_bundled_immutable',
+    });
+  });
+
   it('returns unavailable when passive discovery cannot be read', async () => {
     const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';

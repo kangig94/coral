@@ -2,6 +2,39 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettierConfig from 'eslint-config-prettier';
 
+const capabilityNameCastRestrictions = [
+  {
+    selector:
+      "TSAsExpression[typeAnnotation.type='TSTypeReference'][typeAnnotation.typeName.name='KbCapabilityName']",
+    message: 'Use canonicalizeCapabilityName() or kbCapabilityNameSchema instead of casting to KbCapabilityName.',
+  },
+  {
+    selector:
+      "TSTypeAssertion[typeAnnotation.type='TSTypeReference'][typeAnnotation.typeName.name='KbCapabilityName']",
+    message: 'Use canonicalizeCapabilityName() or kbCapabilityNameSchema instead of asserting KbCapabilityName.',
+  },
+  {
+    selector: "TSAsExpression[typeAnnotation.typeName.right.name='KbCapabilityName']",
+    message: 'Use canonicalizeCapabilityName() or kbCapabilityNameSchema instead of casting to KbCapabilityName.',
+  },
+  {
+    selector: "TSTypeAssertion[typeAnnotation.typeName.right.name='KbCapabilityName']",
+    message: 'Use canonicalizeCapabilityName() or kbCapabilityNameSchema instead of asserting KbCapabilityName.',
+  },
+  {
+    selector: "ImportSpecifier[imported.name='KbCapabilityName'][local.name!='KbCapabilityName']",
+    message: 'Do not alias KbCapabilityName imports; the cast guard depends on the canonical imported name.',
+  },
+];
+
+const backendStderrRestrictions = [
+  {
+    selector:
+      "MemberExpression[object.object.name='process'][object.property.name='stderr'][property.name='write']",
+    message: 'Use backendLog from infra/backend-log.ts instead of process.stderr.write in backend code.',
+  },
+];
+
 export default tseslint.config(
   // --- Global ignores ---
   {
@@ -93,21 +126,42 @@ export default tseslint.config(
   },
 
   // =========================================================
+  // Capability names are branded only at parser/normalizer boundaries.
+  // =========================================================
+  {
+    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    ignores: [
+      'src/kb/capability/contract.ts',
+      'src/kb/capability/constants.ts',
+      'tests/unit/kb/capability/registry.test.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': ['error', ...capabilityNameCastRestrictions],
+    },
+  },
+
+  // =========================================================
   // Principle 2 (cont.): Backend code must use backendLog,
   // not process.stderr.write directly.
   // Applies to: execution/, kb/, workflow/ (backend process code)
   // =========================================================
   {
-    files: ['src/execution/**/*.ts', 'src/kb/**/*.ts', 'src/workflow/**/*.ts'],
+    files: ['src/execution/**/*.ts', 'src/workflow/**/*.ts'],
     rules: {
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector:
-            "MemberExpression[object.object.name='process'][object.property.name='stderr'][property.name='write']",
-          message: 'Use backendLog from infra/backend-log.ts instead of process.stderr.write in backend code.',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...capabilityNameCastRestrictions, ...backendStderrRestrictions],
+    },
+  },
+  {
+    files: ['src/kb/**/*.ts'],
+    ignores: ['src/kb/capability/contract.ts', 'src/kb/capability/constants.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...capabilityNameCastRestrictions, ...backendStderrRestrictions],
+    },
+  },
+  {
+    files: ['src/kb/capability/contract.ts', 'src/kb/capability/constants.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...backendStderrRestrictions],
     },
   },
 

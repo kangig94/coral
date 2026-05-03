@@ -11,12 +11,12 @@ import {
   type RoleRegistry,
 } from './contract.js';
 
-function freezeArray<T>(values: readonly T[]): readonly T[] {
-  return Object.freeze([...values]);
+function freezeArray<T>(values: readonly T[]): T[] {
+  return Object.freeze([...values]) as T[];
 }
 
-function canonicalSetOrder<T extends string>(values: readonly T[]): readonly T[] {
-  return Object.freeze([...new Set(values)].sort((left, right) => left.localeCompare(right)));
+function canonicalSetOrder<T extends string>(values: readonly T[]): T[] {
+  return Object.freeze([...new Set(values)].sort((left, right) => left.localeCompare(right))) as T[];
 }
 
 export function normalizeRetrievalRoleDescriptor(descriptor: RetrievalRoleDescriptor): RetrievalRoleDescriptor {

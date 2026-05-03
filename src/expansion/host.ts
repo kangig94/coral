@@ -153,7 +153,9 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
       }
     },
     registerRetrievalRole(role, scope): RoleHandle {
-      const manifestDescriptor = deps.manifest.provides?.retrievalRoles?.find((descriptor) => descriptor.id === role.id);
+      const manifestDescriptor = deps.manifest.provides?.retrievalRoles?.find(
+        (descriptor) => descriptor.id === role.id,
+      );
       if (manifestDescriptor === undefined) {
         throw roleDescriptorMismatch({
           expansion: host.id,

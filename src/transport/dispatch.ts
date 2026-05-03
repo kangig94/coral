@@ -213,6 +213,13 @@ export async function executeCatalogRequest(
       return unary(await rpcPorts.expansion.unequipExpansion({ name }));
     }
 
+    case 'coordinator.removeExpansionCatalog': {
+      const parsed = request as { name: string };
+      const name = decodePathSegment(parsed.name);
+      if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
+      return unary(await rpcPorts.expansion.removeExpansionCatalog({ name }));
+    }
+
     case 'coordinator.listExpansion':
       return unary(await rpcPorts.expansion.listExpansion({}));
 

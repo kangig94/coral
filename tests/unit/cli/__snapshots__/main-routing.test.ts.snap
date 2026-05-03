@@ -62,15 +62,17 @@ exports[`cli main routing > preserves help output for 'expansion' via snapshot 1
 Manage expansion packages
 
 Options:
-  -h, --help      display help for command
+  -h, --help             display help for command
 
 Commands:
-  list            List installed and available expansions
-  equip <name>    Install or activate an expansion
-  unequip <name>  Deactivate and uninstall an expansion
-  update <name>   Update an installed expansion
-  info <name>     Show expansion metadata and install state
-  help [command]  display help for command
+  list                   List installed and available expansions
+  equip <name>           Install or activate an expansion
+  unequip <name>         Remove an expansion from the coordinator catalog and
+                         local install
+  remove-catalog <name>  Remove an installed expansion catalog entry
+  update <name>          Update an installed expansion
+  info <name>            Show expansion metadata and install state
+  help [command]         display help for command
 "
 `;
 

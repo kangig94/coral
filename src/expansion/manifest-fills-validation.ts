@@ -104,10 +104,7 @@ export function collectCapabilityCatalog(
   return Object.freeze({ entries: Object.freeze([...entries.values()]) });
 }
 
-function assertBuiltinApplied(
-  registry: KbCapabilityRegistry,
-  entry: CapabilityCatalogEntry,
-): void {
+function assertBuiltinApplied(registry: KbCapabilityRegistry, entry: CapabilityCatalogEntry): void {
   const record = registry.runtimeView().get(entry.descriptor.name);
   if (
     record === undefined ||
@@ -162,10 +159,7 @@ function applyManifestDeclaration(registry: KbCapabilityRegistry, entry: Capabil
   });
 }
 
-export function applyCapabilityDeclarations(
-  registry: KbCapabilityRegistry,
-  catalog: CapabilityCatalogSnapshot,
-): void {
+export function applyCapabilityDeclarations(registry: KbCapabilityRegistry, catalog: CapabilityCatalogSnapshot): void {
   for (const entry of catalog.entries) {
     if (entry.origin === 'builtin') {
       assertBuiltinApplied(registry, entry);
@@ -175,10 +169,7 @@ export function applyCapabilityDeclarations(
   }
 }
 
-export function assertCapabilityCatalogApplied(
-  manifest: EngineManifest,
-  catalog: KbCapabilityCatalogView,
-): void {
+export function assertCapabilityCatalogApplied(manifest: EngineManifest, catalog: KbCapabilityCatalogView): void {
   const descriptors = catalog.listDescriptors();
   for (const descriptor of manifest.provides?.capabilities ?? []) {
     const registered = descriptors.find((candidate) => candidate.name === descriptor.name);

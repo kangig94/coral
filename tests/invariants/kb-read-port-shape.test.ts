@@ -324,9 +324,9 @@ describe('KB read port shape', () => {
     expect(existsSync(artifactPath)).toBe(false);
     expect(existsSync(metadataPath)).toBe(false);
     bindOramaFtsForTest(kb);
-    expect(kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().warnings()).toContain(
-      'fts_index_uninitialized',
-    );
+    expect(
+      kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().warnings(),
+    ).toContain('fts_index_uninitialized');
 
     const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, host);
 

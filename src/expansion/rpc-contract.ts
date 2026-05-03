@@ -27,13 +27,13 @@ const expansionCatalogStatusLiterals = [
 ] as const;
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
-const providesSchema: z.ZodType<EngineManifestProvides> = z
+const providesSchema = z
   .object({
     retrievalRoles: z.array(retrievalRoleDescriptorSchema).optional(),
     capabilities: z.array(kbCapabilityDescriptorSchema).optional(),
   })
   .strict();
-const capabilityStatusSchema: z.ZodType<KbCapabilityStatus> = z
+const capabilityStatusSchema = z
   .object({
     name: kbCapabilityNameSchema,
     namespace: z.enum(['kb', 'external']),
@@ -52,6 +52,7 @@ const catalogEntryCommonShape = {
   version: z.string().min(1).optional(),
   method: z.string().min(1).optional(),
   provides: providesSchema.optional(),
+  capabilityStatus: z.array(capabilityStatusSchema).optional(),
 } as const;
 
 const requiredEnvRuleSchema = z
@@ -80,18 +81,17 @@ const onboardingChoiceSchema = z
   })
   .strict();
 
-const postInstallSchema = z
-  .array(
-    z.union([
-      z.literal('register_expansion'),
-      z
-        .object({
-          action: z.literal('register_expansion'),
-          manifestPath: z.string().min(1),
-        })
-        .strict(),
-    ]),
-  );
+const postInstallSchema = z.array(
+  z.union([
+    z.literal('register_expansion'),
+    z
+      .object({
+        action: z.literal('register_expansion'),
+        manifestPath: z.string().min(1),
+      })
+      .strict(),
+  ]),
+);
 
 export const onboardingSchema = z
   .object({
@@ -174,7 +174,7 @@ export interface ExpansionView {
   readonly status: ExpansionStatus;
   readonly lastError?: string;
   readonly provides?: EngineManifestProvides;
-  readonly capabilityStatus?: readonly KbCapabilityStatus[];
+  readonly capabilityStatus?: KbCapabilityStatus[];
 }
 
 export const expansionViewSchema = z
@@ -186,7 +186,7 @@ export const expansionViewSchema = z
     provides: providesSchema.optional(),
     capabilityStatus: z.array(capabilityStatusSchema).optional(),
   })
-  .strict() satisfies z.ZodType<ExpansionView>;
+  .strict();
 
 const installExpansionViewSchema = z
   .object({
@@ -229,6 +229,48 @@ export const unequipExpansionResultSchema = z.union([
 ]);
 export type UnequipExpansionResult = z.infer<typeof unequipExpansionResultSchema>;
 
+export const removeExpansionCatalogRequestSchema = z
+  .object({
+    name: z.string().min(1),
+  })
+  .strict();
+export type RemoveExpansionCatalogRequest = z.infer<typeof removeExpansionCatalogRequestSchema>;
+
+const capabilityRemovalDependentSchema = z
+  .object({
+    expansion: z.string().min(1),
+    edgeKind: z.enum(['read', 'write']),
+    source: z.enum(['onboarding', 'retrievalRole', 'fills']),
+    state: z.enum(['active', 'catalog']),
+  })
+  .strict();
+
+const capabilityRemovalBlockerSchema = z
+  .object({
+    capability: kbCapabilityNameSchema,
+    dependents: z.array(capabilityRemovalDependentSchema),
+  })
+  .strict();
+
+export const removeExpansionCatalogResultSchema = z.union([
+  z.object({ status: z.literal('removed') }).strict(),
+  z.object({ status: z.literal('immutable') }).strict(),
+  z
+    .object({
+      status: z.literal('blocked'),
+      target: z.string().min(1),
+      capabilities: z.array(capabilityRemovalBlockerSchema),
+      dependents: z.array(
+        capabilityRemovalDependentSchema.extend({
+          capability: kbCapabilityNameSchema,
+        }),
+      ),
+    })
+    .strict(),
+  z.object({ status: z.literal('unknown') }).strict(),
+]);
+export type RemoveExpansionCatalogResult = z.infer<typeof removeExpansionCatalogResultSchema>;
+
 export const listExpansionRequestSchema = z.object({}).strict();
 export type ListExpansionRequest = z.infer<typeof listExpansionRequestSchema>;
 
@@ -257,6 +299,7 @@ export type ReadBindingResult = z.infer<typeof readBindingResultSchema>;
 export interface ExpansionRequestPort {
   equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
   unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
+  removeExpansionCatalog(request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult>;
   listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
   readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
 }

@@ -58,7 +58,7 @@ export const engineManifestSchema = z
     fills: z.array(kbCapabilityNameSchema).optional(),
     provides: manifestProvidesSchema.optional(),
   })
-  .strict() satisfies z.ZodType<EngineManifest>;
+  .strict();
 
 export function parseEngineManifest(input: unknown): EngineManifest {
   return engineManifestSchema.parse(input);

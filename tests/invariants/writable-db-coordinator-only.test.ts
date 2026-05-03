@@ -16,6 +16,9 @@ type DbOpenCall = {
 const EXPLICIT_ALLOWLIST = new Set([
   // Store factory internals are the source of truth for opening backend-store DBs.
   'src/store/db.ts:openStoreDatabase',
+  // CLI install path persists the installed-expansion manifest catalog after
+  // installer success (Stage 2 Phase 4A — ExpansionManifestCatalog).
+  'src/cli/expansion/install.ts:openBackendStoreDb',
 ]);
 
 function listSourceFiles(dir: string): string[] {

@@ -142,7 +142,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
   }
 
   const runtime = resolveQueryRuntime(context);
-  let manifestCatalog = createExpansionManifestCatalog();
+  let manifestCatalog: ReturnType<typeof createExpansionManifestCatalog>;
   try {
     manifestCatalog = createExpansionManifestCatalog({ readDb: getDefaultKbQueryDb(context) });
   } catch {

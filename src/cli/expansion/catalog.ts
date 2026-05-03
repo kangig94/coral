@@ -26,9 +26,6 @@ export function readDefaultExpansionCatalog(): readonly EngineManifest[] {
   }
 }
 
-export function resolveCatalogManifest(
-  catalog: readonly EngineManifest[],
-  name: string,
-): EngineManifest | null {
+export function resolveCatalogManifest(catalog: readonly EngineManifest[], name: string): EngineManifest | null {
   return catalog.find((entry) => entry.id === name) ?? null;
 }

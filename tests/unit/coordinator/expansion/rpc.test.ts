@@ -41,6 +41,7 @@ describe('createExpansionRpc', () => {
         },
       ]),
       readBinding: vi.fn(() => ({ bound: true, heldBy: 'needle' })),
+      removeExpansionCatalog: vi.fn(async () => ({ status: 'removed' as const })),
     } as unknown as ExpansionLifecycleService;
 
     const rpc = createExpansionRpc(lifecycle);
@@ -63,6 +64,7 @@ describe('createExpansionRpc', () => {
     });
     await expect(rpc.unequipExpansion({ name: 'needle' })).resolves.toEqual({ status: 'uninstalled' });
     await expect(rpc.unequipExpansion({ name: 'missing' })).resolves.toEqual({ status: 'not_equipped' });
+    await expect(rpc.removeExpansionCatalog({ name: 'needle' })).resolves.toEqual({ status: 'removed' });
     await expect(rpc.listExpansion({})).resolves.toEqual({
       expansions: [{ name: 'failed', tier: 'installed', status: 'installed-not-active', lastError: 'boom' }],
     });

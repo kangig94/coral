@@ -53,9 +53,10 @@ function parsePersistedManifest(row: ManifestCatalogRow): EngineManifest {
 function readRows(db: ManifestCatalogReadDb): ManifestCatalogRow[] {
   try {
     return db
-      .prepare<[], ManifestCatalogRow>(
-        'SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog ORDER BY id',
-      )
+      .prepare<
+        [],
+        ManifestCatalogRow
+      >('SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog ORDER BY id')
       .all();
   } catch {
     return [];
@@ -145,6 +146,8 @@ export class ExpansionManifestCatalog {
   }
 }
 
-export function createExpansionManifestCatalog(options: ExpansionManifestCatalogOptions = {}): ExpansionManifestCatalog {
+export function createExpansionManifestCatalog(
+  options: ExpansionManifestCatalogOptions = {},
+): ExpansionManifestCatalog {
   return new ExpansionManifestCatalog(options);
 }

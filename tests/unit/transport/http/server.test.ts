@@ -72,9 +72,6 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
-// Use the bundled FTS projection id so the fallback registration matches the
-// consumer.id exposed by mocked bindings that rely on waitFreshUntil resolution.
-const MOCK_BASE_CONSUMER_ID = 'orama-base';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
@@ -514,17 +511,6 @@ describe('execution backend server', () => {
   });
 
   function createMockKbSubsystem() {
-    const baseConsumer = {
-      id: MOCK_BASE_CONSUMER_ID,
-      authority: 'corpus' as const,
-      kind: 'apply' as const,
-      registrationKind: 'base' as const,
-      corpusInterest: 'content' as const,
-      apply: vi.fn(async () => {}),
-    };
-    const vectorRetrieval: VectorRetrieval = {
-      search: vi.fn(async () => ({ hits: [] })),
-    };
     const capabilityRegistry = createCapabilityRegistry();
     capabilityRegistry.registerBuiltin(
       BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -537,25 +523,6 @@ describe('execution backend server', () => {
     capabilityRegistry.registerBuiltin(
       BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
       createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
-    );
-    capabilityRegistry.runtimeView().bind(
-      KB_VECTOR_CAPABILITY,
-      { read: () => vectorRetrieval, consumer: baseConsumer },
-      { [Symbol.dispose]() {} },
-      MOCK_BASE_CONSUMER_ID,
-    );
-    capabilityRegistry.runtimeView().bind(
-      KB_FTS_CAPABILITY,
-      {
-        read: () => ({
-          search: vi.fn(async () => ({ hits: [], exhausted: true })),
-          tokenize: vi.fn(() => []),
-          warnings: vi.fn(() => []),
-        }),
-        consumer: baseConsumer,
-      },
-      { [Symbol.dispose]() {} },
-      MOCK_BASE_CONSUMER_ID,
     );
     const roleRegistry = createRoleRegistry();
     const engineArtifactRegistry = new EngineArtifactRegistry();

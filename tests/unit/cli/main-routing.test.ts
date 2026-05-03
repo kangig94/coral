@@ -39,6 +39,7 @@ const mockState = vi.hoisted(() => ({
   expansionInfo: vi.fn(),
   expansionEquip: vi.fn(),
   expansionUnequip: vi.fn(),
+  expansionRemoveCatalog: vi.fn(),
   expansionUpdate: vi.fn(),
   kbSearch: vi.fn(),
   kbDiagnose: vi.fn(),
@@ -94,6 +95,7 @@ vi.mock('#src/cli/expansion/index.js', () => ({
     info: mockState.expansionInfo,
     equip: mockState.expansionEquip,
     unequip: mockState.expansionUnequip,
+    removeCatalog: mockState.expansionRemoveCatalog,
     update: mockState.expansionUpdate,
   }),
 }));
@@ -318,6 +320,7 @@ describe('cli main routing', () => {
     mockState.expansionInfo.mockReset();
     mockState.expansionEquip.mockReset();
     mockState.expansionUnequip.mockReset();
+    mockState.expansionRemoveCatalog.mockReset();
     mockState.expansionUpdate.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbDiagnose.mockReset();
@@ -431,6 +434,18 @@ describe('cli main routing', () => {
       },
     },
     {
+      label: 'remove-catalog',
+      argv: ['expansion', 'remove-catalog', 'needle'],
+      setup: () => {
+        mockState.expansionRemoveCatalog.mockResolvedValueOnce({
+          status: 'uninstalled',
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionRemoveCatalog).toHaveBeenCalledWith('needle');
+      },
+    },
+    {
       label: 'update',
       argv: ['expansion', 'update', 'needle'],
       setup: () => {
@@ -511,6 +526,19 @@ describe('cli main routing', () => {
       argv: ['expansion', 'unequip', 'needle'],
       setup: () => {
         mockState.expansionUnequip.mockResolvedValueOnce({
+          status: 'error',
+          code: 'unknown_expansion',
+          userMessage: 'Unknown expansion.',
+          remediation: 'Run coral-cli expansion list.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+    {
+      label: 'remove-catalog',
+      argv: ['expansion', 'remove-catalog', 'needle'],
+      setup: () => {
+        mockState.expansionRemoveCatalog.mockResolvedValueOnce({
           status: 'error',
           code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
