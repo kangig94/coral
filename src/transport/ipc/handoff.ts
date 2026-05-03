@@ -107,9 +107,9 @@ export async function requestIncumbentShutdown(opts: {
 
   if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
-      health = (await client.health<IncumbentHealth | null>({
+      health = await client.health<IncumbentHealth | null>({
         timeoutMs: remainingBudget(deadlineMs, timePort),
-      })) as IncumbentHealth | null;
+      });
     } catch {
       // incumbent unresponsive on IPC but socket bound; daemon escalation handles this
     }

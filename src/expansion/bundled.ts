@@ -1,10 +1,11 @@
 import oramaExpansion from '#src/engines/orama/expansion.js';
 import { needleInstaller } from '#src/engines/needle/install.js';
 import type { EngineManifest, Expansion, ExpansionHost } from './contract.js';
+import { parseEngineManifests } from './manifest-schema.js';
 
 const PACKAGE_VERSION = '0.5.2';
 
-export const BUNDLED_ENGINES: readonly EngineManifest[] = [
+export const BUNDLED_ENGINES: readonly EngineManifest[] = parseEngineManifests([
   {
     id: 'gemini',
     version: PACKAGE_VERSION,
@@ -40,7 +41,7 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = [
     description: 'Default KB FTS backend (no native deps)',
     fills: ['kb.fts'],
   },
-];
+]);
 
 // `tier: 'bundled'` engines must be statically reachable so esbuild inlines
 // them into coral-backend.cjs. A marketplace install ships src/ alongside the

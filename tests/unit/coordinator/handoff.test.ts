@@ -12,7 +12,7 @@ import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } f
 // We mock `requestIncumbentShutdown` so the handoff state machine sees
 // scripted health/verifiedIdentity outcomes without spinning real IPC.
 vi.mock('#src/transport/ipc/handoff.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('#src/transport/ipc/handoff.js')>();
+  const original = await importOriginal<object>();
   return {
     ...original,
     requestIncumbentShutdown: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock('#src/transport/ipc/handoff.js', async (importOriginal) => {
 // `probeProcessStartedAtSeconds` is called inside `verifySignalTarget`; mock
 // it so we can stage matched/null outcomes deterministically.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('#src/infra/node-process.js')>();
+  const original = await importOriginal<object>();
   return {
     ...original,
     probeProcessStartedAtSeconds: vi.fn(),
@@ -118,7 +118,7 @@ describe('bindWithHandoff', () => {
     const { options } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
     });
-    mockedShutdown.mockImplementationOnce(async () => {
+    mockedShutdown.mockImplementationOnce(() => {
       throw new IncumbentMatchesError(options.desired);
     });
     await expect(bindWithHandoff(options)).rejects.toBeInstanceOf(IncumbentMatchesError);

@@ -47,7 +47,9 @@ describe('session-start.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:session_id=sess-123\n\n')).toBe(true);
+    expect(output.hookSpecificOutput.additionalContext).toMatch(
+      /^SessionStart:session_id=sess-123\nCurrent host: (claude|codex)\n\n/u,
+    );
     expect(output.hookSpecificOutput.additionalContext).toContain(injectMd);
   });
 

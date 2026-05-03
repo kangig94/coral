@@ -33,7 +33,7 @@ export const kbSearchSchema = z
     query: z.string().min(1),
     scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
     top_k: z.number().int().positive().optional(),
-    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
+    mode: z.enum(['text', 'vector', 'hybrid', 'auto']).optional(),
   })
   .strict();
 
@@ -42,7 +42,7 @@ export const kbSearchQuerySchema = z
     q: z.string().min(1),
     scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
     top_k: z.coerce.number().int().positive().optional(),
-    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
+    mode: z.enum(['text', 'vector', 'hybrid', 'auto']).optional(),
   })
   .strict();
 

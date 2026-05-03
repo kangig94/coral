@@ -19,6 +19,10 @@ import type {
   KbRuntime,
 } from './contract.js';
 import type { VectorRetrieval } from './search/contract.js';
+import { createBuiltinGraphRole } from './search/graph-retrieval.js';
+import { createRoleRegistry } from './search/role-registry.js';
+import { createBuiltinTextRole } from './search/text-retrieval.js';
+import { createBuiltinVectorRole } from './search/vector-query.js';
 import {
   createKbMutationLock,
   DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
@@ -90,6 +94,8 @@ class KbRuntimeImpl implements KbRuntime {
   readonly vector: KbRuntime['vector'];
   readonly embedding: KbRuntime['embedding'];
   readonly fts: KbRuntime['fts'];
+  readonly roleRegistry: KbRuntime['roleRegistry'];
+  readonly roleCatalog: KbRuntime['roleCatalog'];
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
   readonly projectionArtifacts: KbProjectionArtifactPort;
@@ -141,6 +147,9 @@ class KbRuntimeImpl implements KbRuntime {
     this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
     this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
     this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+    const roleRegistry = createRoleRegistry();
+    this.roleRegistry = roleRegistry;
+    this.roleCatalog = roleRegistry.catalogView();
     this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
     this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
     this.projectionArtifacts = {
@@ -277,6 +286,10 @@ class KbRuntimeImpl implements KbRuntime {
         this.invalidateKbCache();
       },
     });
+
+    roleRegistry.registerBuiltin(createBuiltinTextRole(this), { criticality: 'core' });
+    roleRegistry.registerBuiltin(createBuiltinVectorRole(this), { criticality: 'core' });
+    roleRegistry.registerBuiltin(createBuiltinGraphRole(this, () => this.readEntityGraph()));
 
     storage.mkdirSync(this.runtimeDir, { recursive: true });
     if (corpusPublishCallbacks !== undefined) {

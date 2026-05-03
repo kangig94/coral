@@ -329,6 +329,14 @@ describe('KB read port shape', () => {
     expect(degraded).toEqual({
       mode: 'text',
       results: [],
+      retrievalDiagnostics: [
+        {
+          roleId: 'text',
+          code: 'binding_missing',
+          recoverable: true,
+          publicText: 'kb_search_degraded_until_coordinator_rebuild',
+        },
+      ],
       warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
     expect(existsSync(artifactPath)).toBe(false);

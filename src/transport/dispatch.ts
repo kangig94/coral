@@ -379,17 +379,19 @@ export async function executeCatalogRequest(
     }
 
     case 'kb.entries.search': {
-      const parsed = request as { q: string; scope?: string; top_k?: number; mode?: 'text' | 'vector' | 'hybrid' };
-      return unaryHttp(
-        domainResultToHttp(
-          await rpcPorts.kb.readSearch({
-            query: parsed.q,
-            ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
-            ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
-            ...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
-          }),
-        ),
-      );
+      const parsed = request as {
+        q: string;
+        scope?: string;
+        top_k?: number;
+        mode?: 'text' | 'vector' | 'hybrid' | 'auto';
+      };
+      const searchRequest = {
+        query: parsed.q,
+        ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+        ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
+        ...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+      };
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readSearch(withAbortSignal(searchRequest, abortSignal))));
     }
 
     case 'kb.diagnose':

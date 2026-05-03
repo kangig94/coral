@@ -1,11 +1,6 @@
 import { z } from 'zod';
 
-import {
-  providerInstructionSchema,
-  type EffortLevel,
-  type ProviderAction,
-  type ProviderInstruction,
-} from '../providers/contract.js';
+import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import type { LaunchPool } from './contracts/admission.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;

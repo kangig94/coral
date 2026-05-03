@@ -278,17 +278,17 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   // blocking `wait: true` on the next coordinator picks up the staleness.
   const corpusRescanAbort = new AbortController();
   const expansionLifecycleService = new ExpansionLifecycleService({
-    makeHost: (id, scope, tier) => {
+    makeHost: (manifest, scope) => {
       const kbRuntime = currentKbRuntime;
       if (kbRuntime === null) {
-        throw documentedCoralSetupError('expansion_runtime_unavailable', { name: id });
+        throw documentedCoralSetupError('expansion_runtime_unavailable', { name: manifest.id });
       }
 
       return createHostFactory({
         runtime,
         kbRuntime,
         consumerDriver: getConsumerDriver(),
-      })(id, scope, tier);
+      })(manifest, scope);
     },
     state: new ExpansionStateStore(getStoreDb()),
     now: () => nowDate(runtime.time).toISOString(),

@@ -2,6 +2,7 @@ import type { RuntimeBinding } from '../runtime/binding.js';
 import type { KbEngineRuntime } from '../kb/contract.js';
 import type { EngineArtifactPort } from '../kb/corpus/artifact-port.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
+import type { RetrievalRole, RetrievalRoleDescriptor, RoleHandle } from '../kb/search/contract.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
 import type {
   ConsumerHandle,
@@ -24,6 +25,7 @@ export type ExpansionConsumerRegistration =
 export interface ExpansionHost {
   bind<T>(binding: RuntimeBinding<T>, value: T): void;
   require<T>(binding: RuntimeBinding<T>): T;
+  registerRetrievalRole(role: RetrievalRole, scope: Disposable): RoleHandle;
   registerConsumer(reg: ExpansionConsumerRegistration, scope: Disposable): ConsumerHandle;
   registerArtifactPort(
     port: EngineArtifactPort,
@@ -81,4 +83,5 @@ export interface EngineManifest {
   readonly installer?: EngineInstaller;
   readonly onboarding?: readonly OnboardingStep[];
   readonly fills?: readonly string[];
+  readonly provides?: readonly RetrievalRoleDescriptor[];
 }

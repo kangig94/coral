@@ -14,9 +14,10 @@ import {
 } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { BUNDLED_ENGINES, loadBundledEngine } from '../expansion/bundled.js';
-import { createExpansionHost } from '../expansion/host.js';
+import { createExpansionHost, disposeExpansionScope } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
+import { validateManifestCompleteness } from '../expansion/manifest-completeness.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
@@ -188,12 +189,18 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     const host: ExpansionHost = createExpansionHost({
       runtime,
       kb,
+      roleRegistry: kb.roleRegistry,
       scope,
-      id: entry.id,
-      tier: entry.tier,
+      manifest: entry,
       consumerDriver: noopDriver,
     });
-    await loadBundledEngine(entry, host);
+    try {
+      await loadBundledEngine(entry, host);
+      validateManifestCompleteness(entry, kb.roleRegistry);
+    } catch (error) {
+      await disposeExpansionScope(scope);
+      throw error;
+    }
   }
 
   defaultRegistry.markBundledLoaded(kb);

@@ -10,7 +10,7 @@ import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
 import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
-import type { FtsSearchResult, VectorRetrieval } from './search/contract.js';
+import type { FtsSearchResult, RoleCatalogView, RoleRegistry, VectorRetrieval } from './search/contract.js';
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
@@ -118,6 +118,7 @@ export interface KbEngineRuntimeBase {
   readonly vector: RuntimeBinding<Backed<VectorRetrieval>>;
   readonly embedding: RuntimeBinding<Backed<EmbeddingService>>;
   readonly fts: RuntimeBinding<Backed<FtsRetrieval>>;
+  readonly roleCatalog: RoleCatalogView;
 }
 
 export interface KbEngineRuntime extends KbEngineRuntimeBase {
@@ -131,6 +132,7 @@ export interface KbEngineRuntime extends KbEngineRuntimeBase {
  * compose at the subsystem level instead.
  */
 export interface KbRuntime extends KbEngineRuntimeBase {
+  readonly roleRegistry: RoleRegistry;
   readonly markdownRoot: string;
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;

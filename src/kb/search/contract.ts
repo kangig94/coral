@@ -1,4 +1,6 @@
-import type { KbEntryId, KbResult, KbSearchScope } from '../entry-types.js';
+import { z } from 'zod';
+import type { EntityGraph, KbEntryId, KbIndex, KbMatchSurface, KbResult, KbSearchScope } from '../entry-types.js';
+import type { Disposable } from '../../runtime/ports.js';
 
 export type RetrievalScope = KbSearchScope;
 export type RetrievalKind = KbResult['kind'];
@@ -16,6 +18,150 @@ export interface RetrievedDocument {
   readonly body: string;
   readonly tags: readonly string[];
   readonly principles: readonly string[];
+}
+
+export const kbBindingNameSchema = z.union([z.literal('kb.fts'), z.literal('kb.embedding'), z.literal('kb.vector')]);
+
+export type KbBindingName = z.infer<typeof kbBindingNameSchema>;
+
+const kbSearchScopeSchema = z.enum(['notes', 'sources', 'communities', 'all'] satisfies [
+  KbSearchScope,
+  KbSearchScope,
+  KbSearchScope,
+  KbSearchScope,
+]);
+
+export interface RetrievalRoleDescriptor {
+  readonly id: string;
+  readonly label: string;
+  readonly tags: readonly string[];
+  readonly phase: 'retrieval-source';
+  readonly supportsScopes: readonly KbSearchScope[];
+  readonly requires?: readonly KbBindingName[];
+  readonly provides: 'retrieval-source';
+}
+
+export const retrievalRoleDescriptorSchema: z.ZodType<RetrievalRoleDescriptor> = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    tags: z.array(z.string().min(1)),
+    phase: z.literal('retrieval-source'),
+    supportsScopes: z.array(kbSearchScopeSchema),
+    requires: z.array(kbBindingNameSchema).optional(),
+    provides: z.literal('retrieval-source'),
+  })
+  .strict();
+
+export interface RetrievalEvidence {
+  readonly roleId: string;
+  readonly label: string;
+  readonly rank: number;
+  readonly weight: number;
+  readonly contribution: number;
+  readonly match?: KbMatchSurface[];
+}
+
+export type RetrievalDiagnosticCode =
+  // Role execution observed the caller's abort signal before completion.
+  | 'role_aborted'
+  // Graph-backed retrieval could not use graph data because it is stale.
+  | 'graph_stale'
+  // A role required a KB runtime binding that was not available.
+  | 'binding_missing'
+  // A role failed for a non-setup execution reason.
+  | 'role_failed'
+  // Planner or executor referenced a descriptor that is not registered.
+  | 'descriptor_unregistered';
+
+export interface RetrievalDiagnostic {
+  readonly roleId: string;
+  readonly code: RetrievalDiagnosticCode;
+  readonly recoverable: boolean;
+  readonly publicText?: string;
+}
+
+export interface RetrievalHit extends RetrievalEntry {
+  rank: number;
+  score: number;
+  document?: RetrievedDocument;
+  match?: KbMatchSurface[];
+}
+
+export interface RoleSearchResult {
+  hits: RetrievalHit[];
+  diagnostic?: RetrievalDiagnostic;
+}
+
+export interface RoleQueryContext {
+  readonly rawQuery: string;
+  readonly topK: number;
+  readonly scope: KbSearchScope;
+  readonly signal: AbortSignal;
+  /** Lazy memoized normalized query accessor. */
+  normalizedQuery(): string;
+  /** Lazy memoized token accessor. */
+  tokens(): readonly string[];
+  /** Lazy memoized query embedding accessor. */
+  embedding(): Promise<Float32Array>;
+  /** Lazy memoized KB index accessor. */
+  index(): KbIndex;
+  /** Lazy memoized graph context accessor. */
+  graphContext(): EntityGraph | null;
+}
+
+export interface RetrievalRole {
+  readonly id: string;
+  readonly descriptor: RetrievalRoleDescriptor;
+  search(ctx: RoleQueryContext): Promise<RoleSearchResult>;
+}
+
+export interface FusionProfile {
+  readonly classWeights: ReadonlyMap<string, number>;
+  readonly overrides: ReadonlyMap<string, number>;
+  readonly rrfK: number;
+}
+
+export interface RegisteredRetrievalRole {
+  readonly role: RetrievalRole;
+  readonly descriptor: RetrievalRoleDescriptor;
+  readonly origin: 'builtin' | 'external';
+  readonly permanence: 'runtime' | 'scoped';
+  readonly criticality?: 'core';
+}
+
+export type RoleExecutionResult =
+  | {
+      readonly registeredRole: RegisteredRetrievalRole;
+      readonly hits: RetrievalHit[];
+      readonly diagnostic?: never;
+    }
+  | {
+      readonly registeredRole: RegisteredRetrievalRole;
+      readonly diagnostic: RetrievalDiagnostic;
+      readonly hits?: never;
+    };
+
+export interface RoleExecutionRegistryView {
+  list(): readonly RegisteredRetrievalRole[];
+}
+
+export interface RoleCatalogView {
+  listDescriptors(): readonly RetrievalRoleDescriptor[];
+}
+
+export interface RoleHandle {
+  readonly id: string;
+  dispose(): void;
+}
+
+export interface RoleRegistry {
+  registerScoped(role: RetrievalRole, scope: Disposable): RoleHandle;
+  registerBuiltin(role: RetrievalRole, options?: { readonly criticality?: 'core' }): RoleHandle;
+  unregister(id: string): boolean;
+  list(): readonly RegisteredRetrievalRole[];
+  executionView(): RoleExecutionRegistryView;
+  catalogView(): RoleCatalogView;
 }
 
 export interface RetrievalEntry {
@@ -44,9 +190,7 @@ export interface FusedRetrievalHit extends RetrievalEntry {
   rank: number;
   score: number;
   document: RetrievedDocument | null;
-  textRank?: number;
-  vectorRank?: number;
-  graphRank?: number;
+  evidence: RetrievalEvidence[];
 }
 
 export interface TextRetrievalResult {
@@ -91,7 +235,6 @@ export interface GraphRetrieval {
   search(query: string, scope?: RetrievalScope): Promise<GraphRetrievalResult>;
 }
 
-// Fusion consumes explicit graph hits instead of treating graph as a text/vector backend.
 export interface HybridFusion {
-  fuse(text: TextRetrievalResult, vector: VectorRetrievalResult, graph: GraphRetrievalResult): FusedResult;
+  fuse(roleResults: ReadonlyArray<RoleExecutionResult>, profile: FusionProfile): FusedResult;
 }

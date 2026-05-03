@@ -3,10 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as RouterModule from '#src/kb/search/router.js';
 import type { ConsumerHandleStatus } from '#src/store/consumer-contract.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
+import type { EntityGraph, KbEntryId, KbSearchResponse } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
   bindOramaFtsForTest,
@@ -22,10 +21,6 @@ const mockState = vi.hoisted(() => ({
   tmpHome: '',
 }));
 
-const routerMockState = vi.hoisted(() => ({
-  createRouter: null as null | ((...args: unknown[]) => unknown),
-}));
-
 const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
 
 vi.mock('node:os', async () => {
@@ -33,17 +28,6 @@ vi.mock('node:os', async () => {
   return {
     ...actual,
     homedir: () => mockState.tmpHome,
-  };
-});
-
-vi.mock('#src/kb/search/router.js', async () => {
-  const actual = await vi.importActual<typeof RouterModule>('#src/kb/search/router.js');
-  return {
-    ...actual,
-    createRouter: (...args: Parameters<typeof actual.createRouter>) =>
-      routerMockState.createRouter === null
-        ? actual.createRouter(...args)
-        : (routerMockState.createRouter(...args) as ReturnType<typeof actual.createRouter>),
   };
 });
 
@@ -61,12 +45,6 @@ async function loadKbModules() {
     createKbRuntime: runtime.createKbRuntime,
     paths,
   };
-}
-
-function asUnknownHandler<TArgs extends unknown[], TResult>(
-  handler: (...args: TArgs) => TResult,
-): (...args: unknown[]) => unknown {
-  return (...args: unknown[]) => handler(...(args as TArgs));
 }
 
 function createRuntime(
@@ -290,6 +268,14 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
   return result!;
 }
 
+function expectMigratedShape(response: KbSearchResponse): void {
+  expect(Array.isArray(response.retrievalDiagnostics)).toBe(true);
+  for (const result of response.results) {
+    expect(Array.isArray(result.evidence)).toBe(true);
+    expect(result).not.toHaveProperty('graphRank');
+  }
+}
+
 type MockNeedleChunkHit = {
   chunkId: string;
   entryId: KbEntryId;
@@ -425,7 +411,6 @@ describe('kb search', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
-    routerMockState.createRouter = null;
     vi.resetModules();
   });
 
@@ -456,6 +441,7 @@ describe('kb search', () => {
     const response = await searchKb(kb, 'rendering', 10);
 
     expect(response.mode).toBe('text');
+    expectMigratedShape(response);
     expect(resultNotes(response.results)).toContain('rendering-guides');
     expect(resultNotes(response.results)).toContain('pipeline-checklist');
     expect(resultNotes(response.results)).not.toContain('contract-log');
@@ -633,14 +619,23 @@ describe('kb search', () => {
 
     const aliasResponse = await searchKb(kb, 'vram', 5);
     expect(aliasResponse.mode).toBe('text');
+    expectMigratedShape(aliasResponse);
     expect(resultNotes(aliasResponse.results).slice(0, 2)).toEqual(['memory-entry', 'runtime-entry']);
     expect(resultFor(aliasResponse.results, 'memory-entry').matchedBy).toEqual([]);
+    expect(resultFor(aliasResponse.results, 'memory-entry').evidence.some((item) => item.roleId === 'graph')).toBe(
+      true,
+    );
     expect(resultFor(aliasResponse.results, 'runtime-entry').matchedBy).toEqual([]);
+    expect(resultFor(aliasResponse.results, 'runtime-entry').evidence.some((item) => item.roleId === 'graph')).toBe(
+      true,
+    );
 
     const exactResponse = await searchKb(kb, 'gpu-device-memory', 5);
+    expectMigratedShape(exactResponse);
     expect(resultNotes(exactResponse.results).slice(0, 2)).toEqual(['memory-entry', 'runtime-entry']);
 
     const phraseResponse = await searchKb(kb, 'cuda runtime api', 5);
+    expectMigratedShape(phraseResponse);
     expect(resultNotes(phraseResponse.results).slice(0, 2)).toEqual(['runtime-entry', 'memory-entry']);
   });
 
@@ -823,10 +818,13 @@ describe('kb search', () => {
     const notesByRank = resultNotes(response.results);
 
     expect(response.mode).toBe('hybrid');
+    expectMigratedShape(response);
     expect(position(notesByRank, 'beta-archive')).toBeLessThan(position(notesByRank, 'rendering-alpha'));
     expect(position(notesByRank, 'rendering-alpha')).toBeLessThan(position(notesByRank, 'gamma-reference'));
     expect(resultFor(response.results, 'beta-archive').matchedBy).toEqual(expect.arrayContaining(['content']));
+    expect(resultFor(response.results, 'beta-archive').evidence.map((item) => item.roleId)).toEqual(['text', 'vector']);
     expect(resultFor(response.results, 'gamma-reference').matchedBy).toEqual([]);
+    expect(resultFor(response.results, 'gamma-reference').evidence.map((item) => item.roleId)).toEqual(['vector']);
   });
 
   it('routes explicit vector search through needle when equipment content manifests match', async () => {
@@ -855,8 +853,10 @@ describe('kb search', () => {
     const response = await searchKb(kb, 'semantic', 2, 'all', 'vector');
 
     expect(response.mode).toBe('vector');
+    expectMigratedShape(response);
     expect(resultNotes(response.results)).toEqual(['needle-beta', 'needle-alpha']);
     expect(resultFor(response.results, 'needle-beta').matchedBy).toEqual([]);
+    expect(resultFor(response.results, 'needle-beta').evidence.map((item) => item.roleId)).toEqual(['vector']);
   });
 
   it('reports kb.embedding remediation for explicit vector search without embedding binding', async () => {
@@ -955,41 +955,6 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'alpha-archive').matchedBy).toEqual([]);
     expect(resultFor(response.results, 'beta-history').matchedBy).toEqual([]);
     expect(resultFor(response.results, 'alpha-archive').snippet).toBeUndefined();
-  });
-
-  it('creates the router once per hybrid search request', async () => {
-    const actualRouter = await vi.importActual<typeof RouterModule>('#src/kb/search/router.js');
-    const createRouterSpy = vi.fn((...args: Parameters<typeof actualRouter.createRouter>) =>
-      actualRouter.createRouter(...args),
-    );
-
-    routerMockState.createRouter = asUnknownHandler(createRouterSpy);
-
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
-    const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
-
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'semantic-note', {
-      title: 'Semantic Note',
-      body: 'Semantic retrieval target.',
-    });
-
-    await reindex(kb);
-    await applyOramaProjection(kb);
-    await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
-      searchVector: vi.fn().mockResolvedValue([{ chunkId: 'semantic:0', entryId: 'note:semantic-note', score: 0.99 }]),
-    });
-
-    const response = await searchKb(kb, 'semantic', 2);
-
-    expect(response.mode).toBe('hybrid');
-    expect(createRouterSpy).toHaveBeenCalledTimes(1);
-    expect(createRouterSpy).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        graph: expect.anything(),
-      }),
-    );
   });
 
   it('filters vector-only hits to the requested source scope', async () => {
@@ -1195,6 +1160,7 @@ describe('kb search', () => {
     await expect(searchKb(kb, 'rendering', 10)).resolves.toEqual({
       results: [],
       mode: 'text',
+      retrievalDiagnostics: [],
       warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
     expect(kb.readIndex()).toBeNull();

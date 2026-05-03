@@ -13,6 +13,7 @@ import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
+import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 
 // Match the orama projection's id so the bundled fallback's registration matches.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
@@ -52,11 +53,14 @@ function createMockKb(order?: string[]) {
   );
   const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
   const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+  const roleRegistry = createRoleRegistry();
   const runtimeDir = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-kb-runtime-'));
   tempRoots.push(runtimeDir);
 
   return {
     runtimeDir,
+    roleRegistry,
+    roleCatalog: roleRegistry.catalogView(),
     engineArtifactRegistry: new EngineArtifactRegistry(),
     corpusAuthorityBaseline: {
       ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),

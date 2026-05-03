@@ -4,9 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as OramaModule from '@orama/orama';
 import type * as NodeOs from 'node:os';
-import type * as RouterModule from '#src/kb/search/router.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { EntityGraph } from '#src/kb/entry-types.js';
+import type { EntityGraph, KbSearchResponse } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
   bindOramaFtsForTest,
@@ -20,7 +19,6 @@ import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/hel
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
   oramaSearch: null as null | ((...args: unknown[]) => unknown),
-  createRouter: null as null | ((...args: unknown[]) => unknown),
 }));
 
 const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
@@ -41,17 +39,6 @@ vi.mock('@orama/orama', async () => {
       mockState.oramaSearch === null
         ? actual.search(...args)
         : (mockState.oramaSearch(...args) as ReturnType<typeof actual.search>),
-  };
-});
-
-vi.mock('#src/kb/search/router.js', async () => {
-  const actual = await vi.importActual<typeof RouterModule>('#src/kb/search/router.js');
-  return {
-    ...actual,
-    createRouter: (...args: Parameters<typeof actual.createRouter>) =>
-      mockState.createRouter === null
-        ? actual.createRouter(...args)
-        : (mockState.createRouter(...args) as ReturnType<typeof actual.createRouter>),
   };
 });
 
@@ -132,6 +119,20 @@ function resultNotes(results: { note: string }[]): string[] {
   return results.map((result) => result.note);
 }
 
+function resultFor<T extends { note: string }>(results: T[], target: string): T {
+  const result = results.find((entry) => entry.note === target);
+  expect(result).toBeDefined();
+  return result!;
+}
+
+function expectMigratedShape(response: KbSearchResponse): void {
+  expect(Array.isArray(response.retrievalDiagnostics)).toBe(true);
+  for (const result of response.results) {
+    expect(Array.isArray(result.evidence)).toBe(true);
+    expect(result).not.toHaveProperty('graphRank');
+  }
+}
+
 describe('kb search mode branching', () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-search-mode-'));
@@ -142,17 +143,13 @@ describe('kb search mode branching', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     mockState.oramaSearch = null;
-    mockState.createRouter = null;
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
   });
 
-  it('does not pay Orama text-search or router cost for explicit vector mode', async () => {
+  it('does not pay Orama text-search cost for explicit vector mode', async () => {
     const actualOrama = await vi.importActual<typeof OramaModule>('@orama/orama');
     const oramaSearchSpy = vi.fn((...args: Parameters<typeof actualOrama.search>) => actualOrama.search(...args));
-    const createRouterSpy = vi.fn(() => {
-      throw new Error('explicit vector mode should not create a router');
-    });
     const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
     const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
     const needleSearchSpy = vi.fn().mockResolvedValue({
@@ -171,7 +168,6 @@ describe('kb search mode branching', () => {
     });
 
     mockState.oramaSearch = asUnknownHandler(oramaSearchSpy);
-    mockState.createRouter = asUnknownHandler(createRouterSpy);
 
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
@@ -200,17 +196,13 @@ describe('kb search mode branching', () => {
     const response = await searchKb(kb, 'semantic', 5, 'all', 'vector');
 
     expect(response.mode).toBe('vector');
+    expectMigratedShape(response);
     expect(resultNotes(response.results)).toEqual(['vector-note']);
+    expect(resultFor(response.results, 'vector-note').evidence.map((item) => item.roleId)).toEqual(['vector']);
     expect(oramaSearchSpy).not.toHaveBeenCalled();
-    expect(createRouterSpy).not.toHaveBeenCalled();
   });
 
-  it('does not build router-backed graph state for explicit text mode', async () => {
-    const actualRouter = await vi.importActual<typeof RouterModule>('#src/kb/search/router.js');
-    const createRouterSpy = vi.fn((...args: Parameters<typeof actualRouter.createRouter>) =>
-      actualRouter.createRouter(...args),
-    );
-
+  it('keeps explicit text mode on the lexical path', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -233,7 +225,6 @@ describe('kb search mode branching', () => {
     await reindex(kb);
     await applyOramaProjection(kb);
 
-    mockState.createRouter = asUnknownHandler(createRouterSpy);
     bindVectorBacked(
       kb,
       {
@@ -249,7 +240,90 @@ describe('kb search mode branching', () => {
     const response = await searchKb(kb, 'rendering', 5, 'all', 'text');
 
     expect(response.mode).toBe('text');
+    expectMigratedShape(response);
     expect(resultNotes(response.results)).toEqual(['rendering-guides']);
-    expect(createRouterSpy).not.toHaveBeenCalled();
+    expect(resultFor(response.results, 'rendering-guides').evidence.map((item) => item.roleId)).toEqual(['text']);
+  });
+
+  it('promotes explicit auto mode to hybrid when semantic evidence is present', async () => {
+    const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
+    const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
+    const needleSearchSpy = vi.fn().mockResolvedValue({
+      hits: [
+        {
+          entryId: 'note:auto-vector',
+          slug: 'auto-vector',
+          kind: 'note',
+          title: 'Auto Vector',
+          tags: [],
+          principles: [],
+          score: 0.99,
+          rank: 1,
+        },
+      ],
+    });
+
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    await bindEmbedding(kb, { embedDocuments, embedQuery });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'auto-vector', {
+      title: 'Auto Vector',
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+    await applyOramaProjection(kb);
+    bindVectorBacked(
+      kb,
+      {
+        search: needleSearchSpy,
+      },
+      createCorpusHandle(
+        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+          invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
+        }),
+      ),
+    );
+
+    const response = await searchKb(kb, 'semantic', 5, 'all', 'auto');
+
+    expect(response.mode).toBe('hybrid');
+    expectMigratedShape(response);
+    expect(resultFor(response.results, 'auto-vector').evidence.some((item) => item.roleId === 'vector')).toBe(true);
+  });
+
+  it('preserves explicit hybrid mode on the hybrid intent path', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    await bindEmbedding(kb, {
+      embedDocuments: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([0]))),
+      embedQuery: vi.fn().mockResolvedValue(new Float32Array([0])),
+    });
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'hybrid-rendering', {
+      title: 'Hybrid Rendering',
+      body: 'Rendering guides keep frames stable.',
+    });
+
+    await reindex(kb);
+    await applyOramaProjection(kb);
+    bindVectorBacked(
+      kb,
+      {
+        search: vi.fn(async () => ({ hits: [] })),
+      },
+      createCorpusHandle(
+        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+          invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
+        }),
+      ),
+    );
+
+    const response = await searchKb(kb, 'rendering', 5, 'all', 'hybrid');
+
+    expect(response.mode).toBe('hybrid');
+    expectMigratedShape(response);
+    expect(resultNotes(response.results)).toEqual(['hybrid-rendering']);
   });
 });

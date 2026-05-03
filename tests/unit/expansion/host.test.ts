@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { EngineManifest } from '#src/expansion/contract.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
@@ -8,6 +9,16 @@ import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 describe('createExpansionHost', () => {
+  function manifest(id: string, tier: EngineManifest['tier'] = 'installed'): EngineManifest {
+    return {
+      id,
+      version: '0.0.0',
+      specifier: `#tests/${id}/expansion.js`,
+      tier,
+      description: id,
+    };
+  }
+
   function createConsumerDriver(register: ConsumerDriverPort['register']): ConsumerDriverPort {
     return {
       register,
@@ -40,8 +51,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope,
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver: createConsumerDriver(vi.fn()),
     });
     const binding = createRuntimeBinding<string>('kb.vector');
@@ -58,8 +69,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver: createConsumerDriver(vi.fn()),
     });
     const binding = createRuntimeBinding<string>('kb.embedding');
@@ -94,8 +105,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope,
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver,
     });
     const reg = {
@@ -136,8 +147,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'orama',
-      tier: 'bundled',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('orama', 'bundled'),
       consumerDriver,
     });
     bundledHost.registerConsumer(
@@ -155,8 +166,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver,
     });
     installedApplyHost.registerConsumer(
@@ -174,8 +185,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'gemini',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('gemini'),
       consumerDriver,
     });
     installedStatelessHost.registerConsumer({ id: 'gemini', kind: 'stateless' }, installedStatelessHost.scope);

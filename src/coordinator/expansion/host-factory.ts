@@ -1,6 +1,6 @@
 import type { ConsumerDriver } from '../consumer-driver/index.js';
-import { createExpansionHost, type ExpansionTier } from '../../expansion/host.js';
-import type { ExpansionHost } from '../../expansion/contract.js';
+import { createExpansionHost } from '../../expansion/host.js';
+import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
 import type { KbRuntime } from '../../kb/contract.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
 
@@ -12,14 +12,14 @@ export interface CreateHostFactoryDeps {
 
 export function createHostFactory(
   deps: CreateHostFactoryDeps,
-): (id: string, scope: Disposable, tier: ExpansionTier) => ExpansionHost {
-  return (id, scope, tier) =>
+): (manifest: EngineManifest, scope: Disposable) => ExpansionHost {
+  return (manifest, scope) =>
     createExpansionHost({
       runtime: deps.runtime,
       kb: deps.kbRuntime,
+      roleRegistry: deps.kbRuntime.roleRegistry,
       scope,
-      id,
-      tier,
+      manifest,
       consumerDriver: deps.consumerDriver,
     });
 }

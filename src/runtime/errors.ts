@@ -45,6 +45,9 @@ export type DocumentedCoralSetupErrorCode =
   | 'binding_occupied'
   | 'binding_required'
   | 'binding_required_by_active_engine'
+  | 'role_id_occupied'
+  | 'role_descriptor_mismatch'
+  | 'role_descriptor_unregistered'
   | 'user_cancelled';
 
 type DocumentedCoralSetupErrorSpec = {
@@ -197,6 +200,23 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Binding '${stringContextValue(context, 'binding', 'unknown')}' is required by active engine '${stringContextValue(context, 'requiredBy', 'this expansion')}'.`,
     remediation: (context) =>
       `Unequip '${stringContextValue(context, 'requiredBy', 'this expansion')}' before unequipping the engine that fills '${stringContextValue(context, 'binding', 'unknown')}'.`,
+  },
+  role_id_occupied: {
+    userMessage: (context) =>
+      `Retrieval role '${stringContextValue(context, 'roleId', 'unknown')}' is already registered.`,
+    remediation: 'Use a unique retrieval role id or dispose the existing role before registering another one.',
+  },
+  role_descriptor_mismatch: {
+    userMessage: (context) =>
+      `Retrieval role '${stringContextValue(context, 'roleId', 'unknown')}' does not match the expansion manifest.`,
+    remediation:
+      'Update the expansion manifest and live retrieval role descriptor so id, label, tags, phase, scopes, requirements, and provided phase match.',
+  },
+  role_descriptor_unregistered: {
+    userMessage: (context) =>
+      `Expansion '${stringContextValue(context, 'expansion', 'this expansion')}' declared retrieval role '${stringContextValue(context, 'missing', 'unknown')}' but did not register it.`,
+    remediation:
+      'Update the expansion to register every retrieval role declared in manifest.provides during startup, or remove the stale descriptor from the manifest.',
   },
   user_cancelled: {
     userMessage: (context) => `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,

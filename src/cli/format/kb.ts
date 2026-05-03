@@ -19,6 +19,7 @@ import type {
 import { formatTable, joinLines } from './text.js';
 
 type KbReadDisplayResult = KbReadResult & { age?: string };
+const MAX_RENDERED_EVIDENCE = 3;
 
 function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'): string | undefined {
   if (warning === undefined || warning.length === 0) {
@@ -39,6 +40,36 @@ function normalizeKbWarnings(warnings: string[] | undefined, cliPrefix = 'coral-
   }
 
   return warnings.map((warning) => normalizeKbWarning(warning, cliPrefix) ?? warning);
+}
+
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/u, '').replace(/\.$/u, '');
+}
+
+function formatRetrievalEvidence(result: KbSearchResponse['results'][number]): string[] {
+  return (result.evidence ?? []).slice(0, MAX_RENDERED_EVIDENCE).map((evidence) => {
+    const weight = formatCompactNumber(evidence.weight);
+    const contribution = formatCompactNumber(evidence.contribution);
+    return `[${evidence.roleId}:#${evidence.rank}(w=${weight},c=${contribution})]`;
+  });
+}
+
+function formatRetrievalDiagnosticWarnings(data: KbSearchResponse, cliPrefix: string): string[] {
+  return (data.retrievalDiagnostics ?? [])
+    .map((diagnostic) => {
+      if (diagnostic.publicText !== undefined && diagnostic.publicText.length > 0) {
+        return `Warning: ${normalizeKbWarning(diagnostic.publicText, cliPrefix) ?? diagnostic.publicText}`;
+      }
+      if (diagnostic.recoverable) {
+        return undefined;
+      }
+      return `Warning: role=${diagnostic.roleId} code=${diagnostic.code}`;
+    })
+    .filter((warning): warning is string => warning !== undefined);
 }
 
 function isVerbosePrincipleRows(principles: KbPrinciplesResult['principles']): principles is KbPrincipleVerboseRow[] {
@@ -72,6 +103,7 @@ function toKbReadDisplayResult(data: KbReadResult): KbReadDisplayResult {
 export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const warnings = normalizeKbWarnings(data.warnings, cliPrefix);
+  const diagnosticWarnings = formatRetrievalDiagnosticWarnings(data, cliPrefix);
   const results = data.results.map((result) => {
     return {
       note: result.note,
@@ -79,6 +111,7 @@ export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'):
       title: result.title,
       matched: result.matchedBy,
       snippet: result.snippet ?? '-',
+      evidence: formatRetrievalEvidence(result),
     };
   });
 
@@ -98,7 +131,9 @@ export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'):
     output.warning = warning;
   }
   if (warnings !== undefined) {
-    output.warnings = warnings;
+    output.warnings = [...warnings, ...diagnosticWarnings];
+  } else if (diagnosticWarnings.length > 0) {
+    output.warnings = diagnosticWarnings;
   }
 
   return JSON.stringify(output);

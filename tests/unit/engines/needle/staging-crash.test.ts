@@ -41,6 +41,7 @@ function createNeedleRuntime(kb: KbRuntime, driver: ConsumerDriver): KbEngineRun
     vector: kb.vector,
     embedding: kb.embedding,
     fts: kb.fts,
+    roleCatalog: kb.roleCatalog,
   };
 }
 

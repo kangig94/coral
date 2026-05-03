@@ -10,14 +10,14 @@ import { bindWithHandoff, HandoffEscalationError } from '#src/coordinator/handof
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { IncumbentHealth, IncumbentIdentity } from '#src/transport/ipc/handoff.js';
+import type { IncumbentIdentity } from '#src/transport/ipc/handoff.js';
 
 vi.mock('#src/transport/ipc/handoff.js', async (orig) => {
-  const original = await orig<typeof import('#src/transport/ipc/handoff.js')>();
+  const original = await orig<object>();
   return { ...original, requestIncumbentShutdown: vi.fn() };
 });
 vi.mock('#src/infra/node-process.js', async (orig) => {
-  const original = await orig<typeof import('#src/infra/node-process.js')>();
+  const original = await orig<object>();
   return { ...original, probeProcessStartedAtSeconds: vi.fn() };
 });
 

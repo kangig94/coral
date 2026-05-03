@@ -1,4 +1,6 @@
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
+import type { RetrievalDiagnostic, RetrievalEvidence } from './search/contract.js';
+import type { KbSearchIntent } from './search/query-planner.js';
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
@@ -56,9 +58,9 @@ export interface KbResult {
   matchedBy: KbMatchSurface[];
   tags: string[];
   principles: string[];
+  evidence: RetrievalEvidence[];
   snippet?: string;
   communityContext?: string[];
-  graphRank?: number;
 }
 
 export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}`;
@@ -135,6 +137,7 @@ export interface KbIndex {
 export interface KbSearchResponse {
   results: KbResult[];
   mode: 'text' | 'vector' | 'hybrid';
+  retrievalDiagnostics: RetrievalDiagnostic[];
   warning?: string;
   warnings?: string[];
 }
@@ -215,7 +218,7 @@ export type KbSearchInput = {
   query: string;
   top_k?: number;
   scope?: KbSearchScope;
-  mode?: KbSearchMode;
+  mode?: KbSearchIntent;
 };
 
 export type KbDiagnoseInput = Record<string, never>;

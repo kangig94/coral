@@ -27,6 +27,7 @@ function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): E
     tier: view.tier,
     status: view.status === 'active' ? 'equipped' : view.status,
     ...(view.lastError === undefined ? {} : { lastError: view.lastError }),
+    ...(view.provides === undefined ? {} : { provides: view.provides }),
   };
 }
 

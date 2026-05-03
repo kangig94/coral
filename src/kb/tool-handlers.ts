@@ -46,6 +46,16 @@ import {
 
 type KbArgs = Record<string, unknown>;
 
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    'addEventListener' in value &&
+    'removeEventListener' in value
+    ? (value as AbortSignal)
+    : undefined;
+}
+
 function kbErrorResult(error: unknown): KbToolResult {
   const detail = error instanceof Error ? { message: error.message } : error;
   return kbError('kb_error', deriveKbErrorMessage('kb_error', detail), detail);
@@ -132,7 +142,14 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   }
 
   return runKbAction(() =>
-    searchKb(kbSubsystem.kb, parsed.data.query, parsed.data.top_k ?? 20, parsed.data.scope ?? 'all', parsed.data.mode),
+    searchKb(
+      kbSubsystem.kb,
+      parsed.data.query,
+      parsed.data.top_k ?? 20,
+      parsed.data.scope ?? 'all',
+      parsed.data.mode ?? 'auto',
+      asAbortSignal(args.abortSignal),
+    ),
   );
 }
 

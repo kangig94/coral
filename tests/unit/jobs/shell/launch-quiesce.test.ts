@@ -5,7 +5,7 @@ import type { ProviderEventBody, ProviderRequest, ProviderSpec } from '#src/prov
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
-import type { JobProgressStore, TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
+import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -15,10 +15,6 @@ import type { SessionJobContinuityCheckpointResult, SessionJobClaimPort } from '
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
 // received BEFORE detach commit; events arriving AFTER detach do not.
-
-type StubProviderStream = {
-  emit: (event: ProviderEventBody) => Promise<void>;
-};
 
 function createControlledProviderStream(): {
   iterable: AsyncIterable<ProviderEventBody>;

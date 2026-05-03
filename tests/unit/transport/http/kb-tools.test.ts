@@ -202,7 +202,7 @@ describe('kb-tools', () => {
 
     const result = await handleKbSearch({ query: 'contracts' }, kbSubsystem);
 
-    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', undefined);
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'auto', undefined);
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'] },
@@ -215,7 +215,7 @@ describe('kb-tools', () => {
 
     const result = await handleKbSearch({ query: 'contracts', mode: 'vector' }, kbSubsystem);
 
-    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'vector');
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'vector', undefined);
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'], mode: 'vector' },

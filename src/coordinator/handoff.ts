@@ -129,13 +129,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
       }
     }
-    if (incumbent === null) {
-      incumbent = opts.readVerifiedIncumbentFromDiscovery({
-        socketPath: opts.socketPath,
-        desired: opts.desired,
-        lastHealth,
-      });
-    }
+    incumbent ??= opts.readVerifiedIncumbentFromDiscovery({
+      socketPath: opts.socketPath,
+      desired: opts.desired,
+      lastHealth,
+    });
 
     remaining = deadline - opts.runtime.time.now();
     if (remaining <= 0) {

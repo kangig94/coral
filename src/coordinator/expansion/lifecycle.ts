@@ -4,26 +4,29 @@ import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
+import type { RetrievalRoleDescriptor } from '../../kb/search/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
+import { validateManifestCompleteness } from '../../expansion/manifest-completeness.js';
 import type { ExpansionStateStore } from './state.js';
 
 type ExpansionModule = {
   default: (host: ExpansionHost) => void | Promise<void>;
 };
 
-export type ExpansionLifecycleView = {
-  id: string;
-  version: string;
-  tier: 'bundled' | 'installed';
-  status: 'active' | 'inactive' | 'installed-not-active';
-  lastError?: string;
-};
+export interface ExpansionLifecycleView {
+  readonly id: string;
+  readonly version: string;
+  readonly tier: 'bundled' | 'installed';
+  readonly status: 'active' | 'inactive' | 'installed-not-active';
+  readonly lastError?: string;
+  readonly provides?: readonly RetrievalRoleDescriptor[];
+}
 
 export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
 
 export interface ExpansionLifecycleServiceOptions {
-  readonly makeHost: (id: string, scope: Disposable, tier: 'bundled' | 'installed') => ExpansionHost;
+  readonly makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
   /**
@@ -99,11 +102,12 @@ export class ExpansionLifecycleService {
     this.assertNotDraining(entry.id);
 
     const scope = createScope();
-    const host = this.options.makeHost(entry.id, scope, entry.tier);
+    const host = this.options.makeHost(entry, scope);
 
     try {
       const module = (await import(entry.specifier)) as ExpansionModule;
       await module.default(host);
+      validateManifestCompleteness(entry, this.requireRoleRegistry(entry.id));
       this.options.state.insert({
         id: entry.id,
         version: entry.version,
@@ -246,10 +250,11 @@ export class ExpansionLifecycleService {
         }
 
         const scope = createScope();
-        const host = this.options.makeHost(entry.id, scope, entry.tier);
+        const host = this.options.makeHost(entry, scope);
 
         try {
           await loadBundledEngine(entry, host, this.options.bundledLoaders);
+          validateManifestCompleteness(entry, this.requireRoleRegistry(entry.id));
           if (this.didFillFallbackBinding(entry, before, kb)) {
             this.appendScope(entry.id, scope);
             this.failedRecovery.delete(entry.id);
@@ -283,6 +288,7 @@ export class ExpansionLifecycleService {
         tier,
         status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
         ...(failed === undefined ? {} : { lastError: failed.message }),
+        ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
       };
     }
 
@@ -292,6 +298,7 @@ export class ExpansionLifecycleService {
       tier,
       status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
       ...(failed === undefined ? {} : { lastError: failed.message }),
+      ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
     };
   }
 
@@ -380,6 +387,14 @@ export class ExpansionLifecycleService {
     const existing = this.scopes.get(id) ?? [];
     existing.push(scope);
     this.scopes.set(id, existing);
+  }
+
+  private requireRoleRegistry(name: string): KbRuntime['roleRegistry'] {
+    const kb = this.options.resolveKbRuntime?.() ?? null;
+    if (kb === null) {
+      throw documentedCoralSetupError('expansion_runtime_unavailable', { name });
+    }
+    return kb.roleRegistry;
   }
 
   private captureFallbackBindingHolders(

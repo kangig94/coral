@@ -198,6 +198,7 @@ export type DiscussAbortOptions = {
 export type KbSearchOptions = {
   topK?: string;
   scope?: 'notes' | 'communities' | 'sources' | 'all';
+  auto?: boolean;
   vector?: boolean;
   hybrid?: boolean;
 };

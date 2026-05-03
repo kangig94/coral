@@ -7,6 +7,7 @@
  * `ExpansionLifecycleService`) lives at `src/coordinator/expansion/rpc.ts`.
  */
 import { z } from 'zod';
+import { retrievalRoleDescriptorSchema, type RetrievalRoleDescriptor } from '../kb/search/contract.js';
 
 const expansionCatalogStatusLiterals = [
   'inactive',
@@ -21,6 +22,7 @@ const expansionCatalogStatusLiterals = [
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
 const postInstallActionLiterals = ['register_expansion'] as const;
+const providesSchema: z.ZodType<readonly RetrievalRoleDescriptor[]> = z.array(retrievalRoleDescriptorSchema);
 
 const catalogEntryCommonShape = {
   id: z.string(),
@@ -29,6 +31,7 @@ const catalogEntryCommonShape = {
   statusDescription: z.string().min(1).optional(),
   version: z.string().min(1).optional(),
   method: z.string().min(1).optional(),
+  provides: providesSchema.optional(),
 } as const;
 
 const requiredEnvRuleSchema = z
@@ -132,6 +135,15 @@ export const expansionStatusSchema = z.enum([
   'installing',
   'not_equipped',
 ]);
+export type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
+
+export interface ExpansionView {
+  readonly name: string;
+  readonly tier: 'bundled' | 'installed';
+  readonly status: ExpansionStatus;
+  readonly lastError?: string;
+  readonly provides?: readonly RetrievalRoleDescriptor[];
+}
 
 export const expansionViewSchema = z
   .object({
@@ -139,9 +151,9 @@ export const expansionViewSchema = z
     tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
     lastError: z.string().min(1).optional(),
+    provides: providesSchema.optional(),
   })
-  .strict();
-export type ExpansionView = z.infer<typeof expansionViewSchema>;
+  .strict() satisfies z.ZodType<ExpansionView>;
 
 const installExpansionViewSchema = z
   .object({
@@ -149,6 +161,7 @@ const installExpansionViewSchema = z
     name: z.string().min(1),
     tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
+    provides: providesSchema.optional(),
   })
   .strict();
 

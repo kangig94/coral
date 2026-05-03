@@ -191,6 +191,7 @@ export function registerKbCommands(program: Command): void {
     .description('Search KB entries')
     .argument('<query>', 'Search query')
     .option('--top-k <n>', 'Maximum results (default: 20)')
+    .option('--auto', 'Use automatic search planning')
     .option('--vector', 'Force vector-only search (requires embedding backend)')
     .option('--hybrid', 'Force hybrid search (requires embedding backend)')
     .addOption(
@@ -205,14 +206,16 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
       try {
-        if (opts.vector === true && opts.hybrid === true) {
-          throw new UsageError('Choose at most one of --vector or --hybrid');
+        const selectedModes = [opts.auto, opts.vector, opts.hybrid].filter((selected) => selected === true).length;
+        if (selectedModes > 1) {
+          throw new UsageError('Choose at most one of --auto, --vector, or --hybrid');
         }
 
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
+          ...(opts.auto === true ? { mode: 'auto' as const } : {}),
           ...(opts.vector === true ? { mode: 'vector' as const } : {}),
           ...(opts.hybrid === true ? { mode: 'hybrid' as const } : {}),
         };

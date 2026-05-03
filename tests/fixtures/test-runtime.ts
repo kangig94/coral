@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ExpansionHost } from '#src/expansion/contract.js';
+import type { EngineManifest, ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
 import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
@@ -113,19 +113,19 @@ export function createTestRuntime(): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
+  makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
 };
 export function createTestRuntime(options: CreateTestRuntimeOptions): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
+  makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
 };
 export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
   runtime: Runtime;
   kb: KbRuntime;
   registerConsumer: (reg: ConsumerRegistration) => ConsumerHandle;
-  makeHost: (id: string, scope: Disposable, tier?: 'bundled' | 'installed') => ExpansionHost;
+  makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
 } {
   const root = mkdtempSync(join(tmpdir(), 'coral-expansion-test-'));
   const runtime = options.runtime ?? new SimulationRuntime({ roots: { coralRoot: root } });
@@ -165,13 +165,13 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
 
   // Tests model fake backends as Expansions and load them through the same
   // makeHost/manifest path as production code.
-  const makeHost = (id: string, scope: Disposable, tier: 'bundled' | 'installed' = 'installed'): ExpansionHost =>
+  const makeHost = (manifest: EngineManifest, scope: Disposable): ExpansionHost =>
     createExpansionHost({
       runtime,
       kb,
+      roleRegistry: kb.roleRegistry,
       scope,
-      id,
-      tier,
+      manifest,
       consumerDriver,
     });
 

@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-import {
-  participationTypes,
-  resolveReasons,
-  type DiscussCreateInput,
-  type DiscussState,
-  type ResolveReason,
-} from './session-types.js';
+import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
 export const controlPhases = ['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize'] as const;
 export type ControlPhase = (typeof controlPhases)[number];

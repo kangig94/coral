@@ -1,12 +1,26 @@
 import type { KbRuntime } from '../contract.js';
 import type { KbSearchScope } from '../entry-types.js';
 import { serializeCoralSetupError } from '../../runtime/errors.js';
-import type { VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
+import type { RetrievalRole, VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
 import type { SearchResponseWarnings } from './text-retrieval.js';
 
 export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
-const VECTOR_PATH_BINDING_NAMES: ReadonlySet<string> = new Set(['kb.embedding', 'kb.vector']);
+const BUILTIN_VECTOR_ROLE_DESCRIPTOR = {
+  id: 'vector',
+  label: 'Vector (Semantic)',
+  tags: ['semantic'],
+  phase: 'retrieval-source',
+  provides: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'all'],
+  requires: ['kb.embedding', 'kb.vector'],
+} as const satisfies RetrievalRole['descriptor'];
+
+type BuiltinVectorBindingName = (typeof BUILTIN_VECTOR_ROLE_DESCRIPTOR.requires)[number];
+
+function isBuiltinVectorBindingName(binding: string): binding is BuiltinVectorBindingName {
+  return BUILTIN_VECTOR_ROLE_DESCRIPTOR.requires.includes(binding as BuiltinVectorBindingName);
+}
 
 async function embedQueryForVectorSearch(rt: KbRuntime, rawQuery: string): Promise<number[]> {
   const embedding = rt.embedding.read().read();
@@ -44,7 +58,7 @@ export async function searchExplicitVectorResults(
   } catch (error) {
     const setupError = serializeCoralSetupError(error);
     const binding = setupError?.context?.binding;
-    if (setupError?.code === 'binding_empty' && typeof binding === 'string' && VECTOR_PATH_BINDING_NAMES.has(binding)) {
+    if (setupError?.code === 'binding_empty' && typeof binding === 'string' && isBuiltinVectorBindingName(binding)) {
       throw error;
     }
     return {
@@ -55,4 +69,18 @@ export async function searchExplicitVectorResults(
       fallbackToText: true,
     };
   }
+}
+
+export function createBuiltinVectorRole(rt: KbRuntime): RetrievalRole {
+  return {
+    id: BUILTIN_VECTOR_ROLE_DESCRIPTOR.id,
+    descriptor: BUILTIN_VECTOR_ROLE_DESCRIPTOR,
+    async search(ctx) {
+      const embedding = rt.embedding.read().read();
+      const queryVector = Array.from(await embedding.embedQuery(ctx.rawQuery));
+      return {
+        hits: (await rt.vector.read().read().search(queryVector, ctx.topK, ctx.scope)).hits,
+      };
+    },
+  };
 }

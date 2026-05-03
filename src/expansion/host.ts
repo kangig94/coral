@@ -1,4 +1,6 @@
 import type { KbEngineRuntime, KbRuntime } from '../kb/contract.js';
+import type { RetrievalRole, RoleHandle, RoleRegistry } from '../kb/search/contract.js';
+import { normalizeRetrievalRoleDescriptor } from '../kb/search/role-registry.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { RuntimeBinding } from '../runtime/binding.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
@@ -9,7 +11,7 @@ import type {
   CorpusStateReadPort,
   JournalConsumerReadPort,
 } from '../store/consumer-contract.js';
-import type { ExpansionConsumerRegistration, ExpansionHost } from './contract.js';
+import type { EngineManifest, ExpansionConsumerRegistration, ExpansionHost } from './contract.js';
 import { decorateDispose } from './scope.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
 
@@ -23,14 +25,14 @@ export interface ConsumerDriverPort {
   getCorpusStateReader(): CorpusStateReadPort;
 }
 
-export type ExpansionTier = 'bundled' | 'installed';
+type ExpansionTier = EngineManifest['tier'];
 
 export interface ExpansionHostDeps {
   readonly runtime: Runtime;
   readonly kb: KbRuntime;
+  readonly roleRegistry: RoleRegistry;
   readonly scope: Disposable;
-  readonly id: string;
-  readonly tier: ExpansionTier;
+  readonly manifest: EngineManifest;
   readonly consumerDriver: ConsumerDriverPort;
 }
 
@@ -74,7 +76,27 @@ function engineFacingKbRuntime(kb: KbRuntime, consumerDriver: ConsumerDriverPort
     vector: kb.vector,
     embedding: kb.embedding,
     fts: kb.fts,
+    roleCatalog: kb.roleRegistry.catalogView(),
   };
+}
+
+function descriptorsEqual(left: RetrievalRole['descriptor'], right: RetrievalRole['descriptor']): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function roleDescriptorMismatch(context: Record<string, unknown>): CoralSetupError {
+  return documentedCoralSetupError('role_descriptor_mismatch', context);
+}
+
+function normalizeRoleDescriptorOrThrow(
+  descriptor: RetrievalRole['descriptor'],
+  context: Record<string, unknown>,
+): RetrievalRole['descriptor'] {
+  try {
+    return normalizeRetrievalRoleDescriptor(descriptor);
+  } catch {
+    throw roleDescriptorMismatch(context);
+  }
 }
 
 export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
@@ -91,7 +113,7 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
     runtime: deps.runtime,
     kb: engineKb,
     scope: deps.scope,
-    id: deps.id,
+    id: deps.manifest.id,
     bind(binding, value) {
       binding.bind(value, host.scope, host.id);
     },
@@ -106,8 +128,45 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
         throw documentedCoralSetupError('binding_required', { binding: bindingName, requiredBy: host.id });
       }
     },
+    registerRetrievalRole(role, scope): RoleHandle {
+      const manifestDescriptor = deps.manifest.provides?.find((descriptor) => descriptor.id === role.id);
+      if (manifestDescriptor === undefined) {
+        throw roleDescriptorMismatch({
+          expansion: host.id,
+          roleId: role.id,
+          reason: 'role.id not in manifest.provides',
+        });
+      }
+
+      const canonicalLiveDescriptor = normalizeRoleDescriptorOrThrow(role.descriptor, {
+        expansion: host.id,
+        roleId: role.id,
+        reason: 'live role descriptor failed validation',
+      });
+      const canonicalManifestDescriptor = normalizeRoleDescriptorOrThrow(manifestDescriptor, {
+        expansion: host.id,
+        roleId: role.id,
+        reason: 'manifest role descriptor failed validation',
+      });
+      if (!descriptorsEqual(canonicalLiveDescriptor, canonicalManifestDescriptor)) {
+        throw roleDescriptorMismatch({
+          expansion: host.id,
+          roleId: role.id,
+          reason: 'live role descriptor differs from manifest declaration',
+          liveDescriptor: canonicalLiveDescriptor,
+          manifestDescriptor: canonicalManifestDescriptor,
+        });
+      }
+
+      const wrappedRole: RetrievalRole = {
+        id: role.id,
+        descriptor: canonicalManifestDescriptor,
+        search: role.search.bind(role),
+      };
+      return deps.roleRegistry.registerScoped(wrappedRole, scope);
+    },
     registerConsumer(reg, scope) {
-      const registrationKind = deriveRegistrationKind(deps.tier, reg);
+      const registrationKind = deriveRegistrationKind(deps.manifest.tier, reg);
       const tierAware: ConsumerRegistration = { ...reg, registrationKind } as ConsumerRegistration;
       const handle = deps.consumerDriver.register(tierAware);
       const expandedScope = scope as ExpansionScope;

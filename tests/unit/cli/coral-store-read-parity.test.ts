@@ -243,13 +243,14 @@ describe('cli coral-store read parity', () => {
     const { searchKnowledgeBase } = await import('#src/kb/queries.js');
     const { createKbQueryHost } = await import('#src/read-model/kb-query-runtime.js');
     const result = await searchKnowledgeBase(
-      { query: 'authoritative', mode: 'vector' },
+      { query: 'authoritative', mode: 'auto' },
       createKbQueryHost({ pluginRoot: REPO_ROOT }),
     );
 
     expect(result).toEqual({
       results: [],
       mode: 'text',
+      retrievalDiagnostics: [],
       warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
   });

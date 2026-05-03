@@ -8,7 +8,6 @@
 // `transport.shutdown` is dispatched, regardless of lifecycle state".
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer, type Server as NetServer } from 'node:net';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';

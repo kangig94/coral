@@ -9,6 +9,7 @@ import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';
 import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';
 import type { EngineArtifactRegistration } from '#src/kb/corpus/artifact-registry.js';
+import type { RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
@@ -58,6 +59,37 @@ const SYNTHETIC_VECTOR_SOURCE = `
   };
 `;
 
+const PARTIAL_ROLE_ONE = {
+  id: 'partial-one',
+  label: 'Partial One',
+  tags: ['lexical'],
+  phase: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'all'],
+  provides: 'retrieval-source',
+} as const satisfies RetrievalRoleDescriptor;
+
+const PARTIAL_ROLE_TWO = {
+  id: 'partial-two',
+  label: 'Partial Two',
+  tags: ['lexical'],
+  phase: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'all'],
+  provides: 'retrieval-source',
+} as const satisfies RetrievalRoleDescriptor;
+
+function partialRoleExpansionSource(): string {
+  return `
+    export default (host) => {
+      const descriptor = ${JSON.stringify(PARTIAL_ROLE_ONE)};
+      host.registerRetrievalRole({
+        id: descriptor.id,
+        descriptor,
+        search: async () => ({ hits: [] }),
+      }, host.scope);
+    };
+  `;
+}
+
 // Bundled-tier engines run through static dispatch — tests inject their stubs
 // via `bundledLoaders` keyed by id, never by data URL specifier. The real
 // `BUNDLED_LOADERS` is spread in so tests that exercise the canonical orama
@@ -95,6 +127,18 @@ const SYNTHETIC_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
         apply: async () => {},
       },
     } as never);
+  },
+  'partial-bundled': (host) => {
+    host.registerRetrievalRole(
+      {
+        id: PARTIAL_ROLE_ONE.id,
+        descriptor: PARTIAL_ROLE_ONE,
+        async search() {
+          return { hits: [] };
+        },
+      },
+      host.scope,
+    );
   },
 };
 
@@ -252,7 +296,16 @@ describe('disposeExpansionScope ordering', () => {
       trace.push('scope-decorated-dispose');
     });
 
-    const host = makeHost('order-test-engine', scope, 'installed');
+    const host = makeHost(
+      {
+        id: 'order-test-engine',
+        version: '0.0.0',
+        specifier: '#tests/order-test-engine/expansion.js',
+        tier: 'installed',
+        description: 'order test engine',
+      },
+      scope,
+    );
     const consumerHandle = host.registerConsumer(
       {
         id: 'order-test-consumer',
@@ -782,5 +835,65 @@ describe('ExpansionLifecycleService', () => {
     await lifecycle.equip('test-embedder');
     expect(kb.embedding.heldBy).toBe('test-embedder');
     expect(state.snapshot()).toHaveLength(1);
+  });
+
+  it('rethrows role_descriptor_unregistered from installed equip and disposes the partial role scope', async () => {
+    const PARTIAL_INSTALLED_ENTRY = {
+      id: 'partial-installed',
+      version: '0.0.0',
+      specifier: javascriptDataUrl(partialRoleExpansionSource()),
+      tier: 'installed',
+      description: 'partial installed role expansion',
+      provides: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO],
+    } as const;
+    const { kb, state, lifecycle } = createLifecycleHarness({
+      manifest: [PARTIAL_INSTALLED_ENTRY] as unknown as readonly EngineManifest[],
+    });
+
+    await expect(lifecycle.equip('partial-installed')).rejects.toMatchObject({
+      code: 'role_descriptor_unregistered',
+      context: {
+        expansion: 'partial-installed',
+        missing: 'partial-two',
+      },
+    });
+
+    expect(state.snapshot()).toEqual([]);
+    expect(lifecycleScopes(lifecycle).get('partial-installed')).toBeUndefined();
+    expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'partial-one')).toBe(false);
+  });
+
+  it('records role_descriptor_unregistered during bundled fallback and continues to later bundled engines', async () => {
+    const PARTIAL_BUNDLED_ENTRY = {
+      id: 'partial-bundled',
+      version: '0.0.0',
+      specifier: UNUSED_BUNDLED_SPECIFIER,
+      tier: 'bundled',
+      description: 'partial bundled role expansion',
+      provides: [PARTIAL_ROLE_ONE, PARTIAL_ROLE_TWO],
+    } as const;
+    const { kb, lifecycle } = createLifecycleHarness({
+      manifest: [PARTIAL_BUNDLED_ENTRY, BUNDLED_FTS_SYNTHETIC_ENTRY] as unknown as readonly EngineManifest[],
+    });
+
+    const fallback = await lifecycle.applyBundledFallback();
+
+    expect(fallback.equipped).toEqual(['orama-fts-only']);
+    expect(fallback.failed.get('partial-bundled')).toMatchObject({
+      code: 'role_descriptor_unregistered',
+      context: {
+        expansion: 'partial-bundled',
+        missing: 'partial-two',
+      },
+    });
+    expect(kb.fts.heldBy).toBe('orama-fts-only');
+    expect(lifecycleScopes(lifecycle).get('partial-bundled')).toBeUndefined();
+    expect(lifecycleScopes(lifecycle).get('orama-fts-only')).toHaveLength(1);
+    expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'partial-one')).toBe(false);
+    expect(lifecycle.info('partial-bundled')).toMatchObject({
+      id: 'partial-bundled',
+      status: 'installed-not-active',
+      lastError: expect.stringContaining("declared retrieval role 'partial-two'"),
+    });
   });
 });

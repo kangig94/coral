@@ -88,6 +88,7 @@ function toCatalogEntry(
   passive: (ExpansionView & { slot?: string }) | null,
 ): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
+  const provides = passive?.provides ?? entry.provides;
   const status =
     passive?.status ??
     (requiresLocalInstall(entry)
@@ -107,6 +108,7 @@ function toCatalogEntry(
     ...(requiresLocalInstall(entry) && typeof local.addonPath === 'string' ? { addonPath: local.addonPath } : {}),
     version: local.version ?? entry.version,
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
+    ...(provides === undefined ? {} : { provides }),
   });
 }
 

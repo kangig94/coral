@@ -327,10 +327,12 @@ describe('cli format', () => {
               tags: ['cli', 'kb'],
               principles: ['contract-first-design'],
               snippet: 'Use kb_reindex after stale writes.',
+              evidence: [],
             },
           ],
           mode: 'hybrid',
           warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
+          retrievalDiagnostics: [],
         },
         'node "/tmp/coral-cli.cjs"',
       );
@@ -344,7 +346,7 @@ describe('cli format', () => {
     });
 
     it('formats an empty kb search result set', () => {
-      const parsed = JSON.parse(formatKbSearch({ results: [], mode: 'text' }));
+      const parsed = JSON.parse(formatKbSearch({ results: [], mode: 'text', retrievalDiagnostics: [] }));
       expect(parsed.count).toBe(0);
     });
 
@@ -354,6 +356,7 @@ describe('cli format', () => {
           results: [],
           mode: 'vector',
           warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+          retrievalDiagnostics: [],
         }),
       );
 

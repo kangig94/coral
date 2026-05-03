@@ -123,19 +123,26 @@ export class ConsumerDriver {
     }
 
     const registrationKind = this.repository.ensureCursorRow(reg);
-    let state!: ConsumerState;
+    const stateRef: { current: ConsumerState | null } = { current: null };
+    const readState = (): ConsumerState => {
+      if (stateRef.current === null) {
+        throw new Error(`Consumer '${reg.id}' state was read before initialization`);
+      }
+      return stateRef.current;
+    };
     const handle: ConsumerHandle = {
       id: reg.id,
       registrationKind,
       get lastApplyError() {
-        return state.lastApplyError;
+        return readState().lastApplyError;
       },
-      stop: () => stopConsumer(state, new Error(`Consumer '${reg.id}' stopped`), this.stopDeps),
-      unregister: () => unregisterConsumer(state, this.finalizeDeps),
-      status: () => this.statusFor(state),
+      stop: () => stopConsumer(readState(), new Error(`Consumer '${reg.id}' stopped`), this.stopDeps),
+      unregister: () => unregisterConsumer(readState(), this.finalizeDeps),
+      status: () => this.statusFor(readState()),
     };
 
-    state = createConsumerState(reg, registrationKind, handle);
+    const state = createConsumerState(reg, registrationKind, handle);
+    stateRef.current = state;
     this.consumers.set(reg.id, state);
     return handle;
   }

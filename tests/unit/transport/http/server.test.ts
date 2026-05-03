@@ -42,6 +42,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Backed, EmbeddingService, FtsRetrieval } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
+import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/tool-result.js';
 import {
@@ -523,6 +524,7 @@ describe('execution backend server', () => {
     );
     const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
     const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    const roleRegistry = createRoleRegistry();
     const engineArtifactRegistry = new EngineArtifactRegistry();
     const runtimeDir = join(mockState.tmpHome, 'kb-runtime');
     mkdirSync(runtimeDir, { recursive: true });
@@ -558,6 +560,8 @@ describe('execution backend server', () => {
         vector,
         fts,
         embedding,
+        roleRegistry,
+        roleCatalog: roleRegistry.catalogView(),
         engineArtifactRegistry,
         corpusAuthorityBaseline: {
           ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
