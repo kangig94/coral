@@ -172,9 +172,22 @@ function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
 }
 
+// `program.js` exports `buildProgram(providerRegistry)`, a pure factory
+// that constructs a fresh Command tree on every call. No module-level
+// mutation — most call sites can reuse a cached module across tests.
+// Tests that change `process.env.HOME` (or other module-load-time env)
+// must call `loadMainModuleFresh()` to re-evaluate captured env.
+let cachedMainModule: MainModule | null = null;
 async function loadMainModule(): Promise<MainModule> {
+  if (cachedMainModule === null) {
+    cachedMainModule = await import('#src/cli/program.js');
+  }
+  return cachedMainModule;
+}
+async function loadMainModuleFresh(): Promise<MainModule> {
   vi.resetModules();
-  return import('#src/cli/program.js');
+  cachedMainModule = null;
+  return loadMainModule();
 }
 
 async function parseWithExpansionNormalization(program: Command, argv: string[]): Promise<void> {
@@ -353,7 +366,6 @@ describe('cli main routing', () => {
     restoreStdin();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('exposes a reusable program factory', async () => {
@@ -1407,7 +1419,8 @@ describe('cli main routing', () => {
       process.env.HOME = fixture.home;
       process.env.TMPDIR = fixture.home;
 
-      const { buildProgram } = await loadMainModule();
+      // Module-load-time env capture: this test needs fresh import.
+      const { buildProgram } = await loadMainModuleFresh();
       const program = buildProgram();
       const terminalEvent = {
         type: 'terminal' as const,

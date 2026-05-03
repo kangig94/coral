@@ -375,18 +375,29 @@ async function openHttpStream(
   });
 }
 
+// Cache modules across tests: these are pure imports from the coordinator
+// graph (no module-level mutation per test). 7 call sites previously paid
+// the cost of vi.resetModules + re-resolving the coordinator graph each
+// time; the first call took ~700ms.
+let cachedExecutionModules: {
+  serverModule: ServerModule;
+  backendInfo: BackendInfoModule;
+  lifecycleModule: LifecycleModule;
+} | null = null;
 async function loadExecutionModules(): Promise<{
   serverModule: ServerModule;
   backendInfo: BackendInfoModule;
   lifecycleModule: LifecycleModule;
 }> {
-  vi.resetModules();
-  const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
-    import('#src/coordinator/index.js'),
-    import('#src/infra/backend-discovery.js'),
-    import('#src/coordinator/lifecycle.js'),
-  ]);
-  return { serverModule, backendInfo, lifecycleModule };
+  if (cachedExecutionModules === null) {
+    const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
+      import('#src/coordinator/index.js'),
+      import('#src/infra/backend-discovery.js'),
+      import('#src/coordinator/lifecycle.js'),
+    ]);
+    cachedExecutionModules = { serverModule, backendInfo, lifecycleModule };
+  }
+  return cachedExecutionModules;
 }
 
 function stubLaunchRecord(
@@ -522,7 +533,11 @@ describe('execution backend server', () => {
     }
     createdJobIds.clear();
     vi.restoreAllMocks();
-    vi.resetModules();
+    // vi.resetModules() removed: 116 tests × ~40ms = ~4.6s of pure cache
+    // invalidation. The few tests needing fresh modules call
+    // `loadExecutionModules()` (which resets internally). vi.mock at module
+    // scope is hoisted and persistent across tests; restoreAllMocks() undoes
+    // any vi.spyOn from individual tests.
     try {
       rmSync(mockState.tmpHome, { recursive: true, force: true });
     } catch {

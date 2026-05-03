@@ -574,7 +574,9 @@ describe('lifecycle recovery', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.resetModules();
+    // vi.resetModules() removed: loadModules() resets before each fresh
+    // import; the afterEach copy was redundant cache invalidation across
+    // 24 tests.
     if (mockState.tmpRoot) {
       rmSync(mockState.tmpRoot, { recursive: true, force: true });
     }
