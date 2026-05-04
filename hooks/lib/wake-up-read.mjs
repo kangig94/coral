@@ -30,7 +30,7 @@ export function readProjectScopedWakeUp(kbRoot, projectSlug) {
     const nextHeaderMatch = tail.match(NEXT_SECTION_HEADER_PATTERN);
     const understanding = (nextHeaderMatch ? tail.slice(0, nextHeaderMatch.index) : tail).trim();
 
-    return `## ${projectSlug} (${updatedAt})\n${understanding}\n`;
+    return `## project wiki: ${projectSlug} (${updatedAt})\n${understanding}\n`;
   } catch (error) {
     logHookLine('session-start', 'wake-up parse error: ' + (error instanceof Error ? error.message : String(error)));
     return null;

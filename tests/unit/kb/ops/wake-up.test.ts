@@ -87,9 +87,9 @@ describe('generateWakeUpPacket', () => {
 
       const packet = await generateWakeUpPacket(kb, 'kangig94-coral');
 
-      expect(packet).toContain('## kangig94-coral (2026-05-04T01:00:00.000Z)');
+      expect(packet).toContain('## project wiki: kangig94-coral (2026-05-04T01:00:00.000Z)');
       expect(packet).toContain('In-scope understanding.');
-      expect(packet).not.toContain('other-subject');
+      expect(packet).not.toContain('## project wiki: other-subject');
       expect(packet).not.toContain('Subject understanding.');
     } finally {
       db.close();

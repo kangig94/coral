@@ -173,9 +173,9 @@ describe('session-start.mjs', () => {
       );
 
       const output = expectHookOutput(result);
-      expect(output.hookSpecificOutput.additionalContext).toContain(`## ${PROJECT_SLUG} (2026-05-04T01:00:00.000Z)`);
+      expect(output.hookSpecificOutput.additionalContext).toContain(`## project wiki: ${PROJECT_SLUG} (2026-05-04T01:00:00.000Z)`);
       expect(output.hookSpecificOutput.additionalContext).toContain('In-scope understanding.');
-      expect(output.hookSpecificOutput.additionalContext).not.toContain('## other-repo');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: other-repo');
       expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');
     });
 
@@ -198,9 +198,9 @@ describe('session-start.mjs', () => {
       );
 
       const output = expectHookOutput(result);
-      expect(output.hookSpecificOutput.additionalContext).not.toContain('## foreign');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: foreign');
       expect(output.hookSpecificOutput.additionalContext).not.toContain('Foreign understanding.');
-      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## /u);
+      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## project wiki: /u);
     });
 
     it('returns null when the project wiki has malformed frontmatter (fail-open)', () => {

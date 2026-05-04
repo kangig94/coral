@@ -16,5 +16,5 @@ export async function generateWakeUpPacket(kb: WakeUpRuntime, projectSlug: strin
   const raw = kb.storagePort.readFileSync(wikiPath, 'utf-8');
   const meta = parseWikiFrontmatter(raw);
   const sections = parseWikiBody(extractBody(raw));
-  return `## ${projectSlug} (${meta.updatedAt})\n${sections.understanding}\n`;
+  return `## project wiki: ${projectSlug} (${meta.updatedAt})\n${sections.understanding}\n`;
 }
