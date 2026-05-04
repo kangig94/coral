@@ -132,14 +132,13 @@ function registerKbWikiCommands(kb: Command): void {
       'Referenced principles (repeatable, comma-separated)',
       appendDelimitedOption,
     )
-    .option('--project <source>', 'Override auto-detected project source (advanced)')
+    .requiredOption('--project <slug>', 'Project this wiki belongs to (the wiki\'s subject domain, e.g. kangig94/coral or macroeconomics-research)')
     .action(async (slug: string, opts: KbWikiCreateOptions) => {
       try {
         const client = makeClient(process.cwd(), kbWikiCreateCommand);
-        const project = opts.project ?? resolveProjectSource(process.cwd());
         const result = await client.kbWikiCreate({
           slug: assertWikiSlug(slug, 'wiki'),
-          project,
+          project: opts.project,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
           ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),

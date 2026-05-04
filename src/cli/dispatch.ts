@@ -247,12 +247,12 @@ export type KbSourceImportOptions = {
 };
 
 export type KbWikiCreateOptions = {
+  project: string;
   title?: string;
   understanding?: string;
   knowledge?: string[];
   tags?: string[];
   referencesPrinciples?: string[];
-  project?: string;
 };
 
 export type KbWikiUpdateOptions = {
