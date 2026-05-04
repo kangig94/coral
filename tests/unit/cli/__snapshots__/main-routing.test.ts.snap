@@ -108,7 +108,7 @@ Options:
 
 Commands:
   import [options] <file>  Import a source file into the KB
-  list                     List KB sources
+  list [options]           List KB sources
   delete <slug>            Delete a KB source
   help [command]           display help for command
 "
@@ -120,25 +120,22 @@ exports[`cli main routing > preserves help output for 'kb' via snapshot 1`] = `
 Knowledge base operations
 
 Options:
-  -f, --output-format <format>  Output format (choices: "text", "json", default:
-                                "text")
-  -h, --help                    display help for command
+  -h, --help                display help for command
 
 Commands:
-  search [options] <query>      Search KB entries
-  diagnose                      Show KB entries with pending manual repair
-                                actions
-  principles [options]          List KB principles
-  source                        Manage KB sources
-  wiki                          Manage KB wikis
-  memo                          Manage project memos
-  read <note>                   Read a KB entry by slug or explicit selector
-  promote [options]             Promote a memo into a KB note
-  update [options] <note>       Update an existing KB note
-  delete <note>                 Delete a KB note
-  wake-up [options]             Generate the KB wake-up packet
-  reindex [options]             Rebuild the KB index
-  help [command]                display help for command
+  search [options] <query>  Search KB entries
+  diagnose [options]        Show KB entries with pending manual repair actions
+  principles [options]      List KB principles
+  source                    Manage KB sources
+  wiki                      Manage KB wikis
+  memo                      Manage project memos
+  read [options] <note>     Read a KB entry by slug or explicit selector
+  promote [options]         Promote a memo into a KB note
+  update [options] <note>   Update an existing KB note
+  delete <note>             Delete a KB note
+  wake-up [options]         Generate the KB wake-up packet
+  reindex [options]         Rebuild the KB index
+  help [command]            display help for command
 "
 `;
 
@@ -182,7 +179,7 @@ Commands:
   workflow [options]        Execute a workflow pipeline
   backend                   Backend daemon control
   discuss                   Discussion operations
-  kb [options]              Knowledge base operations
+  kb                        Knowledge base operations
   expansion                 Manage expansion packages
   help [command]            display help for command
 "

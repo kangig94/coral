@@ -20,7 +20,7 @@ import {
   type KbWikiCreateOptions,
   type KbWikiUpdateOptions,
 } from '../dispatch.js';
-import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
+import { createOutputFormatOption, emit, emitError, emitText, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
 import {
   formatKbDelete,
@@ -70,8 +70,6 @@ function registerKbSourceCommands(kb: Command): void {
     )
     .option('--async', 'Return after launching the import job')
     .action(async (file: string, opts: KbSourceImportOptions) => {
-      const outputFormat = getOutputFormat(kbSourceImportCommand);
-
       try {
         const client = makeClient(process.cwd(), kbSourceImportCommand);
         const result = await client.kbSourceImport({
@@ -80,14 +78,17 @@ function registerKbSourceCommands(kb: Command): void {
           readiness: opts.ready ?? 'base-search',
           async: opts.async === true,
         });
-        emit(result, outputFormat, formatKbSourceImport);
+        emitText(result, formatKbSourceImport);
       } catch (error) {
         emitError(error);
       }
     });
 
   const kbSourceListCommand = kbSourceCommand.command('list');
-  kbSourceListCommand.description('List KB sources').action(async () => {
+  kbSourceListCommand
+    .description('List KB sources')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
     const outputFormat = getOutputFormat(kbSourceListCommand);
 
     try {
@@ -104,12 +105,10 @@ function registerKbSourceCommands(kb: Command): void {
     .description('Delete a KB source')
     .argument('<slug>', 'Source slug without extension')
     .action(async (slug: string) => {
-      const outputFormat = getOutputFormat(kbSourceDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbSourceDeleteCommand);
         const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
-        emit(result, outputFormat, formatKbSourceDelete);
+        emitText(result, formatKbSourceDelete);
       } catch (error) {
         emitError(error);
       }
@@ -133,8 +132,6 @@ function registerKbWikiCommands(kb: Command): void {
       appendDelimitedOption,
     )
     .action(async (slug: string, opts: KbWikiCreateOptions) => {
-      const outputFormat = getOutputFormat(kbWikiCreateCommand);
-
       try {
         const client = makeClient(process.cwd(), kbWikiCreateCommand);
         const result = await client.kbWikiCreate({
@@ -145,7 +142,7 @@ function registerKbWikiCommands(kb: Command): void {
           ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
           ...(opts.referencesPrinciples !== undefined ? { references_principles: opts.referencesPrinciples } : {}),
         });
-        emit(result, outputFormat, formatKbWikiCreate);
+        emitText(result, formatKbWikiCreate);
       } catch (error) {
         emitError(error);
       }
@@ -172,8 +169,6 @@ function registerKbWikiCommands(kb: Command): void {
     .option('--knowledge-add <link>', 'Add a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
     .option('--knowledge-remove <link>', 'Remove a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
     .action(async (slug: string, opts: KbWikiUpdateOptions) => {
-      const outputFormat = getOutputFormat(kbWikiUpdateCommand);
-
       try {
         if (opts.understanding !== undefined && opts.understandingFile !== undefined) {
           throw new UsageError('Choose at most one of --understanding or --understanding-file');
@@ -204,7 +199,7 @@ function registerKbWikiCommands(kb: Command): void {
           ...(opts.knowledgeAdd !== undefined ? { knowledgeAdd: opts.knowledgeAdd } : {}),
           ...(opts.knowledgeRemove !== undefined ? { knowledgeRemove: opts.knowledgeRemove } : {}),
         });
-        emit(result, outputFormat, formatKbWikiUpdate);
+        emitText(result, formatKbWikiUpdate);
       } catch (error) {
         emitError(error);
       }
@@ -215,19 +210,20 @@ function registerKbWikiCommands(kb: Command): void {
     .description('Delete a KB wiki')
     .argument('<slug>', 'Wiki slug without extension')
     .action(async (slug: string) => {
-      const outputFormat = getOutputFormat(kbWikiDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbWikiDeleteCommand);
         const result = await client.kbWikiDelete({ slug: assertWikiSlug(slug, 'wiki') });
-        emit(result, outputFormat, formatKbWikiDelete);
+        emitText(result, formatKbWikiDelete);
       } catch (error) {
         emitError(error);
       }
     });
 
   const kbWikiListCommand = kbWikiCommand.command('list');
-  kbWikiListCommand.description('List KB wikis').action(async () => {
+  kbWikiListCommand
+    .description('List KB wikis')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
     const outputFormat = getOutputFormat(kbWikiListCommand);
 
     try {
@@ -251,8 +247,6 @@ function registerKbMemoCommands(kb: Command): void {
     .option('--content-file <path>', 'Read memo body from file')
     .option('--owner <id>', 'Session owner ID (falls back to CORAL_OWNER env var)')
     .action(async (opts: KbMemoWriteOptions) => {
-      const outputFormat = getOutputFormat(kbMemoWriteCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : opts.content;
@@ -266,7 +260,7 @@ function registerKbMemoCommands(kb: Command): void {
         const owner = assertOwnerId(rawOwner, 'owner');
         const client = makeClient(process.cwd(), kbMemoWriteCommand);
         const result = await client.kbMemo({ topic: opts.topic, content, owner });
-        emit(result, outputFormat, formatKbMemo);
+        emitText(result, formatKbMemo);
       } catch (error) {
         emitError(error);
       }
@@ -276,6 +270,7 @@ function registerKbMemoCommands(kb: Command): void {
   kbMemoListCommand
     .description('List project memos')
     .option('--owner <id>', 'Filter by owner session ID')
+    .addOption(createOutputFormatOption())
     .action(async (opts: KbMemoListOptions) => {
       const outputFormat = getOutputFormat(kbMemoListCommand);
 
@@ -294,12 +289,10 @@ function registerKbMemoCommands(kb: Command): void {
     .argument('<pattern>', 'Simple glob pattern (supports * and ?)')
     .option('--owner <id>', 'Only delete memos owned by this session ID')
     .action(async (pattern: string, opts: KbMemoDeleteOptions) => {
-      const outputFormat = getOutputFormat(kbMemoDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbMemoDeleteCommand);
         const result = await client.kbMemoDelete({ pattern, owner: opts.owner });
-        emit(result, outputFormat, formatKbMemoDelete);
+        emitText(result, formatKbMemoDelete);
       } catch (error) {
         emitError(error);
       }
@@ -310,12 +303,10 @@ function registerKbMemoCommands(kb: Command): void {
     .description('Delete all project memos')
     .option('--owner <owner>', 'Only purge memos owned by this session')
     .action(async (opts: KbMemoPurgeOptions) => {
-      const outputFormat = getOutputFormat(kbMemoPurgeCommand);
-
       try {
         const client = makeClient(process.cwd(), kbMemoPurgeCommand);
         const result = await client.kbMemoPurge(opts.owner ? { owner: opts.owner } : {});
-        emit(result, outputFormat, formatKbMemoPurge);
+        emitText(result, formatKbMemoPurge);
       } catch (error) {
         emitError(error);
       }
@@ -325,7 +316,11 @@ function registerKbMemoCommands(kb: Command): void {
 export function registerKbCommands(program: Command): void {
   const cliPrefix = getCliDisplayPrefix();
   const kb = program.command('kb').description('Knowledge base operations');
-  kb.addOption(new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
+  // --output-format is intentionally NOT registered on the kb parent. Adding it
+  // here would silently extend JSON support to every subcommand, including
+  // mutate ops whose response shape leaks internal `path` fields. Each read
+  // command that genuinely needs JSON output registers it locally via
+  // createOutputFormatOption() — see below.
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
@@ -343,6 +338,7 @@ export function registerKbCommands(program: Command): void {
         'all',
       ]),
     )
+    .addOption(createOutputFormatOption())
     .action(async (query: string, opts: KbSearchOptions) => {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
@@ -368,7 +364,10 @@ export function registerKbCommands(program: Command): void {
     });
 
   const kbDiagnoseCommand = kb.command('diagnose');
-  kbDiagnoseCommand.description('Show KB entries with pending manual repair actions').action(async () => {
+  kbDiagnoseCommand
+    .description('Show KB entries with pending manual repair actions')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
     const outputFormat = getOutputFormat(kbDiagnoseCommand);
 
     try {
@@ -386,6 +385,7 @@ export function registerKbCommands(program: Command): void {
     .option('--query <text>', 'Filter principle names')
     .option('--top-k <n>', 'Maximum results')
     .option('--verbose', 'Include canonical statements and referring note slugs')
+    .addOption(createOutputFormatOption())
     .action(async (opts: KbPrinciplesOptions) => {
       const outputFormat = getOutputFormat(kbPrinciplesCommand);
 
@@ -414,6 +414,7 @@ export function registerKbCommands(program: Command): void {
       '<note>',
       'Bare reads resolve memo -> note -> wiki -> community -> source -> principle; use wiki:<slug>, communities:<slug>, or sources:<slug> to force a kind',
     )
+    .addOption(createOutputFormatOption())
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
 
@@ -439,8 +440,6 @@ export function registerKbCommands(program: Command): void {
       "Prepend the promoted note to a wiki Knowledge section (wiki must already exist — use 'kb wiki create' first)",
     )
     .action(async (opts: KbPromoteOptions) => {
-      const outputFormat = getOutputFormat(kbPromoteCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
@@ -454,7 +453,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);
-        emit(result, outputFormat, formatKbPromote);
+        emitText(result, formatKbPromote);
       } catch (error) {
         emitError(error);
       }
@@ -467,8 +466,6 @@ export function registerKbCommands(program: Command): void {
     .option('--title <text>', 'Updated title')
     .option('--content-file <path>', 'Read content from file')
     .action(async (note: string, opts: KbUpdateOptions) => {
-      const outputFormat = getOutputFormat(kbUpdateCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
@@ -479,7 +476,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbUpdateCommand);
         const result = await client.kbUpdate(args);
-        emit(result, outputFormat, formatKbUpdate);
+        emitText(result, formatKbUpdate);
       } catch (error) {
         emitError(error);
       }
@@ -490,12 +487,10 @@ export function registerKbCommands(program: Command): void {
     .description('Delete a KB note')
     .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .action(async (note: string) => {
-      const outputFormat = getOutputFormat(kbDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbDeleteCommand);
         const result = await client.kbDelete({ note });
-        emit(result, outputFormat, formatKbDelete);
+        emitText(result, formatKbDelete);
       } catch (error) {
         emitError(error);
       }
@@ -506,8 +501,6 @@ export function registerKbCommands(program: Command): void {
     .description('Generate the KB wake-up packet')
     .option('--token-budget <n>', 'Max token budget (default: 900)')
     .action(async (opts: { tokenBudget?: string }) => {
-      const outputFormat = getOutputFormat(kbWakeUpCommand);
-
       try {
         const client = makeClient(process.cwd(), kbWakeUpCommand);
         const result = await client.kbWakeUp(
@@ -515,7 +508,7 @@ export function registerKbCommands(program: Command): void {
             ? { tokenBudget: parseIntegerFlag('--token-budget', opts.tokenBudget) }
             : {},
         );
-        emit(result, outputFormat, formatKbWakeUp);
+        emitText(result, formatKbWakeUp);
       } catch (error) {
         emitError(error);
       }
@@ -526,12 +519,10 @@ export function registerKbCommands(program: Command): void {
     .description('Rebuild the KB index')
     .option('--async', 'Return after launching the reindex job')
     .action(async (opts: KbReindexOptions) => {
-      const outputFormat = getOutputFormat(kbReindexCommand);
-
       try {
         const client = makeClient(process.cwd(), kbReindexCommand);
         const result = await client.kbReindex({ async: opts.async === true });
-        emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
+        emitText(result, (data) => formatKbReindex(data, cliPrefix));
       } catch (error) {
         emitError(error);
       }

@@ -617,19 +617,26 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(2);
   });
 
-  it.each([
-    ['kb', '-f', 'json', 'search', 'q'],
-    ['kb', 'search', 'q', '-f', 'json'],
-  ])('inherits kb-local output format across command ordering for %j', async (...argv: string[]) => {
+  it('accepts -f json on kb search (option registered locally on the read command)', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const kbSearchCommand = findCommand(program, 'kb', 'search');
 
     mockState.kbSearch.mockResolvedValueOnce({ results: [], mode: 'text', retrievalDiagnostics: [] });
 
-    await program.parseAsync(['node', 'coral-cli', ...argv]);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'q', '-f', 'json']);
 
     expect(kbSearchCommand.optsWithGlobals<{ outputFormat?: string }>()).toMatchObject({ outputFormat: 'json' });
+  });
+
+  it('rejects -f on the kb parent — output-format is intentionally local to read commands only', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    program.exitOverride();
+    await expect(program.parseAsync(['node', 'coral-cli', 'kb', '-f', 'json', 'search', 'q'])).rejects.toThrow(
+      /unknown option/u,
+    );
   });
 
   it('routes jobs --phase through filtered job lookup and rendered table output', async () => {
@@ -1921,13 +1928,10 @@ describe('cli main routing', () => {
       count: 1,
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'delete', '2026*', '--output-format', 'json']);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'delete', '2026*']);
 
     expect(mockState.kbMemoDelete).toHaveBeenCalledWith({ pattern: '2026*' });
-    expect(JSON.parse(stdout.trim())).toEqual({
-      deleted: ['a.md'],
-      count: 1,
-    });
+    expect(stdout.trim()).toBe('a.md\nCount: 1');
   });
 
   it('routes kb memo purge through kb_memo_purge', async () => {
@@ -1938,10 +1942,10 @@ describe('cli main routing', () => {
       deleted: 3,
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'purge', '--output-format', 'json']);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'memo', 'purge']);
 
     expect(mockState.kbMemoPurge).toHaveBeenCalledWith({});
-    expect(JSON.parse(stdout.trim())).toEqual({ deleted: 3 });
+    expect(stdout.trim()).toBe('Purged: 3 memos');
   });
 
   it('routes kb read to kb_read and returns JSON', async () => {
