@@ -6,7 +6,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
+| `CORAL_CODEX_MODEL` | `gpt-5.5` | Default Codex model for new sessions |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle. `1` = fast (priority), `0` = flex (cost-efficient). Any other non-blank value is rejected. Blank/unset falls back to `service_tier` in top-level `~/.codex/config.toml`, then Codex default. Env takes precedence over config.toml. Profile-scoped `service_tier` under `[profiles.xxx]` is ignored |
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh` level — the adapter collapses `xhigh` to the provider ceiling (`max`) on those tiers |
@@ -38,7 +38,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 ### Shell Usage
 
 ```bash
-export CORAL_CODEX_MODEL=gpt-5.4
+export CORAL_CODEX_MODEL=gpt-5.5
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CORAL_KB_PATH=/path/to/my-kb
@@ -53,7 +53,7 @@ Project-level or global Claude Code settings can persist the same environment va
 ```json
 {
   "env": {
-    "CORAL_CODEX_MODEL": "gpt-5.4",
+    "CORAL_CODEX_MODEL": "gpt-5.5",
     "CORAL_CODEX_FAST": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
@@ -166,7 +166,7 @@ Live scratch artifacts:
 | --- | --- |
 | Codex CLI | Codex execution |
 | Claude CLI | Claude execution |
-| Node.js 18+ | Runtime |
+| Node.js 22+ | Runtime |
 | `cmake` | Native KB addon fallback builds |
 
 ## File Role Summary

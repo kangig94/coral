@@ -228,7 +228,7 @@ export function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.4';
+const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 
 function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | undefined {
   if (!value) {
