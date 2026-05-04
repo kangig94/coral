@@ -2001,7 +2001,7 @@ describe('cli main routing', () => {
         domain: 'cli',
         topic: 'kb-tooling',
       });
-      expect(stdout).toBe('Created: /tmp/kb/notes/cli-kb-tooling.md\n');
+      expect(stdout).toBe('Promoted note: cli-kb-tooling\n');
     } finally {
       unlinkSync(tmpFile);
     }
@@ -2025,7 +2025,7 @@ describe('cli main routing', () => {
         note: 'cli-kb-tooling',
         content: 'Updated',
       });
-      expect(stdout).toBe('Updated: /tmp/kb/notes/cli-kb-tooling.md\n');
+      expect(stdout).toBe('Updated note: cli-kb-tooling\n');
     } finally {
       unlinkSync(tmpFile);
     }
@@ -2042,7 +2042,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'kb', 'delete', 'cli-kb-tooling']);
 
     expect(mockState.kbDelete).toHaveBeenCalledWith({ note: 'cli-kb-tooling' });
-    expect(stdout).toBe('Deleted: /tmp/kb/notes/cli-kb-tooling.md\n');
+    expect(stdout).toBe('Deleted note: cli-kb-tooling\n');
   });
 
   it('routes kb source import async with readiness unchanged', async () => {

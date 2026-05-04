@@ -26,6 +26,19 @@ import { formatTable, joinLines } from './text.js';
 type KbReadDisplayResult = KbReadResult & { age?: string };
 const MAX_RENDERED_EVIDENCE = 3;
 
+/**
+ * Hide on-disk paths from LLM-visible CLI output. A leaked path teaches the
+ * LLM the storage layout, after which a raw `Read /home/.../kb/wiki/X.md`
+ * bypasses kb tools — losing touch-journal signal, frontmatter parsing,
+ * cascade resolution, and invariant checks. CLI text identifies entries by
+ * their canonical slug; JSON responses still carry the path field for
+ * internal tests/scripts.
+ */
+function pathToSlug(pathOrFilename: string): string {
+  const base = pathOrFilename.replace(/^.*[/\\]/u, '');
+  return base.endsWith('.md') ? base.slice(0, -3) : base;
+}
+
 function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'): string | undefined {
   if (warning === undefined || warning.length === 0) {
     return undefined;
@@ -215,30 +228,31 @@ export function formatKbMemoPurge(data: KbMemoPurgeResult): string {
 }
 
 export function formatKbPromote(data: KbPromoteResponse): string {
+  const slug = pathToSlug(data.path);
   if (data.wikiSlug !== undefined) {
-    return `Created: ${data.path}\nPrepended to wiki: ${data.wikiSlug} Knowledge`;
+    return `Promoted note: ${slug}\nPrepended to wiki: ${data.wikiSlug} Knowledge`;
   }
-  return `Created: ${data.path}`;
+  return `Promoted note: ${slug}`;
 }
 
 export function formatKbUpdate(data: KbUpdateResponse): string {
-  return `Updated: ${data.path}`;
+  return `Updated note: ${pathToSlug(data.path)}`;
 }
 
 export function formatKbDelete(data: KbDeleteResponse): string {
-  return `Deleted: ${data.deleted}`;
+  return `Deleted note: ${pathToSlug(data.deleted)}`;
 }
 
 export function formatKbWikiCreate(data: KbWikiCreateResponse): string {
-  return `Created: ${data.path}`;
+  return `Created wiki: ${data.slug}`;
 }
 
 export function formatKbWikiUpdate(data: KbWikiUpdateResponse): string {
-  return `Updated: ${data.path}`;
+  return `Updated wiki: ${pathToSlug(data.path)}`;
 }
 
 export function formatKbWikiDelete(data: KbWikiDeleteResponse): string {
-  return `Deleted: ${data.deleted}`;
+  return `Deleted wiki: ${pathToSlug(data.deleted)}`;
 }
 
 export function formatKbWikiList(data: KbWikiListResult): string {
@@ -272,7 +286,7 @@ export function formatKbSourceImport(data: KbSourceImportResponse): string {
     case 'queued':
       return `Import job ${data.job} ${data.status} (ready=${data.readiness})`;
     case 'completed':
-      return `Imported: ${data.path}`;
+      return `Imported source: ${data.slug}`;
   }
 }
 
@@ -287,7 +301,7 @@ export function formatKbSourceList(data: KbSourceListResult): string {
 }
 
 export function formatKbSourceDelete(data: KbSourceDeleteResponse): string {
-  return `Deleted: ${data.deleted}`;
+  return `Deleted source: ${pathToSlug(data.deleted)}`;
 }
 
 export function formatKbReindex(data: KbReindexResponse, cliPrefix = 'coral-cli'): string {

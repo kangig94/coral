@@ -469,16 +469,13 @@ describe('cli format', () => {
       expect(formatKbPrinciples({ principles: [], total: 0 })).toBe('No principles\nTotal: 0');
     });
 
-    it('formats kb promote, update, and delete results', () => {
-      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Created: /tmp/kb/notes/cli-kb-tooling.md',
+    it('formats kb promote, update, and delete results with slug-only output (paths hidden from LLM)', () => {
+      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Promoted note: cli-kb-tooling');
+      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md', wikiSlug: 'living-knowledge' })).toBe(
+        'Promoted note: cli-kb-tooling\nPrepended to wiki: living-knowledge Knowledge',
       );
-      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Updated: /tmp/kb/notes/cli-kb-tooling.md',
-      );
-      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Deleted: /tmp/kb/notes/cli-kb-tooling.md',
-      );
+      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Updated note: cli-kb-tooling');
+      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Deleted note: cli-kb-tooling');
     });
 
     it('formats kb reindex as one-liner and rewrites kb_reindex warnings', () => {
