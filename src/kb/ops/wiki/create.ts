@@ -15,7 +15,6 @@ import {
   type KbWikiCreateResponse,
   type KbWikiFrontmatter,
 } from '../../entry-types.js';
-import { currentEntrySeq } from '../../index-state.js';
 import { assertNonEmptyText, assertString, assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 
@@ -89,13 +88,8 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
     const createdAt = nowIsoString(rt.time);
     const meta: KbWikiFrontmatter = {
       tags: normalizeStringList(input.tags, 'tags'),
-      references_principles: normalizeStringList(
-        input.references_principles ?? input.referencesPrinciples,
-        'references_principles',
-      ),
       createdAt,
       updatedAt: createdAt,
-      entrySeq: currentEntrySeq(rt.readIndexState()) + 1,
       related: normalizeEntryReferences(input.related, 'related'),
     };
     const raw = serializeWiki(meta, title, buildWikiBody(input));

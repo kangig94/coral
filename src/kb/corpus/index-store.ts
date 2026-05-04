@@ -248,10 +248,8 @@ function parseWikiIndexEntry(entryId: string, value: Record<string, unknown>): W
     slug,
     title: assertNonEmptyText(value.title, 'KB index entry title'),
     tags: parseStringArray(value.tags),
-    references_principles: parseStringArray(value.references_principles),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
-    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
     knowledge: parseEntryIdArray(value.knowledge),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };

@@ -68,12 +68,10 @@ export function buildWikiIndexEntry(meta: WikiIndexEntrySource): WikiEntry {
     slug: meta.slug,
     title: meta.title,
     tags: [...meta.tags],
-    references_principles: [...meta.references_principles],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     knowledge: [...meta.knowledge],
     related: [...(meta.related ?? [])],
-    ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
 }
 

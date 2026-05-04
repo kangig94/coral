@@ -223,15 +223,12 @@ export function parseCommunityFrontmatter(content: string): CommunityFrontmatter
 
 export function parseWikiFrontmatter(content: string): KbWikiFrontmatter {
   const record = parseFrontmatterRecord(content);
-  const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
   const related = normalizeRelatedList(record.related);
   return {
     tags: normalizeStringList(record.tags, 'tags'),
-    references_principles: normalizePrincipleReferenceList(record.references_principles, 'references_principles'),
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     related,
-    ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
 
@@ -319,14 +316,11 @@ export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, '
 }
 
 export function serializeWikiFrontmatter(meta: KbWikiFrontmatter): string {
-  const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
   const related = normalizeEntryIdList(meta.related ?? [], 'related');
   return serializeFrontmatterRecord({
     tags: normalizeStringList(meta.tags, 'tags'),
-    references_principles: normalizePrincipleReferenceList(meta.references_principles, 'references_principles'),
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
-    ...(entrySeq === undefined ? {} : { entrySeq }),
     ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
   });
 }

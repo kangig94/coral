@@ -169,7 +169,7 @@ function readWikiEntry(slug: string, storage: KbReadStorage, paths: KbReadPathRe
     title,
     content: body,
     tags: frontmatter.tags,
-    principles: frontmatter.references_principles,
+    principles: [],
     updatedAt: frontmatter.updatedAt,
   };
 }

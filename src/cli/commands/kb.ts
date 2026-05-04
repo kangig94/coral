@@ -127,11 +127,6 @@ function registerKbWikiCommands(kb: Command): void {
     .option('--understanding <text>', 'Understanding section text')
     .option('--knowledge <link>', 'Knowledge wikilink or entry ID (repeatable, comma-separated)', appendDelimitedOption)
     .option('--tags <tag>', 'Tags (repeatable, comma-separated)', appendDelimitedOption)
-    .option(
-      '--references-principles <principle>',
-      'Referenced principles (repeatable, comma-separated)',
-      appendDelimitedOption,
-    )
     .action(async (providedSlug: string | undefined, opts: KbWikiCreateOptions) => {
       try {
         const slug = assertWikiSlug(
@@ -145,7 +140,6 @@ function registerKbWikiCommands(kb: Command): void {
           ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
           ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
           ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
-          ...(opts.referencesPrinciples !== undefined ? { references_principles: opts.referencesPrinciples } : {}),
         });
         emitText(result, formatKbWikiCreate);
       } catch (error) {

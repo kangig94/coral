@@ -384,7 +384,6 @@ Clusters graph-backed retrieval notes.
       wikiPathFromName('living-knowledge', KB_ROOT),
       `---
 tags: [kb, wiki]
-references_principles: [single-source-of-truth]
 createdAt: 2026-04-01T00:00:00.000Z
 updatedAt: 2026-04-02T00:00:00.000Z
 ---
@@ -418,7 +417,7 @@ Wiki entries keep durable understanding.
           '  - 2026-04-01 initial row',
         ].join('\n'),
         tags: ['kb', 'wiki'],
-        principles: ['single-source-of-truth'],
+        principles: [],
         updatedAt: '2026-04-02T00:00:00.000Z',
       },
     });
@@ -651,7 +650,7 @@ level: 1
   it('handleKbWikiList wraps listWikis in the wikis envelope', async () => {
     const kbSubsystem = createKbSubsystem();
     mockState.listWikis.mockResolvedValue([
-      { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], references_principles: [], createdAt: '', updatedAt: '', related: [] },
+      { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], createdAt: '', updatedAt: '', related: [] },
     ]);
 
     const result = await handleKbWikiList({}, kbSubsystem);

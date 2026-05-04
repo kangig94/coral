@@ -171,10 +171,8 @@ memo body
       wikiPath,
       `---
 tags: [kb]
-references_principles: []
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-20T00:00:00.000Z
-entrySeq: 2
 ---
 # Living Knowledge
 
@@ -205,7 +203,6 @@ Existing understanding.
     const wiki = readFileSync(wikiPath, 'utf-8');
     expect(frontmatter.parseWikiFrontmatter(wiki)).toMatchObject({
       updatedAt: '2026-03-23T01:02:03.000Z',
-      entrySeq: 2,
     });
     expect(frontmatter.parseWikiBody(frontmatter.extractBody(wiki)).knowledge).toBe(
       '- [[notes/coral-kb-promotion]]\n- [[notes/existing-note]]\n  - 2026-03-20 seed',
@@ -488,7 +485,6 @@ Content here.
       join(paths.wikiDir(process.env.CORAL_KB_PATH!), 'shared-knowledge.md'),
       `---
 tags: [kb]
-references_principles: [contract-first-design]
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
 ---
@@ -534,7 +530,7 @@ level: 0
         '  - 2026-03-21 seed',
       ].join('\n'),
       tags: ['kb'],
-      principles: ['contract-first-design'],
+      principles: [],
       updatedAt: '2026-03-21T00:00:00.000Z',
     };
 

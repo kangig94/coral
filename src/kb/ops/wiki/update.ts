@@ -30,8 +30,7 @@ export type WikiTextOrFile = string | { text: string } | { file: string };
 /**
  * Accepts both snake_case (wire format) and camelCase (TS convenience) for
  * `evidence_append` / `evidenceAppend`, `knowledge_reorder` / `knowledgeReorder`,
- * `knowledge_add` / `knowledgeAdd`, `knowledge_remove` / `knowledgeRemove`, and
- * `references_principles` / `referencesPrinciples`.
+ * `knowledge_add` / `knowledgeAdd`, and `knowledge_remove` / `knowledgeRemove`.
  *
  * Evidence is owned by Knowledge: each evidence entry is a sub-bullet under
  * its target Knowledge block. `evidenceAppend` value must begin with the
@@ -49,8 +48,6 @@ export type KbWikiUpdateInput = {
   knowledgeRemove?: string | readonly string[];
   knowledge_remove?: string | readonly string[];
   tags?: readonly string[];
-  references_principles?: readonly string[];
-  referencesPrinciples?: readonly string[];
   related?: readonly string[];
   updatedAt?: string;
 };
@@ -268,7 +265,7 @@ function applyFrontmatterUpdate(
   const next: KbWikiFrontmatter = { ...frontmatter };
   let changed = false;
 
-  const setList = <Key extends keyof Pick<KbWikiFrontmatter, 'tags' | 'references_principles'>>(
+  const setList = <Key extends keyof Pick<KbWikiFrontmatter, 'tags'>>(
     key: Key,
     values: readonly string[] | undefined,
     field: string,
@@ -284,7 +281,6 @@ function applyFrontmatterUpdate(
   };
 
   setList('tags', input.tags, 'tags');
-  setList('references_principles', input.references_principles ?? input.referencesPrinciples, 'references_principles');
 
   if (input.related !== undefined) {
     const related = normalizeEntryReferences(input.related, 'related');

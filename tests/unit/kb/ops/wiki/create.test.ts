@@ -60,7 +60,6 @@ describe('createWiki', () => {
       understanding: '  First insight.  ',
       knowledge: ['note:alpha', '[[notes/beta]]', 'source:s-one'],
       tags: ['kb'],
-      references_principles: ['contract-first-design'],
       related: ['[[notes/alpha]]'],
     });
 
@@ -69,10 +68,8 @@ describe('createWiki', () => {
     const raw = readFileSync(result.path, 'utf-8');
     expect(frontmatter.parseWikiFrontmatter(raw)).toEqual({
       tags: ['kb'],
-      references_principles: ['contract-first-design'],
       createdAt: '2026-04-10T01:02:03.000Z',
       updatedAt: '2026-04-10T01:02:03.000Z',
-      entrySeq: 1,
       related: ['note:alpha'],
     });
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));

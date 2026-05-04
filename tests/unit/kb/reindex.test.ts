@@ -74,10 +74,8 @@ function renderWiki(): string {
     'tags: [wakeful, retrieval]',
     'sources:',
     '  - note:coral-alpha',
-    'references_principles: [rescan-projection]',
     'createdAt: 2026-05-04T00:00:00.000Z',
     'updatedAt: 2026-05-04T01:00:00.000Z',
-    'entrySeq: 12',
     '---',
     '# Living Memory',
     '',
@@ -290,11 +288,9 @@ Make the contract explicit first.
       slug: 'living-memory',
       title: 'Living Memory',
       tags: ['wakeful', 'retrieval'],
-      references_principles: ['rescan-projection'],
       knowledge: [noteEntryId('coral-alpha')],
       createdAt: '2026-05-04T00:00:00.000Z',
       updatedAt: '2026-05-04T01:00:00.000Z',
-      entrySeq: 12,
     });
     expect(kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'))).toEqual(
       expect.objectContaining({
@@ -339,10 +335,8 @@ Make the contract explicit first.
       [
         '---',
         'tags: [broken]',
-        'references_principles: []',
         'createdAt: 2026-05-04T00:00:00.000Z',
         'updatedAt: 2026-05-04T00:00:00.000Z',
-        'entrySeq: 99',
         '---',
         '# Broken Wiki',
         '',

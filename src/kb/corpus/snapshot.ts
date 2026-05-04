@@ -73,7 +73,6 @@ export const SET_LIKE_FRONTMATTER_ARRAY_FIELDS = new Set([
   'source',
   'members',
   'children',
-  'references_principles',
 ]);
 
 /** Builds the canonical retrieval text that both text and vector indexing hash/embed. */

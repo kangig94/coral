@@ -133,7 +133,6 @@ describe('session-start.mjs', () => {
         [
           '---',
           'tags: [wake]',
-          'references_principles: []',
           'createdAt: 2026-05-04T00:00:00.000Z',
           `updatedAt: ${updatedAt}`,
           '---',

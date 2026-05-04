@@ -251,7 +251,6 @@ export type KbWikiCreateOptions = {
   understanding?: string;
   knowledge?: string[];
   tags?: string[];
-  referencesPrinciples?: string[];
 };
 
 export type KbWikiUpdateOptions = {

@@ -312,7 +312,7 @@ export function handleKbWikiRead(
       title,
       content: body,
       tags: frontmatter.tags,
-      principles: frontmatter.references_principles,
+      principles: [],
       updatedAt: frontmatter.updatedAt,
     });
   } catch (error: unknown) {

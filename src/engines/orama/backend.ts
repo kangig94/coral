@@ -406,11 +406,9 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
             title: record.entry.title,
             body: record.body,
             tags: record.entry.tags,
-            references_principles: record.entry.references_principles,
             createdAt: record.entry.createdAt,
             updatedAt: record.entry.updatedAt,
             knowledge: record.entry.knowledge,
-            ...(record.entry.entrySeq === undefined ? {} : { entrySeq: record.entry.entrySeq }),
             ...(record.entry.related === undefined ? {} : { related: record.entry.related }),
           },
           {

@@ -227,7 +227,6 @@ Keep the body stable.
       const serialized = serializeWiki(
         {
           tags: ['kb'],
-          references_principles: [],
           createdAt: '2026-04-01',
           updatedAt: '2026-04-01',
         },

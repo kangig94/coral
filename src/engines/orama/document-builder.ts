@@ -133,7 +133,7 @@ export function toOramaDocument(
     };
   }
 
-  if ('references_principles' in record) {
+  if ('knowledge' in record) {
     const entryId = wikiEntryId(record.slug);
     return {
       id: entryId,
@@ -144,7 +144,7 @@ export function toOramaDocument(
       title: record.title,
       body: record.body,
       tags: record.tags.map(normalizeHyphens),
-      principles: record.references_principles.map(normalizeHyphens),
+      principles: [],
       contentHash:
         options.contentHash ??
         computeContentSurfaceHash({
@@ -156,10 +156,8 @@ export function toOramaDocument(
         computeMetadataSurfaceHash({
           frontmatter: {
             tags: record.tags,
-            references_principles: record.references_principles,
             createdAt: record.createdAt,
             updatedAt: record.updatedAt,
-            entrySeq: record.entrySeq,
             related: record.related,
           } as CanonicalFrontmatterRecord,
         }),

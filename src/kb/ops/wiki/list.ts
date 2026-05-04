@@ -18,11 +18,9 @@ export async function listWikis(kb: KbRuntime): Promise<WikiListItem[]> {
       slug: entry.slug,
       title: entry.title,
       tags: [...entry.tags],
-      references_principles: [...entry.references_principles],
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
       knowledge: [...entry.knowledge],
       related: [...(entry.related ?? [])],
-      ...(entry.entrySeq === undefined ? {} : { entrySeq: entry.entrySeq }),
     }));
 }

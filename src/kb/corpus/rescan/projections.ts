@@ -284,12 +284,10 @@ export function buildKbIndex(
       slug: wiki.slug,
       title: wiki.title,
       tags: wiki.tags,
-      references_principles: wiki.references_principles,
       createdAt: wiki.createdAt,
       updatedAt: wiki.updatedAt,
       knowledge: wiki.knowledge,
       related: wiki.related ?? [],
-      ...(wiki.entrySeq === undefined ? {} : { entrySeq: wiki.entrySeq }),
     });
   }
 
