@@ -94,7 +94,7 @@ export function drainTouchJournal(
   runtimeDir: string,
   kbIndex: KbIndex,
   options: TouchJournalOptions,
-): Map<string, Set<KbEntryId>> {
+): Map<string, KbEntryId[]> {
   const { storage } = options;
   const journalPath = touchJournalPath(runtimeDir);
   const tombstonePath = touchJournalTombstonePath(runtimeDir);
@@ -130,7 +130,7 @@ export function drainTouchJournal(
     }
   }
 
-  return coalesceTouchedWikis(kbIndex, targetsByEventId.values());
+  return groupTouchEventsByWiki(kbIndex, targetsByEventId.values());
 }
 
 export function truncateTouchJournal(runtimeDir: string, options: TouchJournalOptions): void {
@@ -249,27 +249,48 @@ function parseTouchJournalEvent(line: string): TouchJournalEvent | null {
   };
 }
 
-function coalesceTouchedWikis(kbIndex: KbIndex, targets: Iterable<KbEntryId>): Map<string, Set<KbEntryId>> {
-  const affected = new Map<string, Set<KbEntryId>>();
-  const targetSet = new Set(targets);
-  if (targetSet.size === 0) {
+/**
+ * Reverse-map touch events to affected wikis, preserving event order and
+ * count. Each touch event in the input becomes one entry in the per-wiki
+ * list — the downstream bubble-up helper performs one swap per entry, so
+ * 5 reads of the same link produce 5 swaps (Rivest 1976 transposition
+ * heuristic). eventId-level dedup against rotation/segment overlap has
+ * already been applied by the caller (`targetsByEventId`).
+ */
+function groupTouchEventsByWiki(kbIndex: KbIndex, targets: Iterable<KbEntryId>): Map<string, KbEntryId[]> {
+  const affected = new Map<string, KbEntryId[]>();
+  const targetList = [...targets];
+  if (targetList.length === 0) {
     return affected;
   }
 
+  const wikisByTarget = new Map<KbEntryId, string[]>();
   for (const entry of Object.values(kbIndex.entries)) {
     if (!isWikiEntry(entry)) {
       continue;
     }
-    for (const target of targetSet) {
-      if (!entry.knowledge.includes(target)) {
-        continue;
+    for (const knowledgeId of entry.knowledge) {
+      let slugs = wikisByTarget.get(knowledgeId);
+      if (slugs === undefined) {
+        slugs = [];
+        wikisByTarget.set(knowledgeId, slugs);
       }
-      let touchedTargets = affected.get(entry.slug);
-      if (touchedTargets === undefined) {
-        touchedTargets = new Set<KbEntryId>();
-        affected.set(entry.slug, touchedTargets);
+      slugs.push(entry.slug);
+    }
+  }
+
+  for (const target of targetList) {
+    const slugs = wikisByTarget.get(target);
+    if (slugs === undefined) {
+      continue;
+    }
+    for (const slug of slugs) {
+      let events = affected.get(slug);
+      if (events === undefined) {
+        events = [];
+        affected.set(slug, events);
       }
-      touchedTargets.add(target);
+      events.push(target);
     }
   }
 

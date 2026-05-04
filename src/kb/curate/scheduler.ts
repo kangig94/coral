@@ -26,7 +26,7 @@ import type { SpawnCliFn } from './spawn-cli.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 import { curateDb } from './db-access.js';
-import { moveWikiKnowledgeToFront } from '../ops/wiki/rewrite.js';
+import { bubbleUpWikiKnowledge } from '../ops/wiki/rewrite.js';
 
 export type CurateHandle = {
   start(): Promise<void>;
@@ -43,7 +43,7 @@ export async function runTouchDrainSubphase(kb: KbRuntime): Promise<boolean> {
   const affectedWikis = drainTouchJournal(kb.runtimeDir, kb.readIndexOrEmpty(), { storage: kb.storagePort });
 
   for (const [slug, targets] of affectedWikis) {
-    await moveWikiKnowledgeToFront(kb, slug, [...targets]);
+    await bubbleUpWikiKnowledge(kb, slug, targets);
   }
 
   truncateTouchJournal(kb.runtimeDir, { storage: kb.storagePort });

@@ -69,8 +69,8 @@ describe('touch-journal', () => {
     const result = drainTouchJournal(runtimeDir, index, { storage: realStorage });
 
     expect([...result.keys()].sort()).toEqual(['wiki-one', 'wiki-two']);
-    expect([...result.get('wiki-one')!]).toEqual([targetA]);
-    expect([...result.get('wiki-two')!]).toEqual([targetB]);
+    expect(result.get('wiki-one')!).toEqual([targetA]);
+    expect(result.get('wiki-two')!).toEqual([targetB]);
     expect(existsSync(touchJournalPath(runtimeDir))).toBe(false);
     expect(existsSync(touchJournalTombstonePath(runtimeDir))).toBe(true);
   });
@@ -85,7 +85,21 @@ describe('touch-journal', () => {
     const result = drainTouchJournal(runtimeDir, index, { storage: realStorage });
 
     expect(result.size).toBe(1);
-    expect([...result.get('wiki-one')!]).toEqual([target]);
+    expect(result.get('wiki-one')!).toEqual([target]);
+  });
+
+  it('preserves distinct touch events for the same target in batch order (per-event semantics)', () => {
+    const target = noteEntryId('alpha');
+    appendTouchEvent(runtimeDir, target, 'evt-1', { storage: realStorage, now: STATIC_NOW });
+    appendTouchEvent(runtimeDir, target, 'evt-2', { storage: realStorage, now: STATIC_NOW });
+    appendTouchEvent(runtimeDir, target, 'evt-3', { storage: realStorage, now: STATIC_NOW });
+
+    const index = indexWithWikis({ 'wiki-one': ['alpha', 'beta'] });
+    const result = drainTouchJournal(runtimeDir, index, { storage: realStorage });
+
+    // Three distinct eventIds → three swap requests; downstream bubble-up
+    // performs one swap per entry (Rivest 1976 transposition heuristic).
+    expect(result.get('wiki-one')!).toEqual([target, target, target]);
   });
 
   it('atomic rotation: renames jsonl to tombstone before reading, leaving canonical absent', () => {

@@ -156,23 +156,29 @@ function diffRemovedEntryIds(before: readonly KbEntryId[], after: readonly KbEnt
   return before.filter((entryId) => !remaining.has(entryId));
 }
 
-function moveExistingKnowledgeLinksToFront(knowledge: string, entryIds: readonly KbEntryId[]): string {
+/**
+ * Self-organizing list via the transposition heuristic (Rivest 1976,
+ * Bitner 1979): each touch swaps the matched link with its immediate
+ * predecessor. Under stationary access frequencies, transposition
+ * converges to the optimal frequency-sorted order, while move-to-front
+ * over-reacts to single accesses and never converges.
+ *
+ * Per-event semantics: each entry in `entryIds` is one touch event and
+ * causes at most one swap. Multiple events for the same link in one
+ * batch each count as a separate swap (e.g. 5 touches = 5 positions up).
+ * Touched links already at index 0, or absent from the list, no-op.
+ */
+function bubbleUpKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
   const lines = knowledgeLines(knowledge);
-  const movedLines: string[] = [];
-  const movedIndexes = new Set<number>();
-
-  for (const entryId of uniqueEntryIds(entryIds)) {
+  for (const entryId of entryIds) {
     const link = entryIdToVaultLink(entryId);
-    const index = lines.findIndex((line, candidateIndex) => !movedIndexes.has(candidateIndex) && line.includes(link));
-    if (index === -1) {
+    const index = lines.findIndex((line) => line.includes(link));
+    if (index <= 0) {
       continue;
     }
-    movedIndexes.add(index);
-    movedLines.push(lines[index]);
+    [lines[index - 1], lines[index]] = [lines[index], lines[index - 1]];
   }
-
-  const remaining = lines.filter((_line, index) => !movedIndexes.has(index));
-  return [...movedLines, ...remaining].join('\n').trim();
+  return lines.join('\n').trim();
 }
 
 export async function rewriteWiki(
@@ -265,7 +271,7 @@ export async function rewriteWikiInMutation(
   return { path: current.path };
 }
 
-export function moveWikiKnowledgeToFrontInMutation(
+export function bubbleUpWikiKnowledgeInMutation(
   rt: KbRuntime,
   mutation: KbMutationEffects,
   slug: string,
@@ -279,7 +285,7 @@ export function moveWikiKnowledgeToFrontInMutation(
       if (entryIds.length === 0) {
         return undefined;
       }
-      const knowledge = moveExistingKnowledgeLinksToFront(current.sections.knowledge, entryIds);
+      const knowledge = bubbleUpKnowledgeLinks(current.sections.knowledge, entryIds);
       return knowledge === current.sections.knowledge
         ? undefined
         : {
@@ -295,7 +301,7 @@ export function moveWikiKnowledgeToFrontInMutation(
   );
 }
 
-export function moveWikiKnowledgeToFront(
+export function bubbleUpWikiKnowledge(
   rt: KbRuntime,
   slug: string,
   entryIds: readonly KbEntryId[],
@@ -304,7 +310,7 @@ export function moveWikiKnowledgeToFront(
     if (entryIds.length === 0) {
       return undefined;
     }
-    const knowledge = moveExistingKnowledgeLinksToFront(current.sections.knowledge, entryIds);
+    const knowledge = bubbleUpKnowledgeLinks(current.sections.knowledge, entryIds);
     return knowledge === current.sections.knowledge
       ? undefined
       : {

@@ -16,13 +16,15 @@ vi.mock('node:os', async () => {
 
 async function loadModules() {
   vi.resetModules();
-  const [{ rewriteWiki, rewriteWikiInMutation }, { createWiki }, paths, frontmatter] = await Promise.all([
-    import('#src/kb/ops/wiki/rewrite.js'),
-    import('#src/kb/ops/wiki/create.js'),
-    import('#src/kb/paths.js'),
-    import('#src/kb/corpus/frontmatter.js'),
-  ]);
-  return { rewriteWiki, rewriteWikiInMutation, createWiki, paths, frontmatter };
+  const [{ rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge }, { createWiki }, paths, frontmatter, entryTypes] =
+    await Promise.all([
+      import('#src/kb/ops/wiki/rewrite.js'),
+      import('#src/kb/ops/wiki/create.js'),
+      import('#src/kb/paths.js'),
+      import('#src/kb/corpus/frontmatter.js'),
+      import('#src/kb/entry-types.js'),
+    ]);
+  return { rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge, createWiki, paths, frontmatter, entryTypes };
 }
 
 function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
@@ -123,6 +125,94 @@ describe('rewriteWiki', () => {
 
     expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
       knowledge: ['note:alpha', 'note:added'],
+    });
+  });
+
+  describe('bubbleUpWikiKnowledge (transposition heuristic)', () => {
+    it('swaps a touched link with its immediate predecessor (single touch = one position up)', async () => {
+      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const kb = createRuntime(paths);
+      await createWiki(kb, {
+        slug: 'living-knowledge',
+        knowledge: ['note:alpha', 'note:beta', 'note:gamma', 'note:delta'],
+      });
+
+      await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:gamma']);
+
+      const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+      const raw = readFileSync(wikiPath, 'utf-8');
+      expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
+        '- [[notes/alpha]]\n- [[notes/gamma]]\n- [[notes/beta]]\n- [[notes/delta]]',
+      );
+    });
+
+    it('counts each touch event as a separate swap (5 touches = 5 positions up)', async () => {
+      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const kb = createRuntime(paths);
+      await createWiki(kb, {
+        slug: 'living-knowledge',
+        knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e', 'note:f'],
+      });
+
+      // Touched 'note:f' three times — should bubble up by exactly 3 positions.
+      await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:f', 'note:f', 'note:f']);
+
+      const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+      const raw = readFileSync(wikiPath, 'utf-8');
+      expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
+        '- [[notes/a]]\n- [[notes/b]]\n- [[notes/f]]\n- [[notes/c]]\n- [[notes/d]]\n- [[notes/e]]',
+      );
+    });
+
+    it('handles interleaved touches in event order', async () => {
+      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const kb = createRuntime(paths);
+      await createWiki(kb, {
+        slug: 'living-knowledge',
+        knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e'],
+      });
+
+      // Events: d, b, d, e
+      // After d: [a, b, d, c, e]
+      // After b: [b, a, d, c, e]
+      // After d: [b, d, a, c, e]
+      // After e: [b, d, a, e, c]
+      await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:d', 'note:b', 'note:d', 'note:e']);
+
+      const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+      const raw = readFileSync(wikiPath, 'utf-8');
+      expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
+        '- [[notes/b]]\n- [[notes/d]]\n- [[notes/a]]\n- [[notes/e]]\n- [[notes/c]]',
+      );
+    });
+
+    it('no-ops when the touched link is already at index 0', async () => {
+      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const kb = createRuntime(paths);
+      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
+
+      await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:alpha']);
+
+      const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+      const raw = readFileSync(wikiPath, 'utf-8');
+      expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
+        '- [[notes/alpha]]\n- [[notes/beta]]',
+      );
+    });
+
+    it('skips touches for links no longer in the Knowledge list', async () => {
+      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const kb = createRuntime(paths);
+      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
+
+      await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:absent', 'note:beta']);
+
+      const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+      const raw = readFileSync(wikiPath, 'utf-8');
+      // 'note:absent' is a no-op; 'note:beta' bubbles up by 1.
+      expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
+        '- [[notes/beta]]\n- [[notes/alpha]]',
+      );
     });
   });
 });
