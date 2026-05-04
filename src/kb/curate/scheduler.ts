@@ -26,7 +26,7 @@ import type { SpawnCliFn } from './spawn-cli.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 import { curateDb } from './db-access.js';
-import { bubbleUpWikiKnowledge } from '../ops/wiki/rewrite.js';
+import { bubbleUpWikiKnowledge } from '../ops/wiki/mutation.js';
 
 export type CurateHandle = {
   start(): Promise<void>;

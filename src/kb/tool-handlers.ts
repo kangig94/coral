@@ -20,10 +20,14 @@ import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources } from './ops/source-store.js';
 import { update as kbUpdate } from './ops/update.js';
+import { adoptIntoWiki } from './ops/wiki/adopt.js';
+import { citeWikiKnowledge } from './ops/wiki/cite.js';
 import { createWiki } from './ops/wiki/create.js';
 import { deleteWiki } from './ops/wiki/delete.js';
+import { linkWikiKnowledge } from './ops/wiki/link.js';
 import { listWikis } from './ops/wiki/list.js';
-import { updateWiki } from './ops/wiki/update.js';
+import { rewriteWikiUnderstanding } from './ops/wiki/rewrite.js';
+import { unlinkWikiKnowledge } from './ops/wiki/unlink.js';
 import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
@@ -50,11 +54,15 @@ import {
   kbSourceListSchema,
   kbUpdateSchema,
   kbWakeUpSchema,
+  kbWikiAdoptSchema,
+  kbWikiCiteSchema,
   kbWikiCreateSchema,
   kbWikiDeleteSchema,
+  kbWikiLinkSchema,
   kbWikiListSchema,
   kbWikiReadSchema,
-  kbWikiUpdateSchema,
+  kbWikiRewriteSchema,
+  kbWikiUnlinkSchema,
 } from './tool-contracts.js';
 
 type KbArgs = Record<string, unknown>;
@@ -469,14 +477,72 @@ export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBas
   });
 }
 
-export async function handleKbWikiUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbWikiUpdateSchema.safeParse(args);
+export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiRewriteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
-    const result = await updateWiki(kbSubsystem.kb, parsed.data);
+    const result = await rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiLinkSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await linkWikiKnowledge(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiUnlinkSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await unlinkWikiKnowledge(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiCiteSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await citeWikiKnowledge(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiAdopt(
+  args: KbArgs,
+  kbSubsystem: KnowledgeBaseRuntime,
+  ctx: InvocationContext,
+): Promise<KbToolResult> {
+  const parsed = kbWikiAdoptSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+      kbSubsystem.curateScheduler.schedule();
+    });
     kbSubsystem.curateScheduler.scheduleDeferredCommit();
     return result;
   });

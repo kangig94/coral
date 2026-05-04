@@ -25,17 +25,20 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ promote }, { update }, { deleteNote }, { readEntry }, runtime, paths, frontmatter] = await Promise.all([
-    import('#src/kb/ops/promote.js'),
-    import('#src/kb/ops/update.js'),
-    import('#src/kb/ops/delete.js'),
-    import('#src/kb/read.js'),
-    import('#src/kb/runtime.js'),
-    import('#src/kb/paths.js'),
-    import('#src/kb/corpus/frontmatter.js'),
-  ]);
+  const [{ promote }, { adoptIntoWiki }, { update }, { deleteNote }, { readEntry }, runtime, paths, frontmatter] =
+    await Promise.all([
+      import('#src/kb/ops/promote.js'),
+      import('#src/kb/ops/wiki/adopt.js'),
+      import('#src/kb/ops/update.js'),
+      import('#src/kb/ops/delete.js'),
+      import('#src/kb/read.js'),
+      import('#src/kb/runtime.js'),
+      import('#src/kb/paths.js'),
+      import('#src/kb/corpus/frontmatter.js'),
+    ]);
   return {
     promote,
+    adoptIntoWiki,
     update,
     deleteNote,
     readEntry,
@@ -147,8 +150,8 @@ memo body
     });
   });
 
-  it('promotes a memo and prepends the new note to wiki Knowledge under the same mutation', async () => {
-    const { promote, createKbRuntime, paths, frontmatter } = await loadKbModules();
+  it('adoptIntoWiki promotes a memo and prepends the new note to wiki Knowledge under the same mutation', async () => {
+    const { adoptIntoWiki, createKbRuntime, paths, frontmatter } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
@@ -188,16 +191,17 @@ Existing understanding.
       'utf-8',
     );
 
-    const result = await promote(kb, projectRoot, {
+    const result = await adoptIntoWiki(kb, projectRoot, {
+      slug: 'living-knowledge',
       memo: '2026-03-23-kb.md',
       title: 'KB Promotion',
       content: '## Rule\nPromote through the tool.',
       domain: 'coral',
       topic: 'kb-promotion',
-      wiki: 'living-knowledge',
     });
 
     expect(result.path).toBe(paths.notePathFromName('coral-kb-promotion', process.env.CORAL_KB_PATH!));
+    expect(result.wikiSlug).toBe('living-knowledge');
     expect(existsSync(memoPath)).toBe(false);
 
     const wiki = readFileSync(wikiPath, 'utf-8');

@@ -15,12 +15,13 @@ vi.mock('node:os', async () => {
 
 async function loadModules() {
   vi.resetModules();
-  const [{ listWikis }, { createWiki }, paths] = await Promise.all([
+  const [{ listWikis }, { createWiki }, { linkWikiKnowledge }, paths] = await Promise.all([
     import('#src/kb/ops/wiki/list.js'),
     import('#src/kb/ops/wiki/create.js'),
+    import('#src/kb/ops/wiki/link.js'),
     import('#src/kb/paths.js'),
   ]);
-  return { listWikis, createWiki, paths };
+  return { listWikis, createWiki, linkWikiKnowledge, paths };
 }
 
 function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
@@ -49,22 +50,24 @@ describe('listWikis', () => {
   });
 
   it('returns wikis sorted by updatedAt DESC and includes the projected payload', async () => {
-    const { listWikis, createWiki, paths } = await loadModules();
+    const { listWikis, createWiki, linkWikiKnowledge, paths } = await loadModules();
     const kb = createRuntime(paths);
 
     vi.setSystemTime(new Date('2026-04-15T01:00:00.000Z'));
-    await createWiki(kb, { slug: 'older-wiki', knowledge: ['note:a'] });
+    await createWiki(kb, { slug: 'older-wiki' });
+    await linkWikiKnowledge(kb, { slug: 'older-wiki', refs: ['note:a'] });
     vi.setSystemTime(new Date('2026-04-15T02:00:00.000Z'));
-    await createWiki(kb, { slug: 'newest-wiki', knowledge: ['note:b'] });
+    await createWiki(kb, { slug: 'newest-wiki' });
+    await linkWikiKnowledge(kb, { slug: 'newest-wiki', refs: ['note:b'] });
     vi.setSystemTime(new Date('2026-04-15T01:30:00.000Z'));
-    await createWiki(kb, { slug: 'middle-wiki', knowledge: ['note:c'] });
+    await createWiki(kb, { slug: 'middle-wiki' });
+    await linkWikiKnowledge(kb, { slug: 'middle-wiki', refs: ['note:c'] });
 
     const list = await listWikis(kb);
 
     expect(list.map((entry) => entry.slug)).toEqual(['newest-wiki', 'middle-wiki', 'older-wiki']);
     expect(list[0]).toMatchObject({
       slug: 'newest-wiki',
-      updatedAt: '2026-04-15T02:00:00.000Z',
       knowledge: ['note:b'],
     });
   });

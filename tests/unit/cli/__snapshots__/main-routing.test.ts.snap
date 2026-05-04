@@ -130,7 +130,8 @@ Commands:
   wiki                      Manage KB wikis
   memo                      Manage project memos
   read [options] <note>     Read a KB entry by slug or explicit selector
-  promote [options]         Promote a memo into a KB note
+  promote [options]         Promote a memo into a KB note. To attach the new
+                            note to a wiki, use \`kb wiki adopt\`.
   update [options] <note>   Update an existing KB note
   delete <note>             Delete a KB note
   wake-up                   Generate the KB wake-up packet

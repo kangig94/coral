@@ -41,14 +41,19 @@ import type {
   KbUpdateResponse,
   KbWakeUpInput,
   KbWakeUpResponse,
+  KbWikiAdoptInput,
+  KbWikiAdoptResponse,
+  KbWikiCiteInput,
   KbWikiCreateInput,
   KbWikiCreateResponse,
   KbWikiDeleteInput,
   KbWikiDeleteResponse,
+  KbWikiLinkInput,
   KbWikiListResult,
+  KbWikiMutationResponse,
   KbWikiReadInput,
-  KbWikiUpdateInput,
-  KbWikiUpdateResponse,
+  KbWikiRewriteInput,
+  KbWikiUnlinkInput,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { getSharedReadCoralStore } from './read-store.js';
@@ -129,7 +134,11 @@ export type CliCommandClient = AbortCapableClient & {
   kbUpdate(args: KbUpdateInput): Promise<KbUpdateResponse>;
   kbDelete(args: KbDeleteInput): Promise<KbDeleteResponse>;
   kbWikiCreate(args: KbWikiCreateInput): Promise<KbWikiCreateResponse>;
-  kbWikiUpdate(args: KbWikiUpdateInput): Promise<KbWikiUpdateResponse>;
+  kbWikiRewrite(args: KbWikiRewriteInput): Promise<KbWikiMutationResponse>;
+  kbWikiLink(args: KbWikiLinkInput): Promise<KbWikiMutationResponse>;
+  kbWikiUnlink(args: KbWikiUnlinkInput): Promise<KbWikiMutationResponse>;
+  kbWikiCite(args: KbWikiCiteInput): Promise<KbWikiMutationResponse>;
+  kbWikiAdopt(args: KbWikiAdoptInput): Promise<KbWikiAdoptResponse>;
   kbWikiDelete(args: KbWikiDeleteInput): Promise<KbWikiDeleteResponse>;
   kbWikiList(): Promise<KbWikiListResult>;
   kbWikiRead(args: KbWikiReadInput): Promise<KbReadResult>;
@@ -232,7 +241,6 @@ export type KbPromoteOptions = {
   contentFile?: string;
   domain?: string;
   topic?: string;
-  wiki?: string | true;
 };
 
 export type KbUpdateOptions = {
@@ -248,19 +256,23 @@ export type KbSourceImportOptions = {
 
 export type KbWikiCreateOptions = {
   title?: string;
-  understanding?: string;
-  knowledge?: string[];
-  tags?: string[];
+  tag?: string[];
 };
 
-export type KbWikiUpdateOptions = {
-  understanding?: string;
-  understandingFile?: string;
-  evidenceAppend?: string;
-  evidenceAppendFile?: string;
-  knowledgeReorder?: string;
-  knowledgeAdd?: string[];
-  knowledgeRemove?: string[];
+export type KbWikiRewriteOptions = {
+  from: string;
+};
+
+export type KbWikiCiteOptions = {
+  from: string;
+};
+
+export type KbWikiAdoptOptions = {
+  memo: string;
+  title: string;
+  contentFile: string;
+  domain: string;
+  topic: string;
 };
 
 export type KbReindexOptions = {
@@ -531,10 +543,30 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       ),
     kbWikiCreate: async (args) =>
       await request<KbWikiCreateResponse>('kb.wiki.create', buildKbMutationTransportContextBody(args, defaultContext)),
-    kbWikiUpdate: async (args) =>
-      await request<KbWikiUpdateResponse>(
-        'kb.wiki.update',
-        buildKbMutationTransportContextBody({ ...args, slug: args.slug }, defaultContext),
+    kbWikiRewrite: async (args) =>
+      await request<KbWikiMutationResponse>(
+        'kb.wiki.rewrite',
+        buildKbMutationTransportContextBody(args, defaultContext),
+      ),
+    kbWikiLink: async (args) =>
+      await request<KbWikiMutationResponse>(
+        'kb.wiki.link',
+        buildKbMutationTransportContextBody(args, defaultContext),
+      ),
+    kbWikiUnlink: async (args) =>
+      await request<KbWikiMutationResponse>(
+        'kb.wiki.unlink',
+        buildKbMutationTransportContextBody(args, defaultContext),
+      ),
+    kbWikiCite: async (args) =>
+      await request<KbWikiMutationResponse>(
+        'kb.wiki.cite',
+        buildKbMutationTransportContextBody(args, defaultContext),
+      ),
+    kbWikiAdopt: async (args) =>
+      await request<KbWikiAdoptResponse>(
+        'kb.wiki.adopt',
+        buildKbMutationTransportContextBody(args, defaultContext),
       ),
     kbWikiDelete: async (args) =>
       await request<KbWikiDeleteResponse>(

@@ -21,7 +21,11 @@ export type StaticCommandPath =
   | 'kb source list'
   | 'kb source delete'
   | 'kb wiki create'
-  | 'kb wiki update'
+  | 'kb wiki rewrite'
+  | 'kb wiki link'
+  | 'kb wiki unlink'
+  | 'kb wiki cite'
+  | 'kb wiki adopt'
   | 'kb wiki delete'
   | 'kb wiki list'
   | 'kb wake-up'
@@ -58,7 +62,11 @@ export const commandClassMap = {
   'kb source list': 'read',
   'kb source delete': 'mutate',
   'kb wiki create': 'mutate',
-  'kb wiki update': 'mutate',
+  'kb wiki rewrite': 'mutate',
+  'kb wiki link': 'mutate',
+  'kb wiki unlink': 'mutate',
+  'kb wiki cite': 'mutate',
+  'kb wiki adopt': 'mutate',
   'kb wiki delete': 'mutate',
   'kb wiki list': 'read',
   'kb wake-up': 'read',

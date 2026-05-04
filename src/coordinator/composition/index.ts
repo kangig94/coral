@@ -47,11 +47,15 @@ import {
   handleKbUpdate,
   handleKbDelete,
   handleKbWakeUp,
+  handleKbWikiAdopt,
+  handleKbWikiCite,
   handleKbWikiCreate,
   handleKbWikiDelete,
+  handleKbWikiLink,
   handleKbWikiList,
   handleKbWikiRead,
-  handleKbWikiUpdate,
+  handleKbWikiRewrite,
+  handleKbWikiUnlink,
 } from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
@@ -399,9 +403,29 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         recordHostedKbFailure('wiki_create', ctx, result);
         return result;
       },
-      updateWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiUpdate(args, kbSubsystem));
-        recordHostedKbFailure('wiki_update', ctx, result);
+      rewriteWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiRewrite(args, kbSubsystem));
+        recordHostedKbFailure('wiki_rewrite', ctx, result);
+        return result;
+      },
+      linkWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiLink(args, kbSubsystem));
+        recordHostedKbFailure('wiki_link', ctx, result);
+        return result;
+      },
+      unlinkWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiUnlink(args, kbSubsystem));
+        recordHostedKbFailure('wiki_unlink', ctx, result);
+        return result;
+      },
+      citeWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiCite(args, kbSubsystem));
+        recordHostedKbFailure('wiki_cite', ctx, result);
+        return result;
+      },
+      adoptWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx));
+        recordHostedKbFailure('wiki_adopt', ctx, result);
         return result;
       },
       deleteWiki: async (slug, ctx) => {

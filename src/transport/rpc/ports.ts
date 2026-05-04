@@ -85,7 +85,11 @@ export interface KbRequestPort {
   updateNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteNote(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
   createWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  updateWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  rewriteWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  linkWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  unlinkWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  citeWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  adoptWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteWiki(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
   wakeUp(args: Record<string, unknown>): Promise<KbToolResult>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;

@@ -16,15 +16,15 @@ vi.mock('node:os', async () => {
 
 async function loadModules() {
   vi.resetModules();
-  const [{ rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge }, { createWiki }, paths, frontmatter, entryTypes] =
+  const [{ rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge }, { createWiki }, { linkWikiKnowledge }, paths, frontmatter] =
     await Promise.all([
-      import('#src/kb/ops/wiki/rewrite.js'),
+      import('#src/kb/ops/wiki/mutation.js'),
       import('#src/kb/ops/wiki/create.js'),
+      import('#src/kb/ops/wiki/link.js'),
       import('#src/kb/paths.js'),
       import('#src/kb/corpus/frontmatter.js'),
-      import('#src/kb/entry-types.js'),
     ]);
-  return { rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge, createWiki, paths, frontmatter, entryTypes };
+  return { rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge, createWiki, linkWikiKnowledge, paths, frontmatter };
 }
 
 function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
@@ -35,9 +35,21 @@ function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) 
   });
 }
 
-describe('rewriteWiki', () => {
+async function seedWiki(
+  modules: Awaited<ReturnType<typeof loadModules>>,
+  kb: ReturnType<typeof createRuntime>,
+  slug: string,
+  knowledgeRefs: readonly string[] = [],
+): Promise<void> {
+  await modules.createWiki(kb, { slug });
+  if (knowledgeRefs.length > 0) {
+    await modules.linkWikiKnowledge(kb, { slug, refs: knowledgeRefs });
+  }
+}
+
+describe('rewriteWiki kernel', () => {
   beforeEach(() => {
-    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-wiki-rewrite-'));
+    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-wiki-mutation-'));
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     mkdirSync(process.env.CORAL_KB_PATH, { recursive: true });
     vi.useFakeTimers();
@@ -53,9 +65,10 @@ describe('rewriteWiki', () => {
   });
 
   it('rewrites the Knowledge section through rewriteWiki and updates the index knowledge field', async () => {
-    const { rewriteWiki, createWiki, paths, frontmatter } = await loadModules();
+    const modules = await loadModules();
+    const { rewriteWiki, paths, frontmatter } = modules;
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
+    await seedWiki(modules, kb, 'living-knowledge', ['note:alpha', 'note:beta']);
 
     await rewriteWiki(kb, 'living-knowledge', () => ({
       sections: { knowledge: '- [[notes/gamma]]\n- [[notes/alpha]]' },
@@ -72,9 +85,10 @@ describe('rewriteWiki', () => {
   });
 
   it('rewriteWiki returns the path without writing when the mutation function returns null', async () => {
-    const { rewriteWiki, createWiki, paths } = await loadModules();
+    const modules = await loadModules();
+    const { rewriteWiki, paths } = modules;
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
+    await seedWiki(modules, kb, 'living-knowledge');
     const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     const before = readFileSync(wikiPath, 'utf-8');
 
@@ -84,9 +98,10 @@ describe('rewriteWiki', () => {
   });
 
   it('rewriteWikiInMutation runs inside an existing mutation lock with the requested lane', async () => {
-    const { rewriteWikiInMutation, createWiki, paths, frontmatter } = await loadModules();
+    const modules = await loadModules();
+    const { rewriteWikiInMutation, paths, frontmatter } = modules;
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
+    await seedWiki(modules, kb, 'living-knowledge');
 
     await kb.withMutationLock(async (mutation) => {
       await rewriteWikiInMutation(
@@ -115,9 +130,10 @@ describe('rewriteWiki', () => {
   });
 
   it('updates the index Knowledge derived field even when only the body changes', async () => {
-    const { rewriteWiki, createWiki, paths } = await loadModules();
+    const modules = await loadModules();
+    const { rewriteWiki, paths } = modules;
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha'] });
+    await seedWiki(modules, kb, 'living-knowledge', ['note:alpha']);
 
     await rewriteWiki(kb, 'living-knowledge', () => ({
       sections: { knowledge: '- [[notes/alpha]]\n- [[notes/added]]' },
@@ -130,12 +146,10 @@ describe('rewriteWiki', () => {
 
   describe('bubbleUpWikiKnowledge (transposition heuristic)', () => {
     it('swaps a touched link with its immediate predecessor (single touch = one position up)', async () => {
-      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const modules = await loadModules();
+      const { bubbleUpWikiKnowledge, paths, frontmatter } = modules;
       const kb = createRuntime(paths);
-      await createWiki(kb, {
-        slug: 'living-knowledge',
-        knowledge: ['note:alpha', 'note:beta', 'note:gamma', 'note:delta'],
-      });
+      await seedWiki(modules, kb, 'living-knowledge', ['note:alpha', 'note:beta', 'note:gamma', 'note:delta']);
 
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:gamma']);
 
@@ -146,15 +160,12 @@ describe('rewriteWiki', () => {
       );
     });
 
-    it('counts each touch event as a separate swap (5 touches = 5 positions up)', async () => {
-      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+    it('counts each touch event as a separate swap (3 touches = 3 positions up)', async () => {
+      const modules = await loadModules();
+      const { bubbleUpWikiKnowledge, paths, frontmatter } = modules;
       const kb = createRuntime(paths);
-      await createWiki(kb, {
-        slug: 'living-knowledge',
-        knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e', 'note:f'],
-      });
+      await seedWiki(modules, kb, 'living-knowledge', ['note:a', 'note:b', 'note:c', 'note:d', 'note:e', 'note:f']);
 
-      // Touched 'note:f' three times — should bubble up by exactly 3 positions.
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:f', 'note:f', 'note:f']);
 
       const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
@@ -165,18 +176,11 @@ describe('rewriteWiki', () => {
     });
 
     it('handles interleaved touches in event order', async () => {
-      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const modules = await loadModules();
+      const { bubbleUpWikiKnowledge, paths, frontmatter } = modules;
       const kb = createRuntime(paths);
-      await createWiki(kb, {
-        slug: 'living-knowledge',
-        knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e'],
-      });
+      await seedWiki(modules, kb, 'living-knowledge', ['note:a', 'note:b', 'note:c', 'note:d', 'note:e']);
 
-      // Events: d, b, d, e
-      // After d: [a, b, d, c, e]
-      // After b: [b, a, d, c, e]
-      // After d: [b, d, a, c, e]
-      // After e: [b, d, a, e, c]
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:d', 'note:b', 'note:d', 'note:e']);
 
       const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
@@ -187,9 +191,10 @@ describe('rewriteWiki', () => {
     });
 
     it('no-ops when the touched link is already at index 0', async () => {
-      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const modules = await loadModules();
+      const { bubbleUpWikiKnowledge, paths, frontmatter } = modules;
       const kb = createRuntime(paths);
-      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
+      await seedWiki(modules, kb, 'living-knowledge', ['note:alpha', 'note:beta']);
 
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:alpha']);
 
@@ -201,15 +206,15 @@ describe('rewriteWiki', () => {
     });
 
     it('skips touches for links no longer in the Knowledge list', async () => {
-      const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
+      const modules = await loadModules();
+      const { bubbleUpWikiKnowledge, paths, frontmatter } = modules;
       const kb = createRuntime(paths);
-      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
+      await seedWiki(modules, kb, 'living-knowledge', ['note:alpha', 'note:beta']);
 
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:absent', 'note:beta']);
 
       const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
       const raw = readFileSync(wikiPath, 'utf-8');
-      // 'note:absent' is a no-op; 'note:beta' bubbles up by 1.
       expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
         '- [[notes/beta]]\n- [[notes/alpha]]',
       );

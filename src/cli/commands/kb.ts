@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Option, type Command } from 'commander';
 
-import type { KbPromoteInput } from '../../kb/entry-types.js';
+import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
 import { resolveProjectSource } from '../../infra/project-source.js';
@@ -18,8 +18,10 @@ import {
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
+  type KbWikiAdoptOptions,
+  type KbWikiCiteOptions,
   type KbWikiCreateOptions,
-  type KbWikiUpdateOptions,
+  type KbWikiRewriteOptions,
 } from '../dispatch.js';
 import { createOutputFormatOption, emit, emitError, emitText, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
@@ -40,11 +42,29 @@ import {
   formatKbSourceList,
   formatKbUpdate,
   formatKbWakeUp,
+  formatKbWikiAdopt,
+  formatKbWikiCite,
   formatKbWikiCreate,
   formatKbWikiDelete,
+  formatKbWikiLink,
   formatKbWikiList,
-  formatKbWikiUpdate,
+  formatKbWikiRewrite,
+  formatKbWikiUnlink,
 } from '../format/kb.js';
+
+const REF_FORMAT_HINT =
+  'note:<slug>, source:<slug>, community:<slug>, wiki:<slug>, or [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]]';
+
+function assertRefFormat(value: string, field: string): string {
+  if (parseKbEntryId(value) === null && vaultLinkToEntryId(value) === null) {
+    throw new UsageError(`Invalid ${field} "${value}". Use ${REF_FORMAT_HINT}.`);
+  }
+  return value;
+}
+
+function assertRefsFormat(values: readonly string[]): string[] {
+  return values.map((value) => assertRefFormat(value, 'ref'));
+}
 
 function appendDelimitedOption(value: string, previous: string[] | undefined): string[] {
   return [
@@ -121,25 +141,17 @@ function registerKbWikiCommands(kb: Command): void {
 
   const kbWikiCreateCommand = kbWikiCommand.command('create');
   kbWikiCreateCommand
-    .description('Create a KB wiki')
-    .argument('[slug]', 'Wiki slug without extension (omit to derive from current project)')
-    .option('--title <text>', 'Wiki title')
-    .option('--understanding <text>', 'Understanding section text')
-    .option('--knowledge <link>', 'Knowledge wikilink or entry ID (repeatable, comma-separated)', appendDelimitedOption)
-    .option('--tags <tag>', 'Tags (repeatable, comma-separated)', appendDelimitedOption)
-    .action(async (providedSlug: string | undefined, opts: KbWikiCreateOptions) => {
+    .description('Create an empty wiki. Populate it with rewrite/link afterwards.')
+    .argument('<slug>', 'Wiki slug (kebab-case, no extension)')
+    .option('--title <text>', 'H1 title (defaults to slug)')
+    .option('--tag <name>', 'Tag (repeatable)', appendDelimitedOption)
+    .action(async (slug: string, opts: KbWikiCreateOptions) => {
       try {
-        const slug = assertWikiSlug(
-          providedSlug ?? resolveProjectSource(process.cwd()).replace(/\//g, '-'),
-          'wiki',
-        );
         const client = makeClient(process.cwd(), kbWikiCreateCommand);
         const result = await client.kbWikiCreate({
-          slug,
+          slug: assertWikiSlug(slug, 'wiki'),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
-          ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
-          ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
+          ...(opts.tag !== undefined ? { tags: opts.tag } : {}),
         });
         emitText(result, formatKbWikiCreate);
       } catch (error) {
@@ -147,58 +159,104 @@ function registerKbWikiCommands(kb: Command): void {
       }
     });
 
-  const kbWikiUpdateCommand = kbWikiCommand.command('update');
-  kbWikiUpdateCommand
-    .description('Update a KB wiki')
-    .argument('<slug>', 'Wiki slug without extension')
-    .option('--understanding <text>', 'Replace Understanding section with literal text')
-    .option('--understanding-file <path>', 'Replace Understanding section with file contents')
-    .option(
-      '--evidence-append <text>',
-      'Append evidence to a Knowledge entry. Format: "[[link]] <text>" — the leading wikilink targets the existing Knowledge block whose evidence list to append to.',
-    )
-    .option(
-      '--evidence-append-file <path>',
-      'Append evidence to a Knowledge entry from a file. File contents must begin with [[link]] then the evidence text.',
-    )
-    .option(
-      '--knowledge-reorder <link-list>',
-      'Reorder Knowledge — provide ALL current links in new order (space/comma-separated entry IDs or [[wikilinks]])',
-    )
-    .option('--knowledge-add <link>', 'Add a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
-    .option('--knowledge-remove <link>', 'Remove a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
-    .action(async (slug: string, opts: KbWikiUpdateOptions) => {
+  const kbWikiRewriteCommand = kbWikiCommand.command('rewrite');
+  kbWikiRewriteCommand
+    .description('Replace the Understanding section with the contents of a file.')
+    .argument('<slug>', 'Wiki slug')
+    .requiredOption('--from <path>', 'File whose contents become the new Understanding')
+    .action(async (slug: string, opts: KbWikiRewriteOptions) => {
       try {
-        if (opts.understanding !== undefined && opts.understandingFile !== undefined) {
-          throw new UsageError('Choose at most one of --understanding or --understanding-file');
-        }
-        if (opts.evidenceAppend !== undefined && opts.evidenceAppendFile !== undefined) {
-          throw new UsageError('Choose at most one of --evidence-append or --evidence-append-file');
-        }
-
-        const understanding =
-          opts.understandingFile !== undefined
-            ? { file: resolveFilePath(opts.understandingFile) }
-            : opts.understanding !== undefined
-              ? { text: opts.understanding }
-              : undefined;
-        const evidenceAppend =
-          opts.evidenceAppendFile !== undefined
-            ? { file: resolveFilePath(opts.evidenceAppendFile) }
-            : opts.evidenceAppend !== undefined
-              ? { text: opts.evidenceAppend }
-              : undefined;
-
-        const client = makeClient(process.cwd(), kbWikiUpdateCommand);
-        const result = await client.kbWikiUpdate({
+        const client = makeClient(process.cwd(), kbWikiRewriteCommand);
+        const result = await client.kbWikiRewrite({
           slug: assertWikiSlug(slug, 'wiki'),
-          ...(understanding !== undefined ? { understanding } : {}),
-          ...(evidenceAppend !== undefined ? { evidenceAppend } : {}),
-          ...(opts.knowledgeReorder !== undefined ? { knowledgeReorder: opts.knowledgeReorder } : {}),
-          ...(opts.knowledgeAdd !== undefined ? { knowledgeAdd: opts.knowledgeAdd } : {}),
-          ...(opts.knowledgeRemove !== undefined ? { knowledgeRemove: opts.knowledgeRemove } : {}),
+          understandingFile: resolveFilePath(opts.from),
         });
-        emitText(result, formatKbWikiUpdate);
+        emitText(result, formatKbWikiRewrite);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiLinkCommand = kbWikiCommand.command('link');
+  kbWikiLinkCommand
+    .description(
+      'Append references to Knowledge. Existing links are ignored (idempotent). Refs accept [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]] or note:<slug> / source:<slug> / community:<slug> / wiki:<slug>.',
+    )
+    .argument('<slug>', 'Wiki slug')
+    .argument('<refs...>', 'One or more refs (space-separated)')
+    .action(async (slug: string, refs: string[]) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiLinkCommand);
+        const result = await client.kbWikiLink({
+          slug: assertWikiSlug(slug, 'wiki'),
+          refs: assertRefsFormat(refs),
+        });
+        emitText(result, formatKbWikiLink);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiUnlinkCommand = kbWikiCommand.command('unlink');
+  kbWikiUnlinkCommand
+    .description('Remove references from Knowledge. Their evidence sub-bullets are removed with them. Missing refs are ignored.')
+    .argument('<slug>', 'Wiki slug')
+    .argument('<refs...>', 'One or more refs (space-separated)')
+    .action(async (slug: string, refs: string[]) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiUnlinkCommand);
+        const result = await client.kbWikiUnlink({
+          slug: assertWikiSlug(slug, 'wiki'),
+          refs: assertRefsFormat(refs),
+        });
+        emitText(result, formatKbWikiUnlink);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiCiteCommand = kbWikiCommand.command('cite');
+  kbWikiCiteCommand
+    .description('Append an evidence sub-bullet under <ref> in Knowledge. <ref> must already be linked.')
+    .argument('<slug>', 'Wiki slug')
+    .argument('<ref>', `The Knowledge entry to nest under: ${REF_FORMAT_HINT}`)
+    .requiredOption('--from <path>', 'File whose contents become the evidence text')
+    .action(async (slug: string, ref: string, opts: KbWikiCiteOptions) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiCiteCommand);
+        const result = await client.kbWikiCite({
+          slug: assertWikiSlug(slug, 'wiki'),
+          ref: assertRefFormat(ref, 'ref'),
+          evidenceFile: resolveFilePath(opts.from),
+        });
+        emitText(result, formatKbWikiCite);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiAdoptCommand = kbWikiCommand.command('adopt');
+  kbWikiAdoptCommand
+    .description('Promote a memo to a note and link it at the front of <slug>\'s Knowledge in one atomic operation. All --memo/--title/--content-file/--domain/--topic are required.')
+    .argument('<slug>', 'Wiki slug to adopt the new note into')
+    .requiredOption('--memo <filename>', '(required) Memo filename (e.g. 20260325-topic.md)')
+    .requiredOption('--title <text>', '(required) Note title')
+    .requiredOption('--content-file <path>', '(required) Read note content from file')
+    .requiredOption('--domain <slug>', '(required) Note domain')
+    .requiredOption('--topic <slug>', '(required) Note topic')
+    .action(async (slug: string, opts: KbWikiAdoptOptions) => {
+      try {
+        const content = readFileSync(resolveFilePath(opts.contentFile), 'utf8');
+        const client = makeClient(process.cwd(), kbWikiAdoptCommand);
+        const result = await client.kbWikiAdopt({
+          slug: assertWikiSlug(slug, 'wiki'),
+          memo: opts.memo,
+          title: opts.title,
+          content,
+          domain: opts.domain,
+          topic: opts.topic,
+        });
+        emitText(result, formatKbWikiAdopt);
       } catch (error) {
         emitError(error);
       }
@@ -223,16 +281,16 @@ function registerKbWikiCommands(kb: Command): void {
     .description('List KB wikis')
     .addOption(createOutputFormatOption())
     .action(async () => {
-    const outputFormat = getOutputFormat(kbWikiListCommand);
+      const outputFormat = getOutputFormat(kbWikiListCommand);
 
-    try {
-      const client = makeClient(process.cwd(), kbWikiListCommand);
-      const result = await client.kbWikiList();
-      emit(result, outputFormat, formatKbWikiList);
-    } catch (error) {
-      emitError(error);
-    }
-  });
+      try {
+        const client = makeClient(process.cwd(), kbWikiListCommand);
+        const result = await client.kbWikiList();
+        emit(result, outputFormat, formatKbWikiList);
+      } catch (error) {
+        emitError(error);
+      }
+    });
 }
 
 function registerKbMemoCommands(kb: Command): void {
@@ -428,33 +486,22 @@ export function registerKbCommands(program: Command): void {
 
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
-    .description('Promote a memo into a KB note')
+    .description('Promote a memo into a KB note. To attach the new note to a wiki, use `kb wiki adopt`.')
     .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
     .option('--content-file <path>', 'Read content from file')
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
-    .option(
-      '--wiki [slug]',
-      'Prepend the promoted note to a wiki Knowledge section. With no value: current project wiki (slug auto-derived from cwd). With value: that specific wiki.',
-    )
     .action(async (opts: KbPromoteOptions) => {
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
-        const wikiSlug =
-          opts.wiki === undefined
-            ? undefined
-            : opts.wiki === true
-              ? assertWikiSlug(resolveProjectSource(process.cwd()).replace(/\//g, '-'), 'wiki')
-              : assertWikiSlug(opts.wiki, 'wiki');
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(content !== undefined ? { content } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
-          ...(wikiSlug !== undefined ? { wiki: wikiSlug } : {}),
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);

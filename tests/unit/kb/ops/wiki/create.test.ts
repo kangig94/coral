@@ -16,13 +16,12 @@ vi.mock('node:os', async () => {
 
 async function loadModules() {
   vi.resetModules();
-  const [{ createWiki }, runtime, paths, frontmatter] = await Promise.all([
+  const [{ createWiki }, paths, frontmatter] = await Promise.all([
     import('#src/kb/ops/wiki/create.js'),
-    import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
     import('#src/kb/corpus/frontmatter.js'),
   ]);
-  return { createWiki, createKbRuntime: runtime.createKbRuntime, paths, frontmatter };
+  return { createWiki, paths, frontmatter };
 }
 
 function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
@@ -50,15 +49,13 @@ describe('createWiki', () => {
     vi.resetModules();
   });
 
-  it('creates a wiki with normalized frontmatter and the canonical body shape', async () => {
+  it('creates an empty wiki with the canonical body shape and normalized frontmatter', async () => {
     const { createWiki, paths, frontmatter } = await loadModules();
     const kb = createRuntime(paths);
 
     const result = await createWiki(kb, {
       slug: 'living-knowledge',
       title: 'Living Knowledge',
-      understanding: '  First insight.  ',
-      knowledge: ['note:alpha', '[[notes/beta]]', 'source:s-one'],
       tags: ['kb'],
     });
 
@@ -71,24 +68,21 @@ describe('createWiki', () => {
       updatedAt: '2026-04-10T01:02:03.000Z',
     });
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
-    expect(sections.understanding).toBe('First insight.');
-    expect(sections.knowledge).toBe('- [[notes/alpha]]\n- [[notes/beta]]\n- [[sources/s-one]]');
+    expect(sections.understanding).toBe('');
+    expect(sections.knowledge).toBe('');
   });
 
-  it('populates the wiki index entry knowledge field from the body', async () => {
+  it('records an empty Knowledge list in the wiki index entry', async () => {
     const { createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
 
-    await createWiki(kb, {
-      slug: 'living-knowledge',
-      knowledge: ['note:alpha', 'note:beta'],
-    });
+    await createWiki(kb, { slug: 'living-knowledge' });
 
     const entry = kb.readIndex()?.entries[wikiEntryId('living-knowledge')];
     expect(entry).toMatchObject({
       kind: 'wiki',
       slug: 'living-knowledge',
-      knowledge: ['note:alpha', 'note:beta'],
+      knowledge: [],
     });
   });
 
@@ -99,9 +93,7 @@ describe('createWiki', () => {
     const existing = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     writeFileSync(existing, '# already here\n', 'utf-8');
 
-    await expect(createWiki(kb, { slug: 'living-knowledge' })).rejects.toThrow(
-      'KB wiki already exists',
-    );
+    await expect(createWiki(kb, { slug: 'living-knowledge' })).rejects.toThrow('KB wiki already exists');
     expect(existsSync(existing)).toBe(true);
     expect(readFileSync(existing, 'utf-8')).toBe('# already here\n');
   });

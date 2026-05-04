@@ -139,8 +139,6 @@ export type WikiEntry = KbWikiFrontmatter & {
 export type KbWikiCreateInput = {
   slug: string;
   title?: string;
-  understanding?: string;
-  knowledge?: string | readonly string[];
   tags?: readonly string[];
 };
 
@@ -149,22 +147,28 @@ export type KbWikiCreateResponse = {
   path: string;
 };
 
-export type KbWikiUpdateInput = {
+export type KbWikiRewriteInput = {
   slug: string;
-  understanding?: string | { text: string } | { file: string };
-  evidenceAppend?: string | { text: string } | { file: string };
-  evidence_append?: string | { text: string } | { file: string };
-  knowledgeReorder?: string | readonly string[];
-  knowledge_reorder?: string | readonly string[];
-  knowledgeAdd?: string | readonly string[];
-  knowledge_add?: string | readonly string[];
-  knowledgeRemove?: string | readonly string[];
-  knowledge_remove?: string | readonly string[];
-  tags?: readonly string[];
-  updatedAt?: string;
+  understandingFile: string;
 };
 
-export type KbWikiUpdateResponse = {
+export type KbWikiLinkInput = {
+  slug: string;
+  refs: readonly string[];
+};
+
+export type KbWikiUnlinkInput = {
+  slug: string;
+  refs: readonly string[];
+};
+
+export type KbWikiCiteInput = {
+  slug: string;
+  ref: string;
+  evidenceFile: string;
+};
+
+export type KbWikiMutationResponse = {
   path: string;
 };
 
@@ -174,6 +178,20 @@ export type KbWikiDeleteInput = {
 
 export type KbWikiDeleteResponse = {
   deleted: string;
+};
+
+export type KbWikiAdoptInput = {
+  slug: string;
+  memo: string;
+  title: string;
+  content: string;
+  domain: string;
+  topic: string;
+};
+
+export type KbWikiAdoptResponse = {
+  path: string;
+  wikiSlug: string;
 };
 
 export type KbWikiListItem = KbWikiFrontmatter & {
@@ -308,7 +326,6 @@ export type KbPromoteInput = {
   content: string;
   domain: string;
   topic: string;
-  wiki?: string;
 };
 
 export type KbUpdateInput = {
@@ -545,7 +562,6 @@ export type KbMemoResponse = {
 
 export type KbPromoteResponse = {
   path: string;
-  wikiSlug?: string;
 };
 
 export type KbUpdateResponse = {

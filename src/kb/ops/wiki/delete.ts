@@ -1,17 +1,14 @@
 import { isNoEntryError } from '../../../infra/fs-errors.js';
 import { captureRemovedWikiManifestDeltas } from '../../corpus/manifest-authority.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpus/index-mutations.js';
-import { deleteEntry, wikiEntryId } from '../../entry-types.js';
+import {
+  deleteEntry,
+  wikiEntryId,
+  type KbWikiDeleteInput,
+  type KbWikiDeleteResponse,
+} from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
-
-export type KbWikiDeleteInput = {
-  slug: string;
-};
-
-export type KbWikiDeleteResponse = {
-  deleted: string;
-};
 
 export async function deleteWiki(rt: KbRuntime, input: KbWikiDeleteInput): Promise<KbWikiDeleteResponse> {
   const slug = assertWikiSlug(input.slug, 'wiki');

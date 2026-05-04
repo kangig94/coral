@@ -26,11 +26,15 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
   handleKbWakeUp,
+  handleKbWikiAdopt,
+  handleKbWikiCite,
   handleKbWikiCreate,
   handleKbWikiDelete,
+  handleKbWikiLink,
   handleKbWikiList,
   handleKbWikiRead,
-  handleKbWikiUpdate,
+  handleKbWikiRewrite,
+  handleKbWikiUnlink,
 } from '#src/kb/tool-handlers.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 
@@ -40,7 +44,11 @@ const mockState = vi.hoisted(() => ({
   purgeMemos: vi.fn(),
   files: new Map<string, string>(),
   createWiki: vi.fn(),
-  updateWiki: vi.fn(),
+  rewriteWikiUnderstanding: vi.fn(),
+  linkWikiKnowledge: vi.fn(),
+  unlinkWikiKnowledge: vi.fn(),
+  citeWikiKnowledge: vi.fn(),
+  adoptIntoWiki: vi.fn(),
   deleteWiki: vi.fn(),
   listWikis: vi.fn(),
   generateWakeUpPacket: vi.fn(),
@@ -83,7 +91,11 @@ vi.mock('#src/kb/ops/memo.js', async () => {
 });
 
 vi.mock('#src/kb/ops/wiki/create.js', () => ({ createWiki: mockState.createWiki }));
-vi.mock('#src/kb/ops/wiki/update.js', () => ({ updateWiki: mockState.updateWiki }));
+vi.mock('#src/kb/ops/wiki/rewrite.js', () => ({ rewriteWikiUnderstanding: mockState.rewriteWikiUnderstanding }));
+vi.mock('#src/kb/ops/wiki/link.js', () => ({ linkWikiKnowledge: mockState.linkWikiKnowledge }));
+vi.mock('#src/kb/ops/wiki/unlink.js', () => ({ unlinkWikiKnowledge: mockState.unlinkWikiKnowledge }));
+vi.mock('#src/kb/ops/wiki/cite.js', () => ({ citeWikiKnowledge: mockState.citeWikiKnowledge }));
+vi.mock('#src/kb/ops/wiki/adopt.js', () => ({ adoptIntoWiki: mockState.adoptIntoWiki }));
 vi.mock('#src/kb/ops/wiki/delete.js', () => ({ deleteWiki: mockState.deleteWiki }));
 vi.mock('#src/kb/ops/wiki/list.js', () => ({ listWikis: mockState.listWikis }));
 vi.mock('#src/kb/ops/wake-up.js', () => ({ generateWakeUpPacket: mockState.generateWakeUpPacket }));
@@ -590,8 +602,38 @@ level: 1
       () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
     ],
     [
-      'wiki-update',
-      () => handleKbWikiUpdate({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
+      'wiki-rewrite',
+      () =>
+        handleKbWikiRewrite(
+          { slug: 'living-knowledge', understandingFile: '/tmp/u.md', extra: true },
+          createKbSubsystem(),
+        ),
+    ],
+    [
+      'wiki-link',
+      () =>
+        handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
+    ],
+    [
+      'wiki-unlink',
+      () =>
+        handleKbWikiUnlink(
+          { slug: 'living-knowledge', refs: ['note:a'], extra: true },
+          createKbSubsystem(),
+        ),
+    ],
+    [
+      'wiki-cite',
+      () =>
+        handleKbWikiCite(
+          {
+            slug: 'living-knowledge',
+            ref: 'note:a',
+            evidenceFile: '/tmp/e.md',
+            extra: true,
+          },
+          createKbSubsystem(),
+        ),
     ],
     [
       'wiki-delete',
@@ -622,16 +664,113 @@ level: 1
     });
   });
 
-  it('handleKbWikiUpdate calls updateWiki and schedules a deferred commit', async () => {
+  it('handleKbWikiRewrite calls rewriteWikiUnderstanding and schedules a deferred commit', async () => {
     const kbSubsystem = createKbSubsystem();
-    mockState.updateWiki.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
+    mockState.rewriteWikiUnderstanding.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiUpdate({ slug: 'living-knowledge', understanding: 'new' }, kbSubsystem);
+    const result = await handleKbWikiRewrite(
+      { slug: 'living-knowledge', understandingFile: '/tmp/u.md' },
+      kbSubsystem,
+    );
 
-    expect(mockState.updateWiki).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.rewriteWikiUnderstanding).toHaveBeenCalledWith(kbSubsystem.kb, {
       slug: 'living-knowledge',
-      understanding: 'new',
+      understandingFile: '/tmp/u.md',
     });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiLink calls linkWikiKnowledge and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.linkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiLink(
+      { slug: 'living-knowledge', refs: ['note:alpha'] },
+      kbSubsystem,
+    );
+
+    expect(mockState.linkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+      slug: 'living-knowledge',
+      refs: ['note:alpha'],
+    });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiUnlink calls unlinkWikiKnowledge and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.unlinkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiUnlink(
+      { slug: 'living-knowledge', refs: ['note:alpha'] },
+      kbSubsystem,
+    );
+
+    expect(mockState.unlinkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+      slug: 'living-knowledge',
+      refs: ['note:alpha'],
+    });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiCite calls citeWikiKnowledge and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.citeWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiCite(
+      {
+        slug: 'living-knowledge',
+        ref: '[[notes/alpha]]',
+        evidenceFile: '/tmp/e.md',
+      },
+      kbSubsystem,
+    );
+
+    expect(mockState.citeWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+      slug: 'living-knowledge',
+      ref: '[[notes/alpha]]',
+      evidenceFile: '/tmp/e.md',
+    });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiAdopt calls adoptIntoWiki with the project root and wires onSchedule to curate scheduler', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.adoptIntoWiki.mockImplementation(async (_kb, _projectRoot, _input, onSchedule: () => void) => {
+      onSchedule();
+      return { path: '/virtual/kb/notes/coral-kb-promotion.md', wikiSlug: 'living-knowledge' };
+    });
+
+    const result = await handleKbWikiAdopt(
+      {
+        slug: 'living-knowledge',
+        memo: '2026-04-15-topic.md',
+        title: 'KB Promotion',
+        content: '## Rule\nbody',
+        domain: 'coral',
+        topic: 'kb-promotion',
+      },
+      kbSubsystem,
+      testContext,
+    );
+
+    expect(mockState.adoptIntoWiki).toHaveBeenCalledWith(
+      kbSubsystem.kb,
+      testContext.projectRoot,
+      {
+        slug: 'living-knowledge',
+        memo: '2026-04-15-topic.md',
+        title: 'KB Promotion',
+        content: '## Rule\nbody',
+        domain: 'coral',
+        topic: 'kb-promotion',
+      },
+      expect.any(Function),
+    );
+    expect(kbSubsystem.curateScheduler.schedule).toHaveBeenCalledOnce();
     expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });

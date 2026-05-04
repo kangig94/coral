@@ -511,7 +511,7 @@ export async function executeCatalogRequest(
       return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
     }
 
-    case 'kb.wiki.update': {
+    case 'kb.wiki.rewrite': {
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
@@ -519,7 +519,51 @@ export async function executeCatalogRequest(
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateWiki({ ...args, slug }, ctx)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.rewriteWiki({ ...args, slug }, ctx)));
+    }
+
+    case 'kb.wiki.link': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.linkWiki({ ...args, slug }, ctx)));
+    }
+
+    case 'kb.wiki.unlink': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.unlinkWiki({ ...args, slug }, ctx)));
+    }
+
+    case 'kb.wiki.cite': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.citeWiki({ ...args, slug }, ctx)));
+    }
+
+    case 'kb.wiki.adopt': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryDomain(await rpcPorts.kb.adoptWiki({ ...args, slug }, ctx), 201);
     }
 
     case 'kb.wiki.delete': {

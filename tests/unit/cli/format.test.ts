@@ -471,9 +471,6 @@ describe('cli format', () => {
 
     it('formats kb promote, update, and delete results with slug-only output (paths hidden from LLM)', () => {
       expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Promoted note: cli-kb-tooling');
-      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md', wikiSlug: 'living-knowledge' })).toBe(
-        'Promoted note: cli-kb-tooling\nPrepended to wiki: living-knowledge Knowledge',
-      );
       expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Updated note: cli-kb-tooling');
       expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Deleted note: cli-kb-tooling');
     });

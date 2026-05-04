@@ -1,74 +1,22 @@
 import { nowIsoString } from '../../../infra/time.js';
 import { captureWikiManifestDeltas } from '../../corpus/manifest-authority.js';
-import { extractBody, parseWikiBody, parseWikiFrontmatter, serializeWiki } from '../../corpus/frontmatter.js';
+import { serializeWiki } from '../../corpus/frontmatter.js';
 import { commitCorpusEntryLocked } from '../../corpus/index-mutations.js';
 import { buildWikiIndexEntry } from '../../corpus/index-records.js';
-import { extractKnowledgeLinks } from '../../corpus/wiki-links.js';
 import {
-  entryIdToVaultLink,
-  parseKbEntryId,
   setEntry,
-  vaultLinkToEntryId,
   wikiEntryId,
-  type KbEntryId,
   type KbWikiCreateInput,
   type KbWikiCreateResponse,
   type KbWikiFrontmatter,
 } from '../../entry-types.js';
-import { assertNonEmptyText, assertString, assertWikiSlug } from '../../validation.js';
+import { assertNonEmptyText, assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 
-function normalizeStringList(values: readonly string[] | undefined, field: string): string[] {
-  return (values ?? []).map((value) => assertNonEmptyText(value, field));
-}
+const EMPTY_BODY = '## Understanding\n\n\n\n## Knowledge\n\n';
 
-function normalizeEntryReference(value: string, field: string): KbEntryId {
-  const trimmed = assertNonEmptyText(value, field);
-  const entryId = parseKbEntryId(trimmed) ?? vaultLinkToEntryId(trimmed);
-  if (entryId === null) {
-    throw new Error(`${field} must be a KB entry ID or vault-relative wikilink`);
-  }
-  return entryId;
-}
-
-function normalizeKnowledgeSection(value: string | readonly string[] | undefined): string {
-  if (value === undefined) {
-    return '';
-  }
-
-  if (typeof value === 'string') {
-    return assertString(value, 'knowledge').trim();
-  }
-
-  return value.map((link) => `- ${entryIdToVaultLink(normalizeEntryReference(link, 'knowledge'))}`).join('\n');
-}
-
-function buildWikiBody(input: Pick<KbWikiCreateInput, 'understanding' | 'knowledge'>): string {
-  const understanding =
-    input.understanding === undefined ? '' : assertString(input.understanding, 'understanding').trim();
-  const knowledge = normalizeKnowledgeSection(input.knowledge);
-
-  return `## Understanding
-
-${understanding}
-
-## Knowledge
-
-${knowledge}`;
-}
-
-function parseWikiIndexPayload(
-  slug: string,
-  raw: string,
-): KbWikiFrontmatter & { title: string; knowledge: KbEntryId[] } {
-  const frontmatter = parseWikiFrontmatter(raw);
-  const body = extractBody(raw);
-  const sections = parseWikiBody(body);
-  return {
-    ...frontmatter,
-    title: assertNonEmptyText(raw.match(/^# (.+)$/m)?.[1] ?? slug, 'title'),
-    knowledge: extractKnowledgeLinks(sections.knowledge),
-  };
+function normalizeTags(values: readonly string[] | undefined): string[] {
+  return (values ?? []).map((value) => assertNonEmptyText(value, 'tags'));
 }
 
 export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promise<KbWikiCreateResponse> {
@@ -82,13 +30,12 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
     }
 
     const createdAt = nowIsoString(rt.time);
-    const meta: KbWikiFrontmatter = {
-      tags: normalizeStringList(input.tags, 'tags'),
+    const frontmatter: KbWikiFrontmatter = {
+      tags: normalizeTags(input.tags),
       createdAt,
       updatedAt: createdAt,
     };
-    const raw = serializeWiki(meta, title, buildWikiBody(input));
-    const parsed = parseWikiIndexPayload(slug, raw);
+    const raw = serializeWiki(frontmatter, title, EMPTY_BODY);
 
     commitCorpusEntryLocked(rt, mutation, {
       path: wikiPath,
@@ -100,7 +47,9 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
           wikiEntryId(slug),
           buildWikiIndexEntry({
             slug,
-            ...parsed,
+            title,
+            ...frontmatter,
+            knowledge: [],
           }),
         );
       },

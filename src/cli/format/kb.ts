@@ -16,10 +16,11 @@ import type {
   KbSourceListResult,
   KbUpdateResponse,
   KbWakeUpResponse,
+  KbWikiAdoptResponse,
   KbWikiCreateResponse,
   KbWikiDeleteResponse,
   KbWikiListResult,
-  KbWikiUpdateResponse,
+  KbWikiMutationResponse,
 } from '../../kb/entry-types.js';
 import { formatTable, joinLines } from './text.js';
 
@@ -228,11 +229,7 @@ export function formatKbMemoPurge(data: KbMemoPurgeResult): string {
 }
 
 export function formatKbPromote(data: KbPromoteResponse): string {
-  const slug = pathToSlug(data.path);
-  if (data.wikiSlug !== undefined) {
-    return `Promoted note: ${slug}\nPrepended to wiki: ${data.wikiSlug} Knowledge`;
-  }
-  return `Promoted note: ${slug}`;
+  return `Promoted note: ${pathToSlug(data.path)}`;
 }
 
 export function formatKbUpdate(data: KbUpdateResponse): string {
@@ -247,8 +244,24 @@ export function formatKbWikiCreate(data: KbWikiCreateResponse): string {
   return `Created wiki: ${data.slug}`;
 }
 
-export function formatKbWikiUpdate(data: KbWikiUpdateResponse): string {
-  return `Updated wiki: ${pathToSlug(data.path)}`;
+export function formatKbWikiRewrite(data: KbWikiMutationResponse): string {
+  return `Rewrote Understanding: ${pathToSlug(data.path)}`;
+}
+
+export function formatKbWikiLink(data: KbWikiMutationResponse): string {
+  return `Linked Knowledge: ${pathToSlug(data.path)}`;
+}
+
+export function formatKbWikiUnlink(data: KbWikiMutationResponse): string {
+  return `Unlinked Knowledge: ${pathToSlug(data.path)}`;
+}
+
+export function formatKbWikiCite(data: KbWikiMutationResponse): string {
+  return `Appended evidence: ${pathToSlug(data.path)}`;
+}
+
+export function formatKbWikiAdopt(data: KbWikiAdoptResponse): string {
+  return `Adopted note ${pathToSlug(data.path)} into wiki: ${data.wikiSlug}`;
 }
 
 export function formatKbWikiDelete(data: KbWikiDeleteResponse): string {
