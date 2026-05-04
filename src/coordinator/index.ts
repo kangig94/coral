@@ -64,7 +64,6 @@ import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
-import { join } from 'node:path';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -471,12 +470,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await getExpansionLifecycleService().recoverOnBoot();
       // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
       await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
-      // Boot step 4.5: best-effort cleanup of orphan wake-up cache from prior coordinator-owned consumer.
-      try {
-        kbSubsystem.kb.storagePort.rmSync(join(kbSubsystem.kb.runtimeDir, 'wake-up.md'), { force: true });
-      } catch {
-        // Fail-open: cache cleanup is idempotent best-effort; missing file or rm failure is non-fatal.
-      }
       // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
