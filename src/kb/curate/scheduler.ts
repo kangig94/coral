@@ -62,6 +62,39 @@ class CurateRunError extends Error {
   }
 }
 
+type PermanentlyDisabledLanes = {
+  claim: boolean;
+  communityBatch: boolean;
+};
+
+function permanentlyDisabledLanes(state: CurateState): PermanentlyDisabledLanes {
+  return {
+    claim: state.consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES,
+    communityBatch: state.consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES,
+  };
+}
+
+function warnClaimLanePermanentlyDisabled(): void {
+  backendLog.warn(
+    `kb_curate: claim lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
+  );
+}
+
+function warnCommunityBatchLanePermanentlyDisabled(): void {
+  backendLog.warn(
+    `kb_curate: community batch lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
+  );
+}
+
+function warnPermanentlyDisabledLanes(lanes: PermanentlyDisabledLanes): void {
+  if (lanes.claim) {
+    warnClaimLanePermanentlyDisabled();
+  }
+  if (lanes.communityBatch) {
+    warnCommunityBatchLanePermanentlyDisabled();
+  }
+}
+
 export function createCurateScheduler({
   kb,
   spawnCli,
@@ -120,15 +153,18 @@ export function createCurateScheduler({
     return nextFailures;
   }
 
-  async function runCommunityBatch(signal: AbortSignal): Promise<boolean> {
+  async function runCommunityBatch(
+    signal: AbortSignal,
+    options: { disabledLaneAlreadyWarned?: boolean } = {},
+  ): Promise<boolean> {
     if (stopped || signal.aborted) {
       return false;
     }
 
-    if (readCurateState(curateDb(kb)).consecutiveCommunityBatchFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES) {
-      backendLog.warn(
-        `kb_curate: community batch lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; fix the underlying issue and let the next successful run reset the counter`,
-      );
+    if (permanentlyDisabledLanes(readCurateState(curateDb(kb))).communityBatch) {
+      if (!options.disabledLaneAlreadyWarned) {
+        warnCommunityBatchLanePermanentlyDisabled();
+      }
       return false;
     }
 
@@ -258,6 +294,9 @@ export function createCurateScheduler({
     }
 
     queuedRun = false;
+    const disabledLanes = permanentlyDisabledLanes(readCurateState(curateDb(kb)));
+    // Keep capped lanes operator-visible even when budget exhaustion prevents work.
+    warnPermanentlyDisabledLanes(disabledLanes);
     if (
       isUsageBudgetExhausted({
         homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
@@ -267,22 +306,19 @@ export function createCurateScheduler({
     ) {
       return;
     }
-    const claimLanePermanentlyDisabled =
-      readCurateState(curateDb(kb)).consecutiveClaimFailures >= INVARIANT.MAX_CONSECUTIVE_FAILURES;
-    if (claimLanePermanentlyDisabled) {
-      backendLog.warn(
-        `kb_curate: claim lane permanently disabled after ${INVARIANT.MAX_CONSECUTIVE_FAILURES} consecutive failures; run 'clearCurateRetryState' after fixing the underlying issue to re-enable scheduling`,
-      );
-    }
     const runController = new AbortController();
     activeRunController = runController;
     activeRun = (async () => {
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
-        lastCompletedThrough = claimLanePermanentlyDisabled ? null : await runScheduledCurate(runController.signal);
+        lastCompletedThrough = disabledLanes.claim ? null : await runScheduledCurate(runController.signal);
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
-          if (await runCommunityBatch(runController.signal)) {
+          if (
+            await runCommunityBatch(runController.signal, {
+              disabledLaneAlreadyWarned: disabledLanes.communityBatch,
+            })
+          ) {
             gitSync.gitAutoCommit('curate: detect communities');
           }
           if (await runTouchDrainSubphase(kb)) {

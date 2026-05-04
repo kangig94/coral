@@ -4,6 +4,7 @@ import { finalizeStoreServices } from '#src/coordinator/index.js';
 import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
 import { createLifecycle, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
+import { KB_ID } from '#src/coordinator/subsystems/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
 import type * as StoreDbMod from '#src/store/db.js';
@@ -164,7 +165,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
     expansionLifecycleService,
     consumerDriver,
   } as unknown as CoordinatorStoreServices;
-  let lifecycleState: 'starting' | 'running' | 'draining' | 'stopped' = 'starting';
+  let lifecycleState: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped' = 'starting';
 
   return {
     servicesRef,
@@ -187,26 +188,27 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       runtimeState: {
         getLifecycle: () => lifecycleState,
         getStartedAt: () => 1_000,
-        getKbStatus: () => ({
-          kind: 'ok',
-          subsystem: {
-            kb: {},
-            curateScheduler: {
-              isRunning: () => false,
-              stop: vi.fn(async () => {
-                mockState.events.push('curate:stop');
-              }),
-            },
-          },
-        }),
-        getCurateHealth: () => ({ kind: 'ok' }),
         getLaunchFenceActive: () => false,
+        subsystems: {
+          register: vi.fn(() => {
+            mockState.events.push('subsystems:register');
+          }),
+          initAll: vi.fn(() => {
+            mockState.events.push('subsystems:initAll');
+          }),
+          disposeAll: vi.fn(async () => {
+            mockState.events.push('subsystems:disposeAll');
+          }),
+          run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+          runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+          list: vi.fn(() => []),
+          status: vi.fn(() => null),
+        } as never,
         setLifecycle: vi.fn((state) => {
+          mockState.events.push(`setLifecycle:${state}`);
           lifecycleState = state;
         }),
         setStartedAt: vi.fn(),
-        setKbStatus: vi.fn(),
-        setCurateHealth: vi.fn(),
         setLaunchFenceActive: vi.fn(),
       } as unknown as LifecycleDeps['runtimeState'],
       idleTimer: {
@@ -256,10 +258,17 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         drainForHandoff: vi.fn(),
       } as never,
       handoffQuiescePorts: () => [],
-      createKbSubsystemFn: vi.fn(async () => ({
-        kb: {},
-        readDb: {},
-        curateScheduler: { isRunning: () => false, stop: vi.fn() },
+      createKbSubsystemFn: vi.fn(() => ({
+        id: KB_ID,
+        status: { id: KB_ID, phase: 'initializing', attempt: 0 },
+        init: vi.fn(async () => {}),
+        dispose: vi.fn(async () => {}),
+        resource: vi.fn(() => ({
+          kb: {},
+          readDb: {},
+          curateScheduler: { isRunning: () => false, stop: vi.fn() },
+        })),
+        onStatusChange: vi.fn(() => () => {}),
       })) as never,
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
@@ -301,6 +310,21 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
     expect(mockState.events.indexOf('storeDb:openOrReset')).toBeLessThan(
       mockState.events.indexOf('storeServices:create'),
+    );
+  });
+
+  it('registers subsystems before exposing the running lifecycle', async () => {
+    const { deps } = makeLifecycleDeps();
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+
+    expect(mockState.events.indexOf('subsystems:register')).toBeGreaterThan(-1);
+    expect(mockState.events.indexOf('subsystems:register')).toBeLessThan(
+      mockState.events.indexOf('setLifecycle:running'),
+    );
+    expect(mockState.events.indexOf('setLifecycle:running')).toBeLessThan(
+      mockState.events.indexOf('subsystems:initAll'),
     );
   });
 

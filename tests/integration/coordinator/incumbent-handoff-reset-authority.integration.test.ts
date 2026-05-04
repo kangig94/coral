@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -276,7 +277,7 @@ describe('incumbent handoff reset authority', () => {
         return result;
       },
       createStoreServicesFromDbFn: createStoreServices,
-      createKbSubsystemFn: async () => createKbSubsystemStub(),
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => createKbSubsystemStub()),
       runStartupRecoveryFn: async () => [],
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: () => {},

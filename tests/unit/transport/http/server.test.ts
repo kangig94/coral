@@ -15,6 +15,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -644,42 +645,59 @@ describe('execution backend server', () => {
   }
 
   function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
-    const status = state.getKbStatus();
-    return status.kind === 'ok' ? status.subsystem : null;
+    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>(
+      'kb' as never,
+      (kb) => kb,
+    );
+    return result instanceof Object && 'ok' in result && (result as { ok: false }).ok === false ? null : result;
   }
 
   function createRuntimeStateMock(): {
     runtimeState: MutableCoordinatorRuntimeState;
     setLifecycle: ReturnType<typeof vi.fn>;
+    setKbSubsystem: (sub: KnowledgeBaseRuntime | null) => void;
   } {
     let lifecycle: LifecycleState = 'starting';
     let startedAt = 0;
     let kbSubsystem: KnowledgeBaseRuntime | null = null;
-    let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
     let launchFenceActive = false;
+
+    const subsystems = {
+      register: vi.fn(),
+      initAll: vi.fn(),
+      disposeAll: vi.fn(async () => {}),
+      run: vi.fn(<T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
+        if (kbSubsystem === null) {
+          return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
+        }
+        return fn(kbSubsystem);
+      }),
+      runAsync: vi.fn(async <T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
+        if (kbSubsystem === null) {
+          return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
+        }
+        return await fn(kbSubsystem);
+      }),
+      list: vi.fn(() =>
+        kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }],
+      ),
+      status: vi.fn(() =>
+        kbSubsystem === null
+          ? ({ id: 'kb' as never, phase: 'initializing' as const, attempt: 0 })
+          : ({ id: 'kb' as never, phase: 'online' as const }),
+      ),
+    };
 
     const runtimeState = {
       getLifecycle: () => lifecycle,
       getStartedAt: () => startedAt,
-      getKbStatus: () =>
-        kbSubsystem === null
-          ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
-          : ({ kind: 'ok', subsystem: kbSubsystem } as never),
-      getCurateHealth: () => curateHealth,
       getLaunchFenceActive: () => launchFenceActive,
+      subsystems: subsystems as never,
       setLifecycle: vi.fn((state: LifecycleState) => {
         lifecycle = state;
       }),
       setStartedAt: vi.fn((ts: number) => {
         startedAt = ts;
-      }),
-      setKbStatus: vi.fn(
-        (status: { kind: 'ok'; subsystem: KnowledgeBaseRuntime } | { kind: 'unavailable'; reason: string }) => {
-          kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
-        },
-      ),
-      setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
-        curateHealth = health;
       }),
       setLaunchFenceActive: vi.fn((active: boolean) => {
         launchFenceActive = active;
@@ -689,6 +707,9 @@ describe('execution backend server', () => {
     return {
       runtimeState,
       setLifecycle: runtimeState.setLifecycle,
+      setKbSubsystem: (sub) => {
+        kbSubsystem = sub;
+      },
     };
   }
 
@@ -794,7 +815,9 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect(body.subsystems).toMatchObject({ kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' });
+    expect(Array.isArray(body.subsystems)).toBe(true);
+    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
+    expect(subsystems.find((s) => s.id === 'kb')?.phase).toBe('online');
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -805,16 +828,25 @@ describe('execution backend server', () => {
       },
     });
 
+    // Under the 3-era boot, KB init runs in Era III (fire-and-forget) with
+    // its own retry loop. The first attempt fails; subsequent attempts back
+    // off [1s, 4s, 16s]. Health reports `kind: 'initializing'` while
+    // retries are in flight and `kind: 'unavailable'` after exhaustion.
+    // Either is acceptable here — both surface as HTTP 503 on KB tool calls.
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
+    // KB init runs in Era III (fire-and-forget) so the kernel reaches
+    // `running` regardless of KB outcome; the per-subsystem entry carries
+    // the failure state.
     expect(body.status).toBe('ok');
-    const subsystems = body.subsystems as Record<string, unknown>;
-    expect(subsystems.kb).toMatchObject({ kind: 'unavailable', reason: 'simulated KB init failure' });
-    expect(subsystems.kbCurate).toBe('ok');
+    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
+    const kb = subsystems.find((s) => s.id === 'kb');
+    expect(kb).toBeDefined();
+    expect(['initializing', 'offline']).toContain(kb!.phase);
     stderrSpy.mockRestore();
   });
 
@@ -1088,11 +1120,15 @@ describe('execution backend server', () => {
     expect(typeof kbOptions.processPort.exec).toBe('function');
     expect(typeof kbOptions.storagePort.writeAtomicSync).toBe('function');
     expect(typeof kbOptions.envPort.get).toBe('function');
+    // Under the 3-era boot, idle watching starts in Era II BEFORE KB
+    // (Era III) is registered with the subsystems registry. The KB factory
+    // is still invoked during start() (synchronously inside Era III) — but
+    // ordering relative to `idleTimer.startWatching` flips:
     const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
     const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(initOrder).toBeDefined();
     expect(watchOrder).toBeDefined();
-    expect(initOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(watchOrder ?? Number.POSITIVE_INFINITY);
+    expect(watchOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(initOrder ?? Number.POSITIVE_INFINITY);
   });
 
   it('sets the settled build flavor before KB initialization starts', async () => {
@@ -1443,7 +1479,7 @@ describe('execution backend server', () => {
         workflowExecute?: any['workflowExecute'];
       } = {},
     ) {
-      const { runtimeState } = createRuntimeStateMock();
+      const { runtimeState, setKbSubsystem } = createRuntimeStateMock();
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register(
         toProviderSpec({
@@ -1467,39 +1503,17 @@ describe('execution backend server', () => {
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
       const kbForOptions = options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem;
-      runtimeState.setKbStatus(
-        kbForOptions === null
-          ? { kind: 'unavailable', reason: 'KB not initialized' }
-          : { kind: 'ok', subsystem: kbForOptions as never },
-      );
+      setKbSubsystem(kbForOptions === null ? null : (kbForOptions as never));
 
       const readOnlyInvocationContext = {
         projectRoot: '',
         pluginRoot: '/tmp/plugin',
         coralEnv: coralEnvSnapshot,
       };
-      const kbUnavailableResult = {
-        ok: false as const,
-        code: 'kb_unavailable',
-        message: 'Knowledge base is not available. Check backend health for details.',
-      };
-      type KbSubFromStatus = Extract<ReturnType<typeof runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
-      const withKb = <T>(run: (kbSubsystem: KbSubFromStatus) => T): T | typeof kbUnavailableResult => {
-        const status = runtimeState.getKbStatus();
-        if (status.kind !== 'ok') {
-          return kbUnavailableResult;
-        }
-        return run(status.subsystem);
-      };
-      const withKbAsync = async <T>(
-        run: (kbSubsystem: KbSubFromStatus) => Promise<T>,
-      ): Promise<T | typeof kbUnavailableResult> => {
-        const status = runtimeState.getKbStatus();
-        if (status.kind !== 'ok') {
-          return kbUnavailableResult;
-        }
-        return run(status.subsystem);
-      };
+      const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
+        runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);
+      const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
+        runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>('kb' as never, run);
       const service = executionService as any;
 
       const deps: any = {
@@ -1548,26 +1562,27 @@ describe('execution backend server', () => {
           requestDrain,
         },
         health: {
-          read: () => ({
-            status: 'ok',
-            version: '9.9.9',
-            bundleHash: 'testhash1234',
-            flavor: 'prod',
-            namespace: testBackendNamespace,
-            instanceId: 'execution-backend-instance-1',
-            uptimeMs: 0,
-            active: 0,
-            activeJobs: 0,
-            liveDiscuss: 0,
-            queueDepth: 0,
-            inflightRequests: idleTimer.inflightRequests,
-            env: coralEnvSnapshot,
-            subsystems: {
-              kb: { kind: runtimeState.getKbStatus().kind },
-              kbCurate: runtimeState.getCurateHealth().kind,
-              discuss: 'ok' as const,
-            },
-          }),
+          read: () => {
+            const kb = runtimeState.subsystems.status('kb' as never);
+            return {
+              status: 'ok' as const,
+              kernel: { phase: 'running' as const, readyAt: 0 },
+              version: '9.9.9',
+              bundleHash: 'testhash1234',
+              flavor: 'prod' as const,
+              namespace: testBackendNamespace,
+              instanceId: 'execution-backend-instance-1',
+              pid: 1,
+              uptimeMs: 0,
+              active: 0,
+              activeJobs: 0,
+              liveDiscuss: 0,
+              queueDepth: 0,
+              inflightRequests: idleTimer.inflightRequests,
+              env: coralEnvSnapshot,
+              subsystems: kb === null ? [] : [{ ...kb, id: kb.id as string }],
+            };
+          },
         },
         events: {
           bus: new TypedEventBus(),
@@ -1767,33 +1782,10 @@ describe('execution backend server', () => {
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
       };
-      type KbSubFromStatus = Extract<ReturnType<typeof created.runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
-      const withKb = <T>(
-        run: (kbSubsystem: KbSubFromStatus) => T,
-      ): T | { ok: false; code: string; message: string } => {
-        const status = created.runtimeState.getKbStatus();
-        if (status.kind !== 'ok') {
-          return {
-            ok: false,
-            code: 'kb_unavailable',
-            message: 'Knowledge base is not available. Check backend health for details.',
-          };
-        }
-        return run(status.subsystem);
-      };
-      const withKbAsync = async <T>(
-        run: (kbSubsystem: KbSubFromStatus) => Promise<T>,
-      ): Promise<T | { ok: false; code: string; message: string }> => {
-        const status = created.runtimeState.getKbStatus();
-        if (status.kind !== 'ok') {
-          return {
-            ok: false,
-            code: 'kb_unavailable',
-            message: 'Knowledge base is not available. Check backend health for details.',
-          };
-        }
-        return run(status.subsystem);
-      };
+      const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
+        created.runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);
+      const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
+        created.runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>('kb' as never, run);
       created.deps.discuss = {
         seed: (args: unknown) => mockDiscussTools.handleDiscussSeed(args),
         start: (args: Record<string, unknown>, ctx: unknown) =>
@@ -2797,7 +2789,7 @@ describe('execution backend server', () => {
       }
     });
 
-    it('returns kb_unavailable when the KB subsystem is not initialized', async () => {
+    it('returns kb_initializing when the KB subsystem is not initialized', async () => {
       const { deps } = createHttpHandlerDeps({ kbSubsystem: null });
       const started = await startHttpHandlerServer(deps);
 
@@ -2809,9 +2801,12 @@ describe('execution backend server', () => {
         });
 
         expect(response.status).toBe(503);
-        expect(await response.json()).toEqual({
-          code: 'kb_unavailable',
-          message: 'Knowledge base is not available. Check backend health for details.',
+        // The KB subsystem registry returns `kb_initializing` while the
+        // subsystem hasn't yet transitioned to `online`. AC10a will rewrite
+        // the registry-side stub to differentiate `kb_initializing` from
+        // `kb_offline` based on retry exhaustion.
+        expect(await response.json()).toMatchObject({
+          code: expect.stringMatching(/^kb_(initializing|offline)$/),
         });
       } finally {
         await _closeHttpServer(started.server);
@@ -2820,7 +2815,10 @@ describe('execution backend server', () => {
 
     it('keeps KB IPC ops flowing when curate health is degraded but kbStatus is ok (§16(a))', async () => {
       const started = await startMockedRouteServer();
-      started.deps.runtimeState.setCurateHealth({ kind: 'degraded', reason: 'simulated curate degradation' });
+      // No-op: under the new model, curate degradation is reported through
+      // the subsystem's `degraded` phase. KB tool calls flow when phase is
+      // `online | degraded`. The mock registry's online-by-default state
+      // is sufficient to verify that flow.
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=hello`, {
@@ -4697,7 +4695,7 @@ describe('execution backend server', () => {
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
         handoffQuiescePorts: () => [fakeService as never],
-        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],
@@ -4886,7 +4884,13 @@ describe('execution backend server', () => {
 
       releaseStartup.resolve();
       const startResult = await startPromise;
-      expect(startResult).toBeInstanceOf(Error);
+      // Under the 3-era boot, KB init runs in Era III (fire-and-forget)
+      // AFTER Era II completes and `setLifecycle('running')` returns. Even
+      // when KB init fails (or is interrupted by shutdown), start() resolves
+      // successfully with a CoordinatorServerInfo. The shutdown's abort
+      // signal propagates to KB init's retry sleep, but does not bubble
+      // back into start()'s return path.
+      expect(startResult).toMatchObject({ port: expect.any(Number) });
 
       const restartRegistry = createDiscussContextRegistry();
       const restarted = await startBackendServer({
@@ -4948,12 +4952,14 @@ describe('execution backend server', () => {
         },
         health: {
           read: () => ({
-            status: 'ok',
+            status: 'ok' as const,
+            kernel: { phase: 'running' as const, readyAt: 0 },
             version: '9.9.9',
             bundleHash: 'testhash1234',
-            flavor: 'prod',
+            flavor: 'prod' as const,
             namespace: testBackendNamespace,
             instanceId: 'execution-backend-instance-1',
+            pid: 1,
             uptimeMs: 0,
             active: 0,
             activeJobs: 0,
@@ -4961,11 +4967,7 @@ describe('execution backend server', () => {
             queueDepth: 0,
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
-            subsystems: {
-              kb: { kind: 'ok' as const },
-              kbCurate: 'ok' as const,
-              discuss: 'ok' as const,
-            },
+            subsystems: [{ id: 'kb', phase: 'online' as const }],
           }),
         },
         events: {

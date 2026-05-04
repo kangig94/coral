@@ -1,10 +1,7 @@
-// Phase 7 of apply-contract-reform plan.
-//
-// AC11 wired `/health.subsystems.kb` from a string union to a typed object
-// carrying `kind`, optional `reason`, and optional `mutationBlocked` /
-// `consumerStuck` diagnostic sub-fields. These tests pin the typed shape
-// from the validator's perspective so external consumers (CLI, polling
-// scripts) can rely on the structure.
+// AC10a: `/health.subsystems` is an array of transport subsystem-status entries
+// (4-phase tagged union per `id`). `mutationBlocked` and `consumerStuck`
+// move from `subsystems.kb` to top-level `diagnostics`. The validator
+// pins this shape so external consumers can rely on the structure.
 
 import { describe, expect, it } from 'vitest';
 
@@ -12,7 +9,8 @@ import { isBackendHealth, type BackendHealth } from '#src/transport/http/backend
 
 const HEALTHY_BASE: BackendHealth = {
   status: 'ok',
-  version: '0.5.2',
+  kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+  version: '0.7.1',
   bundleHash: 'hash-1234',
   flavor: 'prod',
   instanceId: 'instance-1',
@@ -22,71 +20,84 @@ const HEALTHY_BASE: BackendHealth = {
   activeJobs: 0,
   inflightRequests: 0,
   queueDepth: 0,
-  subsystems: {
-    kb: { kind: 'ok' },
-    kbCurate: 'ok',
-    discuss: 'ok',
-  },
+  subsystems: [{ id: 'kb', phase: 'online' }],
 };
 
-describe('/health typed subsystems.kb shape (Phase 7 / AC11)', () => {
-  it('accepts a healthy shape with `kind: "ok"` and no diagnostics', () => {
+describe('/health typed shape (AC10a)', () => {
+  it('accepts a healthy shape with one online subsystem and no diagnostics', () => {
     expect(isBackendHealth(HEALTHY_BASE)).toBe(true);
   });
 
-  it('accepts a blocked-mutation shape carrying full diagnostic context', () => {
+  it('accepts an empty subsystems array', () => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, subsystems: [] })).toBe(true);
+  });
+
+  it('accepts an initializing subsystem with attempt count', () => {
+    const initializing: BackendHealth = {
+      ...HEALTHY_BASE,
+      subsystems: [{ id: 'kb', phase: 'initializing', attempt: 2 }],
+    };
+    expect(isBackendHealth(initializing)).toBe(true);
+  });
+
+  it('accepts a degraded subsystem with curate-publish reason', () => {
+    const degraded: BackendHealth = {
+      ...HEALTHY_BASE,
+      subsystems: [
+        {
+          id: 'kb',
+          phase: 'degraded',
+          reason: { kind: 'curate-publish', consecutiveFailures: 3, lastError: 'publish timed out' },
+        },
+      ],
+    };
+    expect(isBackendHealth(degraded)).toBe(true);
+  });
+
+  it('accepts an offline subsystem with reason and last log line', () => {
+    const offline: BackendHealth = {
+      ...HEALTHY_BASE,
+      subsystems: [
+        { id: 'kb', phase: 'offline', reason: 'init failed', lastLogLine: '[subsystem:kb] catalog scan failed' },
+      ],
+    };
+    expect(isBackendHealth(offline)).toBe(true);
+  });
+
+  it('accepts a blocked-mutation diagnostic carrying full context', () => {
     const blocked: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: {
-          kind: 'ok',
-          mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 },
-        },
-      },
+      diagnostics: { mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 } },
     };
     expect(isBackendHealth(blocked)).toBe(true);
   });
 
-  it('accepts a stuck-consumer shape carrying per-consumer elapsedSinceStopMs', () => {
+  it('accepts a stuck-consumer diagnostic carrying per-consumer elapsedSinceStopMs', () => {
     const stuck: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: {
-          kind: 'ok',
-          consumerStuck: [
-            { id: 'orama-base', elapsedSinceStopMs: 2500 },
-            { id: 'needle-base', elapsedSinceStopMs: 100 },
-          ],
-        },
+      diagnostics: {
+        consumerStuck: [
+          { id: 'orama-base', elapsedSinceStopMs: 2500 },
+          { id: 'needle-base', elapsedSinceStopMs: 100 },
+        ],
       },
     };
     expect(isBackendHealth(stuck)).toBe(true);
   });
 
-  it('accepts an unavailable shape with `reason`', () => {
-    const unavailable: BackendHealth = {
+  it('accepts kernel.readyAt === null while still starting', () => {
+    const starting: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: { kind: 'unavailable', reason: 'KB init failed' },
-      },
+      status: 'starting',
+      kernel: { phase: 'starting', readyAt: null },
     };
-    expect(isBackendHealth(unavailable)).toBe(true);
+    expect(isBackendHealth(starting)).toBe(true);
   });
 
   it('rejects a `mutationBlocked` shape missing required diagnostic fields', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: {
-          kind: 'ok',
-          // missing ageMs and signaledAtMs
-          mutationBlocked: { owner: 'reindex' },
-        },
-      },
+      diagnostics: { mutationBlocked: { owner: 'reindex' } },
     };
     expect(isBackendHealth(malformed)).toBe(false);
   });
@@ -94,39 +105,36 @@ describe('/health typed subsystems.kb shape (Phase 7 / AC11)', () => {
   it('rejects a `consumerStuck` entry missing elapsedSinceStopMs', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: {
-          kind: 'ok',
-          consumerStuck: [{ id: 'orama-base' }],
-        },
-      },
+      diagnostics: { consumerStuck: [{ id: 'orama-base' }] },
     };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects the legacy flat string-union shape (clean-slate cost)', () => {
-    // Pre-rewrite responses returned `subsystems.kb` as a string ('ok' /
-    // 'unavailable') alongside a flat `kbReason`. The new validator must
-    // fail-loud on that shape to surface the contract change rather than
-    // silently parse it as a degenerate typed object.
+  it('rejects the legacy `subsystems.kb.kind` object shape (clean-slate cost)', () => {
+    // Pre-AC10a responses returned `subsystems` as a record with `kb.kind`.
+    // The validator must fail-loud on that shape so the contract change
+    // surfaces rather than silently parsing as a degenerate structure.
     const legacy = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: 'ok',
-      },
+      subsystems: { kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' },
     };
     expect(isBackendHealth(legacy)).toBe(false);
   });
 
-  it('rejects an unknown `kind` string in subsystems.kb', () => {
+  it('rejects an unknown phase string', () => {
+    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'unavailable' }] };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a degraded subsystem missing the reason object', () => {
+    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'degraded' }] };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects an unknown kernel phase', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      subsystems: {
-        ...HEALTHY_BASE.subsystems,
-        kb: { kind: 'degraded' },
-      },
+      kernel: { phase: 'frobnicating', readyAt: 0 },
     };
     expect(isBackendHealth(malformed)).toBe(false);
   });

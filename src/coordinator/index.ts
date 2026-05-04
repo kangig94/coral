@@ -19,7 +19,10 @@ import type {
   CoordinatorStoreServices,
   StoreServicesRef,
 } from './composition/types.js';
-import { createKbSubsystem } from '../kb/subsystem.js';
+import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
+import { createKbSubsystem } from './subsystems/kb.js';
+import { KB_ID } from './subsystems/contract.js';
+import { isErrorEnvelope } from './subsystems/registry.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
@@ -41,6 +44,7 @@ import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
 import type { RegisteredKbCapability } from '../kb/capability/contract.js';
 import {
@@ -67,10 +71,22 @@ import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'getMutationBlocked' | 'createStoreServicesFromDbFn'
+  | 'runtime'
+  | 'runStartupRecoveryFn'
+  | 'getConsumerStuck'
+  | 'getMutationBlocked'
+  | 'createStoreServicesFromDbFn'
+  | 'createKbSubsystemFn'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
+  /**
+   * Test seam: replaces the default `createKbRuntime` build step with a
+   * factory returning `KnowledgeBaseRuntime`. Coordinator wraps this into
+   * the new `Subsystem<KnowledgeBaseRuntime>` registry contract; the
+   * subsystem's retry / dispose / curate-bridge semantics still apply.
+   */
+  createKbSubsystemFn?: (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
 };
 
 export type CoordinatorServerController = {
@@ -242,6 +258,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime: providedRuntime,
     runtimeObserver: providedRuntimeObserver,
     registerBuiltInProvidersFn,
+    createKbSubsystemFn: providedCreateKbSubsystemFn,
     ...coreOptions
   } = options;
   const flavor = deriveCoordinatorFlavor(options);
@@ -270,7 +287,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
-  const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
   const providedCreateExecutionService = coreOptions.createExecutionService;
 
   const getStoreServices = (): CoordinatorStoreServices => {
@@ -300,8 +316,25 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     }
     return expansionLifecycleService;
   };
-  let currentKbRuntime: KbRuntime | null = null;
-  let resolveLifecyclePhase: (() => 'starting' | 'running' | 'draining' | 'stopped') | null = null;
+  // Late-bound KB runtime accessor. Normal coordinator requests read via
+  // `subsystems.run` once KB is online/degraded. The remaining early-boot
+  // gap is narrower: `createKbSubsystem.init()` has already built the runtime
+  // but has not yet completed `runBootSequence`, so the registry must still
+  // report `initializing`. During that window, boot-only callbacks owned by
+  // already-created store services (consumer-driver corpus projection and
+  // expansion fallback recovery) need the same built runtime to finish the
+  // boot sequence that will make the registry online. `pendingKbRuntime`
+  // bridges only that bootstrap callback cycle; external KB RPCs still route
+  // through the registry and receive the initializing/offline envelope.
+  let pendingKbRuntime: KbRuntime | null = null;
+  const resolveKbRuntime = (): KbRuntime | null => {
+    if (pendingKbRuntime !== null) return pendingKbRuntime;
+    const c = core;
+    if (c === null) return null;
+    const result = c.runtimeState.subsystems.run<KnowledgeBaseRuntime, KbRuntime>(KB_ID, (kb) => kb.kb);
+    return isErrorEnvelope(result) ? null : result;
+  };
+  let resolveLifecyclePhase: (() => 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped') | null = null;
   // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
   // rebuild kicks so a draining instance does not start fresh KB work. Boot's
   // blocking `wait: true` on the next coordinator picks up the staleness.
@@ -328,14 +361,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       time: runtime.time,
       corpusProjectionReader: {
         resolveCurrentIndex: () => {
-          const kbRuntime = currentKbRuntime;
+          const kbRuntime = resolveKbRuntime();
           if (kbRuntime === null) {
             throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
           }
           return kbRuntime.corpusProjectionReader.resolveCurrentIndex();
         },
         prepareCurrentProjectionInput: (options) => {
-          const kbRuntime = currentKbRuntime;
+          const kbRuntime = resolveKbRuntime();
           if (kbRuntime === null) {
             throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
           }
@@ -343,7 +376,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         },
       },
       onTextProjectionSync: () => {
-        const kbRuntime = currentKbRuntime;
+        const kbRuntime = resolveKbRuntime();
         if (kbRuntime === null) {
           throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.textProjectionSync' });
         }
@@ -352,7 +385,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     const expansionLifecycleService = new ExpansionLifecycleService({
       makeHost: (manifest, scope) => {
-        const kbRuntime = currentKbRuntime;
+        const kbRuntime = resolveKbRuntime();
         if (kbRuntime === null) {
           throw documentedCoralSetupError('expansion_runtime_unavailable', { name: manifest.id });
         }
@@ -367,8 +400,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       manifest: expansionManifestCatalog.listManifests(),
       manifestCatalog: expansionManifestCatalog,
       now: () => nowDate(runtime.time).toISOString(),
-      resolveKbRuntime: () => currentKbRuntime,
-      getLifecyclePhase: () => resolveLifecyclePhase?.() ?? 'starting',
+      resolveKbRuntime,
+      getLifecyclePhase: () => {
+        const phase = resolveLifecyclePhase?.() ?? 'starting';
+        // ExpansionLifecycleService accepts `'starting' | 'running' | 'draining' | 'stopped'`.
+        // Map the new `'kernel-ready'` phase to `'starting'` for backward compat — equip
+        // semantics during kernel-ready match the historical `'starting'` semantics
+        // (subsystems are not online yet, but the listener is bound).
+        return phase === 'kernel-ready' ? 'starting' : phase;
+      },
     });
 
     return {
@@ -407,6 +447,45 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     commitEvents: coordinatorCommit,
   });
+
+  // The seven boot steps (I0..I6) lifted from the previous
+  // `createKbSubsystemFn` closure. Runs inside the subsystem's retry loop —
+  // each step honors `signal.aborted` between operations.
+  const runBootSequence = async (built: KnowledgeBaseRuntime, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    // Boot step 0 (I0): finish or roll back any in-flight promote-to-wiki
+    // before any corpus snapshot can be published.
+    await runPromoteRecovery(built.kb);
+    signal.throwIfAborted();
+    // Boot step 1: replay any corpus publication that committed state
+    // before a prior notify failure.
+    await built.kb.retryPendingCorpusPublication();
+    signal.throwIfAborted();
+    // Boot step 2: absorb external Corpus edits before replaying consumers.
+    await built.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal });
+    signal.throwIfAborted();
+    const driver = getConsumerDriver();
+    // Boot step 3: replay installed-tier rows + apply bundled fallback to
+    // fill empty bindings.
+    await getExpansionLifecycleService().recoverOnBoot();
+    signal.throwIfAborted();
+    // Boot step 4: repair unchanged-snapshot projection artifacts before
+    // readiness waits.
+    await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
+    signal.throwIfAborted();
+    // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
+    const corpusSnapshot = built.kb.getCorpusStateSnapshot();
+    driver.notifyCorpus(corpusSnapshot);
+    const ftsConsumerId = built.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
+      .consumer.id;
+    await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
+    signal.throwIfAborted();
+    if (built.curateScheduler) {
+      // Boot step 6: start background curation only after the read
+      // projections are aligned.
+      await built.curateScheduler.start();
+    }
+  };
   core = createCoordinatorCore({
     ...coreOptions,
     providerRegistry,
@@ -414,16 +493,23 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
-    getMutationBlocked: () => currentKbRuntime?.mutationLockDiagnostics() ?? { blocked: false },
-    createKbSubsystemFn: async (ctx) => {
-      const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
+    getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
+    createKbSubsystemFn: (ctx) => {
+      // Coordinator wires the KB subsystem with its corpus + curate
+      // callbacks. The subsystem owns the retry loop; `runBootSequence`
+      // below contains the seven boot steps (I0..I6) that previously lived
+      // in this closure.
+      const buildOptions = {
         ...ctx,
         db: getStoreDb(),
-        persistCorpusState: (snapshot) =>
+        persistCorpusState: (snapshot: KbCorpusSnapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => nowDate(runtime.time),
           }),
-        notifyCorpusMutation: async (publication) => {
+        notifyCorpusMutation: async (publication: {
+          snapshot: KbCorpusSnapshot;
+          changedLanes: ('content' | 'metadata')[];
+        }) => {
           const driver = getConsumerDriver();
           if (publication.changedLanes.length === 1) {
             driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
@@ -431,57 +517,54 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           }
           driver.notifyCorpus(publication.snapshot);
         },
-        onCorpusPublishFailure: (failure) => {
+        onCorpusPublishFailure: (failure: Parameters<typeof curateSchedulerHealth.onCorpusPublishFailure>[0]) => {
           curateSchedulerHealth.onCorpusPublishFailure(failure);
         },
         onCorpusPublishSuccess: () => {
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
+      };
+
+      const prepareRuntime = (built: KnowledgeBaseRuntime): void => {
+        // Expose the freshly built runtime to coordinator callbacks
+        // (consumer-driver, expansion lifecycle) BEFORE `runBootSequence`
+        // executes — those callbacks fire during `recoverOnBoot()` /
+        // `notifyCorpus` and would otherwise see an offline registry.
+        pendingKbRuntime = built.kb;
+        initializeCapabilityCatalog(
+          built.kb.capabilityRegistry,
+          getStoreServices().expansionManifestCatalog.listManifests(),
+          BUILTIN_CAPABILITY_DESCRIPTORS,
+        );
+        if (built.curateScheduler) {
+          built.curateScheduler = createCoordinatorCurateScheduler({
+            scheduler: built.curateScheduler,
+            db: getStoreDb(),
+            runtime,
+          });
+        }
+      };
+
+      // Test seam: when a host overrides `createKbSubsystemFn` with an
+      // async factory returning `KnowledgeBaseRuntime`, route it through
+      // the subsystem's `build` override so retry/dispose semantics still
+      // apply. Production omits this branch.
+      const buildOverride = providedCreateKbSubsystemFn;
+
+      const subsystem = createKbSubsystem({
+        ...buildOptions,
+        time: runtime.time,
+        curateBridge: curateSchedulerHealth,
+        prepareRuntime,
+        runBootSequence,
+        ...(buildOverride === undefined ? {} : { build: buildOverride }),
       });
-      currentKbRuntime = kbSubsystem.kb;
-      initializeCapabilityCatalog(
-        kbSubsystem.kb.capabilityRegistry,
-        getStoreServices().expansionManifestCatalog.listManifests(),
-        BUILTIN_CAPABILITY_DESCRIPTORS,
-      );
-      if (kbSubsystem.curateScheduler) {
-        kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
-          scheduler: kbSubsystem.curateScheduler,
-          db: getStoreDb(),
-          runtime,
-        });
-      }
-      // Boot step 0 (I0): finish or roll back any in-flight promote-to-wiki
-      // before any corpus snapshot can be published. Runs strictly before
-      // `retryPendingCorpusPublication()`, `ensureCorpusFreshness`, and any
-      // `driver.notifyCorpus` so consumers cannot observe a snapshot built
-      // from a partially committed promote.
-      await runPromoteRecovery(kbSubsystem.kb);
-      // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
-      await kbSubsystem.kb.retryPendingCorpusPublication();
-      // Boot step 2: absorb external Corpus edits before replaying consumers.
-      // Boot uses the blocking variant — downstream consumer apply must see
-      // a fresh index. Subsequent KB read paths use the non-blocking lazy
-      // variant (spec §12.3); the abort signal stops post-boot rebuilds when
-      // shutdown drains.
-      await kbSubsystem.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal });
-      const driver = getConsumerDriver();
-      // Boot step 3: replay installed-tier rows + apply bundled fallback to fill empty bindings.
-      await getExpansionLifecycleService().recoverOnBoot();
-      // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
-      await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
-      // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
-      const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
-      driver.notifyCorpus(corpusSnapshot);
-      const ftsConsumerId = kbSubsystem.kb.capabilityRegistry
-        .runtimeView()
-        .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id;
-      await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
-      if (kbSubsystem.curateScheduler) {
-        // Boot step 6: start background curation only after the read projections are aligned.
-        await kbSubsystem.curateScheduler.start();
-      }
-      return kbSubsystem;
+      subsystem.onStatusChange((status) => {
+        if (status.phase !== 'initializing') {
+          pendingKbRuntime = null;
+        }
+      });
+      return subsystem;
     },
     createExecutionService: (ctx, deps) => {
       const wiredDeps = {
@@ -519,7 +602,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       getDiscussContext,
       createInvocationContext,
       recoveryCoordinator,
-      assertStartupStillActive,
+      signal,
       cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
@@ -554,7 +637,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         kind: 'cursor',
         registrationKind: 'base',
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       const currentMaxSeq = getCurrentJournalSeq();
       driver.notify('journal', currentMaxSeq);
@@ -564,7 +647,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         driver.waitFreshUntil('journal', currentMaxSeq, 'discuss', bootFreshnessTimeoutMs),
         driver.waitFreshUntil('journal', currentMaxSeq, 'workflow', bootFreshnessTimeoutMs),
       ]);
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       await jobsReconcile.runStartup({
         recoveryCoordinator,
@@ -575,25 +658,25 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: getSessionLookup(),
         coordinatorCommit,
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       await lifecycleReactor.scanStartup();
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       await workflowRecover.resumeAll({
         db,
@@ -610,14 +693,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
         staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       return recoveredDiscussResumes;
     },
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   const coordinatorCore = core;
-  curateSchedulerHealth.attachRuntimeState(coordinatorCore.runtimeState);
+  // The curate-scheduler health bridge wires into the KB subsystem during
+  // its `init()` phase via `attachCurateBridge` — no additional wiring here.
   resolveLifecyclePhase = () => coordinatorCore.runtimeState.getLifecycle();
 
   return {

@@ -10,7 +10,6 @@ import type { TimerHandle } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../../../jobs/reconcile/cross-namespace-adoption.js';
-import { StartupInterruptedError } from '../../startup-error.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
@@ -62,7 +61,7 @@ type StartupRecoveryContext = {
   providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
-  assertStartupStillActive: () => void;
+  signal: AbortSignal;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;
@@ -73,7 +72,7 @@ type StartupRecoveryContext = {
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
-  assertStartupStillActive: () => void;
+  signal: AbortSignal;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
 
@@ -146,7 +145,7 @@ export function createRecoveryCoordinator({
   async function runRecoveryAdoption({
     queuedJobs,
     runningJobs,
-    assertStartupStillActive,
+    signal,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
     queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
@@ -172,11 +171,11 @@ export function createRecoveryCoordinator({
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         const recovery = providerRegistry.get(launchRecord.provider)?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
-          assertStartupStillActive();
+          signal.throwIfAborted();
           await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, {
             reason: interruptedAppServerReason,
           });
-          assertStartupStillActive();
+          signal.throwIfAborted();
           state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
           continue;
@@ -192,9 +191,9 @@ export function createRecoveryCoordinator({
         }
 
         let adoptedRuntimeRecord = runtimeRecord;
-        assertStartupStillActive();
+        signal.throwIfAborted();
         ({ cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord));
-        assertStartupStillActive();
+        signal.throwIfAborted();
 
         let cleaned = false;
         const cleanupOnce = (): void => {
@@ -272,7 +271,7 @@ export function createRecoveryCoordinator({
         state.recoveryRegistry?.remove(jobId);
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
       } catch (error: unknown) {
-        if (error instanceof StartupInterruptedError) {
+        if ((error as { name?: string } | null)?.name === 'AbortError') {
           cleanup?.();
           throw error;
         }
@@ -284,25 +283,25 @@ export function createRecoveryCoordinator({
     for (const { jobId, launchRecord } of queuedJobs) {
       try {
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
-        assertStartupStillActive();
+        signal.throwIfAborted();
         service.recoverQueuedJob(launchRecord);
         state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
       } catch (error: unknown) {
-        if (error instanceof StartupInterruptedError) throw error;
+        if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
         log(`Failed to recover queued job ${jobId}: ${formatError(error)}\n`);
         state.recoveryRegistry?.remove(jobId);
       }
     }
 
-    assertStartupStillActive();
+    signal.throwIfAborted();
     resetRecoveryState();
     log('Recovery adoption complete. Launch fence lifted.\n');
   }
 
   return {
     async runStartupRecovery(ctx: StartupRecoveryContext): Promise<void> {
-      const { namespace, bundleHash, runtime, progressStore, assertStartupStillActive, log, cleanupStaleJobs } = ctx;
+      const { namespace, bundleHash, runtime, progressStore, signal, log, cleanupStaleJobs } = ctx;
       const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);
@@ -352,11 +351,11 @@ export function createRecoveryCoordinator({
         await runRecoveryAdoption({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
-          assertStartupStillActive,
+          signal,
           interruptedAppServerReason,
         });
       } catch (error: unknown) {
-        if (error instanceof StartupInterruptedError) {
+        if ((error as { name?: string } | null)?.name === 'AbortError') {
           throw error;
         }
         log(`Recovery adoption failed: ${formatError(error)}\n`);

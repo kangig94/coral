@@ -7,11 +7,6 @@
           {
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/backend-warm-start.mjs\"",
             "timeout": 10
           },
           {

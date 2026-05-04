@@ -19,9 +19,18 @@ import { bindSocket } from './server.js';
 import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
-
 export const STARTUP_POLL_MS = 200;
-export const STARTUP_TIMEOUT_MS = 60_000;
+/** Time budget for the daemon to bind its socket / answer first health probe. */
+export const KERNEL_BIND_DEADLINE_MS = 5_000;
+/** Time budget for the daemon to reach a usable lifecycle phase (kernel-ready or running). */
+export const KERNEL_READY_DEADLINE_MS = 15_000;
+/**
+ * Time budget for the previous daemon to release the socket after shutdown
+ * request. Mirrors `HANDOFF_DRAIN_TIMEOUT_MS` in `coordinator/shutdown.ts` —
+ * defined locally here to avoid a transport→coordinator import cycle. The
+ * coordinator side is canonical; the two must stay in sync.
+ */
+export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 
 export type DesiredCoordinator = {
@@ -32,7 +41,7 @@ export type DesiredCoordinator = {
 };
 
 export type RawCoordinatorHealth = {
-  status: 'starting' | 'ok' | 'draining';
+  status: 'starting' | 'kernel-ready' | 'ok' | 'running' | 'draining';
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
@@ -116,7 +125,11 @@ function currentVersion(root: string): string {
 function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
   return (
     isRecord(value) &&
-    (value.status === 'starting' || value.status === 'ok' || value.status === 'draining') &&
+    (value.status === 'starting' ||
+      value.status === 'kernel-ready' ||
+      value.status === 'ok' ||
+      value.status === 'running' ||
+      value.status === 'draining') &&
     typeof value.version === 'string' &&
     typeof value.bundleHash === 'string' &&
     (value.flavor === 'prod' || value.flavor === 'dev') &&
@@ -125,6 +138,16 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
     typeof value.namespace === 'string' &&
     value.namespace.length > 0
   );
+}
+
+/**
+ * Treat both legacy `'ok'` and the new lifecycle phases (`'kernel-ready'`,
+ * `'running'`) as "the daemon is ready to serve requests". Older composition
+ * layers may map kernel-ready/running to legacy `'ok'`; newer ones report the
+ * lifecycle phase directly.
+ */
+function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
+  return status === 'ok' || status === 'kernel-ready' || status === 'running';
 }
 
 function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
@@ -285,7 +308,7 @@ function matchingStartupError(
       return null;
     }
     const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
-    const latestMtime = waitContext.spawnedAt + STARTUP_TIMEOUT_MS;
+    const latestMtime = waitContext.spawnedAt + KERNEL_READY_DEADLINE_MS;
     if (mtimeMs < earliestMtime || mtimeMs > latestMtime) {
       return null;
     }
@@ -404,18 +427,32 @@ async function waitForBackendReady(
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
 ): Promise<VerifiedBackendInfo> {
-  const deadline = timePort.now() + timeoutMs;
-  while (timePort.now() < deadline) {
+  const currentAttempt = waitContext.kind === 'current-attempt';
+  const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
+  let sawFirstHealth = !currentAttempt;
+  let readyDeadline = timePort.now() + timeoutMs;
+
+  const noteHealth = (health: RawCoordinatorHealth | null): void => {
+    if (health === null || sawFirstHealth) {
+      return;
+    }
+    sawFirstHealth = true;
+    readyDeadline = timePort.now() + timeoutMs;
+  };
+
+  while (timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
     const info = readDiscoverySnapshot(paths);
     let observedPid: number | undefined = info?.pid;
     if (info) {
       const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
+      noteHealth(health);
       observedPid = health?.pid ?? observedPid;
-      if (health && health.status === 'ok' && isCompatibleHealth(health, desired)) {
+      if (health && isReadyStatus(health.status) && isCompatibleHealth(health, desired)) {
         return mergeDiscoveryWithHealth(info, health);
       }
-    } else if (waitContext.kind === 'existing-starting') {
+    } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
       const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+      noteHealth(health);
       observedPid = health?.pid;
     }
 
@@ -426,7 +463,9 @@ async function waitForBackendReady(
     await timePort.sleep(STARTUP_POLL_MS);
   }
   throw new BackendUnreachableError(
-    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
+    sawFirstHealth
+      ? 'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.'
+      : 'Timed out waiting for Coral coordinator bind. Run `coral-cli backend status` to check coordinator health.',
   );
 }
 
@@ -481,13 +520,13 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
 
   if (health && isCompatibleHealth(health, desired) && health.status !== 'draining') {
     const info = readDiscoverySnapshot(paths);
-    if (info && health.status === 'ok') {
+    if (info && isReadyStatus(health.status)) {
       return summarizeBackend(mergeDiscoveryWithHealth(info, health), ipcTime);
     }
     // Compatible incumbent is still `starting`, or `coordinator.json` lags
     // behind the bound socket; wait for the daemon to finish writing it.
     return summarizeBackend(
-      await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, { kind: 'existing-starting' }),
+      await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, ipcTime, { kind: 'existing-starting' }),
       ipcTime,
     );
   }
@@ -495,7 +534,7 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   if (health && isCompatibleHealth(health, desired) && health.status === 'draining') {
     // Compatible-but-draining: the incumbent rejects normal RPCs but health
     // still answers. Wait for the socket to be released, then spawn fresh.
-    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS, ipcTime);
+    await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, ipcTime);
   } else if (health && !isCompatibleHealth(health, desired)) {
     // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
@@ -512,20 +551,20 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
         const info = readDiscoverySnapshot(paths);
         if (info) {
           return summarizeBackend(
-            await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, { kind: 'existing-starting' }),
+            await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, ipcTime, { kind: 'existing-starting' }),
             ipcTime,
           );
         }
       }
       // ignore other errors: bounded escalation happens via socket-release wait
     }
-    await waitForSocketRelease(paths.socketPath, STARTUP_TIMEOUT_MS, ipcTime);
+    await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, ipcTime);
   }
   // else: health unreachable → fall through to spawn
 
   const spawned = spawnCoordinator(backendBin, paths);
   return summarizeBackend(
-    await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, {
+    await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, ipcTime, {
       kind: 'current-attempt',
       attemptId: spawned.attemptId,
       spawnedAt: spawned.spawnedAt,

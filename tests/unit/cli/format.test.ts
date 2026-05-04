@@ -270,25 +270,156 @@ describe('cli format', () => {
   });
 
   describe('backend formatters', () => {
-    it('formats an ok backend status', () => {
+    const baseHealth = {
+      status: 'ok' as const,
+      version: '1.2.3',
+      bundleHash: 'bundle-hash',
+      instanceId: 'instance-1',
+      uptimeMs: 252_000,
+      active: 2,
+      activeJobs: 1,
+      inflightRequests: 0,
+      kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
+    };
+
+    it('formats a running backend status with online subsystems', () => {
       const status = {
         status: 'ok',
         health: {
-          status: 'ok',
-          version: '1.2.3',
-          bundleHash: 'bundle-hash',
-          instanceId: 'instance-1',
-          uptimeMs: 1234,
-          active: 2,
-          activeJobs: 1,
-          inflightRequests: 0,
-          subsystems: { kb: { kind: 'ok' as const }, kbCurate: 'ok' as const, discuss: 'ok' as const },
+          ...baseHealth,
+          subsystems: [{ id: 'kb', phase: 'online' as const }],
+          queueDepth: 0,
         },
       } satisfies BackendStatusFull;
 
       expect(formatBackendStatus(status)).toBe(
-        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
+        [
+          'Backend ok',
+          'Version: 1.2.3',
+          'Uptime: 4m12s',
+          'Kernel: running since 2026-05-05T12:00:00.000Z',
+          '',
+          'Subsystems:',
+          '  kb: online',
+          '',
+          'Active jobs: 1',
+          'Queue depth: 0',
+        ].join('\n'),
       );
+    });
+
+    it('omits the kernel timestamp when readyAt is null', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          kernel: { phase: 'starting' as const, readyAt: null },
+          subsystems: [{ id: 'kb', phase: 'initializing' as const, attempt: 2 }],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('Kernel: starting\n');
+      expect(output).not.toContain(' since ');
+      expect(output).toContain('  kb: initializing\n    attempt: 2');
+    });
+
+    it('formats a degraded subsystem with reason kind, details, and last error', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          subsystems: [
+            {
+              id: 'kb',
+              phase: 'degraded' as const,
+              reason: {
+                kind: 'curate-publish' as const,
+                consecutiveFailures: 3,
+                lastError: 'publish timed out',
+              },
+            },
+          ],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('  kb: degraded');
+      expect(output).toContain('    reason: curate-publish (3 consecutive failures)');
+      expect(output).toContain('    last error: publish timed out');
+      expect(output).toContain('    hint: free disk space, then coral-cli backend shutdown to reset');
+    });
+
+    it('omits the last-error line for a degraded subsystem when lastError is empty', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          subsystems: [
+            {
+              id: 'kb',
+              phase: 'degraded' as const,
+              reason: {
+                kind: 'curate-publish' as const,
+                consecutiveFailures: 1,
+                lastError: '',
+              },
+            },
+          ],
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).not.toContain('last error:');
+    });
+
+    it('formats an offline subsystem with reason, last log, and shutdown hint', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          subsystems: [
+            {
+              id: 'kb',
+              phase: 'offline' as const,
+              reason: 'binding_empty after 3 attempts',
+              lastLogLine: '[subsystem:kb] catalog scan failed',
+            },
+          ],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('  kb: offline');
+      expect(output).toContain('    reason: binding_empty after 3 attempts');
+      expect(output).toContain('    last log: [subsystem:kb] catalog scan failed');
+      expect(output).toContain('    hint: coral-cli backend shutdown');
+    });
+
+    it('omits the last-log line for an offline subsystem when lastLogLine is absent', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          subsystems: [{ id: 'kb', phase: 'offline' as const, reason: 'binding_empty' }],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('  kb: offline');
+      expect(output).not.toContain('last log:');
+      expect(output).toContain('    hint: coral-cli backend shutdown');
+    });
+
+    it('omits the queue-depth line when queueDepth is absent', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          subsystems: [{ id: 'kb', phase: 'online' as const }],
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).not.toContain('Queue depth');
     });
 
     it('formats a not-running backend status', () => {

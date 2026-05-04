@@ -373,6 +373,72 @@ describe('ipc ensure', () => {
     expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 
+  it('uses the bind deadline while a freshly spawned coordinator has not answered health', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue({ pid: 12_345, unref: vi.fn() });
+
+    const { ensure, KERNEL_BIND_DEADLINE_MS, STARTUP_POLL_MS } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(KERNEL_BIND_DEADLINE_MS + STARTUP_POLL_MS);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('switches to the ready deadline after the first health response from a fresh spawn', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const startMs = Date.now();
+    const root = createPluginRoot();
+
+    mockState.health.mockImplementation(async () => {
+      const elapsed = Date.now() - startMs;
+      if (elapsed < 4_800) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      if (!existsSync(discoveryPath(root))) {
+        return {
+          status: 'starting',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'booting-coordinator',
+          namespace: pluginRootNamespace(root),
+        };
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'ready-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockReturnValue({ pid: 12_345, unref: vi.fn() });
+    setTimeout(() => {
+      writeDiscovery(root, {
+        port: 4255,
+        token: 'ready-token',
+        instanceId: 'ready-coordinator',
+      });
+    }, 19_000);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('ready-coordinator');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('polls bindSocket repeatedly while the incumbent socket is still bound', async () => {
     makeHome();
     vi.useFakeTimers();

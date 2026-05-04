@@ -45,6 +45,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_path_unwritable'
   | 'binding_empty'
   | 'kb_unavailable'
+  | 'kb_initializing'
+  | 'kb_offline'
   | 'binding_occupied'
   | 'binding_required'
   | 'capability_name_occupied'
@@ -205,6 +207,16 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const binding = stringContextValue(context, 'binding', '<binding>');
       return `No engine is currently bound to '${binding}'. Equip the bundled or installed engine that fills it, then retry.`;
     },
+  },
+  // Transport-level distinction; CLI does not auto-retry on `_initializing`
+  // and relies on the remediation hint instead.
+  kb_initializing: {
+    userMessage: 'Knowledge base is starting up — retry in ~5 seconds',
+    remediation: 'Wait briefly, then retry the request',
+  },
+  kb_offline: {
+    userMessage: 'Knowledge base is offline',
+    remediation: 'Restart the daemon: coral-cli backend shutdown',
   },
   binding_occupied: {
     userMessage: (context) =>

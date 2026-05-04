@@ -180,7 +180,7 @@ export type DiscussStartupDeps = {
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
-  readonly assertStartupStillActive: () => void;
+  readonly signal: AbortSignal;
 };
 
 export type DiscussRunStartup = (deps: DiscussStartupDeps) => Promise<RecoveredDiscussResume[]>;
@@ -200,7 +200,7 @@ export const runStartup: DiscussRunStartup = async (deps) => {
     } catch (error: unknown) {
       backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(error)}`);
     }
-    deps.assertStartupStillActive();
+    deps.signal.throwIfAborted();
   }
 
   return recoveredDiscussResumes;

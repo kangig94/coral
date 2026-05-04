@@ -66,6 +66,9 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/kb/reindex.ts',
   'src/coordinator/services/kb/shell.ts',
   'src/coordinator/services/kb/source-import.ts',
+  'src/coordinator/subsystems/contract.ts',
+  'src/coordinator/subsystems/registry.ts',
+  'src/coordinator/subsystems/kb.ts',
   'src/coordinator/services/recovery/actions.ts',
   'src/coordinator/services/recovery/index.ts',
   'src/coordinator/services/recovery/service.ts',
@@ -75,7 +78,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/workflow-finalization.ts',
   'src/coordinator/services/workflow-recovery-finalizer.ts',
   'src/coordinator/shutdown.ts',
-  'src/coordinator/startup-error.ts',
 ]);
 
 const DOMAIN_API_TARGETS = new Set<string>();
@@ -115,6 +117,7 @@ const BROAD_IMPORT_PREFIXES = [
   'src/coordinator/composition/',
   'src/coordinator/expansion/',
   'src/coordinator/services/',
+  'src/coordinator/subsystems/',
 ] as const;
 const FORBIDDEN_PREFIXES = [
   'src/execution/',

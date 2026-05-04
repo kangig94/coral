@@ -1,5 +1,4 @@
 import type { Server, ServerResponse } from 'node:http';
-import { errorMessage } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { type LaunchCoordinator } from './live/admission.js';
@@ -15,12 +14,13 @@ import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
-import { StartupInterruptedError } from './startup-error.js';
 import type { JobStore } from '../jobs/store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
+import { KB_ID, type Subsystem } from './subsystems/contract.js';
+import type { SubsystemRegistry } from './subsystems/registry.js';
 import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
@@ -37,14 +37,10 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import {
-  createBackendStoreResetAuthority,
-  openOrResetBackendStoreDb,
-  type Database,
-} from '../store/db.js';
+import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 
-export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
+export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
 export type CoordinatorServerInfo = {
   port: number;
@@ -71,67 +67,49 @@ export interface CoordinatorIdentity {
   readonly log: (message: string) => void;
 }
 
-/**
- * KB availability status. Set by the KB-init aggregator at boot. Transitions
- * `initializing` → `ok` (or `unavailable`) exactly once. The IPC listener
- * binds while `initializing`, so KB-routed mutate handlers can return a
- * structured `kb_unavailable` response immediately instead of clients hanging
- * on a closed socket. Curate publish-health degradation is a separate concept
- * (`CurateHealth`) and does NOT flip this field.
- */
-export type KbStatus =
-  | { kind: 'initializing' }
-  | { kind: 'ok'; subsystem: KnowledgeBaseRuntime }
-  | { kind: 'unavailable'; reason: string };
-
-/**
- * Curate publication-queue health. Mutated only by the curate-scheduler
- * health bridge after N consecutive corpus-publish failures; reset on the
- * next publish success. Surfaced separately on `/health` so curate
- * degradation does not gate unrelated KB IPC ops.
- */
-export type CurateHealth = { kind: 'ok' } | { kind: 'degraded'; reason: string };
-
 export interface ReadonlyRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
-  getKbStatus(): KbStatus;
-  getCurateHealth(): CurateHealth;
   getLaunchFenceActive(): boolean;
+  readonly subsystems: SubsystemRegistry;
 }
 
 export interface MutableRuntimeState extends ReadonlyRuntimeState {
   setLifecycle(state: LifecycleState): void;
   setStartedAt(ts: number): void;
-  setKbStatus(status: KbStatus): void;
-  setCurateHealth(health: CurateHealth): void;
   setLaunchFenceActive(active: boolean): void;
 }
 
-export function createRuntimeState(startedAt: number): MutableRuntimeState {
+export function createRuntimeState(startedAt: number, subsystems: SubsystemRegistry): MutableRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
-  let kbStatus: KbStatus = { kind: 'initializing' };
-  let curateHealth: CurateHealth = { kind: 'ok' };
   let launchFenceActive = false;
+  // Startup is strictly ordered; shutdown may enter `draining` from an
+  // earlier phase when a handoff or hard stop arrives during startup.
+  const allowedTransitions: Readonly<Record<LifecycleState, readonly LifecycleState[]>> = {
+    starting: ['kernel-ready', 'draining', 'stopped'],
+    'kernel-ready': ['running', 'draining', 'stopped'],
+    running: ['draining', 'stopped'],
+    draining: ['stopped'],
+    stopped: [],
+  };
 
   return {
     getLifecycle: () => lifecycle,
     getStartedAt: () => currentStartedAt,
-    getKbStatus: () => kbStatus,
-    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
+    subsystems,
     setLifecycle: (state) => {
+      if (state === lifecycle) {
+        return;
+      }
+      if (!allowedTransitions[lifecycle].includes(state)) {
+        throw new Error(`Invalid lifecycle transition: ${lifecycle} -> ${state}`);
+      }
       lifecycle = state;
     },
     setStartedAt: (ts) => {
       currentStartedAt = ts;
-    },
-    setKbStatus: (status) => {
-      kbStatus = status;
-    },
-    setCurateHealth: (health) => {
-      curateHealth = health;
     },
     setLaunchFenceActive: (active) => {
       launchFenceActive = active;
@@ -139,7 +117,13 @@ export function createRuntimeState(startedAt: number): MutableRuntimeState {
   };
 }
 
-export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
+/**
+ * Factory for the KB subsystem. Returns a `Subsystem<KnowledgeBaseRuntime>`
+ * to register with the runtime-state registry. The registered subsystem
+ * owns its own retry loop and curate-scheduler bridge; lifecycle.ts merely
+ * registers it and triggers `initAll` after Era II completes.
+ */
+export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Subsystem<KnowledgeBaseRuntime>;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode): Promise<void>;
@@ -274,7 +258,7 @@ export type RecoverPersistedDiscussDeps = {
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
-  readonly assertStartupStillActive: () => void;
+  readonly signal: AbortSignal;
 };
 
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
@@ -291,7 +275,7 @@ export type StartupRecoveryDeps = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
-  readonly assertStartupStillActive: () => void;
+  readonly signal: AbortSignal;
   readonly cleanupStaleJobs: (currentBundleHash: string) => void;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
@@ -356,6 +340,7 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownPromise: Promise<void> | null;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
+  startupAbort: AbortController | null;
 };
 
 type LifecycleStartupContext = {
@@ -408,18 +393,17 @@ async function runLifecycleStartup({
     throw new Error('Backend server already started');
   }
 
-  const assertStartupStillActive = (): void => {
-    if (state.shutdownPromise !== null || runtimeState.getLifecycle() !== 'starting') {
-      throw new StartupInterruptedError();
-    }
-  };
+  const startupAbort = new AbortController();
+  state.startupAbort = startupAbort;
+  const signal = startupAbort.signal;
 
   try {
-    // 1. Socket-as-lock: bind first, gracefully handing off any incumbent
-    //    via its own IPC. The lifecycle shutdown callback (composition wires
-    //    `ipcServer.onShutdownRequest`) is already installed before we reach
-    //    here, so a contender that arrives while we are still 'starting'
-    //    triggers immediate shutdown via that path.
+    // ===== Era I (kernel) =====
+    // Socket-as-lock: bind first, gracefully handing off any incumbent via
+    // its own IPC. The lifecycle shutdown callback (composition wires
+    // `ipcServer.onShutdownRequest`) is already installed before we reach
+    // here, so a contender that arrives while we are still 'starting' triggers
+    // immediate shutdown via that path.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
     let socketAuthorityAcquired = false;
@@ -478,7 +462,7 @@ async function runLifecycleStartup({
         interruptedAppServerReason = 'handoff';
       }
     }
-    assertStartupStillActive();
+    signal.throwIfAborted();
 
     const resetAuthority = createBackendStoreResetAuthority(
       runtime,
@@ -511,60 +495,18 @@ async function runLifecycleStartup({
       log: identity.log,
     });
     state.recoveryCoordinator = recoveryCoordinator;
-    assertStartupStillActive();
+    signal.throwIfAborted();
 
     registerBuiltInProvidersFn(providerRegistry);
 
-    // Bind the IPC listener BEFORE awaiting KB init. KB is a subsystem; its
-    // boot work (corpus walk, consumer-driver replay, projection equip) must
-    // not gate the daemon's responsiveness. While `kbStatus === 'initializing'`,
-    // the IPC handlers route KB tool calls to a `kb_unavailable` response so
-    // CLI clients see a structured error instead of a silent hang.
+    // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
+    // recovery work. KB is a subsystem (Era III); its boot work cannot gate
+    // daemon liveness. The CLI's `waitForBackendReady` resolves on
+    // `kernel.phase ∈ { 'kernel-ready', 'running' }` so once we reach this
+    // point the CLI returns within `KERNEL_READY_DEADLINE_MS`.
     const { port, host } = await listenFn(server);
-    assertStartupStillActive();
+    signal.throwIfAborted();
     runtimeState.setStartedAt(now());
-
-    try {
-      const kbSub = await createKbSubsystemFn({
-        db: progressStore.getDb(),
-        paths: {
-          markdownRoot: runtime.paths.coral.corpus.kbRoot,
-          runtimeDir: kbRuntimeDir(flavor),
-        },
-        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
-        processPort: runtime.process,
-        storagePort: runtime.storage,
-        envPort: runtime.env,
-        timePort: runtime.time,
-        idsPort: runtime.ids,
-      });
-      runtimeState.setKbStatus({ kind: 'ok', subsystem: kbSub });
-    } catch (error: unknown) {
-      const message = errorMessage(error);
-      backendLog.error('KB subsystem failed to initialize — running in degraded mode', error);
-      runtimeState.setKbStatus({ kind: 'unavailable', reason: message });
-    }
-    assertStartupStillActive();
-
-    const recoveredDiscussResumes = await runStartupRecoveryFn({
-      identity,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getExecutionService: deps.getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      recoveryCoordinator,
-      assertStartupStillActive,
-      cleanupStaleJobs: cleanupStaleJobsFn,
-      recoverPersistedDiscussFn,
-      interruptedAppServerReason,
-    });
-
-    assertStartupStillActive();
     const startedAt = runtimeState.getStartedAt();
     writeBackendInfoFn({
       pid: backendPid,
@@ -579,14 +521,68 @@ async function runLifecycleStartup({
       instanceId,
       startedAt,
     });
+    runtimeState.setLifecycle('kernel-ready');
+
+    // ===== Era II (recovery) =====
+    // Per-job isolation: corrupt sessions should not abort recovery.
+    // `runStartupRecoveryFn` registers journal cursors then awaits
+    // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
+    // because its budget is bounded by the daemon-side
+    // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
+    // deadline — the CLI has already returned by now.
+    const recoveredDiscussResumes = await runStartupRecoveryFn({
+      identity,
+      runtime,
+      progressStore,
+      providerRegistry,
+      getExecutionService: deps.getExecutionService,
+      getRecoveryService,
+      knownDiscussSources,
+      getDiscussStoreForSource,
+      getDiscussContext,
+      createInvocationContext,
+      recoveryCoordinator,
+      signal,
+      cleanupStaleJobs: cleanupStaleJobsFn,
+      recoverPersistedDiscussFn,
+      interruptedAppServerReason,
+    });
+    signal.throwIfAborted();
+
+    let registeredSubsystems = false;
+    try {
+      const kbSubsystem = createKbSubsystemFn({
+        db: progressStore.getDb(),
+        paths: {
+          markdownRoot: runtime.paths.coral.corpus.kbRoot,
+          runtimeDir: kbRuntimeDir(flavor),
+        },
+        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+        processPort: runtime.process,
+        storagePort: runtime.storage,
+        envPort: runtime.env,
+        timePort: runtime.time,
+        idsPort: runtime.ids,
+      });
+      runtimeState.subsystems.register(kbSubsystem);
+      registeredSubsystems = true;
+    } catch (error: unknown) {
+      backendLog.error('Subsystem registration failed — KB will be offline until restart', error);
+    }
 
     runtimeState.setLifecycle('running');
     state.started = true;
 
     idleTimer.startWatching(
       () => {
-        const status = runtimeState.getKbStatus();
-        const curateRunning = status.kind === 'ok' && status.subsystem.curateScheduler.isRunning();
+        // Probe the curate scheduler through the registry. While KB is still
+        // initializing/offline, the registry returns an error envelope; treat
+        // that as "not running" so idle-shutdown can fire under those phases
+        // (when no actual curate work can be in flight).
+        const curateProbe = runtimeState.subsystems.run<KnowledgeBaseRuntime, boolean>(KB_ID, (kb) =>
+          kb.curateScheduler.isRunning(),
+        );
+        const curateRunning = typeof curateProbe === 'boolean' ? curateProbe : false;
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
@@ -604,6 +600,22 @@ async function runLifecycleStartup({
 
     state.ownershipCheckerTeardown = ownershipChecker.install();
     await hooks.onRecoveryComplete(recoveredDiscussResumes);
+
+    // ===== Era III (subsystems — fire-and-forget) =====
+    // Subsystems were registered before `running` became externally visible
+    // and are now kicked off in the background. The KB subsystem owns its own
+    // retry loop and curate-scheduler bridge; the registry surfaces its phase
+    // via `runtimeState.subsystems.status('kb')`.
+    // KB-routed handlers consult the registry through `subsystems.run`/
+    // `runAsync` and receive a structured `kb_initializing` / `kb_offline`
+    // envelope while the subsystem is not online.
+    try {
+      if (registeredSubsystems) {
+        runtimeState.subsystems.initAll(signal);
+      }
+    } catch (error: unknown) {
+      backendLog.error('Subsystem initialization dispatch failed — KB will be offline until restart', error);
+    }
 
     return {
       port,
@@ -625,7 +637,7 @@ async function runLifecycleStartup({
       runtimeState.setLifecycle('stopped');
       throw new BackendAlreadyRunningError();
     }
-    if (error instanceof StartupInterruptedError && state.shutdownPromise !== null) {
+    if ((error as { name?: string } | null)?.name === 'AbortError' && state.shutdownPromise !== null) {
       // Shutdown owns cleanup. Do not close IPC/backend-info here, because
       // handoff finalizers may still hold socket authority until they
       // complete or budget-skip.
@@ -654,6 +666,8 @@ async function runLifecycleStartup({
       backendLog.error('Handoff escalation failed', error);
     }
     throw error;
+  } finally {
+    state.startupAbort = null;
   }
 }
 
@@ -686,6 +700,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
+    startupAbort: null,
   };
   const ownershipChecker = createReplacementBackendOwnershipChecker({
     readBackendInfo,
@@ -701,6 +716,14 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
   async function shutdown(reason: string): Promise<void> {
     if (state.shutdownPromise) return state.shutdownPromise;
+
+    // Calling `abort()` with no reason sets `signal.reason` to the platform
+    // default (a DOMException whose `.name === 'AbortError'`). Downstream
+    // `signal.throwIfAborted()` checks throw that reason value, which
+    // downstream catches detect via `error?.name === 'AbortError'`. A string
+    // reason would propagate as a bare string and lose the `name`
+    // discriminator.
+    state.startupAbort?.abort();
 
     state.shutdownPromise = (async () => {
       if (runtimeState.getLifecycle() === 'stopped') return;
@@ -752,7 +775,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         shutdown,
       });
     } catch (error: unknown) {
-      if (error instanceof StartupInterruptedError && state.shutdownPromise !== null) {
+      if ((error as { name?: string } | null)?.name === 'AbortError' && state.shutdownPromise !== null) {
         await state.shutdownPromise;
         throw error;
       }

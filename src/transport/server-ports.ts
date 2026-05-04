@@ -4,7 +4,7 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
 
 export interface AdminControlPort {
-  getLifecycleState?(): 'starting' | 'running' | 'draining' | 'stopped';
+  getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
   isLaunchFenceActive(): boolean;
@@ -13,14 +13,42 @@ export interface AdminControlPort {
   requestDrain(reason: string): void;
 }
 
+/**
+ * Per-subsystem status entry surfaced on `/health.subsystems[]`. Structurally
+ * mirrors `SubsystemStatus` from `src/coordinator/subsystems/contract.ts`
+ * (the canonical authority); transport keeps a structural copy because the
+ * architecture-layering invariant forbids transport from importing
+ * coordinator internals. `id` is a plain string here — branding is enforced
+ * producer-side; transport only emits/parses the wire value.
+ */
+export type TransportSubsystemStatus =
+  | { id: string; phase: 'initializing'; attempt: number }
+  | { id: string; phase: 'online' }
+  | {
+      id: string;
+      phase: 'degraded';
+      reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
+    }
+  | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
+
 export type HealthSnapshot = {
   /**
-   * Lifecycle visibility surface. `'starting'` while the daemon is binding /
-   * recovering, `'ok'` once running, `'draining'` after `requestDrain` fires.
-   * Handoff contenders read this to distinguish a same-bundle redundant
-   * peer from a mismatch they should replace.
+   * Legacy lifecycle visibility surface kept for older CLIs that validate the
+   * strict `'starting' | 'ok' | 'draining'` enum. New consumers read
+   * `kernel.phase` instead. Handoff contenders read this to distinguish a
+   * same-bundle redundant peer from a mismatch they should replace.
    */
-  status: string;
+  status: 'starting' | 'ok' | 'draining';
+  /**
+   * Authoritative kernel lifecycle. `phase` reports the full 5-state
+   * `LifecycleState`; `readyAt` is the wall-clock ms when the kernel started
+   * (set on the first non-`'starting'` transition) or `null` while still
+   * starting.
+   */
+  kernel: {
+    phase: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
+    readyAt: number | null;
+  };
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
@@ -44,16 +72,15 @@ export type HealthSnapshot = {
   queueDepth: number;
   inflightRequests: number;
   env: Record<string, string>;
-  subsystems: {
-    kb: {
-      kind: 'ok' | 'initializing' | 'unavailable';
-      reason?: string;
-      mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-      consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
-    };
-    kbCurate: 'ok' | 'degraded';
-    kbCurateReason?: string;
-    discuss: 'ok';
+  subsystems: TransportSubsystemStatus[];
+  /**
+   * Health diagnostics. Omitted entirely when nothing is wrong so the green
+   * path stays compact and operators can grep for these keys to find
+   * blocked writers / stuck consumers.
+   */
+  diagnostics?: {
+    mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
+    consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
   };
 };
 

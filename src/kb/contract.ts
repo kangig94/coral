@@ -172,7 +172,7 @@ export interface KbRuntime extends KbEngineRuntimeBase {
     options?: KbMutationLockOptions,
   ): Promise<T>;
   /**
-   * Mutation-lock diagnostics for `/health.subsystems.kb.mutationBlocked`.
+   * Mutation-lock diagnostics for `/health.diagnostics.mutationBlocked`.
    * Returns `{ blocked: false }` while no mutation has aborted past the
    * cooperative grace window, otherwise the stuck owner snapshot. Owner is
    * `'unknown'` when the deadline fires before the mutation has called

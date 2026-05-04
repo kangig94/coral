@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  createServer,
-  request as httpRequest,
-  type IncomingMessage as ClientIncomingMessage,
-} from 'node:http';
+import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
 import { makeEvent } from '#src/discuss/events.js';
 import type { DiscussDetailResponse, DiscussSummaryDto } from '#src/discuss/read-contract.js';
@@ -185,7 +181,7 @@ describe('server discuss API', () => {
         throw new Error('startServer with progressStore requires its matching runtime');
       }
       const effectiveRuntime = runtime ? { ...runtime, time: realTimePort() } : undefined;
-  const core = createCoordinatorCore({
+      const core = createCoordinatorCore({
         runtime: effectiveRuntime as Runtime,
         resolveProjectSourceFn,
         bootSnapshot: {
@@ -224,6 +220,7 @@ describe('server discuss API', () => {
         });
         attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
       }
+      core.runtimeState.setLifecycle('kernel-ready');
       core.runtimeState.setLifecycle('running');
       core.runtimeState.setStartedAt(Date.now());
       const port = await new Promise<number>((resolve, reject) => {

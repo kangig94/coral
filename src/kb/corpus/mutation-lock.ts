@@ -19,7 +19,7 @@ const MUTATION_DEADLINE_GRACE_MS = 100;
  * The deadline aborts the composed signal but does NOT release the lock; the
  * lock transfers to the next caller only when `fn` actually settles
  * (success/failure/abort propagation). Stuck non-cooperative mutations
- * surface on `/health.subsystems.kb.mutationBlocked` instead.
+ * surface on `/health.diagnostics.mutationBlocked` instead.
  *
  * `signal` lets callers compose external aborts (e.g. user `coral-cli abort`)
  * with the internal deadline. Both abort the same composed signal that `fn`
@@ -60,7 +60,7 @@ export interface KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta
   /**
    * Operator-facing identifier of the in-flight write (e.g. `note_write`,
    * `source_import`). Captured at grace-end time and surfaced through
-   * `KbMutationLockDiagnostics.owner` on `/health.subsystems.kb.mutationBlocked`.
+   * `KbMutationLockDiagnostics.owner` on `/health.diagnostics.mutationBlocked`.
    * Writers set this immediately after acquiring the lock so a deadline that
    * fires after the work begins reports the right owner. The fallback
    * sentinel `'unknown'` (see `?? 'unknown'` below) means the deadline + grace
@@ -209,7 +209,7 @@ export function createKbMutationLock<
         graceHandle = time.setTimeout(() => {
           // Owner is captured at grace-end time, not deadline time, so a
           // cooperative `fn` that settles inside the grace window never
-          // surfaces on `/health.subsystems.kb.mutationBlocked`. The
+          // surfaces on `/health.diagnostics.mutationBlocked`. The
           // `'unknown'` sentinel means the deadline fired before any write
           // committed `pendingMutationReason` — see JSDoc on the field.
           blockedState = {

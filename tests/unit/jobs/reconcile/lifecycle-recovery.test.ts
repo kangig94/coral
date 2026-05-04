@@ -8,6 +8,7 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -173,36 +174,29 @@ function createFakeIdleTimer() {
 function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
-  let kbSubsystem: ReturnType<typeof createMockKbSubsystem> | null = null;
-  let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
   let launchFenceActive = false;
+  // Stub subsystem registry: tests in this file don't exercise KB-routed
+  // calls; an always-initializing registry is sufficient.
+  const subsystems = {
+    register: vi.fn(),
+    initAll: vi.fn(),
+    disposeAll: vi.fn(async () => {}),
+    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+    list: vi.fn(() => []),
+    status: vi.fn(() => null),
+  };
 
   const runtimeState = {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
-    getKbStatus: () =>
-      kbSubsystem === null
-        ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
-        : ({ kind: 'ok', subsystem: kbSubsystem } as never),
-    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
+    subsystems: subsystems as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
     setStartedAt: vi.fn((ts: number) => {
       startedAt = ts;
-    }),
-    setKbStatus: vi.fn(
-      (
-        status:
-          | { kind: 'ok'; subsystem: ReturnType<typeof createMockKbSubsystem> }
-          | { kind: 'unavailable'; reason: string },
-      ) => {
-        kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
-      },
-    ),
-    setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
-      curateHealth = health;
     }),
     setLaunchFenceActive: vi.fn((active: boolean) => {
       launchFenceActive = active;
@@ -471,7 +465,7 @@ function createLifecycleHarness(
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: async () => createMockKbSubsystem(),
+    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
     runStartupRecoveryFn: async ({
@@ -482,7 +476,7 @@ function createLifecycleHarness(
       getRecoveryService,
       createInvocationContext,
       recoveryCoordinator,
-      assertStartupStillActive,
+      signal,
       cleanupStaleJobs,
     }) => {
       await recoveryCoordinator.runStartupRecovery({
@@ -493,7 +487,7 @@ function createLifecycleHarness(
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),

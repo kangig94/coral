@@ -3,12 +3,36 @@ import { isRecord } from '../../../infra/json.js';
 /**
  * Health metadata exposed by the Coral backend over HTTP.
  *
- * `subsystems.kb` is a typed object with sub-fields for `mutationBlocked` and
- * `consumerStuck` carrying full diagnostic context. The flat sibling
- * `kbReason` was removed; callers now read `subsystems.kb.reason`.
+ * `subsystems` is an array of per-subsystem status entries (4-phase tagged
+ * union). `mutationBlocked` and `consumerStuck` live under top-level
+ * `diagnostics` and are omitted entirely when healthy.
+ *
+ * This shape mirrors `HealthSnapshot` in `src/transport/server-ports.ts` —
+ * the producer-side type. The two are kept in sync structurally; transport
+ * keeps a local copy because layering forbids importing coordinator
+ * internals like the branded `SubsystemId`.
  */
+export type TransportSubsystemStatus =
+  | { id: string; phase: 'initializing'; attempt: number }
+  | { id: string; phase: 'online' }
+  | {
+      id: string;
+      phase: 'degraded';
+      reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
+    }
+  | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
+
 export interface BackendHealth {
-  status: 'ok';
+  /**
+   * Legacy strict-enum status field kept so older CLIs that validate
+   * `'starting' | 'ok' | 'draining'` keep working. New consumers read
+   * `kernel.phase` for the full 5-state lifecycle.
+   */
+  status: 'starting' | 'ok' | 'draining';
+  kernel: {
+    phase: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
+    readyAt: number | null;
+  };
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
@@ -19,16 +43,10 @@ export interface BackendHealth {
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;
-  subsystems: {
-    kb: {
-      kind: 'ok' | 'initializing' | 'unavailable';
-      reason?: string;
-      mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-      consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
-    };
-    kbCurate: 'ok' | 'degraded';
-    kbCurateReason?: string;
-    discuss: 'ok';
+  subsystems: TransportSubsystemStatus[];
+  diagnostics?: {
+    mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
+    consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
   };
 }
 
@@ -50,14 +68,55 @@ function isConsumerStuck(value: unknown): value is Array<{ id: string; elapsedSi
   );
 }
 
-function isKbHealth(value: unknown): value is BackendHealth['subsystems']['kb'] {
+function isDegradedReason(
+  value: unknown,
+): value is { kind: 'curate-publish'; consecutiveFailures: number; lastError: string } {
+  return (
+    isRecord(value) &&
+    value.kind === 'curate-publish' &&
+    Number.isFinite(value.consecutiveFailures) &&
+    typeof value.lastError === 'string'
+  );
+}
+
+function isSubsystemStatus(value: unknown): value is TransportSubsystemStatus {
+  if (!isRecord(value) || typeof value.id !== 'string') {
+    return false;
+  }
+  switch (value.phase) {
+    case 'initializing':
+      return Number.isFinite(value.attempt);
+    case 'online':
+      return true;
+    case 'degraded':
+      return isDegradedReason(value.reason);
+    case 'offline':
+      return (
+        typeof value.reason === 'string' && (value.lastLogLine === undefined || typeof value.lastLogLine === 'string')
+      );
+    default:
+      return false;
+  }
+}
+
+function isKernel(value: unknown): value is BackendHealth['kernel'] {
   if (!isRecord(value)) {
     return false;
   }
-  if (value.kind !== 'ok' && value.kind !== 'initializing' && value.kind !== 'unavailable') {
+  if (
+    value.phase !== 'starting' &&
+    value.phase !== 'kernel-ready' &&
+    value.phase !== 'running' &&
+    value.phase !== 'draining' &&
+    value.phase !== 'stopped'
+  ) {
     return false;
   }
-  if (value.reason !== undefined && typeof value.reason !== 'string') {
+  return value.readyAt === null || Number.isFinite(value.readyAt);
+}
+
+function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diagnostics']> {
+  if (!isRecord(value)) {
     return false;
   }
   if (value.mutationBlocked !== undefined && !isMutationBlocked(value.mutationBlocked)) {
@@ -69,29 +128,11 @@ function isKbHealth(value: unknown): value is BackendHealth['subsystems']['kb'] 
   return true;
 }
 
-function isSubsystems(value: unknown): value is BackendHealth['subsystems'] {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (!isKbHealth(value.kb)) {
-    return false;
-  }
-  if (value.kbCurate !== 'ok' && value.kbCurate !== 'degraded') {
-    return false;
-  }
-  if (value.kbCurateReason !== undefined && typeof value.kbCurateReason !== 'string') {
-    return false;
-  }
-  if (value.discuss !== 'ok') {
-    return false;
-  }
-  return true;
-}
-
 export function isBackendHealth(value: unknown): value is BackendHealth {
   return (
     isRecord(value) &&
-    value.status === 'ok' &&
+    (value.status === 'starting' || value.status === 'ok' || value.status === 'draining') &&
+    isKernel(value.kernel) &&
     typeof value.version === 'string' &&
     typeof value.bundleHash === 'string' &&
     (value.flavor === 'prod' || value.flavor === 'dev') &&
@@ -103,6 +144,8 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     Number.isInteger(value.activeJobs) &&
     Number.isInteger(value.inflightRequests) &&
     Number.isInteger(value.queueDepth) &&
-    isSubsystems(value.subsystems)
+    Array.isArray(value.subsystems) &&
+    value.subsystems.every(isSubsystemStatus) &&
+    (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
   );
 }

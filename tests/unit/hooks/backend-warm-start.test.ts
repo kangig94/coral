@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  BACKEND_WARM_START_HOOK,
+  SESSION_START_HOOK,
   cleanupFixtures,
   createFixture,
   runHookAsync,
@@ -15,14 +15,15 @@ afterEach(cleanupFixtures);
 const WARM_START_TIMEOUT_MS = 15_000;
 
 /**
- * The warm-start hook unconditionally spawns the bundled coral-backend.
- * Staleness/incumbent detection is the daemon's job (`bindWithHandoff`): a
- * healthy same-bundle peer makes the new daemon throw
- * `BackendAlreadyRunningError` and exit, while a mismatching peer triggers
- * IPC `transport.shutdown`. The hook stays free of bundle/flavor comparison
- * so the contention contract has one canonical home.
+ * The session-start hook absorbs the daemon spawn (previously a separate
+ * `backend-warm-start.mjs`). The same staleness/incumbent contract still
+ * lives entirely in the daemon's `bindWithHandoff`: a healthy same-bundle
+ * peer makes the new daemon throw `BackendAlreadyRunningError` and exit;
+ * a mismatching peer triggers IPC `transport.shutdown`. The hook stays
+ * free of bundle/flavor comparison so the contention contract has one
+ * canonical home.
  */
-describe('backend-warm-start.mjs', () => {
+describe('session-start.mjs daemon spawn', () => {
   function setupWarmStartFixture() {
     const fixture = createFixture();
     const markerPath = join(fixture.pluginRoot, 'spawned.txt');
@@ -48,8 +49,8 @@ describe('backend-warm-start.mjs', () => {
       const { fixture, markerPath } = setupWarmStartFixture();
 
       const result = await runHookAsync(
-        BACKEND_WARM_START_HOOK,
-        {},
+        SESSION_START_HOOK,
+        { session_id: 'test-session-spawn' },
         {
           HOME: fixture.root,
           CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
@@ -68,8 +69,8 @@ describe('backend-warm-start.mjs', () => {
       const { fixture, markerPath } = setupWarmStartFixture();
 
       const result = await runHookAsync(
-        BACKEND_WARM_START_HOOK,
-        {},
+        SESSION_START_HOOK,
+        { session_id: 'test-session-child' },
         {
           HOME: fixture.root,
           CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
