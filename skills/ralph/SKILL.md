@@ -96,7 +96,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Scope gate: source-affecting files run a–d; non-source changes skip to e.
 
     a. **Lint**: run linter if available.
-    b. **Validation**: spawn `Agent("coral:architect")` (foreground, never `run_in_background`) in parallel with review. For review, prefer `Skill(tier-review)` when the project exposes it, not coral's; otherwise fall back to any project-defined review workflows.
+    b. **Validation**: invoke `Skill(tier-review)` when the project exposes it. If no tier-review skill exists, fall back to spawning `Agent("coral:architect")` directly (foreground, never `run_in_background`).
     c. **Build**: run project build command.
     d. **Test**: run test suite after build passes.
 

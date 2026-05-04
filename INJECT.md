@@ -105,7 +105,7 @@ Wiki entries are long-lived `wiki:{slug}` pages with `## Understanding` (rewrita
 `CLI kb wake-up` — generate the SessionStart packet (auto-injected by the hook on next session).
 
 ## Source Management
-사용자의 명시적 요구가 있을 때에만 실행. 자율적으로 실행 금지.
+Run only on the user's explicit request. Do not run autonomously.
 `CLI kb source import <file> [--slug <name>]`
 `CLI kb source delete <slug>`
 <!-- OWNER_ONLY:END -->
