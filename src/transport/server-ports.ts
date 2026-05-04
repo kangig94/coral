@@ -46,7 +46,7 @@ export type HealthSnapshot = {
   env: Record<string, string>;
   subsystems: {
     kb: {
-      kind: 'ok' | 'unavailable';
+      kind: 'ok' | 'initializing' | 'unavailable';
       reason?: string;
       mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
       consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;

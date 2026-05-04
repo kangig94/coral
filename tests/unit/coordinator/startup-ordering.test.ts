@@ -325,8 +325,11 @@ describe('coordinator startup ordering', () => {
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
-      expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('listenFn (bind)'));
-      expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
+      // KB is a subsystem; the IPC listener must bind before KB initialization
+      // so KB-routed handlers can return a structured `kb_unavailable` while
+      // KB is still warming up, instead of clients hanging on a closed socket.
+      expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('kbSubsystem ready'));
+      expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
       expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
@@ -407,7 +410,10 @@ describe('coordinator startup ordering', () => {
       expect(order.indexOf('ensureCorpusFreshness')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
       expect(order.indexOf('getCorpusStateSnapshot')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
-      expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('listenFn'));
+      // The IPC listener binds before KB init steps so KB-routed handlers
+      // surface a structured `kb_unavailable` during init instead of clients
+      // waiting on a closed socket.
+      expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('notifyCorpus'));
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();

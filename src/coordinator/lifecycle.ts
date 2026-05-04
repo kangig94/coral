@@ -72,11 +72,17 @@ export interface CoordinatorIdentity {
 }
 
 /**
- * KB availability status. Spec §16(a) single source of truth: set exactly
- * once at boot by the KB-init aggregator. Curate publish-health degradation
- * is a separate concept (`CurateHealth`) and does NOT flip this field.
+ * KB availability status. Set by the KB-init aggregator at boot. Transitions
+ * `initializing` → `ok` (or `unavailable`) exactly once. The IPC listener
+ * binds while `initializing`, so KB-routed mutate handlers can return a
+ * structured `kb_unavailable` response immediately instead of clients hanging
+ * on a closed socket. Curate publish-health degradation is a separate concept
+ * (`CurateHealth`) and does NOT flip this field.
  */
-export type KbStatus = { kind: 'ok'; subsystem: KnowledgeBaseRuntime } | { kind: 'unavailable'; reason: string };
+export type KbStatus =
+  | { kind: 'initializing' }
+  | { kind: 'ok'; subsystem: KnowledgeBaseRuntime }
+  | { kind: 'unavailable'; reason: string };
 
 /**
  * Curate publication-queue health. Mutated only by the curate-scheduler
@@ -105,7 +111,7 @@ export interface MutableRuntimeState extends ReadonlyRuntimeState {
 export function createRuntimeState(startedAt: number): MutableRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
-  let kbStatus: KbStatus = { kind: 'unavailable', reason: 'KB not initialized' };
+  let kbStatus: KbStatus = { kind: 'initializing' };
   let curateHealth: CurateHealth = { kind: 'ok' };
   let launchFenceActive = false;
 
@@ -508,6 +514,16 @@ async function runLifecycleStartup({
     assertStartupStillActive();
 
     registerBuiltInProvidersFn(providerRegistry);
+
+    // Bind the IPC listener BEFORE awaiting KB init. KB is a subsystem; its
+    // boot work (corpus walk, consumer-driver replay, projection equip) must
+    // not gate the daemon's responsiveness. While `kbStatus === 'initializing'`,
+    // the IPC handlers route KB tool calls to a `kb_unavailable` response so
+    // CLI clients see a structured error instead of a silent hang.
+    const { port, host } = await listenFn(server);
+    assertStartupStillActive();
+    runtimeState.setStartedAt(now());
+
     try {
       const kbSub = await createKbSubsystemFn({
         db: progressStore.getDb(),
@@ -529,10 +545,6 @@ async function runLifecycleStartup({
       runtimeState.setKbStatus({ kind: 'unavailable', reason: message });
     }
     assertStartupStillActive();
-
-    const { port, host } = await listenFn(server);
-    assertStartupStillActive();
-    runtimeState.setStartedAt(now());
 
     const recoveredDiscussResumes = await runStartupRecoveryFn({
       identity,
