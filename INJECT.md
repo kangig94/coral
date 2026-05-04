@@ -92,12 +92,17 @@ Source code and official docs (via WebFetch) are the source of truth — always 
 KB stores past decisions and lessons learned. Search it when you're stuck, not as a first step.
 `kb read` returns note age — older notes may be stale, so verify against current code before acting.
 1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Use `--verbose` for statements and referring notes.
-2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance. Use `--scope notes|sources|communities|wiki|all` to filter by entry type (default: `all`).
-3. `CLI kb read <slug>` — read an entry by slug. Resolves memo → note → wiki → community → source → principle precedence. Use `kb read sources:<slug>`, `kb read communities:<slug>`, or `kb read wiki:<slug>` for explicit access. Always use this instead of reading KB files directly.
+2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance. Use `--scope notes|sources|communities|all` to filter by entry type (default: `all`).
+3. `CLI kb read <slug>` — read an entry by slug. Resolves memo → note → community → source → principle precedence. Use `kb read sources:<slug>` or `kb read communities:<slug>` for explicit access. Always use this instead of reading KB files directly.
 4. `CLI kb source list` — list imported source documents with metadata.
 
 <!-- OWNER_ONLY:BEGIN -->
 When invoking a provider (e.g. `codex`, `claude`) with a coral agent, or calling the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+
+## Wiki (orchestrator-curated living knowledge)
+Wiki entries are long-lived `wiki:{slug}` pages with `## Understanding` (rewritable summary) + `## Knowledge` (`[[wikilinks]]` to references, evidence as nested sub-bullets). The bare `kb read <slug>` cascade resolves wiki between note and community; `--scope wiki` and `kb read wiki:<slug>` give explicit access. Wiki maintenance is an orchestrator-only workflow: ingest source → update Understanding → append Evidence under the relevant Knowledge link → add new Knowledge links if needed. Subagents do not maintain wikis. When a subagent needs wiki context, include the relevant slice in its prompt rather than letting it self-fetch.
+`CLI kb wiki create/update/delete <slug>` — see `--help` for flags.
+`CLI kb wake-up` — generate the SessionStart packet (auto-injected by the hook on next session).
 
 ## Source Management
 사용자의 명시적 요구가 있을 때에만 실행. 자율적으로 실행 금지.
