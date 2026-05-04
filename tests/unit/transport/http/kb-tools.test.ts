@@ -1,7 +1,7 @@
 import type * as FsMod from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as MemoMod from '#src/kb/ops/memo.js';
-import { memoDir, notePathFromName } from '#src/kb/paths.js';
+import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type * as SearchMod from '#src/kb/ops/search.js';
 import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/selector.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
@@ -25,6 +25,12 @@ import {
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
+  handleKbWakeUp,
+  handleKbWikiCreate,
+  handleKbWikiDelete,
+  handleKbWikiList,
+  handleKbWikiRead,
+  handleKbWikiUpdate,
 } from '#src/kb/tool-handlers.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 
@@ -33,6 +39,11 @@ const mockState = vi.hoisted(() => ({
   deleteMemos: vi.fn(),
   purgeMemos: vi.fn(),
   files: new Map<string, string>(),
+  createWiki: vi.fn(),
+  updateWiki: vi.fn(),
+  deleteWiki: vi.fn(),
+  listWikis: vi.fn(),
+  generateWakeUpPacket: vi.fn(),
 }));
 
 vi.mock('node:fs', async () => {
@@ -71,12 +82,19 @@ vi.mock('#src/kb/ops/memo.js', async () => {
   };
 });
 
+vi.mock('#src/kb/ops/wiki/create.js', () => ({ createWiki: mockState.createWiki }));
+vi.mock('#src/kb/ops/wiki/update.js', () => ({ updateWiki: mockState.updateWiki }));
+vi.mock('#src/kb/ops/wiki/delete.js', () => ({ deleteWiki: mockState.deleteWiki }));
+vi.mock('#src/kb/ops/wiki/list.js', () => ({ listWikis: mockState.listWikis }));
+vi.mock('#src/kb/ops/wake-up.js', () => ({ generateWakeUpPacket: mockState.generateWakeUpPacket }));
+
 const KB_ROOT = '/virtual/kb';
 
 function createKbSubsystem(): KnowledgeBaseRuntime {
   return {
     kb: {
       notePath: (slug: string) => `${KB_ROOT}/notes/${slug}.md`,
+      wikiPath: (slug: string) => `${KB_ROOT}/wiki/${slug}.md`,
       sourcePath: (slug: string) => `${KB_ROOT}/sources/${slug}.md`,
       communityPath: (slug: string) => `${KB_ROOT}/communities/${slug}.md`,
       principlePath: (slug: string) => `${KB_ROOT}/principles/${slug}.md`,
@@ -225,10 +243,12 @@ describe('kb-tools', () => {
   it('parses shared KB selectors and preserves bare read order', () => {
     expect(parseKbSelector('sources:my-slug')).toEqual({ kind: 'source', slug: 'my-slug' });
     expect(parseKbSelector('communities:my-slug')).toEqual({ kind: 'community', slug: 'my-slug' });
+    expect(parseKbSelector('wiki:my-slug')).toEqual({ kind: 'wiki', slug: 'my-slug' });
     expect(parseKbSelector('my-slug')).toEqual({ kind: null, slug: 'my-slug' });
-    expect(KB_BARE_READ_ORDER).toEqual(['memo', 'note', 'community', 'source', 'principle']);
+    expect(KB_BARE_READ_ORDER).toEqual(['memo', 'note', 'wiki', 'community', 'source', 'principle']);
     expect(expandKbReadSelector(parseKbSelector('my-slug')).map(({ kind }) => kind)).toEqual([
       'note',
+      'wiki',
       'community',
       'source',
       'principle',
@@ -236,6 +256,7 @@ describe('kb-tools', () => {
     expect(expandKbReadSelector(parseKbSelector('20260323-010203-shared-slug')).map(({ kind }) => kind)).toEqual([
       'memo',
       'note',
+      'wiki',
       'community',
       'source',
       'principle',
@@ -355,6 +376,62 @@ Clusters graph-backed retrieval notes.
 
   it('returns not_found for a missing community read', () => {
     expectNotFound(handleKbCommunityRead('missing-community', createKbSubsystem(), testRuntime));
+  });
+
+  it('reads a wiki by slug via the per-kind wiki handler', () => {
+    const kbSubsystem = createKbSubsystem();
+    setMockFile(
+      wikiPathFromName('living-knowledge', KB_ROOT),
+      `---
+tags: [kb, wiki]
+references_principles: [single-source-of-truth]
+createdAt: 2026-04-01T00:00:00.000Z
+updatedAt: 2026-04-02T00:00:00.000Z
+---
+# Living Knowledge
+
+## Understanding
+
+Wiki entries keep durable understanding.
+
+## Knowledge
+
+- [[notes/contract-first-design]]
+
+## Evidence
+
+- 2026-04-01 initial row
+`,
+    );
+
+    expect(handleKbWikiRead('living-knowledge', kbSubsystem, testRuntime)).toEqual({
+      ok: true,
+      data: {
+        kind: 'wiki',
+        note: 'living-knowledge',
+        title: 'Living Knowledge',
+        content: [
+          '## Understanding',
+          '',
+          'Wiki entries keep durable understanding.',
+          '',
+          '## Knowledge',
+          '',
+          '- [[notes/contract-first-design]]',
+          '',
+          '## Evidence',
+          '',
+          '- 2026-04-01 initial row',
+        ].join('\n'),
+        tags: ['kb', 'wiki'],
+        principles: ['single-source-of-truth'],
+        updatedAt: '2026-04-02T00:00:00.000Z',
+      },
+    });
+  });
+
+  it('returns not_found for a missing wiki read', () => {
+    expectNotFound(handleKbWikiRead('missing-wiki', createKbSubsystem(), testRuntime));
   });
 
   it('reads a memo by slug via the per-kind memo handler', () => {
@@ -512,6 +589,95 @@ level: 1
     [{ owner: 'owner-a' }, 'neither mode'],
   ])('rejects consolidated memo delete when %s is provided', (args, _mode) => {
     expectInvalidRequest(handleKbMemoDeleteConsolidated(args, testContext, testRuntime));
+  });
+
+  it.each([
+    [
+      'wiki-create',
+      () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
+    ],
+    [
+      'wiki-update',
+      () => handleKbWikiUpdate({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
+    ],
+    [
+      'wiki-delete',
+      () => handleKbWikiDelete({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
+    ],
+    ['wiki-list', () => handleKbWikiList({ extra: true }, createKbSubsystem())],
+    ['wake-up', () => handleKbWakeUp({ extra: true }, createKbSubsystem())],
+  ])('rejects undeclared fields for %s', async (_name, run) => {
+    expectInvalidRequest(await run());
+  });
+
+  it('handleKbWikiCreate calls createWiki and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.createWiki.mockResolvedValue({ slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbSubsystem);
+
+    expect(mockState.createWiki).toHaveBeenCalledWith(kbSubsystem.kb, { slug: 'living-knowledge' });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      ok: true,
+      data: { slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' },
+    });
+  });
+
+  it('handleKbWikiUpdate calls updateWiki and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.updateWiki.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiUpdate({ slug: 'living-knowledge', understanding: 'new' }, kbSubsystem);
+
+    expect(mockState.updateWiki).toHaveBeenCalledWith(kbSubsystem.kb, {
+      slug: 'living-knowledge',
+      understanding: 'new',
+    });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiDelete calls deleteWiki and schedules a deferred commit', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.deleteWiki.mockResolvedValue({ deleted: '/virtual/kb/wiki/living-knowledge.md' });
+
+    const result = await handleKbWikiDelete({ slug: 'living-knowledge' }, kbSubsystem);
+
+    expect(mockState.deleteWiki).toHaveBeenCalledWith(kbSubsystem.kb, { slug: 'living-knowledge' });
+    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('handleKbWikiList wraps listWikis in the wikis envelope', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.listWikis.mockResolvedValue([
+      { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], references_principles: [], createdAt: '', updatedAt: '', related: [] },
+    ]);
+
+    const result = await handleKbWikiList({}, kbSubsystem);
+
+    expect(mockState.listWikis).toHaveBeenCalledWith(kbSubsystem.kb);
+    expect(result).toMatchObject({ ok: true, data: { wikis: expect.any(Array) } });
+  });
+
+  it('handleKbWakeUp returns the generated wake-up packet content', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.generateWakeUpPacket.mockReturnValue('## wake-up packet body');
+
+    const result = await handleKbWakeUp({}, kbSubsystem);
+
+    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, undefined);
+    expect(result).toEqual({ ok: true, data: { content: '## wake-up packet body' } });
+  });
+
+  it('handleKbWakeUp forwards the tokenBudget after schema parsing', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.generateWakeUpPacket.mockReturnValue('packet');
+
+    await handleKbWakeUp({ tokenBudget: 600 }, kbSubsystem);
+
+    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, 600);
   });
 
   it('still validates memo owners after Zod parsing', () => {

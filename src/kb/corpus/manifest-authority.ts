@@ -2,9 +2,16 @@ import { join } from 'node:path';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { KbRuntime } from '../contract.js';
-import { noteEntryId, sourceEntryId } from '../entry-types.js';
+import { noteEntryId, sourceEntryId, wikiEntryId } from '../entry-types.js';
 import { stripMdExt } from '../paths.js';
-import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from './frontmatter.js';
+import {
+  extractBody,
+  extractTitle,
+  parseFrontmatter,
+  parseSourceFrontmatter,
+  parseWikiBody,
+  parseWikiFrontmatter,
+} from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import {
   computeContentSurfaceHash,
@@ -21,7 +28,7 @@ export type FullManifestSurfaceHashes = {
 
 type ManifestAuthorityTarget = Pick<
   KbRuntime,
-  'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath' | 'storagePort'
+  'notesDir' | 'wikiDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath' | 'storagePort'
 >;
 
 export interface ManifestAuthority {
@@ -130,6 +137,10 @@ export function noteMetadataManifestId(slug: string): string {
 
 export function sourceMetadataManifestId(slug: string): string {
   return `source-meta:${slug}`;
+}
+
+export function wikiMetadataManifestId(slug: string): string {
+  return `wiki-meta:${slug}`;
 }
 
 export function communityMetadataManifestId(slug: string): string {
@@ -243,6 +254,60 @@ export function captureRemovedSourceManifestDeltas(slug: string): ManifestAuthor
   ];
 }
 
+export function captureWikiManifestDeltas(slug: string, raw: string): ManifestAuthorityDelta[] {
+  try {
+    const metadata = parseWikiFrontmatter(raw);
+    const body = extractBody(raw);
+    parseWikiBody(body);
+    return [
+      {
+        lane: 'content',
+        manifestId: wikiEntryId(slug),
+        surfaceHash: computeContentSurfaceHash({
+          title: extractTitle(raw),
+          body,
+        }),
+      },
+      {
+        lane: 'metadata',
+        manifestId: wikiMetadataManifestId(slug),
+        surfaceHash: computeMetadataSurfaceHash({
+          // KbWikiFrontmatter satisfies CanonicalFrontmatterRecord structurally; cast avoids widening the metadata-hash input type.
+          frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
+        }),
+      },
+    ];
+  } catch {
+    return [
+      {
+        lane: 'content',
+        manifestId: wikiEntryId(slug),
+        surfaceHash: null,
+      },
+      {
+        lane: 'metadata',
+        manifestId: wikiMetadataManifestId(slug),
+        surfaceHash: null,
+      },
+    ];
+  }
+}
+
+export function captureRemovedWikiManifestDeltas(slug: string): ManifestAuthorityDelta[] {
+  return [
+    {
+      lane: 'content',
+      manifestId: wikiEntryId(slug),
+      surfaceHash: null,
+    },
+    {
+      lane: 'metadata',
+      manifestId: wikiMetadataManifestId(slug),
+      surfaceHash: null,
+    },
+  ];
+}
+
 export function captureCommunityManifestDelta(slug: string, raw: string): ManifestAuthorityDelta[] {
   return [
     {
@@ -311,6 +376,12 @@ export function collectFullManifestSurfaceHashes(target: ManifestAuthorityTarget
     const slug = stripMdExt(entry);
     const raw = storage.readFileSync(join(target.notesDir(), entry), 'utf-8');
     applyDeltasToSurfaceHashes(content, metadata, captureNoteManifestDeltas(slug, raw));
+  }
+
+  for (const entry of sortedMarkdownEntries(storage, target.wikiDir())) {
+    const slug = stripMdExt(entry);
+    const raw = storage.readFileSync(join(target.wikiDir(), entry), 'utf-8');
+    applyDeltasToSurfaceHashes(content, metadata, captureWikiManifestDeltas(slug, raw));
   }
 
   for (const entry of sortedMarkdownEntries(storage, target.sourcesDir())) {

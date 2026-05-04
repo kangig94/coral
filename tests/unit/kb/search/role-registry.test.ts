@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
-import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
+import {
+  retrievalRoleDescriptorSchema,
+  type RetrievalRole,
+  type RetrievalRoleDescriptor,
+} from '#src/kb/search/contract.js';
+import { createBuiltinTextRole } from '#src/kb/search/text-retrieval.js';
 import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { KbRuntime } from '#src/kb/contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 
@@ -79,6 +85,22 @@ describe('role registry runtime invariants', () => {
     expect(Object.isFrozen(record.descriptor.tags)).toBe(true);
     expect(Object.isFrozen(record.descriptor.supportsScopes)).toBe(true);
     expect(Object.isFrozen(record.descriptor.requires)).toBe(true);
+  });
+
+  it('accepts wiki as a retrieval role descriptor scope', () => {
+    expect(
+      retrievalRoleDescriptorSchema.parse({
+        ...descriptor('wiki-descriptor'),
+        supportsScopes: ['wiki'],
+      }).supportsScopes,
+    ).toEqual(['wiki']);
+  });
+
+  it('registers the builtin text descriptor with wiki scope support', () => {
+    const registry = createRoleRegistry();
+    registry.registerBuiltin(createBuiltinTextRole({} as KbRuntime), { criticality: 'core' });
+
+    expect(firstRecord(registry).descriptor.supportsScopes).toContain('wiki');
   });
 
   it('rejects duplicate scoped role ids', () => {

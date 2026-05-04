@@ -31,6 +31,10 @@ The HUD auto-update hook adds one more gate: it refreshes the HUD only when `bui
 
 `hooks/session-start.mjs` reads `INJECT.md`, resolves project placeholders, strips owner/session-only blocks as needed, and returns the text through `hookSpecificOutput.additionalContext`.
 
+KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
+
+The current Claude Code hook runtime verified for this implementation is Node.js `v22.18.0`, where `node:sqlite` still emits `ExperimentalWarning: SQLite is an experimental feature`. For AC29, the hook therefore uses the `better-sqlite3` read-only fallback instead of importing `node:sqlite`; the module is loaded lazily so missing or unreadable SQLite support does not break hook startup.
+
 It also:
 
 - adds `Bash(node *coral-cli*)` permission to `.claude/settings.local.json`
@@ -124,4 +128,4 @@ Rules:
 - read stdin JSON
 - write machine-readable JSON to stdout
 - fail open on any exception
-- avoid external runtime dependencies
+- avoid external runtime dependencies except documented hook-local fallbacks such as the read-only `better-sqlite3` corpus snapshot reader

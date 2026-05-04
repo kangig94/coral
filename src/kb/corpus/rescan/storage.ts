@@ -7,7 +7,7 @@ import { compareLocale } from '../../validation.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 
-export type CorpusMarkdownKind = 'note' | 'source' | 'community' | 'principle';
+export type CorpusMarkdownKind = 'note' | 'source' | 'community' | 'principle' | 'wiki';
 
 export interface CorpusFileHandle {
   readonly path: string;
@@ -30,9 +30,10 @@ const CORPUS_SUBDIR_BY_KIND: Readonly<Record<CorpusMarkdownKind, string>> = {
   source: 'sources',
   community: 'communities',
   principle: 'principles',
+  wiki: 'wiki',
 };
 
-const CORPUS_KINDS: readonly CorpusMarkdownKind[] = ['note', 'source', 'community', 'principle'];
+const CORPUS_KINDS: readonly CorpusMarkdownKind[] = ['note', 'source', 'community', 'principle', 'wiki'];
 
 export function createCorpusStorage(infraStorage: StoragePort): CorpusStorage {
   return {

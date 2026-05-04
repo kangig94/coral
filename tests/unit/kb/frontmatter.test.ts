@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   deriveNoteIdentity,
+  extractBody,
   extractTitle,
   parseCommunityFrontmatter,
   parseFrontmatter,
   parseMemoFrontmatter,
   parseSourceFrontmatter,
+  parseWikiBody,
   replaceFrontmatter,
   serializeCommunityFrontmatter,
   serializeFrontmatter,
   serializeNote,
   serializeSourceFrontmatter,
+  serializeWiki,
 } from '#src/kb/corpus/frontmatter.js';
 
 describe('kb frontmatter', () => {
@@ -202,6 +205,55 @@ Keep the body stable.
     expect(stderrSpy.mock.calls[0][0]).toContain('markTextIndexStale');
     expect(stderrSpy.mock.calls[0][0]).toContain('disk full');
     stderrSpy.mockRestore();
+  });
+
+  describe('parseWikiBody', () => {
+    const sampleBody = [
+      '## Understanding',
+      '',
+      'First understanding paragraph.',
+      '',
+      'Second understanding paragraph.',
+      '',
+      '## Knowledge',
+      '',
+      '- [[notes/alpha]]',
+      '- [[notes/beta]]',
+      '',
+      '## Evidence',
+      '',
+      '- 2026-04-01 seed',
+    ].join('\n');
+
+    it('round-trips parse → serialize via serializeWiki without losing the section content', () => {
+      const sections = parseWikiBody(sampleBody);
+      const serialized = serializeWiki(
+        {
+          tags: ['kb'],
+          references_principles: [],
+          createdAt: '2026-04-01',
+          updatedAt: '2026-04-01',
+        },
+        'Living Knowledge',
+        sampleBody,
+      );
+      const reparsed = parseWikiBody(extractBody(serialized));
+      expect(reparsed).toEqual(sections);
+    });
+
+    it.each([
+      ['Understanding', sampleBody.replace('## Understanding', '## understanding-typo')],
+      ['Knowledge', sampleBody.replace('## Knowledge', '## knowledge-typo')],
+      ['Evidence', sampleBody.replace('## Evidence', '## evidence-typo')],
+    ])('throws when the %s header is missing', (header, malformed) => {
+      expect(() => parseWikiBody(malformed)).toThrow(`Wiki body is missing ## ${header} header`);
+    });
+
+    it('keeps both Understanding paragraphs in the parsed section but extractFirstParagraph only uses the first', () => {
+      const sections = parseWikiBody(sampleBody);
+      expect(sections.understanding).toContain('First understanding paragraph.');
+      expect(sections.understanding).toContain('Second understanding paragraph.');
+    });
   });
 
   it('imports frontmatter and mutation helpers through validation without a circular load failure', async () => {

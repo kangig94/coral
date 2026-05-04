@@ -9,16 +9,27 @@ import type {
   KbSearchInput,
   KbSearchResponse,
   KbSourceListResult,
+  KbWakeUpInput,
+  KbWakeUpResponse,
+  KbWikiListResult,
 } from './entry-types.js';
 import { type MemoStorage, listMemos } from './ops/memo.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import type { KbRuntime } from './contract.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import { readEntry, type KbReadPathResolver, type KbReadStorage } from './read.js';
+import {
+  readEntry,
+  readEntryWithResolvedId,
+  type KbReadPathResolver,
+  type KbReadStorage,
+  type KbResolvedReadResult,
+} from './read.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { listSources } from './ops/source-store.js';
+import { listWikis } from './ops/wiki/list.js';
+import { generateWakeUpPacket } from './ops/wake-up.js';
 
 /**
  * Composed dependencies a KB read query needs. The KB domain declares this
@@ -54,6 +65,14 @@ export function readKnowledgeBaseEntry(selector: KbReadInput, host: KbQueryHost)
   });
 }
 
+export function readKnowledgeBaseEntryWithResolvedId(selector: KbReadInput, host: KbQueryHost): KbResolvedReadResult {
+  return readEntryWithResolvedId(selector, {
+    projectRoot: host.requireProjectRoot('kb.read'),
+    storage: host.storage,
+    paths: host.readPaths,
+  });
+}
+
 export async function listKnowledgeBasePrinciples(
   args: KbPrinciplesInput,
   host: KbQueryHost,
@@ -65,6 +84,19 @@ export async function listKnowledgeBasePrinciples(
 export async function listKnowledgeBaseSources(host: KbQueryHost): Promise<KbSourceListResult> {
   const kb = await host.acquireKbRuntime();
   return await listSources(kb);
+}
+
+export async function listKnowledgeBaseWikis(host: KbQueryHost): Promise<KbWikiListResult> {
+  const kb = await host.acquireKbRuntime();
+  return { wikis: await listWikis(kb) };
+}
+
+export async function generateKnowledgeBaseWakeUpPacket(
+  args: KbWakeUpInput,
+  host: KbQueryHost,
+): Promise<KbWakeUpResponse> {
+  const kb = await host.acquireKbRuntime();
+  return { content: await generateWakeUpPacket(kb, args.tokenBudget) };
 }
 
 export function diagnoseKnowledgeBase(host: KbQueryHost): KbDiagnoseResult {

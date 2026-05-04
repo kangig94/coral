@@ -586,6 +586,12 @@ describe('execution backend server', () => {
             writeJsonAtomic: vi.fn(),
           },
         },
+        // Promote-recovery preflight (boot step 0) probes
+        // `runtimeDir/promote-recovery/` — return false so the worker skips
+        // the empty-marker-dir scan without invoking the rest of StoragePort.
+        storagePort: {
+          existsSync: vi.fn(() => false),
+        },
         corpusProjectionReader: {
           resolveCurrentIndex: vi.fn(() => emptyIndex),
           prepareCurrentProjectionInput: vi.fn(async () => ({
@@ -2977,7 +2983,7 @@ describe('execution backend server', () => {
         method: 'GET',
         path: '/kb/entries?q=contracts&scope=bogus',
         expectedMessage:
-          "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'all', received 'bogus'",
+          "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'wiki' | 'all', received 'bogus'",
       },
       {
         name: 'GET /kb/memos projectRoot',

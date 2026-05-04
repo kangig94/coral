@@ -2,9 +2,16 @@ import { createHash } from 'node:crypto';
 
 import { withImmediate, type Database } from '../../../store/db.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
-import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
+import {
+  extractBody,
+  extractTitle,
+  parseFrontmatter,
+  parseSourceFrontmatter,
+  parseWikiBody,
+  parseWikiFrontmatter,
+} from '../frontmatter.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../snapshot.js';
-import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
+import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../metadata-hash.js';
 import type { CorpusScanView } from './scan.js';
 import type {
   CorpusAuthorityBaselineMap,
@@ -120,6 +127,31 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
             body: extractBody(file.content),
           }),
           metadataHash: sourceMetadataHash(entry),
+        });
+      } catch {
+        const rawHash = rawSha256(file.content);
+        records.push({
+          entryId: file.entryId,
+          contentHash: rawHash,
+          metadataHash: rawHash,
+        });
+      }
+      continue;
+    }
+
+    if (file.kind === 'wiki') {
+      try {
+        const metadata = parseWikiFrontmatter(file.content);
+        const title = extractTitle(file.content);
+        const body = extractBody(file.content);
+        parseWikiBody(body);
+        records.push({
+          entryId: file.entryId,
+          contentHash: computeContentSurfaceHash({
+            title,
+            body,
+          }),
+          metadataHash: wikiMetadataHash(metadata),
         });
       } catch {
         const rawHash = rawSha256(file.content);

@@ -4,7 +4,16 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
-import { coralProjectDir, exitIfChildProcess, exitIfWrongFlavor, isValidSessionId, readStdin } from './lib/hook-utils.mjs';
+import {
+  coralProjectDir,
+  exitIfChildProcess,
+  exitIfWrongFlavor,
+  isValidSessionId,
+  kbRuntimeDir,
+  readCorpusSnapshotStamp,
+  readStdin,
+  storeDbPath,
+} from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -34,14 +43,59 @@ try {
   const aiAgent = process.env.AI_AGENT ?? '';
   const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
 
+  const wakeUpPayload = readFreshWakeUpPayload();
+  const additionalContext = wakeUpPayload === null
+    ? `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`
+    : `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}\n\n${wakeUpPayload}`;
+
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`,
+      additionalContext,
     },
   }));
 } catch {
   process.exit(0);
+}
+
+const STAMP_PATTERN =
+  /^<!-- corpus-snapshot: snapshotId=(\S*) contentSeq=(\d+) metadataSeq=(\d+) contentManifestHash=(\S*) metadataManifestHash=(\S*) -->\r?\n?/;
+
+function readFreshWakeUpPayload() {
+  try {
+    const cachePath = join(kbRuntimeDir(), 'wake-up.md');
+    if (!existsSync(cachePath)) return null;
+
+    const cached = readFileSync(cachePath, 'utf-8');
+    const match = cached.match(STAMP_PATTERN);
+    if (match === null) return null;
+
+    const cachedStamp = {
+      snapshotId: match[1],
+      contentSeq: Number.parseInt(match[2], 10),
+      metadataSeq: Number.parseInt(match[3], 10),
+      contentManifestHash: match[4],
+      metadataManifestHash: match[5],
+    };
+
+    const currentStamp = readCorpusSnapshotStamp(storeDbPath());
+    if (currentStamp === null) return null;
+
+    if (
+      cachedStamp.snapshotId !== currentStamp.snapshotId ||
+      cachedStamp.contentSeq !== currentStamp.contentSeq ||
+      cachedStamp.metadataSeq !== currentStamp.metadataSeq ||
+      cachedStamp.contentManifestHash !== currentStamp.contentManifestHash ||
+      cachedStamp.metadataManifestHash !== currentStamp.metadataManifestHash
+    ) {
+      return null;
+    }
+
+    const body = cached.slice(match[0].length);
+    return body.length === 0 ? null : body;
+  } catch {
+    return null;
+  }
 }
 
 function findGitRoot(cwd) {

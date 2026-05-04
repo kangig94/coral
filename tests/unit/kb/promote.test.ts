@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { noteEntryId } from '#src/kb/entry-types.js';
+import { noteEntryId, wikiEntryId } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -60,6 +60,7 @@ function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths
   const root = process.env.CORAL_KB_PATH!;
   return {
     notePath: (slug: string) => paths.notePathFromName(slug, root),
+    wikiPath: (slug: string) => paths.wikiPathFromName(slug, root),
     sourcePath: (slug: string) => paths.sourcePathFromName(slug, root),
     communityPath: (slug: string) => paths.communityPathFromName(slug, root),
     principlePath: (slug: string) => paths.principlePathFromName(slug, root),
@@ -143,6 +144,80 @@ memo body
       updatedAt: '2026-03-23T01:02:03.000Z',
       related: [],
       entrySeq: 1,
+    });
+  });
+
+  it('promotes a memo and prepends the new note to wiki Knowledge under the same mutation', async () => {
+    const { promote, createKbRuntime, paths, frontmatter } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
+    mkdirSync(paths.wikiDir(process.env.CORAL_KB_PATH!), { recursive: true });
+
+    const memoPath = join(paths.memoDir(projectRoot), '2026-03-23-kb.md');
+    writeFileSync(
+      memoPath,
+      `---
+source: kangig94/coral
+---
+memo body
+`,
+      'utf-8',
+    );
+
+    const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
+    writeFileSync(
+      wikiPath,
+      `---
+tags: [kb]
+references_principles: []
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 2
+---
+# Living Knowledge
+
+## Understanding
+
+Existing understanding.
+
+## Knowledge
+
+- [[notes/existing-note]]
+
+## Evidence
+
+- 2026-03-20 seed
+`,
+      'utf-8',
+    );
+
+    const result = await promote(kb, projectRoot, {
+      memo: '2026-03-23-kb.md',
+      title: 'KB Promotion',
+      content: '## Rule\nPromote through the tool.',
+      domain: 'coral',
+      topic: 'kb-promotion',
+      wiki: 'living-knowledge',
+    });
+
+    expect(result.path).toBe(paths.notePathFromName('coral-kb-promotion', process.env.CORAL_KB_PATH!));
+    expect(existsSync(memoPath)).toBe(false);
+
+    const wiki = readFileSync(wikiPath, 'utf-8');
+    expect(frontmatter.parseWikiFrontmatter(wiki)).toMatchObject({
+      updatedAt: '2026-03-23T01:02:03.000Z',
+      entrySeq: 2,
+    });
+    expect(frontmatter.parseWikiBody(frontmatter.extractBody(wiki)).knowledge).toBe(
+      '- [[notes/coral-kb-promotion]]\n- [[notes/existing-note]]',
+    );
+    expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
+      kind: 'wiki',
+      slug: 'living-knowledge',
+      knowledge: [noteEntryId('coral-kb-promotion'), noteEntryId('existing-note')],
+      updatedAt: '2026-03-23T01:02:03.000Z',
     });
   });
 
@@ -405,6 +480,79 @@ Content here.
       principles: ['contract-first-design'],
       updatedAt: '2026-03-20T00:00:00.000Z',
     });
+  });
+
+  it('reads explicit wiki selectors and prefers wiki before community for bare slugs', async () => {
+    const { readEntry, paths } = await loadKbModules();
+    mkdirSync(paths.wikiDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+
+    writeFileSync(
+      join(paths.wikiDir(process.env.CORAL_KB_PATH!), 'shared-knowledge.md'),
+      `---
+tags: [kb]
+references_principles: [contract-first-design]
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-21T00:00:00.000Z
+---
+# Shared Knowledge
+
+## Understanding
+
+Wiki body.
+
+## Knowledge
+
+- [[notes/coral-kb-read]]
+
+## Evidence
+
+- 2026-03-21 seed
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.communitiesDir(process.env.CORAL_KB_PATH!), 'shared-knowledge.md'),
+      `---
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+level: 0
+---
+# Shared Community
+
+## Members
+`,
+      'utf-8',
+    );
+
+    const expected = {
+      kind: 'wiki',
+      note: 'shared-knowledge',
+      title: 'Shared Knowledge',
+      content: [
+        '## Understanding',
+        '',
+        'Wiki body.',
+        '',
+        '## Knowledge',
+        '',
+        '- [[notes/coral-kb-read]]',
+        '',
+        '## Evidence',
+        '',
+        '- 2026-03-21 seed',
+      ].join('\n'),
+      tags: ['kb'],
+      principles: ['contract-first-design'],
+      updatedAt: '2026-03-21T00:00:00.000Z',
+    };
+
+    expect(
+      readEntry({ note: 'wiki:shared-knowledge' }, { storage: readStorage, paths: createReadPaths(paths) }),
+    ).toEqual(expected);
+    expect(readEntry({ note: 'shared-knowledge' }, { storage: readStorage, paths: createReadPaths(paths) })).toEqual(
+      expected,
+    );
   });
 
   it('prefers matching memos over notes for timestamp-shaped slugs', async () => {

@@ -71,7 +71,9 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
 | `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
 | `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
+| `DELETE /coordinator/expansion/:name/catalog` | 200 | Remove a manifest entry from `expansion_manifest_catalog` (catalog-only purge; does not unequip live bindings) |
 | `GET /coordinator/expansion` | 200 | List currently-equipped expansions via `expansion_state` |
+| `GET /coordinator/bindings/:binding` | 200 | Read a single capability binding's current owner and metadata |
 | `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
@@ -84,6 +86,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /discuss/sessions/:id/speeches` | 200 | Submit a manual speech for a discuss session |
 | `DELETE /discuss/sessions/:id` | 200 | End a discuss session and detach it from the live registry |
 | `GET /kb/entries` | 200 | Search KB entries |
+| `GET /kb/diagnose` | 200 | Report curate retry queue and KB subsystem diagnostics |
 | `GET /kb/notes/:slug` | 200 | Read a note by slug |
 | `GET /kb/memos/:slug` | 200 | Read a project-scoped memo by slug |
 | `GET /kb/sources/:slug` | 200 | Read an imported source by slug |
@@ -99,6 +102,12 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /kb/memos` | 201 | Create a project-scoped memo |
 | `DELETE /kb/memos` | 200 | Delete selected memos or purge all project memos |
 | `GET /kb/principles` | 200 | Search KB principles |
+| `GET /kb/wikis` | 200 | List wiki entries |
+| `GET /kb/wikis/:slug` | 200 | Read a wiki entry by slug |
+| `POST /kb/wikis` | 201 | Create a wiki entry |
+| `PUT /kb/wikis/:slug` | 200 | Update a wiki entry by slug |
+| `DELETE /kb/wikis/:slug` | 200 | Delete a wiki entry by slug |
+| `GET /kb/wake-up` | 200 | Generate the SessionStart wake-up packet |
 | `POST /kb/index` | 200 | Rebuild KB text artifacts through an internal job |
 | `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
@@ -166,7 +175,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes explicit coordinator-facing owner modules for commands, reads, and recovery rather than a compatibility `api.ts` facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
-- KB markdown is the Corpus authority for notes, sources, principles, and communities. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, and memo operations stay direct commands.
+- KB markdown is the Corpus authority for notes, sources, principles, communities, and wiki entries. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes or wiki entries. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, wiki mutations, and memo operations stay direct commands.
 - Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer (constructor-time default of the `kb.vector` and `kb.fts` `RuntimeBinding<Backed<T>>` cells); Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
 
 ## Module Map

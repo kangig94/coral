@@ -109,6 +109,7 @@ export type JournalConsumerRegistration = JournalCursorRegistration | JournalApp
 
 export type CorpusLaneHint = 'content' | 'metadata';
 export type CorpusInterest = CorpusLaneHint | 'both';
+export type CorpusApplyResult = { readonly advance: false; readonly reason: 'stale-snapshot' };
 
 export interface JournalConsumerReadPort {
   readCursor(consumerId: string): number;
@@ -139,7 +140,7 @@ export interface CorpusConsumerRegistration {
   readonly corpusInterest: CorpusInterest;
   readonly projectionSync?: 'text-index';
   readonly onApplyFailure?: (err: ConsumerApplyError) => void;
-  apply(ctx: CorpusConsumerApplyContext): Promise<void>;
+  apply(ctx: CorpusConsumerApplyContext): Promise<void | CorpusApplyResult>;
 }
 
 /**

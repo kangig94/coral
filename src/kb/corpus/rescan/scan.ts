@@ -2,26 +2,38 @@ import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
-import { extractTitle, parseCommunityFrontmatter, parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
+import {
+  extractTitle,
+  parseCommunityFrontmatter,
+  parseFrontmatter,
+  parseSourceFrontmatter,
+  parseWikiFrontmatter,
+} from '../frontmatter.js';
 import { parseEntityGraph } from '../entity-graph-store.js';
 import {
   noteEntryId,
   sourceEntryId,
   communityEntryId,
+  wikiEntryId,
   type CommunityFrontmatter,
   type EntityGraph,
   type KbEntryId,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
+  type KbWikiFrontmatter,
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../../validation.js';
 import type { CorpusMarkdownKind, CorpusStorage } from './storage.js';
 
 export type PrincipleEntryId = `principle:${string}`;
 export type CorpusActiveEntryId = KbEntryId | PrincipleEntryId;
 
-export type CorpusParsedFrontmatter = KbNoteFrontmatter | KbSourceFrontmatter | CommunityFrontmatter;
+export type CorpusParsedFrontmatter =
+  | KbNoteFrontmatter
+  | KbSourceFrontmatter
+  | CommunityFrontmatter
+  | KbWikiFrontmatter;
 export type CorpusFrontmatterStatus = 'absent' | 'parsed' | 'unterminated' | 'error';
 
 export interface CorpusFrontmatterView {
@@ -254,11 +266,13 @@ function parseTypedFrontmatter(kind: CorpusMarkdownKind, content: string): Corpu
       return parseCommunityFrontmatter(content);
     case 'principle':
       return null;
+    case 'wiki':
+      return parseWikiFrontmatter(content);
   }
 }
 
 function scanTitle(kind: CorpusMarkdownKind, content: string): { title: string | null; titleError: unknown | null } {
-  if (kind !== 'note' && kind !== 'community') {
+  if (kind !== 'note' && kind !== 'community' && kind !== 'wiki') {
     return {
       title: null,
       titleError: null,
@@ -288,6 +302,8 @@ function buildEntryId(kind: CorpusMarkdownKind, slug: string): string {
       return communityEntryId(slug);
     case 'principle':
       return `principle:${slug}`;
+    case 'wiki':
+      return wikiEntryId(slug);
   }
 }
 
@@ -302,6 +318,8 @@ function buildActiveEntryId(kind: CorpusMarkdownKind, slug: string): CorpusActiv
         return communityEntryId(assertCommunitySlug(slug, 'community slug'));
       case 'principle':
         return `principle:${assertNoteSlug(slug, 'principle slug')}`;
+      case 'wiki':
+        return wikiEntryId(assertWikiSlug(slug, 'wiki slug'));
     }
   } catch {
     return null;

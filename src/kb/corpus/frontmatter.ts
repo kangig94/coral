@@ -12,6 +12,7 @@ import {
   type KbNoteFrontmatter,
   type KbNoteIdentity,
   type KbSourceFrontmatter,
+  type KbWikiFrontmatter,
 } from '../entry-types.js';
 import {
   NOTE_SLUG_PATTERN,
@@ -124,8 +125,12 @@ export function normalizePrincipleReference(value: string): string {
   return normalized;
 }
 
+function normalizePrincipleReferenceList(value: unknown, field: string): string[] {
+  return normalizeStringList(value, field).map(normalizePrincipleReference);
+}
+
 function normalizePrincipleList(value: unknown): string[] {
-  return normalizeStringList(value, 'principles').map(normalizePrincipleReference);
+  return normalizePrincipleReferenceList(value, 'principles');
 }
 
 function normalizeEntryIdList(value: unknown, field: string): KbEntryId[] {
@@ -216,6 +221,20 @@ export function parseCommunityFrontmatter(content: string): CommunityFrontmatter
   };
 }
 
+export function parseWikiFrontmatter(content: string): KbWikiFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
+  const related = normalizeRelatedList(record.related);
+  return {
+    tags: normalizeStringList(record.tags, 'tags'),
+    references_principles: normalizePrincipleReferenceList(record.references_principles, 'references_principles'),
+    createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
+    related,
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+  };
+}
+
 export function parseMemoFrontmatter(content: string): { source: string[]; owner?: string } {
   const record = parseFrontmatterRecord(content);
   const { source, owner } = record;
@@ -299,6 +318,19 @@ export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, '
   });
 }
 
+export function serializeWikiFrontmatter(meta: KbWikiFrontmatter): string {
+  const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
+  const related = normalizeEntryIdList(meta.related ?? [], 'related');
+  return serializeFrontmatterRecord({
+    tags: normalizeStringList(meta.tags, 'tags'),
+    references_principles: normalizePrincipleReferenceList(meta.references_principles, 'references_principles'),
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+    ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+  });
+}
+
 export function replaceFrontmatter(content: string, meta: KbNoteFrontmatter): string {
   return replaceFrontmatterBlock(content, serializeFrontmatter(meta));
 }
@@ -352,6 +384,84 @@ export function parseSummaryFromBody(body: string): string | undefined {
   return text || undefined;
 }
 
+export type WikiBodySections = {
+  understanding: string;
+  knowledge: string;
+  evidence: string;
+};
+
+const WIKI_BODY_HEADERS = ['Understanding', 'Knowledge', 'Evidence'] as const;
+const WIKI_BODY_HEADER_PATTERN = /^## (Understanding|Knowledge|Evidence)[ \t]*(?:\r?\n|$)/gm;
+
+export function parseWikiBody(body: string): WikiBodySections {
+  const matches = Array.from(body.matchAll(WIKI_BODY_HEADER_PATTERN));
+  const byHeader = new Map<string, RegExpMatchArray>();
+
+  for (const match of matches) {
+    const header = match[1];
+    if (byHeader.has(header)) {
+      throw new Error(`Wiki body contains duplicate ## ${header} header`);
+    }
+    byHeader.set(header, match);
+  }
+
+  for (const header of WIKI_BODY_HEADERS) {
+    if (!byHeader.has(header)) {
+      throw new Error(`Wiki body is missing ## ${header} header`);
+    }
+  }
+
+  const ordered = WIKI_BODY_HEADERS.map((header) => byHeader.get(header) as RegExpMatchArray);
+  if (!ordered.every((match, index) => (match.index ?? -1) === matches[index]?.index)) {
+    throw new Error('Wiki body headers must appear in Understanding, Knowledge, Evidence order');
+  }
+
+  const firstHeaderIndex = ordered[0].index ?? 0;
+  if (body.slice(0, firstHeaderIndex).trim()) {
+    throw new Error('Wiki body must begin with ## Understanding');
+  }
+
+  const sectionContent = (index: number): string => {
+    const match = ordered[index];
+    const start = (match.index ?? 0) + match[0].length;
+    const end = ordered[index + 1]?.index ?? body.length;
+    return body.slice(start, end).trim();
+  };
+
+  return {
+    understanding: sectionContent(0),
+    knowledge: sectionContent(1),
+    evidence: sectionContent(2),
+  };
+}
+
+export type EvidenceRow = {
+  date: string;
+  slug: string;
+  summary: string;
+};
+
+// `{ISO-8601 date} {slug} → {summary}` — slug stored as plain text so Knowledge
+// (canonical [[wikilinks]]) and Evidence (audit trail) cannot drift.
+const EVIDENCE_ROW_PATTERN = /^-\s+(\d{4}-\d{2}-\d{2}(?:T[\d:.Z+-]+)?)\s+(\S+)\s+(?:→|->)\s+(.+)$/;
+
+export function parseEvidenceRow(line: string): EvidenceRow | null {
+  const match = line.trim().match(EVIDENCE_ROW_PATTERN);
+  if (match === null) {
+    return null;
+  }
+
+  return {
+    date: match[1],
+    slug: match[2],
+    summary: match[3].trim(),
+  };
+}
+
+export function serializeEvidenceRow(row: EvidenceRow): string {
+  return `- ${row.date} ${row.slug} → ${row.summary}`.trim();
+}
+
 export function serializeNote(meta: KbNoteFrontmatter, title: string, body: string): string {
   const heading = `# ${assertNonEmptyText(title, 'title')}`;
   const frontmatter = serializeFrontmatter(meta);
@@ -360,6 +470,15 @@ export function serializeNote(meta: KbNoteFrontmatter, title: string, body: stri
   if (!normalizedBody) {
     return `${frontmatter}${heading}\n`;
   }
+
+  return `${frontmatter}${heading}\n\n${normalizedBody}\n`;
+}
+
+export function serializeWiki(meta: KbWikiFrontmatter, title: string, body: string): string {
+  const heading = `# ${assertNonEmptyText(title, 'title')}`;
+  const frontmatter = serializeWikiFrontmatter(meta);
+  const normalizedBody = body.trim();
+  parseWikiBody(normalizedBody);
 
   return `${frontmatter}${heading}\n\n${normalizedBody}\n`;
 }

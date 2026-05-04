@@ -39,6 +39,16 @@ import type {
   KbSourcePersistInput,
   KbUpdateInput,
   KbUpdateResponse,
+  KbWakeUpInput,
+  KbWakeUpResponse,
+  KbWikiCreateInput,
+  KbWikiCreateResponse,
+  KbWikiDeleteInput,
+  KbWikiDeleteResponse,
+  KbWikiListResult,
+  KbWikiReadInput,
+  KbWikiUpdateInput,
+  KbWikiUpdateResponse,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { getSharedReadCoralStore } from './read-store.js';
@@ -118,6 +128,12 @@ export type CliCommandClient = AbortCapableClient & {
   kbPromote(args: KbPromoteInput): Promise<KbPromoteResponse>;
   kbUpdate(args: KbUpdateInput): Promise<KbUpdateResponse>;
   kbDelete(args: KbDeleteInput): Promise<KbDeleteResponse>;
+  kbWikiCreate(args: KbWikiCreateInput): Promise<KbWikiCreateResponse>;
+  kbWikiUpdate(args: KbWikiUpdateInput): Promise<KbWikiUpdateResponse>;
+  kbWikiDelete(args: KbWikiDeleteInput): Promise<KbWikiDeleteResponse>;
+  kbWikiList(): Promise<KbWikiListResult>;
+  kbWikiRead(args: KbWikiReadInput): Promise<KbReadResult>;
+  kbWakeUp(args?: KbWakeUpInput): Promise<KbWakeUpResponse>;
   kbSourceImport(args: KbSourcePersistInput): Promise<KbSourceImportResponse>;
   kbSourceList(): Promise<KbSourceListResult>;
   kbSourceDelete(args: KbSourceDeleteInput): Promise<KbSourceDeleteResponse>;
@@ -199,7 +215,7 @@ export type DiscussAbortOptions = {
 
 export type KbSearchOptions = {
   topK?: string;
-  scope?: 'notes' | 'communities' | 'sources' | 'all';
+  scope?: 'notes' | 'communities' | 'sources' | 'wiki' | 'all';
   vector?: boolean;
   hybrid?: boolean;
 };
@@ -216,6 +232,7 @@ export type KbPromoteOptions = {
   contentFile?: string;
   domain?: string;
   topic?: string;
+  wiki?: string;
 };
 
 export type KbUpdateOptions = {
@@ -227,6 +244,25 @@ export type KbSourceImportOptions = {
   slug?: string;
   ready?: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
   async?: boolean;
+};
+
+export type KbWikiCreateOptions = {
+  title?: string;
+  understanding?: string;
+  knowledge?: string[];
+  evidence?: string;
+  tags?: string[];
+  referencesPrinciples?: string[];
+};
+
+export type KbWikiUpdateOptions = {
+  understanding?: string;
+  understandingFile?: string;
+  evidenceAppend?: string;
+  evidenceAppendFile?: string;
+  knowledgeReorder?: string;
+  knowledgeAdd?: string[];
+  knowledgeRemove?: string[];
 };
 
 export type KbReindexOptions = {
@@ -495,6 +531,33 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         'kb.note.delete',
         buildKbMutationTransportContextBody({ slug: args.note }, defaultContext),
       ),
+    kbWikiCreate: async (args) =>
+      await request<KbWikiCreateResponse>('kb.wiki.create', buildKbMutationTransportContextBody(args, defaultContext)),
+    kbWikiUpdate: async (args) =>
+      await request<KbWikiUpdateResponse>(
+        'kb.wiki.update',
+        buildKbMutationTransportContextBody({ ...args, slug: args.slug }, defaultContext),
+      ),
+    kbWikiDelete: async (args) =>
+      await request<KbWikiDeleteResponse>(
+        'kb.wiki.delete',
+        buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
+      ),
+    kbWikiList: async () => {
+      if (commandClass === 'read') {
+        return await readStore().kb.listWikis();
+      }
+
+      return await request<KbWikiListResult>('kb.wiki.list', {});
+    },
+    kbWikiRead: async (args) => await request<KbReadResult>('kb.wiki.read', { slug: args.slug }),
+    kbWakeUp: async (args = {}) => {
+      if (commandClass === 'read') {
+        return await readStore().kb.wakeUp(args);
+      }
+
+      return await request<KbWakeUpResponse>('kb.wake_up', args);
+    },
     kbSourceImport: async (args) =>
       await request<KbSourceImportResponse>(
         'kb.source.create',

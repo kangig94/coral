@@ -39,6 +39,10 @@ export function notesDir(root: string): string {
   return join(root, 'notes');
 }
 
+export function wikiDir(root: string): string {
+  return join(root, 'wiki');
+}
+
 export function principlesDir(root: string): string {
   return join(root, 'principles');
 }
@@ -68,6 +72,10 @@ export function notePathFromName(note: string, root: string): string {
   return markdownPath(notesDir(root), note, 'KB note path');
 }
 
+export function wikiPathFromName(slug: string, root: string): string {
+  return markdownPath(wikiDir(root), slug, 'KB wiki path');
+}
+
 export function principlePathFromName(principle: string, root: string): string {
   return markdownPath(principlesDir(root), principle, 'KB principle path');
 }
@@ -86,11 +94,13 @@ export function sourceImportStageDir(runtimeRoot: string): string {
 
 export type KbRuntimePaths = {
   notesDir(): string;
+  wikiDir(): string;
   sourcesDir(): string;
   communitiesDir(): string;
   principlesDir(): string;
   entityGraphPath(): string;
   notePath(note: string): string;
+  wikiPath(slug: string): string;
   sourcePath(source: string): string;
   communityPath(community: string): string;
   principlePath(principle: string): string;
@@ -100,11 +110,13 @@ export type KbRuntimePaths = {
 export function createKbRuntimePaths(markdownRoot: string, runtimeDir: string): KbRuntimePaths {
   return {
     notesDir: () => notesDir(markdownRoot),
+    wikiDir: () => wikiDir(markdownRoot),
     sourcesDir: () => sourcesDir(markdownRoot),
     communitiesDir: () => communitiesDir(markdownRoot),
     principlesDir: () => principlesDir(markdownRoot),
     entityGraphPath: () => join(markdownRoot, '.entity-graph.json'),
     notePath: (note) => notePathFromName(note, markdownRoot),
+    wikiPath: (slug) => wikiPathFromName(slug, markdownRoot),
     sourcePath: (source) => sourcePathFromName(source, markdownRoot),
     communityPath: (community) => communityPathFromName(community, markdownRoot),
     principlePath: (principle) => principlePathFromName(principle, markdownRoot),

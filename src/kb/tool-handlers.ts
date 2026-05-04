@@ -10,6 +10,8 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
+  parseWikiBody,
+  parseWikiFrontmatter,
 } from './corpus/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
 import { memoDir } from './paths.js';
@@ -18,8 +20,13 @@ import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources } from './ops/source-store.js';
 import { update as kbUpdate } from './ops/update.js';
+import { createWiki } from './ops/wiki/create.js';
+import { deleteWiki } from './ops/wiki/delete.js';
+import { listWikis } from './ops/wiki/list.js';
+import { updateWiki } from './ops/wiki/update.js';
+import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import { type KbReadKind } from './selector.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
@@ -42,6 +49,12 @@ import {
   kbSourceDeleteSchema,
   kbSourceListSchema,
   kbUpdateSchema,
+  kbWakeUpSchema,
+  kbWikiCreateSchema,
+  kbWikiDeleteSchema,
+  kbWikiListSchema,
+  kbWikiReadSchema,
+  kbWikiUpdateSchema,
 } from './tool-contracts.js';
 
 type KbArgs = Record<string, unknown>;
@@ -98,6 +111,10 @@ function normalizeKbSlug(
       return { ok: true, slug: assertSourceSlug(slug, kind) };
     }
 
+    if (kind === 'wiki') {
+      return { ok: true, slug: assertWikiSlug(slug, kind) };
+    }
+
     return { ok: true, slug: assertNoteSlug(slug, kind) };
   } catch (error: unknown) {
     return { ok: false, result: invalidRequestResult(error) };
@@ -129,6 +146,7 @@ function kbReadPaths(kbSubsystem: KnowledgeBaseRuntime | undefined): KbReadPathR
   const required = requireKbSubsystem(kbSubsystem);
   return {
     notePath: (slug) => required.kb.notePath(slug),
+    wikiPath: (slug) => required.kb.wikiPath(slug),
     sourcePath: (slug) => required.kb.sourcePath(slug),
     communityPath: (slug) => required.kb.communityPath(slug),
     principlePath: (slug) => required.kb.principlePath(slug),
@@ -256,6 +274,46 @@ export function handleKbCommunityRead(
       ...(children === undefined ? {} : { children }),
       ...(summary === undefined ? {} : { summary }),
       updatedAt,
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbWikiRead(
+  slugOrArgs: string | KbArgs,
+  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  runtime: KbToolRuntime,
+): KbToolResult {
+  const parsed = kbWikiReadSchema.safeParse(typeof slugOrArgs === 'string' ? { slug: slugOrArgs } : slugOrArgs);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  const normalized = normalizeKbSlug(parsed.data.slug, 'wiki');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const wikiPath = requireKbSubsystem(kbSubsystem).kb.wikiPath(normalized.slug);
+    if (!runtime.storage.existsSync(wikiPath)) {
+      return kbNotFoundResult('wiki', normalized.slug);
+    }
+
+    const raw = runtime.storage.readFileSync(wikiPath, 'utf-8');
+    const frontmatter = parseWikiFrontmatter(raw);
+    const title = extractTitle(raw);
+    const body = extractBody(raw);
+    parseWikiBody(body);
+    return kbSuccess({
+      kind: 'wiki',
+      note: normalized.slug,
+      title,
+      content: body,
+      tags: frontmatter.tags,
+      principles: frontmatter.references_principles,
+      updatedAt: frontmatter.updatedAt,
     });
   } catch (error: unknown) {
     return kbErrorResult(error);
@@ -396,6 +454,67 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
     kbSubsystem.curateScheduler.scheduleDeferredCommit();
     return result;
   });
+}
+
+export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiCreateSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await createWiki(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiUpdateSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await updateWiki(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiDeleteSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    const result = await deleteWiki(kbSubsystem.kb, parsed.data);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
+export async function handleKbWikiList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWikiListSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => {
+    return { wikis: await listWikis(kbSubsystem.kb) };
+  });
+}
+
+export async function handleKbWakeUp(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+  const parsed = kbWakeUpSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbAction(async () => ({
+    content: await generateWakeUpPacket(kbSubsystem.kb, parsed.data.tokenBudget),
+  }));
 }
 
 export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {

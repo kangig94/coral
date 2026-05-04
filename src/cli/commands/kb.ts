@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Option, type Command } from 'commander';
 
 import type { KbPromoteInput } from '../../kb/entry-types.js';
-import { assertSourceSlug } from '../../kb/validation.js';
+import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
 import { UsageError } from '../errors.js';
 import {
@@ -17,6 +17,8 @@ import {
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
+  type KbWikiCreateOptions,
+  type KbWikiUpdateOptions,
 } from '../dispatch.js';
 import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
@@ -36,7 +38,22 @@ import {
   formatKbSourceImport,
   formatKbSourceList,
   formatKbUpdate,
+  formatKbWakeUp,
+  formatKbWikiCreate,
+  formatKbWikiDelete,
+  formatKbWikiList,
+  formatKbWikiUpdate,
 } from '../format/kb.js';
+
+function appendDelimitedOption(value: string, previous: string[] | undefined): string[] {
+  return [
+    ...(previous ?? []),
+    ...value
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  ];
+}
 
 function registerKbSourceCommands(kb: Command): void {
   const kbSourceCommand = kb.command('source').description('Manage KB sources');
@@ -97,6 +114,126 @@ function registerKbSourceCommands(kb: Command): void {
         emitError(error);
       }
     });
+}
+
+function registerKbWikiCommands(kb: Command): void {
+  const kbWikiCommand = kb.command('wiki').description('Manage KB wikis');
+
+  const kbWikiCreateCommand = kbWikiCommand.command('create');
+  kbWikiCreateCommand
+    .description('Create a KB wiki')
+    .argument('<slug>', 'Wiki slug without extension')
+    .option('--title <text>', 'Wiki title')
+    .option('--understanding <text>', 'Understanding section text')
+    .option('--knowledge <link>', 'Knowledge wikilink or entry ID (repeatable, comma-separated)', appendDelimitedOption)
+    .option('--evidence <text>', 'Evidence section text')
+    .option('--tags <tag>', 'Tags (repeatable, comma-separated)', appendDelimitedOption)
+    .option(
+      '--references-principles <principle>',
+      'Referenced principles (repeatable, comma-separated)',
+      appendDelimitedOption,
+    )
+    .action(async (slug: string, opts: KbWikiCreateOptions) => {
+      const outputFormat = getOutputFormat(kbWikiCreateCommand);
+
+      try {
+        const client = makeClient(process.cwd(), kbWikiCreateCommand);
+        const result = await client.kbWikiCreate({
+          slug: assertWikiSlug(slug, 'wiki'),
+          ...(opts.title !== undefined ? { title: opts.title } : {}),
+          ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
+          ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
+          ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
+          ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
+          ...(opts.referencesPrinciples !== undefined ? { references_principles: opts.referencesPrinciples } : {}),
+        });
+        emit(result, outputFormat, formatKbWikiCreate);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiUpdateCommand = kbWikiCommand.command('update');
+  kbWikiUpdateCommand
+    .description('Update a KB wiki')
+    .argument('<slug>', 'Wiki slug without extension')
+    .option('--understanding <text>', 'Replace Understanding section with literal text')
+    .option('--understanding-file <path>', 'Replace Understanding section with file contents')
+    .option('--evidence-append <text>', 'Append literal text to Evidence section')
+    .option('--evidence-append-file <path>', 'Append file contents to Evidence section')
+    .option(
+      '--knowledge-reorder <link-list>',
+      'Reorder Knowledge — provide ALL current links in new order (space/comma-separated entry IDs or [[wikilinks]])',
+    )
+    .option('--knowledge-add <link>', 'Add a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
+    .option('--knowledge-remove <link>', 'Remove a Knowledge wikilink or entry ID (repeatable)', appendDelimitedOption)
+    .action(async (slug: string, opts: KbWikiUpdateOptions) => {
+      const outputFormat = getOutputFormat(kbWikiUpdateCommand);
+
+      try {
+        if (opts.understanding !== undefined && opts.understandingFile !== undefined) {
+          throw new UsageError('Choose at most one of --understanding or --understanding-file');
+        }
+        if (opts.evidenceAppend !== undefined && opts.evidenceAppendFile !== undefined) {
+          throw new UsageError('Choose at most one of --evidence-append or --evidence-append-file');
+        }
+
+        const understanding =
+          opts.understandingFile !== undefined
+            ? { file: resolveFilePath(opts.understandingFile) }
+            : opts.understanding !== undefined
+              ? { text: opts.understanding }
+              : undefined;
+        const evidenceAppend =
+          opts.evidenceAppendFile !== undefined
+            ? { file: resolveFilePath(opts.evidenceAppendFile) }
+            : opts.evidenceAppend !== undefined
+              ? { text: opts.evidenceAppend }
+              : undefined;
+
+        const client = makeClient(process.cwd(), kbWikiUpdateCommand);
+        const result = await client.kbWikiUpdate({
+          slug: assertWikiSlug(slug, 'wiki'),
+          ...(understanding !== undefined ? { understanding } : {}),
+          ...(evidenceAppend !== undefined ? { evidenceAppend } : {}),
+          ...(opts.knowledgeReorder !== undefined ? { knowledgeReorder: opts.knowledgeReorder } : {}),
+          ...(opts.knowledgeAdd !== undefined ? { knowledgeAdd: opts.knowledgeAdd } : {}),
+          ...(opts.knowledgeRemove !== undefined ? { knowledgeRemove: opts.knowledgeRemove } : {}),
+        });
+        emit(result, outputFormat, formatKbWikiUpdate);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiDeleteCommand = kbWikiCommand.command('delete');
+  kbWikiDeleteCommand
+    .description('Delete a KB wiki')
+    .argument('<slug>', 'Wiki slug without extension')
+    .action(async (slug: string) => {
+      const outputFormat = getOutputFormat(kbWikiDeleteCommand);
+
+      try {
+        const client = makeClient(process.cwd(), kbWikiDeleteCommand);
+        const result = await client.kbWikiDelete({ slug: assertWikiSlug(slug, 'wiki') });
+        emit(result, outputFormat, formatKbWikiDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiListCommand = kbWikiCommand.command('list');
+  kbWikiListCommand.description('List KB wikis').action(async () => {
+    const outputFormat = getOutputFormat(kbWikiListCommand);
+
+    try {
+      const client = makeClient(process.cwd(), kbWikiListCommand);
+      const result = await client.kbWikiList();
+      emit(result, outputFormat, formatKbWikiList);
+    } catch (error) {
+      emitError(error);
+    }
+  });
 }
 
 function registerKbMemoCommands(kb: Command): void {
@@ -194,10 +331,11 @@ export function registerKbCommands(program: Command): void {
     .option('--vector', 'Force vector-only search (requires embedding backend)')
     .option('--hybrid', 'Force hybrid search (requires embedding backend)')
     .addOption(
-      new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
+      new Option('--scope <scope>', 'Limit results to notes, communities, sources, wiki, or all').choices([
         'notes',
         'communities',
         'sources',
+        'wiki',
         'all',
       ]),
     )
@@ -262,6 +400,7 @@ export function registerKbCommands(program: Command): void {
     });
 
   registerKbSourceCommands(kb);
+  registerKbWikiCommands(kb);
   registerKbMemoCommands(kb);
 
   const kbReadCommand = kb.command('read');
@@ -269,7 +408,7 @@ export function registerKbCommands(program: Command): void {
     .description('Read a KB entry by slug or explicit selector')
     .argument(
       '<note>',
-      'Bare reads resolve memo -> note -> community -> source -> principle; use communities:<slug> or sources:<slug> to force a kind',
+      'Bare reads resolve memo -> note -> wiki -> community -> source -> principle; use wiki:<slug>, communities:<slug>, or sources:<slug> to force a kind',
     )
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
@@ -291,6 +430,10 @@ export function registerKbCommands(program: Command): void {
     .option('--content-file <path>', 'Read content from file')
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
+    .option(
+      '--wiki <slug>',
+      "Prepend the promoted note to a wiki Knowledge section (wiki must already exist — use 'kb wiki create' first)",
+    )
     .action(async (opts: KbPromoteOptions) => {
       const outputFormat = getOutputFormat(kbPromoteCommand);
 
@@ -303,6 +446,7 @@ export function registerKbCommands(program: Command): void {
           ...(content !== undefined ? { content } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+          ...(opts.wiki !== undefined ? { wiki: assertWikiSlug(opts.wiki, 'wiki') } : {}),
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);
@@ -348,6 +492,26 @@ export function registerKbCommands(program: Command): void {
         const client = makeClient(process.cwd(), kbDeleteCommand);
         const result = await client.kbDelete({ note });
         emit(result, outputFormat, formatKbDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWakeUpCommand = kb.command('wake-up');
+  kbWakeUpCommand
+    .description('Generate the KB wake-up packet')
+    .option('--token-budget <n>', 'Max token budget (default: 900)')
+    .action(async (opts: { tokenBudget?: string }) => {
+      const outputFormat = getOutputFormat(kbWakeUpCommand);
+
+      try {
+        const client = makeClient(process.cwd(), kbWakeUpCommand);
+        const result = await client.kbWakeUp(
+          opts.tokenBudget !== undefined
+            ? { tokenBudget: parseIntegerFlag('--token-budget', opts.tokenBudget) }
+            : {},
+        );
+        emit(result, outputFormat, formatKbWakeUp);
       } catch (error) {
         emitError(error);
       }

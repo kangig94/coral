@@ -493,6 +493,49 @@ export async function executeCatalogRequest(
       );
     }
 
+    case 'kb.wiki.list':
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listWikis()));
+
+    case 'kb.wiki.read': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readWiki(slug)));
+    }
+
+    case 'kb.wiki.create': {
+      const parsed = request as Record<string, unknown>;
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
+    }
+
+    case 'kb.wiki.update': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateWiki({ ...args, slug }, ctx)));
+    }
+
+    case 'kb.wiki.delete': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(
+        domainResultToHttp(await rpcPorts.kb.deleteWiki(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts))),
+      );
+    }
+
+    case 'kb.wake_up': {
+      const parsed = request as Record<string, unknown>;
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed)));
+    }
+
     case 'kb.community.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);

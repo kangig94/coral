@@ -8,9 +8,11 @@ import {
   communityEntryId,
   noteEntryId,
   sourceEntryId,
+  wikiEntryId,
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
+  type WikiEntry,
 } from '../../kb/entry-types.js';
 import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
 import { normalizeWhitespace } from '../../kb/text-normalization.js';
@@ -21,7 +23,7 @@ export type KbOramaDocument = {
   id: string;
   entryId: string;
   slug: string;
-  kind: 'note' | 'source' | 'community';
+  kind: 'note' | 'source' | 'community' | 'wiki';
   freshness: 'fresh' | 'stale';
   title: string;
   body: string;
@@ -29,6 +31,11 @@ export type KbOramaDocument = {
   principles: string[];
   contentHash: string;
   metadataHash: string;
+};
+
+type KbReindexWikiRecord = Omit<WikiEntry, 'kind'> & {
+  path: string;
+  body: string;
 };
 
 function uniqueTokens(tokens: string[]): string[] {
@@ -52,7 +59,7 @@ export function tokenizeQuery(oramaTerm: string, tokenizer: KbOramaTokenizer): s
 }
 
 export function toOramaDocument(
-  record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord,
+  record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord | KbReindexWikiRecord,
   options: {
     communityFresh?: boolean;
     contentHash?: string;
@@ -119,6 +126,39 @@ export function toOramaDocument(
             tags: record.tags,
             url: record.url,
             importedAt: record.importedAt,
+            entrySeq: record.entrySeq,
+            related: record.related,
+          } as CanonicalFrontmatterRecord,
+        }),
+    };
+  }
+
+  if ('references_principles' in record) {
+    const entryId = wikiEntryId(record.slug);
+    return {
+      id: entryId,
+      entryId,
+      slug: normalizeHyphens(record.slug),
+      kind: 'wiki',
+      freshness: 'fresh',
+      title: record.title,
+      body: record.body,
+      tags: record.tags.map(normalizeHyphens),
+      principles: record.references_principles.map(normalizeHyphens),
+      contentHash:
+        options.contentHash ??
+        computeContentSurfaceHash({
+          title: record.title,
+          body: record.body,
+        }),
+      metadataHash:
+        options.metadataHash ??
+        computeMetadataSurfaceHash({
+          frontmatter: {
+            tags: record.tags,
+            references_principles: record.references_principles,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
             entrySeq: record.entrySeq,
             related: record.related,
           } as CanonicalFrontmatterRecord,

@@ -15,6 +15,11 @@ import type {
   KbSourceImportResponse,
   KbSourceListResult,
   KbUpdateResponse,
+  KbWakeUpResponse,
+  KbWikiCreateResponse,
+  KbWikiDeleteResponse,
+  KbWikiListResult,
+  KbWikiUpdateResponse,
 } from '../../kb/entry-types.js';
 import { formatTable, joinLines } from './text.js';
 
@@ -210,6 +215,9 @@ export function formatKbMemoPurge(data: KbMemoPurgeResult): string {
 }
 
 export function formatKbPromote(data: KbPromoteResponse): string {
+  if (data.wikiSlug !== undefined) {
+    return `Created: ${data.path}\nPrepended to wiki: ${data.wikiSlug} Knowledge`;
+  }
   return `Created: ${data.path}`;
 }
 
@@ -219,6 +227,43 @@ export function formatKbUpdate(data: KbUpdateResponse): string {
 
 export function formatKbDelete(data: KbDeleteResponse): string {
   return `Deleted: ${data.deleted}`;
+}
+
+export function formatKbWikiCreate(data: KbWikiCreateResponse): string {
+  return `Created: ${data.path}`;
+}
+
+export function formatKbWikiUpdate(data: KbWikiUpdateResponse): string {
+  return `Updated: ${data.path}`;
+}
+
+export function formatKbWikiDelete(data: KbWikiDeleteResponse): string {
+  return `Deleted: ${data.deleted}`;
+}
+
+export function formatKbWikiList(data: KbWikiListResult): string {
+  const rows = data.wikis.map((wiki) => [
+    wiki.slug,
+    wiki.title,
+    wiki.updatedAt,
+    wiki.tags.length === 0 ? '-' : wiki.tags.join(', '),
+  ]);
+
+  if (rows.length === 0) {
+    return 'No wikis';
+  }
+
+  return formatTable(['SLUG', 'TITLE', 'UPDATED AT', 'TAGS'], rows);
+}
+
+export function formatKbWikiRead(data: KbReadResult): string {
+  return formatKbRead(data);
+}
+
+export function formatKbWakeUp(data: KbWakeUpResponse): string {
+  const entryCount = (data.content.match(/^## /gmu) ?? []).length;
+  const tokenEstimate = Math.ceil(Buffer.byteLength(data.content, 'utf8') / 4);
+  return `# KB wake-up packet (${entryCount} entries, ~${tokenEstimate} tokens)\n${data.content}`;
 }
 
 export function formatKbSourceImport(data: KbSourceImportResponse): string {
@@ -253,7 +298,7 @@ export function formatKbReindex(data: KbReindexResponse, cliPrefix = 'coral-cli'
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([
-    `Reindexed: ${data.notes} notes, ${data.communities} communities, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
+    `Reindexed: ${data.notes} notes, ${data.communities} communities, ${data.wikis} wikis, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
 }

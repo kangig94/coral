@@ -20,6 +20,11 @@ export type StaticCommandPath =
   | 'kb source import'
   | 'kb source list'
   | 'kb source delete'
+  | 'kb wiki create'
+  | 'kb wiki update'
+  | 'kb wiki delete'
+  | 'kb wiki list'
+  | 'kb wake-up'
   | 'kb memo write'
   | 'kb memo list'
   | 'kb memo delete'
@@ -52,6 +57,11 @@ export const commandClassMap = {
   'kb source import': 'mutate',
   'kb source list': 'read',
   'kb source delete': 'mutate',
+  'kb wiki create': 'mutate',
+  'kb wiki update': 'mutate',
+  'kb wiki delete': 'mutate',
+  'kb wiki list': 'read',
+  'kb wake-up': 'read',
   'kb memo write': 'mutate',
   'kb memo list': 'read',
   'kb memo delete': 'mutate',
@@ -67,7 +77,15 @@ export const commandClassMap = {
   'discuss abort': 'mutate',
 } as const satisfies Readonly<Record<StaticCommandPath, CommandClass>>;
 
-export const commandContainerPaths = new Set<string>(['backend', 'discuss', 'expansion', 'kb', 'kb source', 'kb memo']);
+export const commandContainerPaths = new Set<string>([
+  'backend',
+  'discuss',
+  'expansion',
+  'kb',
+  'kb source',
+  'kb wiki',
+  'kb memo',
+]);
 
 export const commandClassExemptions = {
   'backend status': 'local operational health probe',

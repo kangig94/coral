@@ -1,7 +1,14 @@
 import type { KbRuntime } from './contract.js';
 import type { KbIndex } from './entry-types.js';
 import { buildCorpusScanView } from './corpus/rescan/scan.js';
-import { buildKbIndex, loadCommunities, loadNotes, loadPrinciples, loadSources } from './corpus/rescan/projections.js';
+import {
+  buildKbIndex,
+  loadCommunities,
+  loadNotes,
+  loadPrinciples,
+  loadSources,
+  loadWikis,
+} from './corpus/rescan/projections.js';
 
 function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const scan = buildCorpusScanView(kb);
@@ -9,8 +16,9 @@ function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const sources = loadSources(scan);
   const principles = loadPrinciples(scan);
   const communities = loadCommunities(scan);
+  const wikis = loadWikis(scan);
 
-  return buildKbIndex(scan, notes, sources, communities, principles);
+  return buildKbIndex(scan, notes, sources, communities, wikis, principles);
 }
 
 export function readKnowledgeBaseListIndex(kb: KbRuntime): KbIndex {

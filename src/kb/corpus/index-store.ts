@@ -12,6 +12,7 @@ import {
   type EntityRelationship,
   type EntityType,
   ENTITY_TYPES,
+  type KbEntryId,
   type KbIndex,
   type NoteEntry,
   noteEntryId,
@@ -20,6 +21,8 @@ import {
   RELATIONSHIP_TYPES,
   type SourceEntry,
   sourceEntryId,
+  type WikiEntry,
+  wikiEntryId,
 } from '../entry-types.js';
 import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
 import { writeFileAtomic, type FileAtomicHost } from './file-atomic.js';
@@ -28,6 +31,7 @@ import {
   assertNonEmptyText,
   assertNoteSlug,
   assertSourceSlug,
+  assertWikiSlug,
   parseNonNegativeInteger,
   parseOptionalTrimmedString,
   parsePositiveInteger,
@@ -155,7 +159,7 @@ export function parseEntityRelationships(
   });
 }
 
-function parseEntryIdArray(value: unknown): string[] {
+function parseEntryIdArray(value: unknown): KbEntryId[] {
   const values = parseStringArray(value);
   return values.map((entryId) => {
     const normalized = parseKbEntryId(entryId);
@@ -233,6 +237,26 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
   };
 }
 
+function parseWikiIndexEntry(entryId: string, value: Record<string, unknown>): WikiEntry {
+  const slug = assertWikiSlug(value.slug, 'KB index entry slug');
+  if (entryId !== wikiEntryId(slug)) {
+    throw new Error('Invalid KB index');
+  }
+
+  return {
+    kind: 'wiki',
+    slug,
+    title: assertNonEmptyText(value.title, 'KB index entry title'),
+    tags: parseStringArray(value.tags),
+    references_principles: parseStringArray(value.references_principles),
+    createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
+    updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
+    ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
+    knowledge: parseEntryIdArray(value.knowledge),
+    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
+  };
+}
+
 export function parseIndex(value: unknown): KbIndex {
   if (
     !isRecord(value) ||
@@ -262,6 +286,11 @@ export function parseIndex(value: unknown): KbIndex {
 
     if (rawEntry.kind === 'community') {
       entries[entryId] = parseCommunityIndexEntry(entryId, rawEntry);
+      continue;
+    }
+
+    if (rawEntry.kind === 'wiki') {
+      entries[entryId] = parseWikiIndexEntry(entryId, rawEntry);
       continue;
     }
 

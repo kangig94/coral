@@ -10,6 +10,7 @@ import { commitMetadataTargets } from './metadata-commit.js';
 import { clearCurateRetryState, clearCurateRetryStateLocked, recordCurateFailure } from './operations.js';
 import { runPrincipleDiscovery } from './principles.js';
 import { claimCurateRun, hasPendingEntriesBeyondCursor, runClassificationBatches } from './runner.js';
+import { drainTouchJournal, truncateTouchJournal } from './touch-journal.js';
 import {
   INVARIANT,
   isClaimStale,
@@ -25,6 +26,7 @@ import type { SpawnCliFn } from './spawn-cli.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 import { curateDb } from './db-access.js';
+import { moveWikiKnowledgeToFront } from '../ops/wiki/rewrite.js';
 
 export type CurateHandle = {
   start(): Promise<void>;
@@ -36,6 +38,17 @@ export type CurateHandle = {
 
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
+
+export async function runTouchDrainSubphase(kb: KbRuntime): Promise<boolean> {
+  const affectedWikis = drainTouchJournal(kb.runtimeDir, kb.readIndexOrEmpty(), { storage: kb.storagePort });
+
+  for (const [slug, targets] of affectedWikis) {
+    await moveWikiKnowledgeToFront(kb, slug, [...targets]);
+  }
+
+  truncateTouchJournal(kb.runtimeDir, { storage: kb.storagePort });
+  return affectedWikis.size > 0;
+}
 
 class CurateRunError extends Error {
   readonly through: CurateCursor | null;
@@ -228,6 +241,12 @@ export function createCurateScheduler({
     }
 
     if (!stopped && !signal.aborted) {
+      if (await runTouchDrainSubphase(kb)) {
+        gitSync.gitAutoCommit('curate: drain wiki touches');
+      }
+    }
+
+    if (!stopped && !signal.aborted) {
       await gitSync.gitPush();
     }
     return lastCompletedThrough;
@@ -265,8 +284,11 @@ export function createCurateScheduler({
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
           if (await runCommunityBatch(runController.signal)) {
             gitSync.gitAutoCommit('curate: detect communities');
-            await gitSync.gitPush();
           }
+          if (await runTouchDrainSubphase(kb)) {
+            gitSync.gitAutoCommit('curate: drain wiki touches');
+          }
+          await gitSync.gitPush();
         }
       } catch (error: unknown) {
         if (stopped && runController.signal.aborted) {

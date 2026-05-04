@@ -8,7 +8,8 @@ import type {
 } from '../../store/consumer-contract.js';
 import type { KbProjectionInput, KbProjectionRecord } from '../../kb/projection-input-contract.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../../kb/corpus/snapshot.js';
-import { noteMetadataHash, sourceMetadataHash } from '../../kb/metadata-hash.js';
+import { isSnapshotFresherForInterest } from '../../kb/state/corpus-state.js';
+import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../kb/metadata-hash.js';
 import {
   createOramaDb,
   createOramaTokenizer,
@@ -58,6 +59,9 @@ function scopeAllowsKind(scope: RetrievalScope | undefined, kind: KbOramaDocumen
   }
   if (scope === 'sources') {
     return kind === 'source';
+  }
+  if (scope === 'wiki') {
+    return kind === 'wiki';
   }
   return kind === 'community';
 }
@@ -207,12 +211,13 @@ export class OramaSearchPort implements FtsRetrieval {
 export class OramaBaseProjection implements CorpusConsumerRegistration {
   readonly id = ORAMA_BASE_CONSUMER_ID;
   readonly authority = 'corpus';
-  readonly corpusInterest = 'content';
+  readonly corpusInterest = 'both';
   readonly kind = 'apply';
   readonly projectionSync = 'text-index';
   registrationKind: 'base' | 'expansion' = 'base';
   onApplyFailure?: (error: ConsumerApplyError) => void;
   private readonly searchPort: OramaSearchPort;
+  private installedSnapshot: KbCorpusSnapshot | null = null;
 
   constructor(
     private readonly runtime: KbEngineRuntimeBase,
@@ -222,8 +227,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   }
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    const preparedProjection = await this.prepareFullSnapshot(ctx.projectionInput);
-    await this.installFullSnapshot(ctx.snapshot, preparedProjection);
+    await this.installLatestCoalescedSnapshot(ctx);
   }
 
   async ensureLoaded(): Promise<OramaLoadedIndex> {
@@ -278,7 +282,68 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
     });
+    this.installedSnapshot = { ...snapshot };
     this.searchPort.probeFreshness();
+  }
+
+  /**
+   * Metadata-lane bursts can publish newer snapshots while Orama rebuilds.
+   * Keep apply awaited until the installed artifact catches up; the driver
+   * advances the consumer cursor only after this method returns.
+   */
+  private async installLatestCoalescedSnapshot(ctx: CorpusConsumerApplyContext): Promise<void> {
+    let selectedSnapshot = this.latestSnapshot(ctx.snapshot, ctx.corpusStateReader.readCurrentSnapshot());
+    if (this.isInstalled(selectedSnapshot)) {
+      return;
+    }
+
+    let projectionInput =
+      selectedSnapshot.snapshotId === ctx.snapshot.snapshotId
+        ? ctx.projectionInput
+        : await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({ signal: ctx.signal });
+
+    while (true) {
+      const preparedProjection = await this.prepareFullSnapshot(projectionInput);
+      const settledSnapshot = this.latestSnapshot(selectedSnapshot, ctx.corpusStateReader.readCurrentSnapshot());
+      if (settledSnapshot.snapshotId === selectedSnapshot.snapshotId) {
+        if (!this.isInstalled(selectedSnapshot)) {
+          await this.installFullSnapshot(selectedSnapshot, preparedProjection);
+        }
+        const installedSnapshot = this.latestSnapshot(selectedSnapshot, ctx.corpusStateReader.readCurrentSnapshot());
+        if (installedSnapshot.snapshotId === selectedSnapshot.snapshotId) {
+          return;
+        }
+
+        selectedSnapshot = installedSnapshot;
+        if (this.isInstalled(selectedSnapshot)) {
+          return;
+        }
+        projectionInput = await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({
+          signal: ctx.signal,
+        });
+        continue;
+      }
+
+      selectedSnapshot = settledSnapshot;
+      if (this.isInstalled(selectedSnapshot)) {
+        return;
+      }
+      projectionInput = await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({ signal: ctx.signal });
+    }
+  }
+
+  private latestSnapshot(left: KbCorpusSnapshot, right: KbCorpusSnapshot): KbCorpusSnapshot {
+    if (isSnapshotFresherForInterest(right, left, this.corpusInterest)) {
+      return { ...right };
+    }
+    return { ...left };
+  }
+
+  private isInstalled(snapshot: KbCorpusSnapshot): boolean {
+    return (
+      this.installedSnapshot !== null &&
+      !isSnapshotFresherForInterest(snapshot, this.installedSnapshot, this.corpusInterest)
+    );
   }
 
   private materializeDocuments(records: readonly KbProjectionRecord[], communityFresh: boolean): KbOramaDocument[] {
@@ -329,6 +394,31 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
               body: record.body,
             }),
             metadataHash: sourceMetadataHash(record.entry),
+          },
+        );
+      }
+
+      if (record.kind === 'wiki') {
+        return toOramaDocument(
+          {
+            slug: record.entry.slug,
+            path: `wiki/${record.entry.slug}.md`,
+            title: record.entry.title,
+            body: record.body,
+            tags: record.entry.tags,
+            references_principles: record.entry.references_principles,
+            createdAt: record.entry.createdAt,
+            updatedAt: record.entry.updatedAt,
+            knowledge: record.entry.knowledge,
+            ...(record.entry.entrySeq === undefined ? {} : { entrySeq: record.entry.entrySeq }),
+            ...(record.entry.related === undefined ? {} : { related: record.entry.related }),
+          },
+          {
+            contentHash: computeContentSurfaceHash({
+              title: record.entry.title,
+              body: record.body,
+            }),
+            metadataHash: wikiMetadataHash(record.entry),
           },
         );
       }

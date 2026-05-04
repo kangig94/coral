@@ -6,6 +6,7 @@ import {
   closeSync,
   existsSync,
   fdatasyncSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -22,7 +23,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
@@ -164,6 +165,8 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
     closeSync: (fd) => closeSync(fd),
     appendFileSync: (path, data) => appendFileSync(path, data),
     appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
+    appendFileWithCanonicalCheckSync: (path, data, options) =>
+      appendFileWithCanonicalCheckSyncNode(path, data, options),
     unlinkSync: (path) => unlinkSync(path),
     tryExclusiveWriteSync: (path, data, options) =>
       tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
@@ -751,6 +754,114 @@ function appendFileDurableSyncNode(path: string, data: string): boolean {
     }
     throw error;
   }
+}
+
+function appendFileWithCanonicalCheckSyncNode(
+  path: string,
+  data: string,
+  options: { canonicalPath: string; maxRetries?: number },
+): { ok: boolean; retries: number; orphanPath?: string } {
+  const buffer = Buffer.from(data, 'utf-8');
+  const maxRetries = normalizeMaxRetries(options.maxRetries);
+  let retries = 0;
+  let targetPath = path;
+  let lastOrphanPath: string | undefined;
+
+  while (true) {
+    try {
+      const result = appendAndCheckCanonicalSync(targetPath, buffer, options.canonicalPath);
+      if (result.ok) {
+        return { ok: true, retries };
+      }
+      lastOrphanPath = result.orphanPath;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { ok: false, retries, ...(lastOrphanPath ? { orphanPath: lastOrphanPath } : {}) };
+      }
+      throw error;
+    }
+
+    if (retries >= maxRetries) {
+      return { ok: false, retries, ...(lastOrphanPath ? { orphanPath: lastOrphanPath } : {}) };
+    }
+
+    retries += 1;
+    targetPath = options.canonicalPath;
+  }
+}
+
+function appendAndCheckCanonicalSync(
+  path: string,
+  buffer: Buffer,
+  canonicalPath: string,
+): { ok: true } | { ok: false; orphanPath: string } {
+  mkdirSync(dirname(path), { recursive: true });
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'a');
+    writeAllSync(fd, buffer);
+    fdatasyncSync(fd);
+
+    const openedIdentity = fileIdentityFromStats(fstatSync(fd));
+    const canonicalIdentity = statFileIdentity(canonicalPath);
+    if (canonicalIdentity && sameFileIdentity(openedIdentity, canonicalIdentity)) {
+      return { ok: true };
+    }
+
+    return {
+      ok: false,
+      orphanPath: findPathByIdentity(dirname(canonicalPath), openedIdentity) ?? path,
+    };
+  } finally {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+  }
+}
+
+function normalizeMaxRetries(maxRetries: number | undefined): number {
+  if (maxRetries === undefined) {
+    return 3;
+  }
+  if (!Number.isFinite(maxRetries)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(maxRetries));
+}
+
+function fileIdentityFromStats(stats: { dev: number; ino: number }): { dev: number; ino: number } {
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function statFileIdentity(path: string): { dev: number; ino: number } | null {
+  try {
+    return fileIdentityFromStats(statSync(path));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function sameFileIdentity(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function findPathByIdentity(parent: string, identity: { dev: number; ino: number }): string | undefined {
+  try {
+    for (const entry of readdirSync(parent)) {
+      const candidate = join(parent, entry);
+      const candidateIdentity = statFileIdentity(candidate);
+      if (candidateIdentity && sameFileIdentity(candidateIdentity, identity)) {
+        return candidate;
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  return undefined;
 }
 
 function writeAllSync(fd: number, buffer: Buffer): void {

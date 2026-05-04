@@ -4,8 +4,7 @@ import { serializeNote } from '../corpus/frontmatter.js';
 import { loadKbNote } from '../read.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
-import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { commitIndexUpdate, recordContentMutation } from '../corpus/index-mutations.js';
+import { commitCorpusEntryLocked } from '../corpus/index-mutations.js';
 import { buildNoteIndexEntry } from '../corpus/index-records.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 
@@ -27,21 +26,24 @@ export async function applyNoteUpdateLocked(
   const nextFrontmatter = { ...frontmatter, updatedAt };
   const nextRaw = serializeNote(nextFrontmatter, nextTitle, nextContent);
 
-  writeFileAtomic(rt, notePath, nextRaw);
-  mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(input.note, nextRaw));
-
-  commitIndexUpdate(rt, (index) => {
-    setEntry(
-      index,
-      noteEntryId(input.note),
-      buildNoteIndexEntry({
-        slug: input.note,
-        title: nextTitle,
-        ...nextFrontmatter,
-      }),
-    );
+  commitCorpusEntryLocked(rt, mutation, {
+    path: notePath,
+    raw: nextRaw,
+    manifestDeltas: captureNoteManifestDeltas(input.note, nextRaw),
+    indexUpdate: (index) => {
+      setEntry(
+        index,
+        noteEntryId(input.note),
+        buildNoteIndexEntry({
+          slug: input.note,
+          title: nextTitle,
+          ...nextFrontmatter,
+        }),
+      );
+    },
+    lane: 'content',
+    reason: 'KB text snapshot is stale after kb_update.',
   });
-  recordContentMutation(rt, 'KB text snapshot is stale after kb_update.');
 
   return { path: notePath };
 }

@@ -63,6 +63,8 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
+import { registerWakeUpCorpusConsumer } from './services/kb/wake-up.js';
+import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -450,6 +452,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           runtime,
         });
       }
+      // Boot step 0 (I0): finish or roll back any in-flight promote-to-wiki
+      // before any corpus snapshot can be published. Runs strictly before
+      // `retryPendingCorpusPublication()`, `ensureCorpusFreshness`, and any
+      // `driver.notifyCorpus` so consumers cannot observe a snapshot built
+      // from a partially committed promote.
+      await runPromoteRecovery(kbSubsystem.kb);
       // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
       await kbSubsystem.kb.retryPendingCorpusPublication();
       // Boot step 2: absorb external Corpus edits before replaying consumers.
@@ -463,15 +471,17 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await getExpansionLifecycleService().recoverOnBoot();
       // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
       await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
+      const wakeUpConsumer = registerWakeUpCorpusConsumer(driver, kbSubsystem.kb);
       // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
-      await driver.waitFreshUntil(
-        'corpus',
-        corpusSnapshot,
-        kbSubsystem.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id,
-        bootFreshnessTimeoutMs,
-      );
+      const ftsConsumerId = kbSubsystem.kb.capabilityRegistry
+        .runtimeView()
+        .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id;
+      await Promise.all([
+        driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs),
+        driver.waitFreshUntil('corpus', corpusSnapshot, wakeUpConsumer.id, bootFreshnessTimeoutMs),
+      ]);
       if (kbSubsystem.curateScheduler) {
         // Boot step 6: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();

@@ -130,11 +130,13 @@ Commands:
                                 actions
   principles [options]          List KB principles
   source                        Manage KB sources
+  wiki                          Manage KB wikis
   memo                          Manage project memos
   read <note>                   Read a KB entry by slug or explicit selector
   promote [options]             Promote a memo into a KB note
   update [options] <note>       Update an existing KB note
   delete <note>                 Delete a KB note
+  wake-up [options]             Generate the KB wake-up packet
   reindex [options]             Rebuild the KB index
   help [command]                display help for command
 "

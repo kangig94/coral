@@ -31,7 +31,7 @@ const optionalTransportContextFieldsShape = {
 export const kbSearchSchema = z
   .object({
     query: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
+    scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
@@ -40,7 +40,7 @@ export const kbSearchSchema = z
 export const kbSearchQuerySchema = z
   .object({
     q: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
+    scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.coerce.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
@@ -59,6 +59,7 @@ export const kbPromoteSchema = z
     content: z.string(),
     domain: z.string().min(1),
     topic: z.string().min(1),
+    wiki: z.string().min(1).optional(),
   })
   .strict();
 
@@ -73,6 +74,57 @@ export const kbUpdateSchema = z
 export const kbDeleteSchema = z
   .object({
     note: z.string().min(1),
+  })
+  .strict();
+
+const kbWikiTextOrFileSchema = z.union([
+  z.string(),
+  z.object({ text: z.string() }).strict(),
+  z.object({ file: z.string().min(1) }).strict(),
+]);
+
+const kbWikiLinkListSchema = z.union([z.string().min(1), z.array(z.string().min(1))]);
+
+export const kbWikiCreateSchema = z
+  .object({
+    slug: slugSchema,
+    title: z.string().min(1).optional(),
+    understanding: z.string().optional(),
+    knowledge: z.union([z.string(), z.array(z.string().min(1))]).optional(),
+    evidence: z.string().optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    references_principles: z.array(z.string().min(1)).optional(),
+    referencesPrinciples: z.array(z.string().min(1)).optional(),
+    related: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+export const kbWikiUpdateSchema = z
+  .object({
+    slug: slugSchema,
+    understanding: kbWikiTextOrFileSchema.optional(),
+    evidenceAppend: kbWikiTextOrFileSchema.optional(),
+    evidence_append: kbWikiTextOrFileSchema.optional(),
+    knowledgeReorder: kbWikiLinkListSchema.optional(),
+    knowledge_reorder: kbWikiLinkListSchema.optional(),
+    knowledgeAdd: kbWikiLinkListSchema.optional(),
+    knowledge_add: kbWikiLinkListSchema.optional(),
+    knowledgeRemove: kbWikiLinkListSchema.optional(),
+    knowledge_remove: kbWikiLinkListSchema.optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    references_principles: z.array(z.string().min(1)).optional(),
+    referencesPrinciples: z.array(z.string().min(1)).optional(),
+    related: z.array(z.string().min(1)).optional(),
+    updatedAt: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const kbWikiDeleteSchema = z.object({ slug: slugSchema }).strict();
+export const kbWikiListSchema = z.object({}).strict();
+export const kbWikiReadSchema = z.object({ slug: slugSchema }).strict();
+export const kbWakeUpSchema = z
+  .object({
+    tokenBudget: z.coerce.number().int().positive().optional(),
   })
   .strict();
 
@@ -179,6 +231,7 @@ export const kbMemoReadRequestSchema = z
 export const kbPrinciplesListRequestSchema = kbPrinciplesQuerySchema;
 export const kbPrincipleReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbNoteCreateRequestSchema = kbPromoteSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiCreateRequestSchema = kbWikiCreateSchema.extend(transportContextFieldsShape).strict();
 export const kbSourceCreateRequestSchema = kbSourceImportSchema.extend(transportContextFieldsShape).strict();
 export const kbMemoCreateRequestSchema = kbMemoSchema
   .omit({ owner: true })
@@ -197,9 +250,14 @@ export const kbNoteUpdateRequestSchema = kbUpdateSchema
     ...transportContextFieldsShape,
   })
   .strict();
+export const kbWikiUpdateRequestSchema = kbWikiUpdateSchema.extend(transportContextFieldsShape).strict();
 export const kbNoteDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();
+export const kbWikiDeleteRequestSchema = kbWikiDeleteSchema.extend(optionalTransportContextFieldsShape).strict();
+export const kbWikiListRequestSchema = kbWikiListSchema;
+export const kbWikiReadRequestSchema = kbWikiReadSchema;
+export const kbWakeUpRequestSchema = kbWakeUpSchema;
 export const kbSourceDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();

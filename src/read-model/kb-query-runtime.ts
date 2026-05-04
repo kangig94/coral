@@ -11,6 +11,7 @@ import {
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
+  wikiPathFromName,
 } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { loadBundledEngine } from '../expansion/bundled.js';
@@ -98,6 +99,7 @@ export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathRes
   const root = resolveQueryMarkdownRoot(context);
   return {
     notePath: (note) => notePathFromName(note, root),
+    wikiPath: (slug) => wikiPathFromName(slug, root),
     sourcePath: (source) => sourcePathFromName(source, root),
     communityPath: (community) => communityPathFromName(community, root),
     principlePath: (principle) => principlePathFromName(principle, root),

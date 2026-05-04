@@ -29,6 +29,7 @@ const KIND_ORDER: Record<KbResult['kind'], number> = {
   note: 0,
   community: 1,
   source: 2,
+  wiki: 3,
 };
 
 const BUILTIN_TEXT_ROLE_DESCRIPTOR = {
@@ -37,7 +38,7 @@ const BUILTIN_TEXT_ROLE_DESCRIPTOR = {
   tags: ['lexical'],
   phase: 'retrieval-source',
   provides: 'retrieval-source',
-  supportsScopes: ['notes', 'sources', 'communities', 'all'],
+  supportsScopes: ['notes', 'sources', 'communities', 'wiki', 'all'],
   requires: [KB_FTS_CAPABILITY],
 } as const satisfies RetrievalRole['descriptor'];
 
@@ -131,6 +132,10 @@ export function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[
 
   if (scope === 'sources') {
     return hits.filter((hit) => hit.kind === 'source');
+  }
+
+  if (scope === 'wiki') {
+    return hits.filter((hit) => hit.kind === 'wiki');
   }
 
   return hits.filter((hit) => hit.kind === 'community');
@@ -296,7 +301,7 @@ export function createBuiltinTextRole(rt: KbRuntime): RetrievalRole {
 }
 
 export function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {
-  if (kind === 'community') {
+  if (kind === 'community' || kind === 'wiki') {
     return false;
   }
 

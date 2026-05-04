@@ -29,8 +29,14 @@ try {
   }
 
   const kbRoot = resolveKbRoot();
-  const kbNotesDir = join(kbRoot, 'notes');
-  const files = readdirSync(kbNotesDir).filter(f => f.endsWith('.md'));
+  const collectMarkdown = (subdir) => {
+    try {
+      return readdirSync(join(kbRoot, subdir)).filter(f => f.endsWith('.md'));
+    } catch {
+      return [];
+    }
+  };
+  const files = [...collectMarkdown('notes'), ...collectMarkdown('wiki')];
   if (files.length === 0) process.exit(0);
 
   const topics = [...new Set(files.map(f => f.replace(/\.md$/, '').replace(/-.*$/, '')))].sort();

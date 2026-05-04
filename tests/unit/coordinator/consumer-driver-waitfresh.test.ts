@@ -38,6 +38,7 @@ function createDriver(apply: Extract<JournalConsumerRegistration, { kind: 'apply
 function createCorpusDriver(
   apply: CorpusConsumerRegistration['apply'] = async () => {},
   timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = REAL_CONSUMER_DRIVER_TIMERS,
+  onApplyFailure?: CorpusConsumerRegistration['onApplyFailure'],
 ): {
   db: Database;
   driver: ConsumerDriver;
@@ -53,6 +54,7 @@ function createCorpusDriver(
     kind: 'apply',
     registrationKind: 'expansion',
     corpusInterest: 'both',
+    ...(onApplyFailure === undefined ? {} : { onApplyFailure }),
     apply,
   });
 
@@ -303,6 +305,74 @@ describe('ConsumerDriver waitFreshUntil', () => {
       await driver.drainAll();
     } finally {
       releaseApply.resolve();
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('keeps corpus waiters unresolved after a clean no-advance apply until a newer snapshot advances', async () => {
+    const staleSnapshot = buildSnapshot({ snapshotId: 'corpus-stale', contentSeq: 2, metadataSeq: 2 });
+    const newerSnapshot = buildSnapshot({ snapshotId: 'corpus-newer', contentSeq: 3, metadataSeq: 3 });
+    const staleApplyStarted = createDeferred<void>();
+    const releaseStaleApply = createDeferred<void>();
+    const onApplyFailure = vi.fn();
+    const applyCalls: string[] = [];
+    const { db, driver, consumerId, handle } = createCorpusDriver(
+      async ({ snapshot }) => {
+        applyCalls.push(snapshot.snapshotId);
+        if (snapshot.snapshotId === staleSnapshot.snapshotId) {
+          staleApplyStarted.resolve();
+          await releaseStaleApply.promise;
+          return { advance: false, reason: 'stale-snapshot' };
+        }
+      },
+      REAL_CONSUMER_DRIVER_TIMERS,
+      onApplyFailure,
+    );
+
+    try {
+      let resolved = false;
+      const waitPromise = driver.waitFreshUntil('corpus', staleSnapshot, consumerId, 5000).then(() => {
+        resolved = true;
+      });
+
+      driver.notify('corpus', staleSnapshot);
+      await staleApplyStarted.promise;
+      await flushMicrotasks();
+
+      expect(resolved).toBe(false);
+
+      releaseStaleApply.resolve();
+      await driver.drainAll();
+      await flushMicrotasks();
+
+      expect(resolved).toBe(false);
+      expect(onApplyFailure).not.toHaveBeenCalled();
+      expect(handle.lastApplyError).toBeNull();
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: null,
+        contentSeq: 0,
+        metadataSeq: 0,
+        pending: false,
+        lastApplyError: null,
+      });
+
+      driver.notify('corpus', newerSnapshot);
+      await waitPromise;
+      await driver.drainAll();
+
+      expect(resolved).toBe(true);
+      expect(applyCalls).toEqual(['corpus-stale', 'corpus-newer']);
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: 'corpus-newer',
+        contentSeq: 3,
+        metadataSeq: 3,
+        lastApplyError: null,
+      });
+    } finally {
+      releaseStaleApply.resolve();
       await driver.shutdown();
       db.close();
     }
