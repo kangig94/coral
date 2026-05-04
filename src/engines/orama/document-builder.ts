@@ -158,7 +158,6 @@ export function toOramaDocument(
             tags: record.tags,
             createdAt: record.createdAt,
             updatedAt: record.updatedAt,
-            related: record.related,
           } as CanonicalFrontmatterRecord,
         }),
     };

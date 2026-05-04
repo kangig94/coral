@@ -48,7 +48,6 @@ export type KbWikiUpdateInput = {
   knowledgeRemove?: string | readonly string[];
   knowledge_remove?: string | readonly string[];
   tags?: readonly string[];
-  related?: readonly string[];
   updatedAt?: string;
 };
 
@@ -75,10 +74,6 @@ function normalizeEntryReference(value: string, field: string): KbEntryId {
     throw new Error(`${field} must be a KB entry ID or vault-relative wikilink`);
   }
   return entryId;
-}
-
-function normalizeEntryReferences(values: readonly string[], field: string): KbEntryId[] {
-  return values.map((value) => normalizeEntryReference(value, field));
 }
 
 function uniqueEntries(entries: readonly KbEntryId[]): KbEntryId[] {
@@ -281,14 +276,6 @@ function applyFrontmatterUpdate(
   };
 
   setList('tags', input.tags, 'tags');
-
-  if (input.related !== undefined) {
-    const related = normalizeEntryReferences(input.related, 'related');
-    if (!sameOrderedEntries(next.related ?? [], related)) {
-      next.related = related;
-      changed = true;
-    }
-  }
 
   if (input.updatedAt !== undefined) {
     const updatedAt = assertNonEmptyText(input.updatedAt, 'updatedAt');

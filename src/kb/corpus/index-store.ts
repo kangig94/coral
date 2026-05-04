@@ -251,7 +251,6 @@ function parseWikiIndexEntry(entryId: string, value: Record<string, unknown>): W
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
     knowledge: parseEntryIdArray(value.knowledge),
-    related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
 }
 

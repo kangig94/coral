@@ -127,7 +127,6 @@ export interface KbWikiFrontmatter {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-  related?: KbEntryId[];
 }
 
 export type WikiEntry = KbWikiFrontmatter & {
@@ -143,7 +142,6 @@ export type KbWikiCreateInput = {
   understanding?: string;
   knowledge?: string | readonly string[];
   tags?: readonly string[];
-  related?: readonly string[];
 };
 
 export type KbWikiCreateResponse = {
@@ -163,7 +161,6 @@ export type KbWikiUpdateInput = {
   knowledgeRemove?: string | readonly string[];
   knowledge_remove?: string | readonly string[];
   tags?: readonly string[];
-  related?: readonly string[];
   updatedAt?: string;
 };
 

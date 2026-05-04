@@ -92,7 +92,6 @@ export const kbWikiCreateSchema = z
     understanding: z.string().optional(),
     knowledge: z.union([z.string(), z.array(z.string().min(1))]).optional(),
     tags: z.array(z.string().min(1)).optional(),
-    related: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
@@ -109,7 +108,6 @@ export const kbWikiUpdateSchema = z
     knowledgeRemove: kbWikiLinkListSchema.optional(),
     knowledge_remove: kbWikiLinkListSchema.optional(),
     tags: z.array(z.string().min(1)).optional(),
-    related: z.array(z.string().min(1)).optional(),
     updatedAt: z.string().min(1).optional(),
   })
   .strict();

@@ -6,7 +6,7 @@ type NoteMetadataHashInput = Pick<
   'tags' | 'principles' | 'source' | 'createdAt' | 'updatedAt' | 'entrySeq' | 'related'
 >;
 type SourceMetadataHashInput = Pick<SourceEntry, 'type' | 'tags' | 'url' | 'importedAt' | 'entrySeq' | 'related'>;
-type WikiMetadataHashInput = Pick<WikiEntry, 'tags' | 'createdAt' | 'updatedAt' | 'related'>;
+type WikiMetadataHashInput = Pick<WikiEntry, 'tags' | 'createdAt' | 'updatedAt'>;
 
 export function noteMetadataHash(entry: NoteMetadataHashInput): string {
   return computeMetadataSurfaceHash({
@@ -41,7 +41,6 @@ export function wikiMetadataHash(entry: WikiMetadataHashInput): string {
       tags: entry.tags,
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
-      related: entry.related,
     } as CanonicalFrontmatterRecord,
   });
 }

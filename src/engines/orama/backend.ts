@@ -409,7 +409,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
             createdAt: record.entry.createdAt,
             updatedAt: record.entry.updatedAt,
             knowledge: record.entry.knowledge,
-            ...(record.entry.related === undefined ? {} : { related: record.entry.related }),
           },
           {
             contentHash: computeContentSurfaceHash({

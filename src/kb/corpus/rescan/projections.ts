@@ -287,7 +287,6 @@ export function buildKbIndex(
       createdAt: wiki.createdAt,
       updatedAt: wiki.updatedAt,
       knowledge: wiki.knowledge,
-      related: wiki.related ?? [],
     });
   }
 

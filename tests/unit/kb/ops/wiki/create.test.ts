@@ -60,7 +60,6 @@ describe('createWiki', () => {
       understanding: '  First insight.  ',
       knowledge: ['note:alpha', '[[notes/beta]]', 'source:s-one'],
       tags: ['kb'],
-      related: ['[[notes/alpha]]'],
     });
 
     expect(result.slug).toBe('living-knowledge');
@@ -70,7 +69,6 @@ describe('createWiki', () => {
       tags: ['kb'],
       createdAt: '2026-04-10T01:02:03.000Z',
       updatedAt: '2026-04-10T01:02:03.000Z',
-      related: ['note:alpha'],
     });
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
     expect(sections.understanding).toBe('First insight.');

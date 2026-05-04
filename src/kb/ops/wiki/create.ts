@@ -31,10 +31,6 @@ function normalizeEntryReference(value: string, field: string): KbEntryId {
   return entryId;
 }
 
-function normalizeEntryReferences(values: readonly string[] | undefined, field: string): KbEntryId[] {
-  return (values ?? []).map((value) => normalizeEntryReference(value, field));
-}
-
 function normalizeKnowledgeSection(value: string | readonly string[] | undefined): string {
   if (value === undefined) {
     return '';
@@ -90,7 +86,6 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
       tags: normalizeStringList(input.tags, 'tags'),
       createdAt,
       updatedAt: createdAt,
-      related: normalizeEntryReferences(input.related, 'related'),
     };
     const raw = serializeWiki(meta, title, buildWikiBody(input));
     const parsed = parseWikiIndexPayload(slug, raw);

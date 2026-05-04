@@ -71,7 +71,6 @@ export function buildWikiIndexEntry(meta: WikiIndexEntrySource): WikiEntry {
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     knowledge: [...meta.knowledge],
-    related: [...(meta.related ?? [])],
   };
 }
 

@@ -21,6 +21,5 @@ export async function listWikis(kb: KbRuntime): Promise<WikiListItem[]> {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
       knowledge: [...entry.knowledge],
-      related: [...(entry.related ?? [])],
     }));
 }
