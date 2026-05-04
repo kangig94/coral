@@ -56,7 +56,6 @@ describe('createWiki', () => {
 
     const result = await createWiki(kb, {
       slug: 'living-knowledge',
-      project: 'kangig94/coral',
       title: 'Living Knowledge',
       understanding: '  First insight.  ',
       knowledge: ['note:alpha', '[[notes/beta]]', 'source:s-one'],
@@ -71,7 +70,6 @@ describe('createWiki', () => {
     expect(frontmatter.parseWikiFrontmatter(raw)).toEqual({
       tags: ['kb'],
       references_principles: ['contract-first-design'],
-      project: 'kangig94/coral',
       createdAt: '2026-04-10T01:02:03.000Z',
       updatedAt: '2026-04-10T01:02:03.000Z',
       entrySeq: 1,
@@ -88,7 +86,6 @@ describe('createWiki', () => {
 
     await createWiki(kb, {
       slug: 'living-knowledge',
-      project: 'kangig94/coral',
       knowledge: ['note:alpha', 'note:beta'],
     });
 
@@ -107,7 +104,7 @@ describe('createWiki', () => {
     const existing = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     writeFileSync(existing, '# already here\n', 'utf-8');
 
-    await expect(createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral' })).rejects.toThrow(
+    await expect(createWiki(kb, { slug: 'living-knowledge' })).rejects.toThrow(
       'KB wiki already exists',
     );
     expect(existsSync(existing)).toBe(true);
@@ -118,7 +115,7 @@ describe('createWiki', () => {
     const { createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
 
-    await expect(createWiki(kb, { slug: 'Invalid Slug', project: 'kangig94/coral' })).rejects.toThrow();
+    await expect(createWiki(kb, { slug: 'Invalid Slug' })).rejects.toThrow();
     expect(existsSync(paths.wikiDir(process.env.CORAL_KB_PATH!))).toBe(false);
   });
 });

@@ -1,10 +1,9 @@
 import { join } from 'node:path';
 
 import type { KbRuntime } from '../contract.js';
-import { parseWikiBody } from '../corpus/frontmatter.js';
-import type { KbProjectionInput, KbProjectionRecord } from '../projection-input-contract.js';
+import { extractBody, parseWikiBody, parseWikiFrontmatter } from '../corpus/frontmatter.js';
 
-type WakeUpRuntime = Pick<KbRuntime, 'markdownRoot' | 'storagePort' | 'corpusProjectionReader'>;
+type WakeUpRuntime = Pick<KbRuntime, 'markdownRoot' | 'storagePort' | 'wikiPath'>;
 
 function readIdentity(kb: Pick<WakeUpRuntime, 'markdownRoot' | 'storagePort'>): string | null {
   const identityPath = join(kb.markdownRoot, 'identity.md');
@@ -14,38 +13,24 @@ function readIdentity(kb: Pick<WakeUpRuntime, 'markdownRoot' | 'storagePort'>): 
   return kb.storagePort.readFileSync(identityPath, 'utf-8').trimEnd();
 }
 
-function projectScopedWikiRecords(
-  projectionInput: KbProjectionInput,
-  project: string,
-): Array<Extract<KbProjectionRecord, { kind: 'wiki' }>> {
-  return projectionInput.records
-    .filter(
-      (record): record is Extract<KbProjectionRecord, { kind: 'wiki' }> =>
-        record.kind === 'wiki' && record.entry.project === project,
-    )
-    .sort(
-      (left, right) =>
-        right.entry.updatedAt.localeCompare(left.entry.updatedAt) || left.entry.slug.localeCompare(right.entry.slug),
-    );
-}
-
-export async function generateWakeUpPacket(kb: KbRuntime, project: string | undefined): Promise<string> {
-  if (project === undefined) {
+export async function generateWakeUpPacket(kb: WakeUpRuntime, projectSlug: string | undefined): Promise<string> {
+  if (projectSlug === undefined) {
     return '';
   }
 
-  const projectionInput = await kb.corpusProjectionReader.prepareCurrentProjectionInput();
-  const wikiChunks = projectScopedWikiRecords(projectionInput, project)
-    .map((record) => {
-      const sections = parseWikiBody(record.body);
-      return `## ${record.entry.slug} (${record.entry.updatedAt})\n${sections.understanding}\n\n`;
-    })
-    .join('');
+  let wikiChunk = '';
+  const wikiPath = kb.wikiPath(projectSlug);
+  if (kb.storagePort.existsSync(wikiPath)) {
+    const raw = kb.storagePort.readFileSync(wikiPath, 'utf-8');
+    const meta = parseWikiFrontmatter(raw);
+    const sections = parseWikiBody(extractBody(raw));
+    wikiChunk = `## ${projectSlug} (${meta.updatedAt})\n${sections.understanding}\n`;
+  }
 
   const identity = readIdentity(kb);
   if (identity === null || identity.length === 0) {
-    return wikiChunks;
+    return wikiChunk;
   }
 
-  return `${identity}\n\n${wikiChunks}`;
+  return `${identity}\n\n${wikiChunk}`;
 }

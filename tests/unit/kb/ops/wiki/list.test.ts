@@ -53,11 +53,11 @@ describe('listWikis', () => {
     const kb = createRuntime(paths);
 
     vi.setSystemTime(new Date('2026-04-15T01:00:00.000Z'));
-    await createWiki(kb, { slug: 'older-wiki', project: 'kangig94/coral', knowledge: ['note:a'] });
+    await createWiki(kb, { slug: 'older-wiki', knowledge: ['note:a'] });
     vi.setSystemTime(new Date('2026-04-15T02:00:00.000Z'));
-    await createWiki(kb, { slug: 'newest-wiki', project: 'kangig94/coral', knowledge: ['note:b'] });
+    await createWiki(kb, { slug: 'newest-wiki', knowledge: ['note:b'] });
     vi.setSystemTime(new Date('2026-04-15T01:30:00.000Z'));
-    await createWiki(kb, { slug: 'middle-wiki', project: 'kangig94/coral', knowledge: ['note:c'] });
+    await createWiki(kb, { slug: 'middle-wiki', knowledge: ['note:c'] });
 
     const list = await listWikis(kb);
 
@@ -72,7 +72,7 @@ describe('listWikis', () => {
   it('only includes wiki entries (filters out non-wiki entries from the index)', async () => {
     const { listWikis, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'only-wiki', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'only-wiki' });
 
     // Inject a non-wiki entry directly into the index.
     const index = kb.readIndex()!;

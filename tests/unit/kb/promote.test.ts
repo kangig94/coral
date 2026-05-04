@@ -172,7 +172,6 @@ memo body
       `---
 tags: [kb]
 references_principles: []
-project: kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-20T00:00:00.000Z
 entrySeq: 2
@@ -490,7 +489,6 @@ Content here.
       `---
 tags: [kb]
 references_principles: [contract-first-design]
-project: kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-21T00:00:00.000Z
 ---

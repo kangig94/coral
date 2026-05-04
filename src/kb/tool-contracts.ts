@@ -88,7 +88,6 @@ const kbWikiLinkListSchema = z.union([z.string().min(1), z.array(z.string().min(
 export const kbWikiCreateSchema = z
   .object({
     slug: slugSchema,
-    project: z.string().min(1),
     title: z.string().min(1).optional(),
     understanding: z.string().optional(),
     knowledge: z.union([z.string(), z.array(z.string().min(1))]).optional(),

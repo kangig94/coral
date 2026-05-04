@@ -52,7 +52,7 @@ describe('deleteWiki', () => {
   it('atomically removes the wiki file and its index entry', async () => {
     const { deleteWiki, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'living-knowledge' });
     const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     expect(existsSync(wikiPath)).toBe(true);
 
@@ -66,7 +66,7 @@ describe('deleteWiki', () => {
   it('rejects deleting a missing wiki without modifying the index', async () => {
     const { deleteWiki, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'keep-me', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'keep-me' });
     const indexBefore = kb.readIndex();
 
     await expect(deleteWiki(kb, { slug: 'no-such-wiki' })).rejects.toThrow('KB wiki not found');
@@ -83,7 +83,7 @@ describe('deleteWiki', () => {
   it('clears the manifest authority delta for a deleted wiki', async () => {
     const { deleteWiki, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'living-knowledge' });
     const beforeState = kb.readIndexState();
 
     await deleteWiki(kb, { slug: 'living-knowledge' });

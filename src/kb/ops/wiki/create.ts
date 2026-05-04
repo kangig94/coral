@@ -93,7 +93,6 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
         input.references_principles ?? input.referencesPrinciples,
         'references_principles',
       ),
-      project: assertNonEmptyText(input.project, 'project'),
       createdAt,
       updatedAt: createdAt,
       entrySeq: currentEntrySeq(rt.readIndexState()) + 1,

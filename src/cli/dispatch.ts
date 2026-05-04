@@ -232,7 +232,7 @@ export type KbPromoteOptions = {
   contentFile?: string;
   domain?: string;
   topic?: string;
-  wiki?: string;
+  wiki?: string | true;
 };
 
 export type KbUpdateOptions = {
@@ -247,7 +247,6 @@ export type KbSourceImportOptions = {
 };
 
 export type KbWikiCreateOptions = {
-  project: string;
   title?: string;
   understanding?: string;
   knowledge?: string[];

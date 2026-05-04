@@ -55,7 +55,7 @@ describe('rewriteWiki', () => {
   it('rewrites the Knowledge section through rewriteWiki and updates the index knowledge field', async () => {
     const { rewriteWiki, createWiki, paths, frontmatter } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral', knowledge: ['note:alpha', 'note:beta'] });
+    await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
 
     await rewriteWiki(kb, 'living-knowledge', () => ({
       sections: { knowledge: '- [[notes/gamma]]\n- [[notes/alpha]]' },
@@ -74,7 +74,7 @@ describe('rewriteWiki', () => {
   it('rewriteWiki returns the path without writing when the mutation function returns null', async () => {
     const { rewriteWiki, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'living-knowledge' });
     const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     const before = readFileSync(wikiPath, 'utf-8');
 
@@ -86,7 +86,7 @@ describe('rewriteWiki', () => {
   it('rewriteWikiInMutation runs inside an existing mutation lock with the requested lane', async () => {
     const { rewriteWikiInMutation, createWiki, paths, frontmatter } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral' });
+    await createWiki(kb, { slug: 'living-knowledge' });
 
     await kb.withMutationLock(async (mutation) => {
       await rewriteWikiInMutation(
@@ -117,7 +117,7 @@ describe('rewriteWiki', () => {
   it('updates the index Knowledge derived field even when only the body changes', async () => {
     const { rewriteWiki, createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral', knowledge: ['note:alpha'] });
+    await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha'] });
 
     await rewriteWiki(kb, 'living-knowledge', () => ({
       sections: { knowledge: '- [[notes/alpha]]\n- [[notes/added]]' },
@@ -134,7 +134,6 @@ describe('rewriteWiki', () => {
       const kb = createRuntime(paths);
       await createWiki(kb, {
         slug: 'living-knowledge',
-        project: 'kangig94/coral',
         knowledge: ['note:alpha', 'note:beta', 'note:gamma', 'note:delta'],
       });
 
@@ -152,7 +151,6 @@ describe('rewriteWiki', () => {
       const kb = createRuntime(paths);
       await createWiki(kb, {
         slug: 'living-knowledge',
-        project: 'kangig94/coral',
         knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e', 'note:f'],
       });
 
@@ -171,7 +169,6 @@ describe('rewriteWiki', () => {
       const kb = createRuntime(paths);
       await createWiki(kb, {
         slug: 'living-knowledge',
-        project: 'kangig94/coral',
         knowledge: ['note:a', 'note:b', 'note:c', 'note:d', 'note:e'],
       });
 
@@ -192,7 +189,7 @@ describe('rewriteWiki', () => {
     it('no-ops when the touched link is already at index 0', async () => {
       const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
       const kb = createRuntime(paths);
-      await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral', knowledge: ['note:alpha', 'note:beta'] });
+      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
 
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:alpha']);
 
@@ -206,7 +203,7 @@ describe('rewriteWiki', () => {
     it('skips touches for links no longer in the Knowledge list', async () => {
       const { bubbleUpWikiKnowledge, createWiki, paths, frontmatter } = await loadModules();
       const kb = createRuntime(paths);
-      await createWiki(kb, { slug: 'living-knowledge', project: 'kangig94/coral', knowledge: ['note:alpha', 'note:beta'] });
+      await createWiki(kb, { slug: 'living-knowledge', knowledge: ['note:alpha', 'note:beta'] });
 
       await bubbleUpWikiKnowledge(kb, 'living-knowledge', ['note:absent', 'note:beta']);
 

@@ -43,8 +43,8 @@ try {
   const aiAgent = process.env.AI_AGENT ?? '';
   const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
 
-  const projectSource = projectDir ? resolveProjectSource(projectDir) : undefined;
-  const wakeUpPayload = projectSource ? readProjectScopedWakeUp(resolveKbRoot(), projectSource) : null;
+  const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
+  const wakeUpPayload = projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
   const additionalContext = wakeUpPayload === null
     ? `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`
     : `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}\n\n${wakeUpPayload}`;

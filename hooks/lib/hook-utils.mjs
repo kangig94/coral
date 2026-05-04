@@ -1,11 +1,8 @@
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const require = createRequire(import.meta.url);
 
 export function exitIfChildProcess() {
   if (process.env.CORAL_CHILD === '1') process.exit(0);
@@ -109,20 +106,6 @@ export function resolveKbRoot() {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
   return join(homedir(), '.coral', buildFlavor() === 'dev' ? 'kb-dev' : 'kb');
-}
-
-let _yaml;
-let _yamlLoaded = false;
-
-export function loadYaml() {
-  if (_yamlLoaded) return _yaml;
-  _yamlLoaded = true;
-  try {
-    _yaml = require('yaml');
-  } catch {
-    _yaml = null;
-  }
-  return _yaml;
 }
 
 const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;

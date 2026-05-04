@@ -36,7 +36,6 @@ function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) 
 const SEED_WIKI = `---
 tags: [kb]
 references_principles: []
-project: kangig94/coral
 createdAt: 2026-04-01T00:00:00.000Z
 updatedAt: 2026-04-01T00:00:00.000Z
 ---

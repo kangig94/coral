@@ -122,7 +122,7 @@ function registerKbWikiCommands(kb: Command): void {
   const kbWikiCreateCommand = kbWikiCommand.command('create');
   kbWikiCreateCommand
     .description('Create a KB wiki')
-    .argument('<slug>', 'Wiki slug without extension')
+    .argument('[slug]', 'Wiki slug without extension (omit to derive from current project)')
     .option('--title <text>', 'Wiki title')
     .option('--understanding <text>', 'Understanding section text')
     .option('--knowledge <link>', 'Knowledge wikilink or entry ID (repeatable, comma-separated)', appendDelimitedOption)
@@ -132,13 +132,15 @@ function registerKbWikiCommands(kb: Command): void {
       'Referenced principles (repeatable, comma-separated)',
       appendDelimitedOption,
     )
-    .requiredOption('--project <slug>', 'Project this wiki belongs to (the wiki\'s subject domain, e.g. kangig94/coral or macroeconomics-research)')
-    .action(async (slug: string, opts: KbWikiCreateOptions) => {
+    .action(async (providedSlug: string | undefined, opts: KbWikiCreateOptions) => {
       try {
+        const slug = assertWikiSlug(
+          providedSlug ?? resolveProjectSource(process.cwd()).replace(/\//g, '-'),
+          'wiki',
+        );
         const client = makeClient(process.cwd(), kbWikiCreateCommand);
         const result = await client.kbWikiCreate({
-          slug: assertWikiSlug(slug, 'wiki'),
-          project: opts.project,
+          slug,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
           ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
@@ -439,20 +441,26 @@ export function registerKbCommands(program: Command): void {
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
     .option(
-      '--wiki <slug>',
-      "Prepend the promoted note to a wiki Knowledge section (wiki must already exist — use 'kb wiki create' first)",
+      '--wiki [slug]',
+      'Prepend the promoted note to a wiki Knowledge section. With no value: current project wiki (slug auto-derived from cwd). With value: that specific wiki.',
     )
     .action(async (opts: KbPromoteOptions) => {
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
+        const wikiSlug =
+          opts.wiki === undefined
+            ? undefined
+            : opts.wiki === true
+              ? assertWikiSlug(resolveProjectSource(process.cwd()).replace(/\//g, '-'), 'wiki')
+              : assertWikiSlug(opts.wiki, 'wiki');
         const args = {
           ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(content !== undefined ? { content } : {}),
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
-          ...(opts.wiki !== undefined ? { wiki: assertWikiSlug(opts.wiki, 'wiki') } : {}),
+          ...(wikiSlug !== undefined ? { wiki: wikiSlug } : {}),
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);
@@ -505,7 +513,7 @@ export function registerKbCommands(program: Command): void {
     .action(async () => {
       try {
         const client = makeClient(process.cwd(), kbWakeUpCommand);
-        const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()) });
+        const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()).replace(/\//g, '-') });
         emitText(result, formatKbWakeUp);
       } catch (error) {
         emitError(error);
