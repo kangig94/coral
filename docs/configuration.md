@@ -166,7 +166,7 @@ Live scratch artifacts:
 | --- | --- |
 | Codex CLI | Codex execution |
 | Claude CLI | Claude execution |
-| Node.js 18+ | Runtime |
+| Node.js 22+ | Runtime |
 | `cmake` | Native KB addon fallback builds |
 
 ## File Role Summary

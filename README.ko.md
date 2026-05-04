@@ -6,7 +6,7 @@ Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, �
 
 ## 설치
 
-**요구사항:** Node.js 18+
+**요구사항:** Node.js 22+
 
 ```bash
 # Claude Code:
