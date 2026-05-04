@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
-export const BACKEND_WARM_START_HOOK = join(process.cwd(), 'hooks', 'backend-warm-start.mjs');
 export const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
 export const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
 export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');

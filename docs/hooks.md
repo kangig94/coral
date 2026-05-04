@@ -8,13 +8,14 @@ Hook registration lives in `hooks/hooks.json`. Coral uses these Claude Code hook
 
 | Event | Scripts | Purpose |
 | --- | --- | --- |
-| `SessionStart` (`*`) | `session-start.mjs`, `backend-warm-start.mjs`, `hud-auto-update.mjs` | Inject `INJECT.md`, ensure backend availability, refresh HUD |
+| `SessionStart` (`*`) | `session-start.mjs`, `hud-auto-update.mjs` | Inject `INJECT.md` (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
 | `SessionStart` (`compact`) | `kb-promote-gate.mjs`, `post-compact.mjs` | Restore KB/promotion guidance and recover active jobs after compaction |
 | `SubagentStart` | `subagent-start.mjs` | Inject subagent-safe `INJECT.md` |
 | `PreCompact` | `pre-compact.mjs` | Snapshot active jobs before compaction |
 | `UserPromptSubmit` | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars |
 | `PreToolUse` (`Skill`) | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs` | Same state setup for skill-initiated flows |
 | `PreToolUse` (`Bash`) | `cli-resolve.mjs` | Resolve bare `coral-cli` calls to the plugin-local bundle |
+| `PreToolUse` (`Monitor`) | `cli-monitor-guard.mjs` | Guard Monitor tool calls |
 | `PostToolUseFailure` | `kb-lookup-reminder.mjs` | KB reminder on explicit tool failures |
 | `PostToolUse` (`Bash`) | `kb-lookup-reminder.mjs` | KB reminder on silent-failure command output |
 | `Stop` | `ralph-loop.mjs`, `kb-promote-gate.mjs` | Prompt-mode looping and KB promotion enforcement |
@@ -46,7 +47,7 @@ Provider-launched Codex and Claude sessions also receive `INJECT.md`, but that h
 
 ## Backend Warm-start
 
-`hooks/backend-warm-start.mjs` starts `bridge/coral-backend.cjs` early when there is no healthy backend. It reads the expected flavor from `bridge/manifest.json`, skips only when the live backend already matches that flavor, and asks a wrong-flavor backend to shut down so replacement can proceed. It is still best-effort only: failures are ignored and the CLI can start the backend lazily later.
+`hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The daemon's `bindWithHandoff` / `requestIncumbentShutdown` contention layer is the single source of truth for staleness: a healthy same-bundle peer makes the new daemon throw `BackendAlreadyRunningError` and exit; a mismatching peer triggers IPC `transport.shutdown` and the new daemon takes over the bound socket. The hook stays free of bundle/flavor comparison so the contention contract has one canonical home. Failures are ignored and the CLI can start the backend lazily later.
 
 ## Compact Recovery
 

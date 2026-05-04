@@ -6,7 +6,6 @@ declare const __PLUGIN_ROOT__: string | undefined;
 import { dirname } from 'node:path';
 
 import { BackendAlreadyRunningError } from './handoff.js';
-import { StartupInterruptedError } from './startup-error.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
@@ -154,7 +153,7 @@ export async function main(): Promise<number> {
       backendLog.info(error.message);
       return 0;
     }
-    if (error instanceof StartupInterruptedError) {
+    if ((error as { name?: string } | null)?.name === 'AbortError') {
       return 0;
     }
 

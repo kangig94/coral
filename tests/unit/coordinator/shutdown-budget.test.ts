@@ -72,7 +72,17 @@ function buildHarness(opts: {
       setLifecycle: (s) => {
         callLog.push(`setLifecycle:${s}`);
       },
-      getKbStatus: () => ({ kind: 'unavailable', reason: 'test' }),
+      subsystems: {
+        register: () => {},
+        initAll: () => {},
+        disposeAll: async () => {
+          callLog.push('subsystems.disposeAll');
+        },
+        run: () => ({ ok: false, code: 'kb_initializing', message: '' }),
+        runAsync: async () => ({ ok: false, code: 'kb_initializing', message: '' }),
+        list: () => [],
+        status: () => null,
+      },
     },
     idleTimer: {
       stopWatching: () => {

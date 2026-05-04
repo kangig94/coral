@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import type {
   CoordinatorCoreOptions,
   CoordinatorCoreResult,
@@ -174,9 +175,9 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         }
         return storeServices;
       },
-      createKbSubsystemFn: async () => {
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
         throw new Error('handoff-cores harness runs without a KB subsystem');
-      },
+      }),
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
@@ -195,7 +196,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
           getDiscussStoreForSource,
           getDiscussContext,
           createInvocationContext,
-          assertStartupStillActive,
+          signal,
           recoverPersistedDiscussFn,
         }) => {
           return recoverPersistedDiscussFn({
@@ -203,7 +204,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
             getDiscussStoreForSource,
             getDiscussContext,
             createInvocationContext,
-            assertStartupStillActive,
+            signal,
           });
         }),
       getConsumerStuck: () => [],

@@ -70,6 +70,8 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
       break;
     case 'backend_recovering':
     case 'kb_unavailable':
+    case 'kb_initializing':
+    case 'kb_offline':
       statusCode = 503;
       break;
     case 'start_failed':
@@ -83,7 +85,16 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
     statusCode,
     body:
       result.detail === undefined
-        ? { code: result.code, message: result.message }
-        : { code: result.code, message: result.message, detail: result.detail },
+        ? {
+            code: result.code,
+            message: result.message,
+            ...(result.remediation === undefined ? {} : { remediation: result.remediation }),
+          }
+        : {
+            code: result.code,
+            message: result.message,
+            ...(result.remediation === undefined ? {} : { remediation: result.remediation }),
+            detail: result.detail,
+          },
   };
 }

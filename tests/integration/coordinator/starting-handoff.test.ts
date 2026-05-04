@@ -33,6 +33,7 @@ function buildPorts(opts: {
 }): HttpHandlerPorts {
   const health: HealthSnapshot = {
     status: 'starting',
+    kernel: { phase: 'starting', readyAt: null },
     version: '0.0.0',
     bundleHash: 'h',
     flavor: 'prod',
@@ -46,11 +47,7 @@ function buildPorts(opts: {
     queueDepth: 0,
     inflightRequests: 0,
     env: {},
-    subsystems: {
-      kb: { kind: 'unavailable', reason: 'test' },
-      kbCurate: 'ok',
-      discuss: 'ok',
-    },
+    subsystems: [{ id: 'kb', phase: 'offline', reason: 'test' }],
   };
   return {
     identity: {

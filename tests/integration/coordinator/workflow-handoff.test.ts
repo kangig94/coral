@@ -131,7 +131,7 @@ describe('workflow handoff (cross-domain integration)', () => {
         getDiscussStoreForSource,
         getDiscussContext,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
         recoverPersistedDiscussFn,
         progressStore,
       }) => {
@@ -140,7 +140,7 @@ describe('workflow handoff (cross-domain integration)', () => {
           getDiscussStoreForSource,
           getDiscussContext,
           createInvocationContext,
-          assertStartupStillActive,
+          signal,
         });
 
         const stubExecution: WorkflowExecutionPort = {

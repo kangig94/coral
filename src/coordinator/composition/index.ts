@@ -66,6 +66,9 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
+import { createSubsystemRegistry } from '../subsystems/registry.js';
+import { KB_ID } from '../subsystems/contract.js';
+import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
@@ -152,7 +155,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     (() => {
       throw storeServicesStartupNotReadyError();
     });
-  const runtimeState = createRuntimeState(world.now());
+  const subsystems = createSubsystemRegistry();
+  const runtimeState = createRuntimeState(world.now(), subsystems);
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   const services = createExecutionServices({
@@ -235,28 +239,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
   };
-  const kbUnavailableResult = {
-    ok: false as const,
-    code: 'kb_unavailable',
-    message: 'Knowledge base is not available. Check backend health for details.',
-  };
-  type KbSubsystemFromStatus = Extract<ReturnType<typeof runtimeState.getKbStatus>, { kind: 'ok' }>['subsystem'];
-  const withKb = <T>(run: (kbSubsystem: KbSubsystemFromStatus) => T): T | typeof kbUnavailableResult => {
-    const status = runtimeState.getKbStatus();
-    if (status.kind !== 'ok') {
-      return kbUnavailableResult;
-    }
-    return run(status.subsystem);
-  };
-  const withKbAsync = async <T>(
-    run: (kbSubsystem: KbSubsystemFromStatus) => Promise<T>,
-  ): Promise<T | typeof kbUnavailableResult> => {
-    const status = runtimeState.getKbStatus();
-    if (status.kind !== 'ok') {
-      return kbUnavailableResult;
-    }
-    return run(status.subsystem);
-  };
+  // KB-tool handlers route through the subsystem registry. The registry
+  // returns a structured `kb_initializing` / `kb_offline` envelope whenever
+  // the subsystem is not online or degraded — handlers cascade that envelope
+  // up to the transport layer where it maps to HTTP 503.
+  const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
+    runtimeState.subsystems.run<KnowledgeBaseRuntime, T>(KB_ID, run);
+  const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
+    runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>(KB_ID, run);
   const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
       return;
@@ -510,46 +500,49 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const env = { ...world.coralEnvSnapshot };
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
-        let status: string = lifecycleState;
-        if (storeServices === null) {
-          status = 'starting';
-        } else if (world.idleTimer.isDraining) {
-          status = 'draining';
-        } else if (lifecycleState === 'running') {
-          status = 'ok';
+        // Legacy `status` field — older CLIs validate the strict
+        // `'starting' | 'ok' | 'draining'` enum. New consumers read
+        // `kernel.phase` for the full 5-state lifecycle.
+        let legacyStatus: 'starting' | 'ok' | 'draining';
+        if (world.idleTimer.isDraining || lifecycleState === 'draining' || lifecycleState === 'stopped') {
+          legacyStatus = 'draining';
+        } else if (lifecycleState === 'running' && storeServices !== null) {
+          legacyStatus = 'ok';
+        } else {
+          legacyStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
         const processStartedAt = probeProcessStartedAtSeconds(world.backendPid, platform) ?? undefined;
 
-        const kbStatus = runtimeState.getKbStatus();
-        const curateHealth = runtimeState.getCurateHealth();
+        // Strip the branded `SubsystemId` to plain string at the wire boundary;
+        // transport types use `string` because the brand is enforced producer-side.
+        const subsystems = runtimeState.subsystems.list().map((entry) => ({ ...entry, id: entry.id as string }));
+
         const consumerStuck = storeServices === null ? [] : options.getConsumerStuck();
-        const mutationBlocked = storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
-        // `mutationBlocked` and `consumerStuck` are diagnostic fields that
-        // appear on `/health.subsystems.kb` only when something is wrong:
-        // omitted when healthy so the green path stays compact and operators
-        // can grep for these keys to find blocked writers / stuck consumers.
-        const kbHealth: {
-          kind: 'ok' | 'initializing' | 'unavailable';
-          reason?: string;
+        const mutationBlockedSnapshot =
+          storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
+        const diagnostics: {
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
-        } = {
-          kind: kbStatus.kind,
-          ...(kbStatus.kind === 'unavailable' ? { reason: kbStatus.reason } : {}),
-          ...(mutationBlocked.blocked
-            ? {
-                mutationBlocked: {
-                  owner: mutationBlocked.owner,
-                  ageMs: mutationBlocked.ageMs,
-                  signaledAtMs: mutationBlocked.signaledAtMs,
-                },
-              }
-            : {}),
-          ...(consumerStuck.length > 0 ? { consumerStuck } : {}),
-        };
+        } = {};
+        if (mutationBlockedSnapshot.blocked) {
+          diagnostics.mutationBlocked = {
+            owner: mutationBlockedSnapshot.owner,
+            ageMs: mutationBlockedSnapshot.ageMs,
+            signaledAtMs: mutationBlockedSnapshot.signaledAtMs,
+          };
+        }
+        if (consumerStuck.length > 0) {
+          diagnostics.consumerStuck = consumerStuck;
+        }
+        const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
+
         return {
-          status,
+          status: legacyStatus,
+          kernel: {
+            phase: lifecycleState,
+            readyAt: lifecycleState === 'starting' ? null : runtimeState.getStartedAt(),
+          },
           version: identity.version,
           bundleHash: identity.bundleHash,
           flavor: identity.flavor,
@@ -564,12 +557,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
-          subsystems: {
-            kb: kbHealth,
-            kbCurate: curateHealth.kind,
-            ...(curateHealth.kind === 'degraded' ? { kbCurateReason: curateHealth.reason } : {}),
-            discuss: 'ok' as const,
-          },
+          subsystems,
+          ...(hasDiagnostics ? { diagnostics } : {}),
           env,
         };
       },

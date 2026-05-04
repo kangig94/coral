@@ -1,6 +1,5 @@
 import type { Server, ServerResponse } from 'node:http';
 import { formatError } from '../infra/error-format.js';
-import type { KbRuntime } from '../kb/contract.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -9,6 +8,7 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
+import type { SubsystemRegistry } from './subsystems/registry.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -31,11 +31,8 @@ export type LifecycleWiringState = {
 };
 
 export interface ShutdownRuntimeState {
-  setLifecycle(state: 'starting' | 'running' | 'draining' | 'stopped'): void;
-  getKbStatus():
-    | { kind: 'initializing' }
-    | { kind: 'ok'; subsystem: { curateScheduler: { stop?: () => Promise<void> }; kb: KbRuntime } }
-    | { kind: 'unavailable'; reason: string };
+  setLifecycle(state: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped'): void;
+  readonly subsystems: SubsystemRegistry;
 }
 
 type RunShutdownSequenceContext = {
@@ -197,12 +194,13 @@ export async function runShutdownSequence({
     );
   }
 
-  const kbStatus = runtimeState.getKbStatus();
-  const kbSubsystem = kbStatus.kind === 'ok' ? kbStatus.subsystem : null;
-  const curateSchedulerStop = kbSubsystem?.curateScheduler.stop?.bind(kbSubsystem.curateScheduler);
-  if (curateSchedulerStop) {
-    await withBudget('kb curate scheduler stop', async () => curateSchedulerStop(), remainingDrain, runtime.time, log);
-  }
+  await withBudget(
+    'subsystems disposeAll',
+    async (signal) => runtimeState.subsystems.disposeAll(signal),
+    remainingDrain,
+    runtime.time,
+    log,
+  );
   const expansionLifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
   if (expansionLifecycleService) {
     await withBudget(

@@ -5,13 +5,20 @@ import type { KbCorpusPublishFailure } from '../../kb/contract.js';
 import type { CurateHandle } from '../../kb/curate/scheduler.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
-import type { MutableRuntimeState } from '../lifecycle.js';
+import type { DegradedReason } from '../subsystems/contract.js';
 
 const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CURATE_INTERVAL_MS = 60_000;
 
 export interface CurateSchedulerHealthBridge {
-  attachRuntimeState(runtimeState: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'>): void;
+  /**
+   * Wire the bridge to the KB subsystem's transition callback. The bridge
+   * owns the consecutive-failure counter; the subsystem owns the
+   * `online ⇄ degraded` flip. Pass `null` for healthy, a `DegradedReason`
+   * for degraded.
+   */
+  attach(transition: (reason: DegradedReason | null) => void): void;
+  detach(): void;
   onCorpusPublishFailure(failure: KbCorpusPublishFailure): void;
   onCorpusPublishSuccess(): void;
 }
@@ -19,25 +26,35 @@ export interface CurateSchedulerHealthBridge {
 export function createCurateSchedulerHealthBridge(
   failureThreshold = DEFAULT_FAILURE_THRESHOLD,
 ): CurateSchedulerHealthBridge {
-  let runtimeState: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'> | null = null;
+  let transition: ((reason: DegradedReason | null) => void) | null = null;
+  let degraded = false;
 
   return {
-    attachRuntimeState(nextRuntimeState) {
-      runtimeState = nextRuntimeState;
+    attach(next) {
+      if (transition !== null) {
+        throw new Error('Curate scheduler health bridge already attached');
+      }
+      transition = next;
+    },
+    detach() {
+      transition = null;
+      degraded = false;
     },
     onCorpusPublishFailure(failure) {
-      if (runtimeState === null || failure.consecutivePublishFailureCount < failureThreshold) {
+      if (transition === null || failure.consecutivePublishFailureCount < failureThreshold) {
         return;
       }
-
-      runtimeState.setCurateHealth({
-        kind: 'degraded',
-        reason: `Corpus publication queue unhealthy after ${failure.consecutivePublishFailureCount} consecutive ${failure.stage} failures: ${errorMessage(failure.error)}`,
+      degraded = true;
+      transition({
+        kind: 'curate-publish',
+        consecutiveFailures: failure.consecutivePublishFailureCount,
+        lastError: errorMessage(failure.error),
       });
     },
     onCorpusPublishSuccess() {
-      if (runtimeState?.getCurateHealth().kind === 'degraded') {
-        runtimeState.setCurateHealth({ kind: 'ok' });
+      if (degraded && transition !== null) {
+        degraded = false;
+        transition(null);
       }
     },
   };

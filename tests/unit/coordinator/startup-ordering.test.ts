@@ -24,6 +24,15 @@ import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error('waitFor timed out');
+}
+
 // Match the orama projection's id so the bundled fallback's registration matches.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
 
@@ -184,27 +193,39 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
+      // Era III (KB) is fire-and-forget; wait for the final corpus
+      // `waitFreshUntil` call from `runBootSequence` to land before
+      // assertions.
+      await waitFor(() => waitFreshUntil.mock.calls.length >= 6);
       expect(waitFreshUntil).toHaveBeenCalledTimes(6);
+      // Under the 3-era boot, journal `waitFreshUntil` (Era II) runs BEFORE
+      // KB Era III's corpus calls. Reorder expectations accordingly.
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        1,
+        5,
         'corpus',
         { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        2,
+        6,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
-      expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
+      // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
+      // `jobsReconcile.runStartup`. Corpus `waitFreshUntil` (Era III) runs
+      // AFTER it. So the FIRST few `waitFreshUntil:resolved` precede
+      // jobsReconcile; the last (Era III corpus) follows it.
+      const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
+      expect(firstWaitResolved).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();
@@ -297,6 +318,8 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       order.push("setLifecycle('running')");
+      // Wait for Era III KB boot to finish before asserting full ordering.
+      await waitFor(() => waitFreshUntil.mock.calls.length >= 6);
 
       const waitFreshOrder = [
         order.indexOf('waitFreshUntil:jobs'),
@@ -307,36 +330,45 @@ describe('coordinator startup ordering', () => {
 
       expect(coordinator.getLifecycle()).toBe('running');
       expect(waitFreshUntil).toHaveBeenCalledTimes(6);
+      // Three-era boot: journal cursors (Era II) precede KB corpus
+      // freshness waits (Era III).
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        1,
+        5,
         'corpus',
         { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        2,
+        6,
         'corpus',
         expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
-      // KB is a subsystem; the IPC listener must bind before KB initialization
-      // so KB-routed handlers can return a structured `kb_unavailable` while
-      // KB is still warming up, instead of clients hanging on a closed socket.
-      expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('kbSubsystem ready'));
-      expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('registerJournalConsumers'));
+      // Era I (listen + register cursors) precedes Era II (waitFresh):
+      expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
+      // Era III (KB) starts AFTER Era II's recovery completes — but KB
+      // build's first sync step runs on the same tick as `subsystems.initAll`
+      // before the test resumes, so we assert the build ran AFTER recovery
+      // wrote the recovery markers:
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('kbSubsystem ready'));
+      // Era II ordering of recovery steps:
       expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
       expect(order.indexOf('recoverPersistedDiscussFn')).toBeLessThan(order.indexOf('workflowRecover.resumeAll'));
-      expect(order.indexOf('workflowRecover.resumeAll')).toBeLessThan(order.indexOf('writeBackendInfoFn'));
-      expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf("setLifecycle('running')"));
+      // writeBackendInfoFn now fires in Era I (BEFORE recovery), not after:
+      expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
+      // Era II recovery work (jobsReconcile, recoverPersistedDiscuss,
+      // workflowRecover) fires AFTER writeBackendInfoFn:
+      expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
+      expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf('workflowRecover.resumeAll'));
     } finally {
       register.mockRestore();
       waitFreshUntil.mockRestore();
@@ -398,6 +430,9 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
+      // Wait for Era III's `runBootSequence` to finish — its final step is
+      // `curateScheduler.start`.
+      await waitFor(() => order.includes('curateScheduler.start'));
       expect(notifyCorpus).toHaveBeenCalledTimes(1);
       expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(true);
       expect(order).toContain('retryPendingCorpusPublication');
@@ -410,9 +445,7 @@ describe('coordinator startup ordering', () => {
       expect(order.indexOf('ensureCorpusFreshness')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
       expect(order.indexOf('getCorpusStateSnapshot')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
-      // The IPC listener binds before KB init steps so KB-routed handlers
-      // surface a structured `kb_unavailable` during init instead of clients
-      // waiting on a closed socket.
+      // The IPC listener binds in Era I before any KB Era III work runs.
       expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('notifyCorpus'));
     } finally {
       await coordinator.shutdown('test-cleanup');

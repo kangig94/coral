@@ -13,7 +13,7 @@ import type { CorpusSnapshot } from '#src/kb/corpus/snapshot.js';
 
 // AC7: mutation-lock ownership-on-settle. The deadline aborts the composed
 // signal but does NOT release the lock. Diagnostics surface the stuck owner
-// on `/health.subsystems.kb.mutationBlocked` while the wedged fn is in flight.
+// on `/health.diagnostics.mutationBlocked` while the wedged fn is in flight.
 
 type Index = { tag: string };
 type Lane = 'content' | 'metadata' | 'both';

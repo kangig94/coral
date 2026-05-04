@@ -66,6 +66,11 @@ export type CoordinatorCoreOptions = {
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   terminateAllFn?: () => void;
+  /**
+   * Subsystem factory for KB. Coordinator wraps the user-facing legacy
+   * build factory into this shape; composition forwards it to
+   * `LifecycleDeps.createKbSubsystemFn`.
+   */
   createKbSubsystemFn?: CreateKbSubsystemFn;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
@@ -78,7 +83,7 @@ export type CoordinatorCoreOptions = {
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in
-   * `/health.subsystems.kb.consumerStuck`. Cursor-only and stateless
+   * `/health.diagnostics.consumerStuck`. Cursor-only and stateless
    * consumers never appear here (no inflight after stop).
    */
   getConsumerStuck: () => Array<{ id: string; elapsedSinceStopMs: number }>;

@@ -455,6 +455,20 @@ describe('hooks.json', () => {
   it('does not reference migrate-coral-dir.mjs', () => {
     expect(readFileSync(HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
   });
+
+  it('SessionStart matcher "*" array has 2 entries: session-start (10s) then hud-auto-update (3s)', () => {
+    const hooksJson = JSON.parse(readFileSync(HOOKS_JSON_PATH, 'utf-8')) as {
+      hooks: { SessionStart: Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }> };
+    };
+    const wildcardEntry = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
+    expect(wildcardEntry).toBeDefined();
+    expect(wildcardEntry!.hooks).toHaveLength(2);
+    expect(wildcardEntry!.hooks[0].command).toContain('session-start.mjs');
+    expect(wildcardEntry!.hooks[0].timeout).toBe(10);
+    expect(wildcardEntry!.hooks[1].command).toContain('hud-auto-update.mjs');
+    expect(wildcardEntry!.hooks[1].timeout).toBe(3);
+    expect(JSON.stringify(wildcardEntry)).not.toContain('backend-warm-start.mjs');
+  });
 });
 
 describe('pre-compact.mjs', () => {

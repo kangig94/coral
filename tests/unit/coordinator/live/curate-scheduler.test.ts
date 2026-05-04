@@ -5,7 +5,7 @@ import {
   createCoordinatorCurateScheduler,
   createCurateSchedulerHealthBridge,
 } from '#src/coordinator/live/curate-scheduler.js';
-import type { CurateHealth, MutableRuntimeState } from '#src/coordinator/lifecycle.js';
+import type { DegradedReason } from '#src/coordinator/subsystems/contract.js';
 
 function createInnerScheduler() {
   return {
@@ -57,37 +57,53 @@ describe('coordinator curate scheduler', () => {
     db.close();
   });
 
-  it('routes corpus publish failures past the threshold to runtime curateHealth', () => {
-    const curateHealthRef: { current: CurateHealth } = { current: { kind: 'ok' } };
-    const stateStub: Pick<MutableRuntimeState, 'getCurateHealth' | 'setCurateHealth'> = {
-      getCurateHealth: () => curateHealthRef.current,
-      setCurateHealth: (next) => {
-        curateHealthRef.current = next;
-      },
-    };
+  it('routes corpus publish failures past the threshold to a transition callback', () => {
+    let lastReason: DegradedReason | null | undefined = undefined;
     const bridge = createCurateSchedulerHealthBridge(3);
-    bridge.attachRuntimeState(stateStub);
+    bridge.attach((reason) => {
+      lastReason = reason;
+    });
 
     bridge.onCorpusPublishFailure({
       stage: 'publish',
       error: new Error('boom'),
       consecutivePublishFailureCount: 2,
     } as never);
-    expect(curateHealthRef.current).toEqual({ kind: 'ok' });
+    expect(lastReason).toBeUndefined();
 
     bridge.onCorpusPublishFailure({
       stage: 'publish',
       error: new Error('boom'),
       consecutivePublishFailureCount: 3,
     } as never);
-    expect(curateHealthRef.current.kind).toBe('degraded');
-    if (curateHealthRef.current.kind === 'degraded') {
-      expect(curateHealthRef.current.reason).toContain('Corpus publication queue unhealthy');
-      expect(curateHealthRef.current.reason).toContain('boom');
-    }
+    expect(lastReason).toEqual({ kind: 'curate-publish', consecutiveFailures: 3, lastError: 'boom' });
 
     bridge.onCorpusPublishSuccess();
-    expect(curateHealthRef.current).toEqual({ kind: 'ok' });
+    expect(lastReason).toBeNull();
+  });
+
+  it('rejects double attach until detach clears listener and degraded state', () => {
+    const bridge = createCurateSchedulerHealthBridge(3);
+    const first = vi.fn();
+    const second = vi.fn();
+
+    bridge.attach(first);
+    expect(() => bridge.attach(second)).toThrow(/already attached/);
+
+    bridge.onCorpusPublishFailure({
+      stage: 'publish',
+      error: new Error('boom'),
+      consecutivePublishFailureCount: 3,
+    } as never);
+    expect(first).toHaveBeenCalledWith({ kind: 'curate-publish', consecutiveFailures: 3, lastError: 'boom' });
+
+    bridge.detach();
+    bridge.onCorpusPublishSuccess();
+    expect(first).toHaveBeenCalledTimes(1);
+
+    bridge.attach(second);
+    bridge.onCorpusPublishSuccess();
+    expect(second).not.toHaveBeenCalled();
   });
 
   it('respects CORAL_CURATE_INTERVAL_MS overrides', async () => {

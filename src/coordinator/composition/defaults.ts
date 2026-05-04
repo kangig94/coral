@@ -6,7 +6,6 @@ import { removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
-import { createKbSubsystem as defaultCreateKbSubsystem } from '../../kb/subsystem.js';
 import {
   cleanupStaleJobs,
   closeServer as defaultCloseServer,
@@ -17,6 +16,25 @@ import type { JobStore } from '../../jobs/store.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
 import type { CoordinatorCoreOptions, CreateServerFn, FetchFn } from './types.js';
+import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+import type { Subsystem, SubsystemStatus } from '../subsystems/contract.js';
+import { KB_ID, SubsystemUnavailableError } from '../subsystems/contract.js';
+
+const defaultIdleKbSubsystem = (): Subsystem<KnowledgeBaseRuntime> => {
+  const status: SubsystemStatus = { id: KB_ID, phase: 'initializing', attempt: 0 };
+  return {
+    id: KB_ID,
+    get status() {
+      return status;
+    },
+    resource: () => {
+      throw new SubsystemUnavailableError(KB_ID, 'initializing');
+    },
+    onStatusChange: () => () => {},
+    init: async () => {},
+    dispose: async () => {},
+  };
+};
 
 type BackendEagerDefaults = {
   readonly resolvedPluginRoot: string;
@@ -82,7 +100,13 @@ export function resolveCoordinatorDefaults(
   const removeBackendInfoIfOwnerFn =
     options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
-  const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
+  // Production wires `createKbSubsystemFn` through `createCoordinatorServer`,
+  // which always overrides this default. The fallback exists for tests that
+  // call `createCoordinatorCore` directly without registering KB — it
+  // returns a Subsystem that never transitions out of `initializing`, so
+  // KB-routed handlers cleanly produce `kb_initializing` envelopes.
+  const createKbSubsystemFn: NonNullable<CoordinatorCoreOptions['createKbSubsystemFn']> =
+    options.createKbSubsystemFn ?? defaultIdleKbSubsystem;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});
   const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussRecovery.runStartup;
   const createServerFn: CreateServerFn = options.createServerFn ?? createServer;

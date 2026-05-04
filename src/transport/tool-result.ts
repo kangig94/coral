@@ -2,7 +2,7 @@ import { isRecord } from '../infra/json.js';
 
 export type ToolDomainResult =
   | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; detail?: unknown };
+  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
 export function domainSuccess(data: unknown): ToolDomainResult {
   return { ok: true, data };

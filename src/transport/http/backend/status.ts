@@ -8,6 +8,10 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus =
   | {
+      // CLI-level verdict. The daemon-side legacy lifecycle field (which
+      // can be `'starting' | 'ok' | 'draining'`) is preserved as
+      // `health.status` inside the nested `BackendHealth` payload via
+      // `BackendStatusFull`.
       status: 'ok';
       version: string;
       bundleHash: string;
@@ -16,7 +20,10 @@ export type BackendStatus =
       active: number;
       activeJobs: number;
       inflightRequests: number;
+      queueDepth?: number;
+      kernel: BackendHealth['kernel'];
       subsystems: BackendHealth['subsystems'];
+      diagnostics?: BackendHealth['diagnostics'];
     }
   | {
       status: 'shutting_down';
@@ -46,9 +53,12 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
         return { status: 'not_running' };
       }
+      if (body.status === 'draining') {
+        return { status: 'shutting_down' };
+      }
 
-      const { namespace: _namespace, queueDepth: _queueDepth, ...health } = body;
-      return { status: 'ok', health };
+      const { namespace: _namespace, status: _status, ...rest } = body;
+      return { status: 'ok', health: { ...rest, status: 'ok' as const } };
     }
     if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
       return { status: 'shutting_down' };

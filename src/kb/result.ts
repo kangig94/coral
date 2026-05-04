@@ -1,6 +1,8 @@
 import { isRecord } from '../infra/json.js';
 
-export type KbToolResult = { ok: true; data: unknown } | { ok: false; code: string; message: string; detail?: unknown };
+export type KbToolResult =
+  | { ok: true; data: unknown }
+  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
 export function kbSuccess(data: unknown): KbToolResult {
   return { ok: true, data };

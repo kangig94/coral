@@ -32,6 +32,7 @@ import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
 import type { Runtime } from '../../../src/runtime/ports.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
+import { adaptLegacyKbFactory } from '../../testing/kb-subsystem-adapter.js';
 import type {
   CoordinatorCoreResult,
   CoordinatorStoreServices,
@@ -512,7 +513,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         paths: runtime.paths,
       });
     },
-    createKbSubsystemFn: async ({ paths: kbPaths, processPort, storagePort, envPort }) => {
+    createKbSubsystemFn: adaptLegacyKbFactory(async ({ paths: kbPaths, processPort, storagePort, envPort }) => {
       hooks.createKbSubsystemCalls.push({
         markdownRoot: kbPaths.markdownRoot,
         processPort,
@@ -520,7 +521,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         envPort,
       });
       return createMockKbSubsystem(asReadonlyDatabase(storeDb));
-    },
+    }),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;
@@ -540,7 +541,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       getDiscussContext,
       createInvocationContext,
       recoveryCoordinator,
-      assertStartupStillActive,
+      signal,
       cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
@@ -553,22 +554,22 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: createProjectionSessionLookup(storeDb),
         coordinatorCommit: (cb) => progressStore.commit(cb),
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       await workflowRecover.resumeAll({
         db: storeDb,
@@ -583,7 +584,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         }),
         time: runtime.time,
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
 
       return recoveredDiscussResumes;
     },

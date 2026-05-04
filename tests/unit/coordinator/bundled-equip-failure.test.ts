@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
@@ -266,10 +267,10 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         log: () => {},
       },
       createStoreServicesFromDbFn: (storeDb) => createStoreServices(runtime, storeDb, lifecycle, state),
-      createKbSubsystemFn: async (): Promise<never> => {
+      createKbSubsystemFn: adaptLegacyKbFactory(async (): Promise<never> => {
         await lifecycle.recoverOnBoot();
         throw new Error('recoverOnBoot unexpectedly resolved');
-      },
+      }),
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
@@ -287,31 +288,36 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
 
     try {
       const info = await core.lifecycleController.start();
-      const kbStatus = core.runtimeState.getKbStatus();
-
       expect(core.runtimeState.getLifecycle()).toBe('running');
-      expect(kbStatus.kind).toBe('unavailable');
-      const reason = kbStatus.kind === 'unavailable' ? kbStatus.reason : '';
-      expect(reason).toContain('broken-orama');
-      expect(reason).toContain('boot-equip-boom');
 
-      const health = await requestIpcMethod<Record<string, unknown>>(info.socketPath, 'transport.health', undefined, {
+      // The KB subsystem is in Era III — it starts initialization after
+      // setLifecycle('running'). Each retry attempt fails immediately
+      // (broken-orama throws), then sleeps 1s/4s/16s before the next try.
+      // We wait briefly so the FIRST attempt has surfaced an `initializing`
+      // status; non-`online` phases produce the same `kb_initializing` /
+      // `kb_offline` envelope on KB-routed IPC.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Health endpoint reports per-subsystem phase via the array. While
+      // retries are running, KB is `initializing` between attempts; once
+      // exhausted it transitions to `offline`.
+      const health = await requestIpcMethod<{
+        subsystems: Array<{ id: string; phase: string }>;
+      }>(info.socketPath, 'transport.health', undefined, {
         timeoutMs: 1_000,
       });
-      expect(health.subsystems).toMatchObject({
-        kb: { kind: 'unavailable', reason },
-        kbCurate: 'ok',
-      });
+      const kb = health.subsystems.find((s) => s.id === 'kb');
+      expect(kb).toBeDefined();
+      expect(['initializing', 'offline']).toContain(kb!.phase);
 
-      // KB-routed calls during degraded mode now ride a JSON-RPC error
-      // envelope, so the client rejects with the structured cause instead of
-      // resolving with the error body — preventing CLI formatters from
-      // silently rendering an error envelope as success.
+      // KB-routed calls during not-online phases ride a JSON-RPC error
+      // envelope. The new wording is "Knowledge base is starting up" while
+      // KB is initializing or "Knowledge base is offline" once exhausted.
       await expect(
         requestIpcMethod<Record<string, unknown>>(info.socketPath, 'kb.entries.search', { q: 'hello' }, {
           timeoutMs: 1_000,
         }),
-      ).rejects.toThrow('Knowledge base is not available');
+      ).rejects.toThrow(/Knowledge base is (starting up|offline)/);
 
       await expect(
         requestIpcMethod(info.socketPath, 'jobs.list', { all: true }, { timeoutMs: 1_000 }),

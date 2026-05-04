@@ -14,12 +14,27 @@
 
 let _tag = '';
 
+// Per-prefix capture of the most recent message starting with `[<prefix>...]`.
+// Subsystems (e.g. KB) populate `lastLogLine` on `offline` status by reading
+// the slot for their bracket prefix — avoids a 21MB log grep at status time.
+const _lastByPrefix = new Map<string, string>();
+
 function ts(): string {
   return new Date().toISOString();
 }
 
+function captureBracketPrefix(message: string): void {
+  if (message.length === 0 || message.charCodeAt(0) !== 91 /* '[' */) return;
+  const close = message.indexOf(']');
+  if (close <= 1) return;
+  // Slot stores the rendered line (timestamp + level + tag + message) so
+  // the consumer reads the same shape that hit stderr.
+  _lastByPrefix.set(message.slice(1, close), `${ts()} ${_tag.trimStart()} ${message}`.trim());
+}
+
 function write(level: string, message: string): void {
   process.stderr.write(`${ts()} ${level}${_tag} ${message}\n`);
+  captureBracketPrefix(message);
 }
 
 export const backendLog = {
@@ -48,5 +63,14 @@ export const backendLog = {
   /** Raw write without prefix — for startup banner, fatal exit, etc. */
   raw(message: string): void {
     process.stderr.write(message);
+  },
+
+  /**
+   * Last rendered log line whose message started with `[<prefix>...]`, or
+   * `undefined` if no such line has been emitted. One slot per prefix; a
+   * later matching emission overwrites the previous slot value.
+   */
+  lastLineFor(prefix: string): string | undefined {
+    return _lastByPrefix.get(prefix);
   },
 };

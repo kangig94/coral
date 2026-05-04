@@ -40,10 +40,11 @@ function createPorts(): HttpHandlerPorts {
     },
     health: {
       read: () => ({
-        status: 'ok',
+        status: 'ok' as const,
+        kernel: { phase: 'running' as const, readyAt: 0 },
         version: '0.5.2',
         bundleHash: 'test-hash',
-        flavor: 'prod',
+        flavor: 'prod' as const,
         namespace: 'test-namespace',
         instanceId: 'test-instance',
         pid: 12345,
@@ -54,11 +55,7 @@ function createPorts(): HttpHandlerPorts {
         queueDepth: 0,
         inflightRequests: 0,
         env: {},
-        subsystems: {
-          kb: { kind: 'ok' as const },
-          kbCurate: 'ok' as const,
-          discuss: 'ok' as const,
-        },
+        subsystems: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {

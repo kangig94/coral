@@ -15,7 +15,7 @@ export type JobsStartupContext = {
   providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
-  assertStartupStillActive: () => void;
+  signal: AbortSignal;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;

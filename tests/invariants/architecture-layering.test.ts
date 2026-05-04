@@ -61,6 +61,7 @@ const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
   'src/coordinator/expansion/',
   'src/coordinator/services/',
+  'src/coordinator/subsystems/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',

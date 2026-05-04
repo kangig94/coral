@@ -5,6 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -46,7 +47,6 @@ async function loadModules() {
   const [
     progressStoreModule,
     lifecycleModule,
-    recoveryErrorsModule,
     engineModule,
     eventBusModule,
     pathsModule,
@@ -55,7 +55,6 @@ async function loadModules() {
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/coordinator/lifecycle.js'),
-    import('#src/coordinator/startup-error.js'),
     import('#src/coordinator/live/admission.js'),
     import('#src/coordinator/event-bus.js'),
     import('#src/infra/plugin-identity.js'),
@@ -66,7 +65,6 @@ async function loadModules() {
   return {
     progressStoreModule,
     lifecycleModule,
-    recoveryErrorsModule,
     engineModule,
     eventBusModule,
     pathsModule,
@@ -156,40 +154,28 @@ function createFakeIdleTimer() {
 function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
-  type KbSub = {
-    kb: unknown;
-    curateScheduler: {
-      start: ReturnType<typeof vi.fn>;
-      schedule: ReturnType<typeof vi.fn>;
-      scheduleDeferredCommit: ReturnType<typeof vi.fn>;
-      isRunning(): boolean;
-      stop: ReturnType<typeof vi.fn>;
-    };
-  };
-  let kbSubsystem: KbSub | null = null;
-  let curateHealth: { kind: 'ok' } | { kind: 'degraded'; reason: string } = { kind: 'ok' };
   let launchFenceActive = false;
+  // Stub subsystem registry. KB-routed handlers are not exercised here.
+  const subsystems = {
+    register: vi.fn(),
+    initAll: vi.fn(),
+    disposeAll: vi.fn(async () => {}),
+    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
+    list: vi.fn(() => []),
+    status: vi.fn(() => null),
+  };
 
   const runtimeState = {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
-    getKbStatus: () =>
-      kbSubsystem === null
-        ? ({ kind: 'unavailable', reason: 'KB not initialized' } as never)
-        : ({ kind: 'ok', subsystem: kbSubsystem } as never),
-    getCurateHealth: () => curateHealth,
     getLaunchFenceActive: () => launchFenceActive,
+    subsystems: subsystems as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
     setStartedAt: vi.fn((ts: number) => {
       startedAt = ts;
-    }),
-    setKbStatus: vi.fn((status: { kind: 'ok'; subsystem: KbSub } | { kind: 'unavailable'; reason: string }) => {
-      kbSubsystem = status.kind === 'ok' ? status.subsystem : null;
-    }),
-    setCurateHealth: vi.fn((health: { kind: 'ok' } | { kind: 'degraded'; reason: string }) => {
-      curateHealth = health;
     }),
     setLaunchFenceActive: vi.fn((active: boolean) => {
       launchFenceActive = active;
@@ -360,7 +346,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: async () => createMockKbSubsystem(),
+    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
     // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion
@@ -374,7 +360,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       getRecoveryService,
       createInvocationContext,
       recoveryCoordinator,
-      assertStartupStillActive,
+      signal,
       cleanupStaleJobs,
     }) => {
       await recoveryCoordinator.runStartupRecovery({
@@ -385,17 +371,17 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        assertStartupStillActive,
+        signal,
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: modules.sessionQueriesModule.createProjectionSessionLookup(progressStore.getDb()),
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
       });
-      assertStartupStillActive();
+      signal.throwIfAborted();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();
-      assertStartupStillActive();
+      signal.throwIfAborted();
       await workflowResumeHook();
-      assertStartupStillActive();
+      signal.throwIfAborted();
       return recoveredDiscussResumes;
     },
     hooks: {
@@ -487,12 +473,15 @@ describe('recovery coordinator shutdown', () => {
       const startResult = await controller.start().catch((error: unknown) => error);
       await controller.waitForShutdown();
 
-      expect(startResult).toBeInstanceOf(modules.recoveryErrorsModule.StartupInterruptedError);
+      expect((startResult as Error)?.name).toBe('AbortError');
       expect(harness.fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
       expect(cleanupSpy).toHaveBeenCalledTimes(1);
       expect(harness.recoverPersistedDiscussFn).not.toHaveBeenCalled();
       expect(harness.workflowResumeHook).not.toHaveBeenCalled();
-      expect(harness.writeBackendInfoFn).not.toHaveBeenCalled();
+      // Under the 3-era boot, `writeBackendInfoFn` fires in Era I BEFORE
+      // recovery — even an interrupted Era II startup has already
+      // published backend info.
+      expect(harness.writeBackendInfoFn).toHaveBeenCalledTimes(1);
     } finally {
       await stopLifecycleController(controller);
     }
@@ -548,20 +537,23 @@ describe('recovery coordinator shutdown', () => {
       const startResult = await controller.start().catch((error: unknown) => error);
       await controller.waitForShutdown();
 
-      expect(startResult).toBeInstanceOf(modules.recoveryErrorsModule.StartupInterruptedError);
+      expect((startResult as Error)?.name).toBe('AbortError');
       expect(harness.fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
       expect(recoveryPollHandle).not.toBeNull();
       expect(clearIntervalSpy).toHaveBeenCalledWith(recoveryPollHandle);
       expect(cleanupSpy).toHaveBeenCalledTimes(1);
       expect(harness.workflowResumeHook).not.toHaveBeenCalled();
-      expect(harness.writeBackendInfoFn).not.toHaveBeenCalled();
+      // Under the 3-era boot, Era I writes backend info BEFORE recovery.
+      expect(harness.writeBackendInfoFn).toHaveBeenCalledTimes(1);
       expect(harness.setLifecycle).not.toHaveBeenCalledWith('running');
 
       pidAlive = false;
       virtualRuntime.time.tick(recoveryPollMs + 1);
 
       expect(harness.fakeService.completeRecoveredJob).not.toHaveBeenCalled();
-      expect(harness.writeBackendInfoFn).not.toHaveBeenCalled();
+      // writeBackendInfoFn fires exactly once in Era I; the interrupted
+      // recovery does not cause additional invocations.
+      expect(harness.writeBackendInfoFn).toHaveBeenCalledTimes(1);
       expect(cleanupSpy).toHaveBeenCalledTimes(1);
       expect(harness.setLifecycle).not.toHaveBeenCalledWith('running');
     } finally {
