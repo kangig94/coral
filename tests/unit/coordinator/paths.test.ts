@@ -49,6 +49,7 @@ describe('composeCoralPaths', () => {
       sourcesDir: join('/tmp/coral-root', 'kb-dev', 'sources'),
       principlesDir: join('/tmp/coral-root', 'kb-dev', 'principles'),
       communitiesDir: join('/tmp/coral-root', 'kb-dev', 'communities'),
+      wikiDir: join('/tmp/coral-root', 'kb-dev', 'wiki'),
     });
   });
 

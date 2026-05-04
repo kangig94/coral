@@ -8,7 +8,7 @@ import type { SpawnCliFn } from './spawn-cli.js';
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 const DEFERRED_COMMIT_DELAY_MS = 60_000;
-const KB_GIT_DIFF_PATHS = ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json'];
+const KB_GIT_DIFF_PATHS = ['notes/', 'sources/', 'principles/', 'communities/', 'wiki/', '.entity-graph.json'];
 
 export type GitSyncPathChange =
   | {
@@ -138,8 +138,8 @@ export function createGitSyncController({
   }
 
   function kbGitPaths(): string[] {
-    return ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json', '.gitignore'].filter((entry) =>
-      storagePort.existsSync(join(root, entry.replace(/\/$/, ''))),
+    return ['notes/', 'sources/', 'principles/', 'communities/', 'wiki/', '.entity-graph.json', '.gitignore'].filter(
+      (entry) => storagePort.existsSync(join(root, entry.replace(/\/$/, ''))),
     );
   }
 

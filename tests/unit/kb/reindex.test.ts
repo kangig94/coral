@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { ReadonlyDatabase } from '#src/store/read-port.js';
-import { communityEntryId, noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
@@ -57,6 +57,7 @@ function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths
   const root = process.env.CORAL_KB_PATH!;
   return {
     notePath: (slug: string) => paths.notePathFromName(slug, root),
+    wikiPath: (slug: string) => paths.wikiPathFromName(slug, root),
     sourcePath: (slug: string) => paths.sourcePathFromName(slug, root),
     communityPath: (slug: string) => paths.communityPathFromName(slug, root),
     principlePath: (slug: string) => paths.principlePathFromName(slug, root),
@@ -65,6 +66,29 @@ function createReadPaths(paths: Awaited<ReturnType<typeof loadKbModules>>['paths
 
 function setMtime(path: string, mtime: Date): void {
   utimesSync(path, mtime, mtime);
+}
+
+function renderWiki(): string {
+  return [
+    '---',
+    'tags: [wakeful, retrieval]',
+    'sources:',
+    '  - note:coral-alpha',
+    'createdAt: 2026-05-04T00:00:00.000Z',
+    'updatedAt: 2026-05-04T01:00:00.000Z',
+    '---',
+    '# Living Memory',
+    '',
+    '## Understanding',
+    '',
+    'Wakeful retrieval keeps the session context ready after a cold rebuild.',
+    '',
+    '## Knowledge',
+    '',
+    '- [[notes/coral-alpha]]',
+    '  - 2026-05-04 Seeded from disk.',
+    '',
+  ].join('\n');
 }
 
 function expectPendingRepairEntries(
@@ -199,6 +223,202 @@ Make the contract explicit first.
     expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
       '"coral-kb-mode"',
     );
+  });
+
+  it('keeps disk-created wikis through cold reindex, projection input, Orama search, and wake-up input', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const [
+      { readKnowledgeBaseListIndex },
+      { createKbProjectionInput },
+      { parseWikiBody },
+      { createOramaBaseProjection },
+      { OramaSnapshotStore },
+    ] = await Promise.all([
+      import('#src/kb/direct-read-index.js'),
+      import('#src/kb/projection-input.js'),
+      import('#src/kb/corpus/frontmatter.js'),
+      import('#src/engines/orama/backend.js'),
+      import('#src/engines/orama/snapshot.js'),
+    ]);
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    mkdirSync(paths.wikiDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeFileSync(
+      paths.notePathFromName('coral-alpha', process.env.CORAL_KB_PATH!),
+      [
+        '---',
+        'tags: [coral, alpha]',
+        'principles: []',
+        'source:',
+        '  - kangig94/coral',
+        'createdAt: 2026-05-04T00:00:00.000Z',
+        'updatedAt: 2026-05-04T00:30:00.000Z',
+        'entrySeq: 11',
+        '---',
+        '# Coral Alpha',
+        '',
+        'Authoritative note body.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    writeFileSync(paths.wikiPathFromName('living-memory', process.env.CORAL_KB_PATH!), renderWiki(), 'utf-8');
+
+    const fallbackIndex = readKnowledgeBaseListIndex(kb);
+    expect(fallbackIndex.entries[wikiEntryId('living-memory')]).toMatchObject({
+      kind: 'wiki',
+      slug: 'living-memory',
+      title: 'Living Memory',
+      knowledge: [noteEntryId('coral-alpha')],
+    });
+
+    const result = await reindex(kb);
+
+    expect(result).toMatchObject({
+      notes: 1,
+      sources: 0,
+      communities: 0,
+      wikis: 1,
+      principles: 0,
+      tags: 4,
+      mode: 'text',
+    });
+    expect(kb.readIndex()?.entries[wikiEntryId('living-memory')]).toMatchObject({
+      kind: 'wiki',
+      slug: 'living-memory',
+      title: 'Living Memory',
+      tags: ['wakeful', 'retrieval'],
+      knowledge: [noteEntryId('coral-alpha')],
+      createdAt: '2026-05-04T00:00:00.000Z',
+      updatedAt: '2026-05-04T01:00:00.000Z',
+    });
+    expect(kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'))).toEqual(
+      expect.objectContaining({
+        entryId: wikiEntryId('living-memory'),
+        contentHash: expect.any(String),
+        metadataHash: expect.any(String),
+      }),
+    );
+
+    const projectionInput = createKbProjectionInput(kb);
+    const wikiRecord = projectionInput.records.find((record) => record.entry.slug === 'living-memory');
+    expect(wikiRecord).toBeDefined();
+    expect(wikiRecord?.kind).toBe('wiki');
+    if (wikiRecord?.kind !== 'wiki') {
+      throw new Error('Expected living-memory projection record to be a wiki.');
+    }
+    expect(wikiRecord?.rawContent).toContain('# Living Memory');
+    expect(wikiRecord?.body).toContain('## Understanding');
+    expect(parseWikiBody(wikiRecord?.body ?? '').understanding).toContain('Wakeful retrieval keeps the session');
+
+    const projection = createOramaBaseProjection(
+      kb,
+      new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir),
+    );
+    const preparedProjection = await projection.prepareFullSnapshot(projectionInput);
+    await projection.installFullSnapshot(kb.captureCorpusSnapshot(), preparedProjection);
+    const search = await projection.search('wakeful retrieval', 5, 'wiki');
+    expect(search.hits[0]?.documentId).toBe(wikiEntryId('living-memory'));
+  });
+
+  it('diagnostic-skips malformed wiki section bodies during reindex without repair attempts', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const [{ backendLog }, { readCurateRetryQueue }] = await Promise.all([
+      import('#src/infra/backend-log.js'),
+      import('#src/kb/curate/retry.js'),
+    ]);
+    const kb = createRuntime(createKbRuntime, paths);
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    mkdirSync(paths.wikiDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeFileSync(
+      paths.wikiPathFromName('broken-wiki', process.env.CORAL_KB_PATH!),
+      [
+        '---',
+        'tags: [broken]',
+        'createdAt: 2026-05-04T00:00:00.000Z',
+        'updatedAt: 2026-05-04T00:00:00.000Z',
+        '---',
+        '# Broken Wiki',
+        '',
+        '## Understanding',
+        '',
+        'This wiki is missing its strict Knowledge section.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    try {
+      const result = await reindex(kb);
+
+      expect(result).toMatchObject({ wikis: 0 });
+      expect(kb.readIndex()?.entries[wikiEntryId('broken-wiki')]).toBeUndefined();
+      expect(readCurateRetryQueue(curateDb(kb)).some((entry) => entry.entryId === wikiEntryId('broken-wiki'))).toBe(
+        false,
+      );
+      expect(
+        warnSpy.mock.calls.some(
+          ([message]) =>
+            message.includes('Skipping malformed KB wiki broken-wiki.md') &&
+            message.includes('Wiki body is missing ## Knowledge header'),
+        ),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('refreshes and deletes wiki authority baseline rows from wiki manifest ids', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { CorpusAuthorityBaselineRefresh } = await import('#src/kb/corpus/authority-baseline-refresh.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.wikiDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeFileSync(paths.wikiPathFromName('living-memory', process.env.CORAL_KB_PATH!), renderWiki(), 'utf-8');
+    await reindex(kb);
+
+    const refresh = new CorpusAuthorityBaselineRefresh({
+      corpusAuthorityBaseline: kb.corpusAuthorityBaseline,
+      storagePort: kb.storagePort,
+      getRuntime: () => kb,
+      notePath: (slug) => kb.notePath(slug),
+      wikiPath: (slug) => kb.wikiPath(slug),
+      sourcePath: (slug) => kb.sourcePath(slug),
+      communityPath: (slug) => kb.communityPath(slug),
+      principlePath: (slug) => kb.principlePath(slug),
+      entityGraphPath: () => kb.entityGraphPath(),
+    });
+
+    const before = kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'));
+    expect(before).toBeDefined();
+
+    writeFileSync(
+      kb.wikiPath('living-memory'),
+      renderWiki().replace('updatedAt: 2026-05-04T01:00:00.000Z', 'updatedAt: 2026-05-04T02:00:00.000Z'),
+      'utf-8',
+    );
+    refresh.refreshAuthorityBaselineForPendingDeltas([
+      { lane: 'metadata', manifestId: 'wiki-meta:living-memory', surfaceHash: 'ignored' },
+    ]);
+    const metadataRefreshed = kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'));
+    expect(metadataRefreshed?.contentHash).toBe(before?.contentHash);
+    expect(metadataRefreshed?.metadataHash).not.toBe(before?.metadataHash);
+
+    writeFileSync(
+      kb.wikiPath('living-memory'),
+      renderWiki().replace('Wakeful retrieval keeps the session', 'Wakeful baseline refresh keeps the session'),
+      'utf-8',
+    );
+    refresh.refreshAuthorityBaselineForPendingDeltas([
+      { lane: 'content', manifestId: 'wiki:living-memory', surfaceHash: 'ignored' },
+    ]);
+    const contentRefreshed = kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'));
+    expect(contentRefreshed?.contentHash).not.toBe(metadataRefreshed?.contentHash);
+
+    rmSync(kb.wikiPath('living-memory'));
+    refresh.refreshAuthorityBaselineForPendingDeltas([
+      { lane: 'content', manifestId: 'wiki:living-memory', surfaceHash: null },
+    ]);
+    expect(kb.corpusAuthorityBaseline.read().get(wikiEntryId('living-memory'))).toBeUndefined();
   });
 
   it('indexes communities as first-class entries during text rebuild', async () => {

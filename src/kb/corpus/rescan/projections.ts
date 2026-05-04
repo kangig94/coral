@@ -4,22 +4,32 @@ import {
   deriveNoteIdentity,
   extractBody,
   extractPrincipleStatement,
+  parseWikiBody,
   parseMembersFromBody,
   parseSummaryFromBody,
 } from '../frontmatter.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
-import { assertCommunitySlug, assertSourceSlug } from '../../validation.js';
+import {
+  buildCommunityIndexEntry,
+  buildNoteIndexEntry,
+  buildSourceIndexEntry,
+  buildWikiIndexEntry,
+} from '../index-records.js';
+import { assertCommunitySlug, assertSourceSlug, assertWikiSlug } from '../../validation.js';
 import {
   communityEntryId,
   noteEntryId,
   sourceEntryId,
+  vaultLinkToEntryId,
+  wikiEntryId,
   type CommunityFrontmatter,
+  type KbEntryId,
   type KbIndex,
   type KbNoteFrontmatter,
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type KbSourceFrontmatter,
+  type KbWikiFrontmatter,
   type ReindexResult,
 } from '../../entry-types.js';
 import { fileSyntaxDetector } from './incidents/file-syntax.js';
@@ -35,6 +45,15 @@ const ALL_DETECTORS: readonly Detector[] = [
   identitySequenceDetector,
   referenceIntegrityDetector,
 ];
+
+export type KbReindexWikiRecord = KbWikiFrontmatter & {
+  slug: string;
+  path: string;
+  title: string;
+  body: string;
+  rawContent: string;
+  knowledge: KbEntryId[];
+};
 
 /**
  * Aggregates detected incidents across every typed detector. Pure projection over
@@ -131,6 +150,52 @@ export function loadPrinciples(scan: CorpusScanView): Array<[string, string]> {
   return principles;
 }
 
+export function loadWikis(scan: CorpusScanView): KbReindexWikiRecord[] {
+  const wikis: KbReindexWikiRecord[] = [];
+
+  for (const file of filesOfKind(scan, 'wiki')) {
+    const filename = `${file.slug}.md`;
+    try {
+      const frontmatter = requireTypedFrontmatter<KbWikiFrontmatter>(file);
+      const title = requireTitle(file);
+      const body = extractBody(file.content);
+      const sections = parseWikiBody(body);
+      wikis.push({
+        slug: assertWikiSlug(file.slug, 'KB wiki name'),
+        path: `wiki/${filename}`,
+        title,
+        body,
+        rawContent: file.content,
+        knowledge: extractWikiKnowledgeLinks(sections.knowledge),
+        ...frontmatter,
+      });
+    } catch (error: unknown) {
+      backendLog.warn(`Skipping malformed KB wiki ${filename}: ${errorMessage(error)}`);
+    }
+  }
+
+  return wikis;
+}
+
+export function extractWikiKnowledgeLinks(knowledge: string): KbEntryId[] {
+  const links: KbEntryId[] = [];
+  const pattern = /\[\[([^\]\r\n]+)\]\]/g;
+
+  for (const match of knowledge.matchAll(pattern)) {
+    const target = (match[1] ?? '').split('|', 1)[0]?.split('#', 1)[0]?.trim() ?? '';
+    if (!target) {
+      continue;
+    }
+
+    const entryId = vaultLinkToEntryId(`[[${target}]]`);
+    if (entryId !== null) {
+      links.push(entryId);
+    }
+  }
+
+  return links;
+}
+
 function filesOfKind(scan: CorpusScanView, kind: CorpusMarkdownFileScan['kind']): CorpusMarkdownFileScan[] {
   return scan.markdownFiles.filter((file) => file.kind === kind);
 }
@@ -167,6 +232,7 @@ export function buildKbIndex(
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
   communities: KbReindexCommunityRecord[],
+  wikis: KbReindexWikiRecord[],
   principles: Array<[string, string]>,
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
@@ -213,6 +279,17 @@ export function buildKbIndex(
     });
   }
 
+  for (const wiki of wikis) {
+    entries[wikiEntryId(wiki.slug)] = buildWikiIndexEntry({
+      slug: wiki.slug,
+      title: wiki.title,
+      tags: wiki.tags,
+      createdAt: wiki.createdAt,
+      updatedAt: wiki.updatedAt,
+      knowledge: wiki.knowledge,
+    });
+  }
+
   return {
     entries,
     principles: Object.fromEntries(principles),
@@ -225,17 +302,27 @@ export function buildCounts(
   notes: KbReindexNoteRecord[],
   sources: KbReindexSourceRecord[],
   communities: KbReindexCommunityRecord[],
+  wikis: KbReindexWikiRecord[],
   principles: Array<[string, string]>,
   index: KbIndex,
 ): Pick<
   ReindexResult,
-  'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+  | 'notes'
+  | 'sources'
+  | 'communities'
+  | 'wikis'
+  | 'principles'
+  | 'tags'
+  | 'entities'
+  | 'relationships'
+  | 'entityCoverage'
 > {
   const entityMeta = index.entityMeta;
   const uniqueTags = new Set([
     ...notes.flatMap((note) => note.tags),
     ...sources.flatMap((source) => source.tags),
     ...communities.flatMap((community) => community.members),
+    ...wikis.flatMap((wiki) => wiki.tags),
   ]);
   const entityNames = Object.keys(entityMeta);
   const coveredTags = [...uniqueTags].filter((tag) => Object.prototype.hasOwnProperty.call(entityMeta, tag)).length;
@@ -243,6 +330,7 @@ export function buildCounts(
     notes: notes.length,
     sources: sources.length,
     communities: communities.length,
+    wikis: wikis.length,
     principles: principles.length,
     tags: uniqueTags.size,
     entities: entityNames.length,

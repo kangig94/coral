@@ -1,6 +1,6 @@
 import type { KbRuntime } from '../contract.js';
 import { performRescan } from '../corpus/rescan/index.js';
-import type { ReindexResult } from '../entry-types.js';
+import { isWikiEntry, type ReindexResult } from '../entry-types.js';
 
 /** Heavy-path mutation deadline for `kb reindex` — full corpus rescans on
  * large KBs legitimately exceed the 60s default. */
@@ -18,7 +18,7 @@ export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal })
   const counts = await kb.withMutationLock(
     async (mutation, { signal: lockSignal }) => {
       const startState = kb.readIndexState();
-      return performRescan(
+      const counts = await performRescan(
         kb,
         mutation,
         {
@@ -27,6 +27,8 @@ export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal })
         },
         { signal: lockSignal },
       );
+      const wikis = Object.values(kb.readIndexOrEmpty().entries).filter(isWikiEntry).length;
+      return { ...counts, wikis };
     },
     {
       timeoutMs: KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS,

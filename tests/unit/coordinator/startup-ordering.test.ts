@@ -85,6 +85,12 @@ function createMockKb(order?: string[]) {
         writeJsonAtomic: vi.fn(),
       },
     },
+    // Promote-recovery preflight (boot step 0) probes
+    // `runtimeDir/promote-recovery/` — return false so the worker skips the
+    // empty-marker-dir scan without invoking the rest of StoragePort.
+    storagePort: {
+      existsSync: vi.fn(() => false),
+    },
     corpusProjectionReader: {
       resolveCurrentIndex: vi.fn(() => EMPTY_INDEX),
       prepareCurrentProjectionInput: vi.fn(async () => ({

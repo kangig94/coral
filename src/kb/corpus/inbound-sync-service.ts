@@ -17,11 +17,13 @@ import type { KbMutationLockController } from './mutation-lock.js';
 
 export interface CorpusInboundSyncTarget {
   notesDir(): string;
+  wikiDir(): string;
   sourcesDir(): string;
   communitiesDir(): string;
   principlesDir(): string;
   entityGraphPath(): string;
   notePath(note: string): string;
+  wikiPath(slug: string): string;
   sourcePath(source: string): string;
   communityPath(community: string): string;
   principlePath(principle: string): string;

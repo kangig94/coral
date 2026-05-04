@@ -6,14 +6,17 @@ import {
   type KbIndex,
   type NoteEntry,
   type SourceEntry,
+  type WikiEntry,
   isCommunityEntry,
   isNoteEntry,
   isSourceEntry,
+  isWikiEntry,
 } from '../entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
 type CommunityIndexEntrySource = Omit<CommunityEntry, 'kind'>;
+type WikiIndexEntrySource = Omit<WikiEntry, 'kind'>;
 
 export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
   return {
@@ -56,6 +59,18 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     ...(meta.parent === undefined ? {} : { parent: meta.parent }),
     ...(meta.children === undefined ? {} : { children: [...meta.children] }),
     ...(meta.summary === undefined ? {} : { summary: meta.summary }),
+  };
+}
+
+export function buildWikiIndexEntry(meta: WikiIndexEntrySource): WikiEntry {
+  return {
+    kind: 'wiki',
+    slug: meta.slug,
+    title: meta.title,
+    tags: [...meta.tags],
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    knowledge: [...meta.knowledge],
   };
 }
 
@@ -113,6 +128,10 @@ function cloneEntryRecord(entry: EntryRecord): EntryRecord {
 
   if (isCommunityEntry(entry)) {
     return buildCommunityIndexEntry(entry);
+  }
+
+  if (isWikiEntry(entry)) {
+    return buildWikiIndexEntry(entry);
   }
 
   throw new Error(`Unsupported KB entry kind: ${(entry as EntryRecord).kind}`);

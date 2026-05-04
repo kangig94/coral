@@ -12,6 +12,7 @@ import {
   type KbNoteFrontmatter,
   type KbNoteIdentity,
   type KbSourceFrontmatter,
+  type KbWikiFrontmatter,
 } from '../entry-types.js';
 import {
   NOTE_SLUG_PATTERN,
@@ -124,8 +125,12 @@ export function normalizePrincipleReference(value: string): string {
   return normalized;
 }
 
+function normalizePrincipleReferenceList(value: unknown, field: string): string[] {
+  return normalizeStringList(value, field).map(normalizePrincipleReference);
+}
+
 function normalizePrincipleList(value: unknown): string[] {
-  return normalizeStringList(value, 'principles').map(normalizePrincipleReference);
+  return normalizePrincipleReferenceList(value, 'principles');
 }
 
 function normalizeEntryIdList(value: unknown, field: string): KbEntryId[] {
@@ -216,6 +221,15 @@ export function parseCommunityFrontmatter(content: string): CommunityFrontmatter
   };
 }
 
+export function parseWikiFrontmatter(content: string): KbWikiFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  return {
+    tags: normalizeStringList(record.tags, 'tags'),
+    createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
+  };
+}
+
 export function parseMemoFrontmatter(content: string): { source: string[]; owner?: string } {
   const record = parseFrontmatterRecord(content);
   const { source, owner } = record;
@@ -299,6 +313,14 @@ export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, '
   });
 }
 
+export function serializeWikiFrontmatter(meta: KbWikiFrontmatter): string {
+  return serializeFrontmatterRecord({
+    tags: normalizeStringList(meta.tags, 'tags'),
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+  });
+}
+
 export function replaceFrontmatter(content: string, meta: KbNoteFrontmatter): string {
   return replaceFrontmatterBlock(content, serializeFrontmatter(meta));
 }
@@ -352,6 +374,110 @@ export function parseSummaryFromBody(body: string): string | undefined {
   return text || undefined;
 }
 
+export type WikiBodySections = {
+  understanding: string;
+  knowledge: string;
+};
+
+const WIKI_BODY_HEADERS = ['Understanding', 'Knowledge'] as const;
+const WIKI_BODY_HEADER_PATTERN = /^## (Understanding|Knowledge)[ \t]*(?:\r?\n|$)/gm;
+
+export function parseWikiBody(body: string): WikiBodySections {
+  const matches = Array.from(body.matchAll(WIKI_BODY_HEADER_PATTERN));
+  const byHeader = new Map<string, RegExpMatchArray>();
+
+  for (const match of matches) {
+    const header = match[1];
+    if (byHeader.has(header)) {
+      throw new Error(`Wiki body contains duplicate ## ${header} header`);
+    }
+    byHeader.set(header, match);
+  }
+
+  for (const header of WIKI_BODY_HEADERS) {
+    if (!byHeader.has(header)) {
+      throw new Error(`Wiki body is missing ## ${header} header`);
+    }
+  }
+
+  const ordered = WIKI_BODY_HEADERS.map((header) => byHeader.get(header) as RegExpMatchArray);
+  if (!ordered.every((match, index) => (match.index ?? -1) === matches[index]?.index)) {
+    throw new Error('Wiki body headers must appear in Understanding, Knowledge order');
+  }
+
+  const firstHeaderIndex = ordered[0].index ?? 0;
+  if (body.slice(0, firstHeaderIndex).trim()) {
+    throw new Error('Wiki body must begin with ## Understanding');
+  }
+
+  const sectionContent = (index: number): string => {
+    const match = ordered[index];
+    const start = (match.index ?? 0) + match[0].length;
+    const end = ordered[index + 1]?.index ?? body.length;
+    return body.slice(start, end).trim();
+  };
+
+  return {
+    understanding: sectionContent(0),
+    knowledge: sectionContent(1),
+  };
+}
+
+/**
+ * One Knowledge entry: a top-level `- [[link]]` line plus any indented
+ * sub-bullet lines that follow it (each carrying date + evidence text).
+ * Knowledge owns its evidence physically — removing the block removes
+ * its evidence in the same write, no separate sync.
+ */
+export type KnowledgeBlock = {
+  entryId: KbEntryId;
+  /** Original top-level line text, e.g. `- [[notes/foo]]`. */
+  header: string;
+  /** Indented sub-bullet lines as written, in order. Each entry is a single line. */
+  evidence: string[];
+};
+
+const KNOWLEDGE_TOP_LEVEL_PATTERN = /^-\s+(\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\])\s*$/;
+const KNOWLEDGE_SUB_BULLET_PATTERN = /^[ \t]+-\s+\S/;
+
+export function parseKnowledgeBlocks(knowledge: string): KnowledgeBlock[] {
+  const blocks: KnowledgeBlock[] = [];
+  const lines = knowledge.split(/\r?\n/u);
+  let current: KnowledgeBlock | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/u, '');
+    if (line.length === 0) {
+      continue;
+    }
+    const headerMatch = line.match(KNOWLEDGE_TOP_LEVEL_PATTERN);
+    if (headerMatch !== null) {
+      const entryId = vaultLinkToEntryId(headerMatch[1]);
+      if (entryId === null) {
+        continue;
+      }
+      current = { entryId, header: line.trimStart(), evidence: [] };
+      blocks.push(current);
+      continue;
+    }
+    if (KNOWLEDGE_SUB_BULLET_PATTERN.test(line) && current !== null) {
+      current.evidence.push(line);
+      continue;
+    }
+    // Unrecognized line under a block (e.g. malformed indentation or stray
+    // text between blocks). Strict parser: skip silently — extractKnowledgeLinks
+    // and serializeKnowledgeBlocks operate on the recognized structure only.
+  }
+
+  return blocks;
+}
+
+export function serializeKnowledgeBlocks(blocks: readonly KnowledgeBlock[]): string {
+  return blocks
+    .map((block) => (block.evidence.length === 0 ? block.header : `${block.header}\n${block.evidence.join('\n')}`))
+    .join('\n');
+}
+
 export function serializeNote(meta: KbNoteFrontmatter, title: string, body: string): string {
   const heading = `# ${assertNonEmptyText(title, 'title')}`;
   const frontmatter = serializeFrontmatter(meta);
@@ -360,6 +486,15 @@ export function serializeNote(meta: KbNoteFrontmatter, title: string, body: stri
   if (!normalizedBody) {
     return `${frontmatter}${heading}\n`;
   }
+
+  return `${frontmatter}${heading}\n\n${normalizedBody}\n`;
+}
+
+export function serializeWiki(meta: KbWikiFrontmatter, title: string, body: string): string {
+  const heading = `# ${assertNonEmptyText(title, 'title')}`;
+  const frontmatter = serializeWikiFrontmatter(meta);
+  const normalizedBody = body.trim();
+  parseWikiBody(normalizedBody);
 
   return `${frontmatter}${heading}\n\n${normalizedBody}\n`;
 }

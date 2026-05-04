@@ -218,7 +218,7 @@ async function ensureFreshCommunityIndex(
   await applyOramaProjection(kb);
 }
 
-async function markCommunityStateFresh(kb: { readIndex: () => any }) {
+async function markCommunityStateFresh(kb: { readIndex: () => any; recordMutationCommitted?: any }) {
   const [
     { computeCommunityTopologyFingerprint },
     { computeCommunitySummaryInputFingerprints },
@@ -250,6 +250,10 @@ async function markCommunityStateFresh(kb: { readIndex: () => any }) {
     communitySummaryTopologyHash: topologyHash,
     communitySummaryInputFingerprints: fingerprints,
   });
+  // Mirror production: curate state freshness changes are paired with a metadata
+  // mutation record so the corpus snapshot bumps and downstream consumers (Orama
+  // projection apply) re-materialize with the new community freshness.
+  kb.recordMutationCommitted?.('metadata', 'test:markCommunityStateFresh');
 }
 
 function resultNotes(results: { note: string }[]): string[] {

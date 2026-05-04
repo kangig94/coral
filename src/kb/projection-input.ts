@@ -1,7 +1,9 @@
 import { isNoEntryError } from '../infra/fs-errors.js';
+import { errorMessage } from '../infra/error-format.js';
+import { backendLog } from '../infra/backend-log.js';
 import { areCommunityDocumentsFresh } from './curate/community/freshness.js';
-import { extractBody, parseCommunityFrontmatter } from './corpus/frontmatter.js';
-import { isCommunityEntry, isNoteEntry, isSourceEntry, type KbIndex } from './entry-types.js';
+import { extractBody, parseCommunityFrontmatter, parseWikiBody, parseWikiFrontmatter } from './corpus/frontmatter.js';
+import { isCommunityEntry, isNoteEntry, isSourceEntry, isWikiEntry, type KbIndex } from './entry-types.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import type { KbRuntime } from './contract.js';
 import type {
@@ -13,7 +15,7 @@ import type {
 
 type ProjectionInputRuntime = Pick<
   KbRuntime,
-  'readIndexOrEmpty' | 'storagePort' | 'notePath' | 'sourcePath' | 'communityPath'
+  'readIndexOrEmpty' | 'storagePort' | 'notePath' | 'sourcePath' | 'communityPath' | 'wikiPath'
 >;
 
 function materializeProjectionRecord(
@@ -52,6 +54,27 @@ function materializeProjectionRecord(
         return null;
       }
       throw error;
+    }
+  }
+
+  if (isWikiEntry(entry)) {
+    try {
+      const rawContent = kb.storagePort.readFileSync(kb.wikiPath(entry.slug), 'utf-8');
+      parseWikiFrontmatter(rawContent);
+      const body = extractBody(rawContent);
+      parseWikiBody(body);
+      return {
+        kind: 'wiki',
+        entry,
+        body,
+        rawContent,
+      };
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return null;
+      }
+      backendLog.warn(`Skipping malformed KB wiki ${entry.slug}.md in projection input: ${errorMessage(error)}`);
+      return null;
     }
   }
 

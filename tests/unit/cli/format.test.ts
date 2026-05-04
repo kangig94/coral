@@ -469,16 +469,10 @@ describe('cli format', () => {
       expect(formatKbPrinciples({ principles: [], total: 0 })).toBe('No principles\nTotal: 0');
     });
 
-    it('formats kb promote, update, and delete results', () => {
-      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Created: /tmp/kb/notes/cli-kb-tooling.md',
-      );
-      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Updated: /tmp/kb/notes/cli-kb-tooling.md',
-      );
-      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe(
-        'Deleted: /tmp/kb/notes/cli-kb-tooling.md',
-      );
+    it('formats kb promote, update, and delete results with slug-only output (paths hidden from LLM)', () => {
+      expect(formatKbPromote({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Promoted note: cli-kb-tooling');
+      expect(formatKbUpdate({ path: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Updated note: cli-kb-tooling');
+      expect(formatKbDelete({ deleted: '/tmp/kb/notes/cli-kb-tooling.md' })).toBe('Deleted note: cli-kb-tooling');
     });
 
     it('formats kb reindex as one-liner and rewrites kb_reindex warnings', () => {
@@ -487,6 +481,7 @@ describe('cli format', () => {
           notes: 4,
           sources: 0,
           communities: 0,
+          wikis: 0,
           principles: 2,
           tags: 3,
           duration_ms: 25,
@@ -497,7 +492,7 @@ describe('cli format', () => {
       );
 
       expect(formatted).toBe(
-        'Reindexed: 4 notes, 0 communities, 2 principles, 3 tags (25ms, text)\n' +
+        'Reindexed: 4 notes, 0 communities, 0 wikis, 2 principles, 3 tags (25ms, text)\n' +
           'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
       );
     });

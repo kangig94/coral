@@ -44,6 +44,11 @@ export interface StoragePort {
   closeSync(fd: number): void;
   appendFileSync(path: string, data: string): void;
   appendFileDurableSync(path: string, data: string): boolean;
+  appendFileWithCanonicalCheckSync(
+    path: string,
+    data: string,
+    options: { canonicalPath: string; maxRetries?: number },
+  ): { ok: boolean; retries: number; orphanPath?: string };
   unlinkSync(path: string): void;
   tryExclusiveWriteSync(
     path: string,

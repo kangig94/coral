@@ -235,13 +235,19 @@ export async function runCorpusApply(
       state.activeController = controller;
     }
     const projectionInput = await prepareCorpusProjectionInput(controller.signal, deps);
-    await reg.apply({
+    const applyResult = await reg.apply({
       snapshot,
       journalReader: deps.journalReader,
       corpusStateReader: deps.corpusStateReader,
       projectionInput,
       signal: controller.signal,
     });
+    if (applyResult?.advance === false) {
+      if (state.kind === 'corpus') {
+        state.lastApplyError = null;
+      }
+      return true;
+    }
     if (reg.projectionSync === 'text-index') {
       deps.onTextProjectionSync?.();
     }

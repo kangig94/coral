@@ -35,6 +35,7 @@ export interface CorpusAuthorityBaselineRefreshOptions {
   storagePort: Pick<StoragePort, 'readFileSync'>;
   getRuntime(): KbRuntime;
   notePath(note: string): string;
+  wikiPath(wiki: string): string;
   sourcePath(source: string): string;
   communityPath(community: string): string;
   principlePath(principle: string): string;
@@ -100,6 +101,16 @@ export class CorpusAuthorityBaselineRefresh {
     if (manifestId.startsWith('source:')) {
       const slug = manifestId.slice('source:'.length);
       return { kind: 'source', slug, entryId: manifestId, key: manifestId };
+    }
+
+    if (manifestId.startsWith('wiki-meta:')) {
+      const slug = manifestId.slice('wiki-meta:'.length);
+      return { kind: 'wiki', slug, entryId: `wiki:${slug}`, key: `wiki:${slug}` };
+    }
+
+    if (manifestId.startsWith('wiki:')) {
+      const slug = manifestId.slice('wiki:'.length);
+      return { kind: 'wiki', slug, entryId: manifestId, key: manifestId };
     }
 
     if (manifestId.startsWith('community:')) {
@@ -201,6 +212,8 @@ export class CorpusAuthorityBaselineRefresh {
         return this.options.notePath(slug);
       case 'source':
         return this.options.sourcePath(slug);
+      case 'wiki':
+        return this.options.wikiPath(slug);
       case 'community':
         return this.options.communityPath(slug);
       case 'principle':

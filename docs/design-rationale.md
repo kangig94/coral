@@ -16,7 +16,7 @@ Global ordering is cheap: SQLite ROWID is monotonic per database, so every event
 
 ### 1.2 Why a Corpus for knowledge-like domains
 
-KB notes, sources, principles, and communities are **spatial**: they accumulate, get edited, reference each other. What matters is the current state, not the sequence of edits. Obsidian-as-editor reinforces this — users edit markdown files directly; the filesystem *is* the truth they see and manipulate.
+KB notes, sources, principles, communities, and wiki entries are **spatial**: they accumulate, get edited, reference each other. What matters is the current state, not the sequence of edits. Obsidian-as-editor reinforces this — users edit markdown files directly; the filesystem *is* the truth they see and manipulate. Wiki entries push this further with a strict 2-section body (`## Understanding` rewritable summary, `## Knowledge` self-organizing list of `[[wikilinks]]` where each link owns its own evidence timeline as nested sub-bullets) — link removal physically removes the evidence with it, so no separate sync layer is needed.
 
 Event-sourcing the KB would force bi-directional sync: external edits → synthetic events → reconstructed markdown, with conflict resolution for Obsidian-vs-coordinator races. The filesystem already offers atomic rename; git already provides sync. Reinventing these inside a journal adds complexity without elegance gain.
 

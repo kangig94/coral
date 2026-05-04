@@ -4,8 +4,17 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
-import { coralProjectDir, exitIfChildProcess, exitIfWrongFlavor, isValidSessionId, readStdin } from './lib/hook-utils.mjs';
+import {
+  coralProjectDir,
+  exitIfChildProcess,
+  exitIfWrongFlavor,
+  isValidSessionId,
+  readStdin,
+  resolveKbRoot,
+  resolveProjectSource,
+} from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+import { readProjectScopedWakeUp } from './lib/wake-up-read.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -34,10 +43,16 @@ try {
   const aiAgent = process.env.AI_AGENT ?? '';
   const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
 
+  const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
+  const wakeUpPayload = projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
+  const additionalContext = wakeUpPayload === null
+    ? `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`
+    : `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}\n\n${wakeUpPayload}`;
+
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`,
+      additionalContext,
     },
   }));
 } catch {

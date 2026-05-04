@@ -27,9 +27,25 @@ const MUTATION_DEADLINE_GRACE_MS = 100;
  * propagates verbatim while the deadline aborts with
  * `{ kind: 'mutation_deadline', timeoutMs }`.
  */
-export interface KbMutationLockOptions {
+export interface KbMutationLockOptions<
+  TIndex = unknown,
+  TPublication extends { snapshot: CorpusSnapshot } = { snapshot: CorpusSnapshot },
+  TLane = unknown,
+  TOpaqueDelta = unknown,
+> {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Runs after pending mutation state is finalized and before corpus publication
+   * is enqueued. This hook is for ordered side effects that require committed
+   * mutation state but must complete before consumers observe the publication.
+   *
+   * Do not queue manifest authority deltas from this hook: manifest authority
+   * and corpus state have already been finalized for the active mutation.
+   */
+  postFinalize?: (
+    lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
+  ) => Promise<void>;
 }
 
 /** Reason value attached to the deadline abort on the composed signal. */
@@ -54,6 +70,15 @@ export interface KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta
   pendingMutationReason?: string;
   publication: TPublication | null;
   pendingOpaqueDeltas: TOpaqueDelta[];
+  /**
+   * `true` once `runner.finalizePendingMutation` has run for this lock —
+   * manifest authority and corpus state are committed and `postFinalize` is
+   * about to (or did) run. Mutation effects that mutate the pending state
+   * (e.g. `queueManifestAuthorityDelta`) MUST throw when invoked past this
+   * boundary; the queued delta would never be applied. One-way false→true,
+   * never reset within the same lock.
+   */
+  finalized: boolean;
 }
 
 export interface KbMutationLockRunner<
@@ -108,7 +133,7 @@ export interface KbMutationLockController<
       lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
       args: { signal: AbortSignal },
     ) => Promise<TResult> | TResult,
-    options?: KbMutationLockOptions,
+    options?: KbMutationLockOptions<TIndex, TPublication, TLane, TOpaqueDelta>,
   ): Promise<TResult>;
   diagnostics(): KbMutationLockDiagnostics;
 }
@@ -132,7 +157,7 @@ export function createKbMutationLock<
         lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
         args: { signal: AbortSignal },
       ) => Promise<TResult> | TResult,
-      options: KbMutationLockOptions = {},
+      options: KbMutationLockOptions<TIndex, TPublication, TLane, TOpaqueDelta> = {},
     ): Promise<TResult> {
       const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
       const previous = runner.getCurrentLock();
@@ -151,6 +176,7 @@ export function createKbMutationLock<
         pendingMutationReason: undefined,
         publication: null,
         pendingOpaqueDeltas: [],
+        finalized: false,
       };
       runner.setActiveContext(lockContext);
 
@@ -211,6 +237,14 @@ export function createKbMutationLock<
         try {
           if (succeeded) {
             await runner.finalizePendingMutation(lockContext);
+            // One-way flip — never reset within the same lock. Subsequent
+            // attempts to queue mutation effects (e.g. manifest authority
+            // deltas from postFinalize) must throw rather than silently
+            // accumulate state that will never be applied.
+            lockContext.finalized = true;
+            if (options.postFinalize !== undefined) {
+              await options.postFinalize(lockContext);
+            }
           }
         } catch (error: unknown) {
           deferredError = error;

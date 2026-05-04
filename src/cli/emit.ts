@@ -1,3 +1,4 @@
+import { Option } from 'commander';
 import type { Command } from 'commander';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
@@ -12,6 +13,18 @@ import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 
+/**
+ * Build the `-f, --output-format <text|json>` Option. Register it ONLY on
+ * commands whose response is meant for machine consumption (search, list,
+ * read, diagnose). Mutate commands intentionally omit it so future agents
+ * cannot "discover" a JSON affordance and propagate it across write ops —
+ * a leaky JSON response would expose internal `path` fields the text
+ * formatter deliberately hides.
+ */
+export function createOutputFormatOption(): Option {
+  return new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text');
+}
+
 export function getOutputFormat(command: Command): CliOutputFormat {
   return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json' ? 'json' : 'text';
 }
@@ -24,6 +37,16 @@ export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?
   const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
   flushPendingReadStoreNote(outputFormat);
+}
+
+/**
+ * Always-text emitter for mutate commands. Use this instead of `emit` when
+ * the command does NOT register `--output-format` — keeping the call sites
+ * uniformly JSON-free signals intent to future agents.
+ */
+export function emitText<T>(result: T, textFormatter: (data: T) => string): void {
+  process.stdout.write(textFormatter(result) + '\n');
+  flushPendingReadStoreNote('text');
 }
 
 export function emitError(error: unknown): void {

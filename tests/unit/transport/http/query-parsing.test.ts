@@ -53,6 +53,26 @@ describe('transport HTTP query parsing', () => {
     });
 
     expect(
+      kbSearchSchema.parse({
+        query: 'living knowledge',
+        scope: 'wiki',
+      }),
+    ).toEqual({
+      query: 'living knowledge',
+      scope: 'wiki',
+    });
+
+    expect(
+      kbSearchQuerySchema.parse({
+        q: 'living knowledge',
+        scope: 'wiki',
+      }),
+    ).toEqual({
+      q: 'living knowledge',
+      scope: 'wiki',
+    });
+
+    expect(
       discussEventsQuerySchema.parse({
         cursor: '9',
         projectRoot: '/repo/project',

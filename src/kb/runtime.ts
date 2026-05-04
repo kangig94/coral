@@ -228,6 +228,7 @@ class KbRuntimeImpl implements KbRuntime {
       storagePort: this.storagePort,
       getRuntime: () => this,
       notePath: (note) => this.notePath(note),
+      wikiPath: (wiki) => this.wikiPath(wiki),
       sourcePath: (source) => this.sourcePath(source),
       communityPath: (community) => this.communityPath(community),
       principlePath: (principle) => this.principlePath(principle),
@@ -290,11 +291,13 @@ class KbRuntimeImpl implements KbRuntime {
       target: {
         storagePort: this.storagePort,
         notesDir: () => this.notesDir(),
+        wikiDir: () => this.wikiDir(),
         sourcesDir: () => this.sourcesDir(),
         communitiesDir: () => this.communitiesDir(),
         principlesDir: () => this.principlesDir(),
         entityGraphPath: () => this.entityGraphPath(),
         notePath: (note) => this.notePath(note),
+        wikiPath: (slug) => this.wikiPath(slug),
         sourcePath: (source) => this.sourcePath(source),
         communityPath: (community) => this.communityPath(community),
         principlePath: (principle) => this.principlePath(principle),
@@ -321,6 +324,9 @@ class KbRuntimeImpl implements KbRuntime {
   notesDir(): string {
     return this.paths.notesDir();
   }
+  wikiDir(): string {
+    return this.paths.wikiDir();
+  }
   sourcesDir(): string {
     return this.paths.sourcesDir();
   }
@@ -335,6 +341,9 @@ class KbRuntimeImpl implements KbRuntime {
   }
   notePath(note: string): string {
     return this.paths.notePath(note);
+  }
+  wikiPath(slug: string): string {
+    return this.paths.wikiPath(slug);
   }
   sourcePath(source: string): string {
     return this.paths.sourcePath(source);

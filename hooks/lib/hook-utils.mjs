@@ -86,6 +86,7 @@ export function resolveProjectSource(projectDir) {
       cwd: projectDir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 2000,
     }).trim().replace(/\.git$/, '');
     const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
     const rawPath = sshPath ?? remote.replace(/^[^:]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/^[^/]+\/+/, '');

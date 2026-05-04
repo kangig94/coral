@@ -123,6 +123,116 @@ describe('session-start.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('owner instruction');
   });
+
+  describe('wake-up payload', () => {
+    function seedKbWiki(kbRoot: string, slug: string, updatedAt: string, understanding: string): void {
+      const wikiDir = join(kbRoot, 'wiki');
+      mkdirSync(wikiDir, { recursive: true });
+      writeFileSync(
+        join(wikiDir, `${slug}.md`),
+        [
+          '---',
+          'tags: [wake]',
+          'createdAt: 2026-05-04T00:00:00.000Z',
+          `updatedAt: ${updatedAt}`,
+          '---',
+          `# ${slug}`,
+          '',
+          '## Understanding',
+          '',
+          understanding,
+          '',
+          '## Knowledge',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+    }
+
+    // For projectDir = fixture.projectRoot with origin acme/repo, the
+    // current-project slug (dash form) is 'acme-repo'.
+    const PROJECT_SLUG = 'acme-repo';
+
+    it('injects the current-project wiki into additionalContext', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      seedKbWiki(kbRoot, PROJECT_SLUG, '2026-05-04T01:00:00.000Z', 'In-scope understanding.');
+      seedKbWiki(kbRoot, 'other-repo', '2026-05-04T02:00:00.000Z', 'Other understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).toContain(`## project wiki: ${PROJECT_SLUG} (2026-05-04T01:00:00.000Z)`);
+      expect(output.hookSpecificOutput.additionalContext).toContain('In-scope understanding.');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: other-repo');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');
+    });
+
+    it('omits the wake-up block entirely when the project wiki is absent', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      seedKbWiki(kbRoot, 'foreign', '2026-05-04T01:00:00.000Z', 'Foreign understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: foreign');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('Foreign understanding.');
+      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## project wiki: /u);
+    });
+
+    it('returns null when the project wiki has malformed frontmatter (fail-open)', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      const wikiDir = join(kbRoot, 'wiki');
+      mkdirSync(wikiDir, { recursive: true });
+      writeFileSync(
+        join(wikiDir, `${PROJECT_SLUG}.md`),
+        '---\nbroken-no-closing-fence\n# Broken\n\n## Understanding\n\nBroken.\n',
+        'utf-8',
+      );
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const output = expectHookOutput(result);
+      // Malformed file produces no wake-up block; identity absent → no "## " heading appears.
+      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## /u);
+    });
+  });
 });
 
 describe('subagent-start.mjs', () => {

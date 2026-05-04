@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { Option, type Command } from 'commander';
 
-import type { KbPromoteInput } from '../../kb/entry-types.js';
-import { assertSourceSlug } from '../../kb/validation.js';
+import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
+import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
+import { resolveProjectSource } from '../../infra/project-source.js';
 import { UsageError } from '../errors.js';
 import {
   makeClient,
@@ -17,8 +18,12 @@ import {
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
+  type KbWikiAdoptOptions,
+  type KbWikiCiteOptions,
+  type KbWikiCreateOptions,
+  type KbWikiRewriteOptions,
 } from '../dispatch.js';
-import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
+import { createOutputFormatOption, emit, emitError, emitText, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
 import {
   formatKbDelete,
@@ -36,7 +41,40 @@ import {
   formatKbSourceImport,
   formatKbSourceList,
   formatKbUpdate,
+  formatKbWakeUp,
+  formatKbWikiAdopt,
+  formatKbWikiCite,
+  formatKbWikiCreate,
+  formatKbWikiDelete,
+  formatKbWikiLink,
+  formatKbWikiList,
+  formatKbWikiRewrite,
+  formatKbWikiUnlink,
 } from '../format/kb.js';
+
+const REF_FORMAT_HINT =
+  'note:<slug>, source:<slug>, community:<slug>, wiki:<slug>, or [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]]';
+
+function assertRefFormat(value: string, field: string): string {
+  if (parseKbEntryId(value) === null && vaultLinkToEntryId(value) === null) {
+    throw new UsageError(`Invalid ${field} "${value}". Use ${REF_FORMAT_HINT}.`);
+  }
+  return value;
+}
+
+function assertRefsFormat(values: readonly string[]): string[] {
+  return values.map((value) => assertRefFormat(value, 'ref'));
+}
+
+function appendDelimitedOption(value: string, previous: string[] | undefined): string[] {
+  return [
+    ...(previous ?? []),
+    ...value
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  ];
+}
 
 function registerKbSourceCommands(kb: Command): void {
   const kbSourceCommand = kb.command('source').description('Manage KB sources');
@@ -53,8 +91,6 @@ function registerKbSourceCommands(kb: Command): void {
     )
     .option('--async', 'Return after launching the import job')
     .action(async (file: string, opts: KbSourceImportOptions) => {
-      const outputFormat = getOutputFormat(kbSourceImportCommand);
-
       try {
         const client = makeClient(process.cwd(), kbSourceImportCommand);
         const result = await client.kbSourceImport({
@@ -63,14 +99,17 @@ function registerKbSourceCommands(kb: Command): void {
           readiness: opts.ready ?? 'base-search',
           async: opts.async === true,
         });
-        emit(result, outputFormat, formatKbSourceImport);
+        emitText(result, formatKbSourceImport);
       } catch (error) {
         emitError(error);
       }
     });
 
   const kbSourceListCommand = kbSourceCommand.command('list');
-  kbSourceListCommand.description('List KB sources').action(async () => {
+  kbSourceListCommand
+    .description('List KB sources')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
     const outputFormat = getOutputFormat(kbSourceListCommand);
 
     try {
@@ -87,12 +126,167 @@ function registerKbSourceCommands(kb: Command): void {
     .description('Delete a KB source')
     .argument('<slug>', 'Source slug without extension')
     .action(async (slug: string) => {
-      const outputFormat = getOutputFormat(kbSourceDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbSourceDeleteCommand);
         const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
-        emit(result, outputFormat, formatKbSourceDelete);
+        emitText(result, formatKbSourceDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+}
+
+function registerKbWikiCommands(kb: Command): void {
+  const kbWikiCommand = kb.command('wiki').description('Manage KB wikis');
+
+  const kbWikiCreateCommand = kbWikiCommand.command('create');
+  kbWikiCreateCommand
+    .description('Create an empty wiki. Populate it with rewrite/link afterwards.')
+    .argument('<slug>', 'Wiki slug (kebab-case, no extension)')
+    .option('--title <text>', 'H1 title (defaults to slug)')
+    .option('--tag <name>', 'Tag (repeatable)', appendDelimitedOption)
+    .action(async (slug: string, opts: KbWikiCreateOptions) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiCreateCommand);
+        const result = await client.kbWikiCreate({
+          slug: assertWikiSlug(slug, 'wiki'),
+          ...(opts.title !== undefined ? { title: opts.title } : {}),
+          ...(opts.tag !== undefined ? { tags: opts.tag } : {}),
+        });
+        emitText(result, formatKbWikiCreate);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiRewriteCommand = kbWikiCommand.command('rewrite');
+  kbWikiRewriteCommand
+    .description('Replace the Understanding section with the contents of a file.')
+    .argument('<slug>', 'Wiki slug')
+    .requiredOption('--from <path>', 'File whose contents become the new Understanding')
+    .action(async (slug: string, opts: KbWikiRewriteOptions) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiRewriteCommand);
+        const result = await client.kbWikiRewrite({
+          slug: assertWikiSlug(slug, 'wiki'),
+          understandingFile: resolveFilePath(opts.from),
+        });
+        emitText(result, formatKbWikiRewrite);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiLinkCommand = kbWikiCommand.command('link');
+  kbWikiLinkCommand
+    .description(
+      'Append references to Knowledge. Existing links are ignored (idempotent). Refs accept [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]] or note:<slug> / source:<slug> / community:<slug> / wiki:<slug>.',
+    )
+    .argument('<slug>', 'Wiki slug')
+    .argument('<refs...>', 'One or more refs (space-separated)')
+    .action(async (slug: string, refs: string[]) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiLinkCommand);
+        const result = await client.kbWikiLink({
+          slug: assertWikiSlug(slug, 'wiki'),
+          refs: assertRefsFormat(refs),
+        });
+        emitText(result, formatKbWikiLink);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiUnlinkCommand = kbWikiCommand.command('unlink');
+  kbWikiUnlinkCommand
+    .description('Remove references from Knowledge. Their evidence sub-bullets are removed with them. Missing refs are ignored.')
+    .argument('<slug>', 'Wiki slug')
+    .argument('<refs...>', 'One or more refs (space-separated)')
+    .action(async (slug: string, refs: string[]) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiUnlinkCommand);
+        const result = await client.kbWikiUnlink({
+          slug: assertWikiSlug(slug, 'wiki'),
+          refs: assertRefsFormat(refs),
+        });
+        emitText(result, formatKbWikiUnlink);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiCiteCommand = kbWikiCommand.command('cite');
+  kbWikiCiteCommand
+    .description('Append an evidence sub-bullet under <ref> in Knowledge. <ref> must already be linked.')
+    .argument('<slug>', 'Wiki slug')
+    .argument('<ref>', `The Knowledge entry to nest under: ${REF_FORMAT_HINT}`)
+    .requiredOption('--from <path>', 'File whose contents become the evidence text')
+    .action(async (slug: string, ref: string, opts: KbWikiCiteOptions) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiCiteCommand);
+        const result = await client.kbWikiCite({
+          slug: assertWikiSlug(slug, 'wiki'),
+          ref: assertRefFormat(ref, 'ref'),
+          evidenceFile: resolveFilePath(opts.from),
+        });
+        emitText(result, formatKbWikiCite);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiAdoptCommand = kbWikiCommand.command('adopt');
+  kbWikiAdoptCommand
+    .description('Promote a memo to a note and link it at the front of <slug>\'s Knowledge in one atomic operation. All --memo/--title/--content-file/--domain/--topic are required.')
+    .argument('<slug>', 'Wiki slug to adopt the new note into')
+    .requiredOption('--memo <filename>', '(required) Memo filename (e.g. 20260325-topic.md)')
+    .requiredOption('--title <text>', '(required) Note title')
+    .requiredOption('--content-file <path>', '(required) Read note content from file')
+    .requiredOption('--domain <slug>', '(required) Note domain')
+    .requiredOption('--topic <slug>', '(required) Note topic')
+    .action(async (slug: string, opts: KbWikiAdoptOptions) => {
+      try {
+        const content = readFileSync(resolveFilePath(opts.contentFile), 'utf8');
+        const client = makeClient(process.cwd(), kbWikiAdoptCommand);
+        const result = await client.kbWikiAdopt({
+          slug: assertWikiSlug(slug, 'wiki'),
+          memo: opts.memo,
+          title: opts.title,
+          content,
+          domain: opts.domain,
+          topic: opts.topic,
+        });
+        emitText(result, formatKbWikiAdopt);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiDeleteCommand = kbWikiCommand.command('delete');
+  kbWikiDeleteCommand
+    .description('Delete a KB wiki')
+    .argument('<slug>', 'Wiki slug without extension')
+    .action(async (slug: string) => {
+      try {
+        const client = makeClient(process.cwd(), kbWikiDeleteCommand);
+        const result = await client.kbWikiDelete({ slug: assertWikiSlug(slug, 'wiki') });
+        emitText(result, formatKbWikiDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWikiListCommand = kbWikiCommand.command('list');
+  kbWikiListCommand
+    .description('List KB wikis')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
+      const outputFormat = getOutputFormat(kbWikiListCommand);
+
+      try {
+        const client = makeClient(process.cwd(), kbWikiListCommand);
+        const result = await client.kbWikiList();
+        emit(result, outputFormat, formatKbWikiList);
       } catch (error) {
         emitError(error);
       }
@@ -110,8 +304,6 @@ function registerKbMemoCommands(kb: Command): void {
     .option('--content-file <path>', 'Read memo body from file')
     .option('--owner <id>', 'Session owner ID (falls back to CORAL_OWNER env var)')
     .action(async (opts: KbMemoWriteOptions) => {
-      const outputFormat = getOutputFormat(kbMemoWriteCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : opts.content;
@@ -125,7 +317,7 @@ function registerKbMemoCommands(kb: Command): void {
         const owner = assertOwnerId(rawOwner, 'owner');
         const client = makeClient(process.cwd(), kbMemoWriteCommand);
         const result = await client.kbMemo({ topic: opts.topic, content, owner });
-        emit(result, outputFormat, formatKbMemo);
+        emitText(result, formatKbMemo);
       } catch (error) {
         emitError(error);
       }
@@ -135,6 +327,7 @@ function registerKbMemoCommands(kb: Command): void {
   kbMemoListCommand
     .description('List project memos')
     .option('--owner <id>', 'Filter by owner session ID')
+    .addOption(createOutputFormatOption())
     .action(async (opts: KbMemoListOptions) => {
       const outputFormat = getOutputFormat(kbMemoListCommand);
 
@@ -153,12 +346,10 @@ function registerKbMemoCommands(kb: Command): void {
     .argument('<pattern>', 'Simple glob pattern (supports * and ?)')
     .option('--owner <id>', 'Only delete memos owned by this session ID')
     .action(async (pattern: string, opts: KbMemoDeleteOptions) => {
-      const outputFormat = getOutputFormat(kbMemoDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbMemoDeleteCommand);
         const result = await client.kbMemoDelete({ pattern, owner: opts.owner });
-        emit(result, outputFormat, formatKbMemoDelete);
+        emitText(result, formatKbMemoDelete);
       } catch (error) {
         emitError(error);
       }
@@ -169,12 +360,10 @@ function registerKbMemoCommands(kb: Command): void {
     .description('Delete all project memos')
     .option('--owner <owner>', 'Only purge memos owned by this session')
     .action(async (opts: KbMemoPurgeOptions) => {
-      const outputFormat = getOutputFormat(kbMemoPurgeCommand);
-
       try {
         const client = makeClient(process.cwd(), kbMemoPurgeCommand);
         const result = await client.kbMemoPurge(opts.owner ? { owner: opts.owner } : {});
-        emit(result, outputFormat, formatKbMemoPurge);
+        emitText(result, formatKbMemoPurge);
       } catch (error) {
         emitError(error);
       }
@@ -184,7 +373,11 @@ function registerKbMemoCommands(kb: Command): void {
 export function registerKbCommands(program: Command): void {
   const cliPrefix = getCliDisplayPrefix();
   const kb = program.command('kb').description('Knowledge base operations');
-  kb.addOption(new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
+  // --output-format is intentionally NOT registered on the kb parent. Adding it
+  // here would silently extend JSON support to every subcommand, including
+  // mutate ops whose response shape leaks internal `path` fields. Each read
+  // command that genuinely needs JSON output registers it locally via
+  // createOutputFormatOption() — see below.
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
@@ -194,13 +387,15 @@ export function registerKbCommands(program: Command): void {
     .option('--vector', 'Force vector-only search (requires embedding backend)')
     .option('--hybrid', 'Force hybrid search (requires embedding backend)')
     .addOption(
-      new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
+      new Option('--scope <scope>', 'Limit results to notes, communities, sources, wiki, or all').choices([
         'notes',
         'communities',
         'sources',
+        'wiki',
         'all',
       ]),
     )
+    .addOption(createOutputFormatOption())
     .action(async (query: string, opts: KbSearchOptions) => {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
@@ -226,7 +421,10 @@ export function registerKbCommands(program: Command): void {
     });
 
   const kbDiagnoseCommand = kb.command('diagnose');
-  kbDiagnoseCommand.description('Show KB entries with pending manual repair actions').action(async () => {
+  kbDiagnoseCommand
+    .description('Show KB entries with pending manual repair actions')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
     const outputFormat = getOutputFormat(kbDiagnoseCommand);
 
     try {
@@ -244,6 +442,7 @@ export function registerKbCommands(program: Command): void {
     .option('--query <text>', 'Filter principle names')
     .option('--top-k <n>', 'Maximum results')
     .option('--verbose', 'Include canonical statements and referring note slugs')
+    .addOption(createOutputFormatOption())
     .action(async (opts: KbPrinciplesOptions) => {
       const outputFormat = getOutputFormat(kbPrinciplesCommand);
 
@@ -262,6 +461,7 @@ export function registerKbCommands(program: Command): void {
     });
 
   registerKbSourceCommands(kb);
+  registerKbWikiCommands(kb);
   registerKbMemoCommands(kb);
 
   const kbReadCommand = kb.command('read');
@@ -269,8 +469,9 @@ export function registerKbCommands(program: Command): void {
     .description('Read a KB entry by slug or explicit selector')
     .argument(
       '<note>',
-      'Bare reads resolve memo -> note -> community -> source -> principle; use communities:<slug> or sources:<slug> to force a kind',
+      'Bare reads resolve memo -> note -> wiki -> community -> source -> principle; use wiki:<slug>, communities:<slug>, or sources:<slug> to force a kind',
     )
+    .addOption(createOutputFormatOption())
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
 
@@ -285,15 +486,13 @@ export function registerKbCommands(program: Command): void {
 
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
-    .description('Promote a memo into a KB note')
+    .description('Promote a memo into a KB note. To attach the new note to a wiki, use `kb wiki adopt`.')
     .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
     .option('--title <text>', 'Note title')
     .option('--content-file <path>', 'Read content from file')
     .option('--domain <slug>', 'Note domain')
     .option('--topic <slug>', 'Note topic')
     .action(async (opts: KbPromoteOptions) => {
-      const outputFormat = getOutputFormat(kbPromoteCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
@@ -306,7 +505,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);
-        emit(result, outputFormat, formatKbPromote);
+        emitText(result, formatKbPromote);
       } catch (error) {
         emitError(error);
       }
@@ -319,8 +518,6 @@ export function registerKbCommands(program: Command): void {
     .option('--title <text>', 'Updated title')
     .option('--content-file <path>', 'Read content from file')
     .action(async (note: string, opts: KbUpdateOptions) => {
-      const outputFormat = getOutputFormat(kbUpdateCommand);
-
       try {
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
@@ -331,7 +528,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbUpdateCommand);
         const result = await client.kbUpdate(args);
-        emit(result, outputFormat, formatKbUpdate);
+        emitText(result, formatKbUpdate);
       } catch (error) {
         emitError(error);
       }
@@ -342,12 +539,23 @@ export function registerKbCommands(program: Command): void {
     .description('Delete a KB note')
     .argument('<note>', 'Note slug without extension (e.g. rendering-guiding-contracts)')
     .action(async (note: string) => {
-      const outputFormat = getOutputFormat(kbDeleteCommand);
-
       try {
         const client = makeClient(process.cwd(), kbDeleteCommand);
         const result = await client.kbDelete({ note });
-        emit(result, outputFormat, formatKbDelete);
+        emitText(result, formatKbDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbWakeUpCommand = kb.command('wake-up');
+  kbWakeUpCommand
+    .description('Generate the KB wake-up packet')
+    .action(async () => {
+      try {
+        const client = makeClient(process.cwd(), kbWakeUpCommand);
+        const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()).replace(/\//g, '-') });
+        emitText(result, formatKbWakeUp);
       } catch (error) {
         emitError(error);
       }
@@ -358,12 +566,10 @@ export function registerKbCommands(program: Command): void {
     .description('Rebuild the KB index')
     .option('--async', 'Return after launching the reindex job')
     .action(async (opts: KbReindexOptions) => {
-      const outputFormat = getOutputFormat(kbReindexCommand);
-
       try {
         const client = makeClient(process.cwd(), kbReindexCommand);
         const result = await client.kbReindex({ async: opts.async === true });
-        emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
+        emitText(result, (data) => formatKbReindex(data, cliPrefix));
       } catch (error) {
         emitError(error);
       }

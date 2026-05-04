@@ -9,12 +9,20 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
+  parseWikiBody,
+  parseWikiFrontmatter,
 } from './corpus/frontmatter.js';
 import {
   type KbNoteFrontmatter,
+  type KbEntryId,
   type KbReadInput,
   type KbReadResult,
   type KbSourceFrontmatter,
+  type KbWikiFrontmatter,
+  communityEntryId,
+  noteEntryId,
+  sourceEntryId,
+  wikiEntryId,
 } from './entry-types.js';
 import { memoDir } from './paths.js';
 import { expandKbReadSelector, parseKbSelector, type KbResolvedReadSelector } from './selector.js';
@@ -24,6 +32,7 @@ export type KbReadStorage = Pick<StoragePort, 'existsSync' | 'readFileSync'>;
 
 export type KbReadPathResolver = {
   notePath(note: string): string;
+  wikiPath(slug: string): string;
   sourcePath(source: string): string;
   communityPath(community: string): string;
   principlePath(principle: string): string;
@@ -33,6 +42,11 @@ export type KbReadOptions = {
   storage: KbReadStorage;
   projectRoot?: string;
   paths?: KbReadPathResolver;
+};
+
+export type KbResolvedReadResult = {
+  result: KbReadResult;
+  resolvedEntryId: KbEntryId | null;
 };
 
 export type KbLoadedNote = {
@@ -45,6 +59,13 @@ export type KbLoadedNote = {
 export type KbLoadedSource = {
   raw: string;
   frontmatter: KbSourceFrontmatter;
+  title: string;
+  body: string;
+};
+
+export type KbLoadedWiki = {
+  raw: string;
+  frontmatter: KbWikiFrontmatter;
   title: string;
   body: string;
 };
@@ -76,6 +97,18 @@ export function loadKbSource(storage: Pick<StoragePort, 'readFileSync'>, sourceP
     frontmatter,
     title: frontmatter.title,
     body: extractBody(raw),
+  };
+}
+
+export function loadKbWiki(storage: Pick<StoragePort, 'readFileSync'>, wikiPath: string): KbLoadedWiki {
+  const raw = storage.readFileSync(wikiPath, 'utf-8');
+  const body = extractBody(raw);
+  parseWikiBody(body);
+  return {
+    raw,
+    frontmatter: parseWikiFrontmatter(raw),
+    title: extractTitle(raw),
+    body,
   };
 }
 
@@ -123,20 +156,30 @@ function readCommunityEntry(community: string, storage: KbReadStorage, paths: Kb
   };
 }
 
+function readWikiEntry(slug: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
+  const wikiPath = paths.wikiPath(slug);
+  if (!storage.existsSync(wikiPath)) {
+    return null;
+  }
+
+  const { frontmatter, title, body } = loadKbWiki(storage, wikiPath);
+  return {
+    kind: 'wiki',
+    note: slug,
+    title,
+    content: body,
+    tags: frontmatter.tags,
+    principles: [],
+    updatedAt: frontmatter.updatedAt,
+  };
+}
+
 function readCandidateEntry(
   candidate: KbResolvedReadSelector,
   storage: KbReadStorage,
   paths: KbReadPathResolver,
   projectRoot?: string,
 ): KbReadResult | null {
-  if (candidate.kind === 'source') {
-    return readSourceEntry(candidate.slug, storage, paths);
-  }
-
-  if (candidate.kind === 'community') {
-    return readCommunityEntry(candidate.slug, storage, paths);
-  }
-
   if (candidate.kind === 'memo') {
     if (projectRoot === undefined || !MEMO_FILENAME_PATTERN.test(candidate.slug)) {
       return null;
@@ -177,6 +220,18 @@ function readCandidateEntry(
     };
   }
 
+  if (candidate.kind === 'wiki') {
+    return readWikiEntry(candidate.slug, storage, paths);
+  }
+
+  if (candidate.kind === 'community') {
+    return readCommunityEntry(candidate.slug, storage, paths);
+  }
+
+  if (candidate.kind === 'source') {
+    return readSourceEntry(candidate.slug, storage, paths);
+  }
+
   const principlePath = paths.principlePath(candidate.slug);
   if (!storage.existsSync(principlePath)) {
     return null;
@@ -196,7 +251,23 @@ function readCandidateEntry(
   };
 }
 
-export function readEntry(input: KbReadInput, options: KbReadOptions): KbReadResult {
+function resolvedEntryIdForCandidate(candidate: KbResolvedReadSelector): KbEntryId | null {
+  if (candidate.kind === 'note') {
+    return noteEntryId(candidate.slug);
+  }
+  if (candidate.kind === 'wiki') {
+    return wikiEntryId(candidate.slug);
+  }
+  if (candidate.kind === 'community') {
+    return communityEntryId(candidate.slug);
+  }
+  if (candidate.kind === 'source') {
+    return sourceEntryId(candidate.slug);
+  }
+  return null;
+}
+
+export function readEntryWithResolvedId(input: KbReadInput, options: KbReadOptions): KbResolvedReadResult {
   const storage = options.storage;
   const paths = resolveReadPaths(options.paths);
   const selector = parseKbSelector(input.note);
@@ -204,9 +275,16 @@ export function readEntry(input: KbReadInput, options: KbReadOptions): KbReadRes
   for (const candidate of expandKbReadSelector(selector)) {
     const entry = readCandidateEntry(candidate, storage, paths, options.projectRoot);
     if (entry !== null) {
-      return entry;
+      return {
+        result: entry,
+        resolvedEntryId: resolvedEntryIdForCandidate(candidate),
+      };
     }
   }
 
   throw new Error(`KB entry not found: ${input.note}`);
+}
+
+export function readEntry(input: KbReadInput, options: KbReadOptions): KbReadResult {
+  return readEntryWithResolvedId(input, options).result;
 }

@@ -50,6 +50,7 @@ function emptyCounts(): rescanModule.RescanCounts {
     notes: 0,
     sources: 0,
     communities: 0,
+    wikis: 0,
     principles: 0,
     tags: 0,
     entities: 0,

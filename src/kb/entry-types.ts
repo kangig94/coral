@@ -1,4 +1,4 @@
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import type { RetrievalDiagnostic, RetrievalEvidence } from './search/contract.js';
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
@@ -52,7 +52,7 @@ export interface EntityGraph {
 
 export interface KbResult {
   note: string;
-  kind: 'note' | 'source' | 'community';
+  kind: 'note' | 'source' | 'community' | 'wiki';
   title: string;
   matchedBy: KbMatchSurface[];
   tags: string[];
@@ -62,7 +62,7 @@ export interface KbResult {
   communityContext?: string[];
 }
 
-export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}`;
+export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}` | `wiki:${string}`;
 
 export type NoteEntry = KbNoteFrontmatter & {
   kind: 'note';
@@ -123,7 +123,100 @@ export type CommunityEntry = CommunityFrontmatter & {
   summary?: string;
 };
 
-export type EntryRecord = NoteEntry | SourceEntry | CommunityEntry;
+export interface KbWikiFrontmatter {
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WikiEntry = KbWikiFrontmatter & {
+  kind: 'wiki';
+  slug: string;
+  title: string;
+  knowledge: KbEntryId[];
+};
+
+export type KbWikiCreateInput = {
+  slug: string;
+  title?: string;
+  tags?: readonly string[];
+};
+
+export type KbWikiCreateResponse = {
+  slug: string;
+  path: string;
+};
+
+export type KbWikiRewriteInput = {
+  slug: string;
+  understandingFile: string;
+};
+
+export type KbWikiLinkInput = {
+  slug: string;
+  refs: readonly string[];
+};
+
+export type KbWikiUnlinkInput = {
+  slug: string;
+  refs: readonly string[];
+};
+
+export type KbWikiCiteInput = {
+  slug: string;
+  ref: string;
+  evidenceFile: string;
+};
+
+export type KbWikiMutationResponse = {
+  path: string;
+};
+
+export type KbWikiDeleteInput = {
+  slug: string;
+};
+
+export type KbWikiDeleteResponse = {
+  deleted: string;
+};
+
+export type KbWikiAdoptInput = {
+  slug: string;
+  memo: string;
+  title: string;
+  content: string;
+  domain: string;
+  topic: string;
+};
+
+export type KbWikiAdoptResponse = {
+  path: string;
+  wikiSlug: string;
+};
+
+export type KbWikiListItem = KbWikiFrontmatter & {
+  slug: string;
+  title: string;
+  knowledge: KbEntryId[];
+};
+
+export type KbWikiListResult = {
+  wikis: KbWikiListItem[];
+};
+
+export type KbWikiReadInput = {
+  slug: string;
+};
+
+export type KbWakeUpInput = {
+  project?: string;
+};
+
+export type KbWakeUpResponse = {
+  content: string;
+};
+
+export type EntryRecord = NoteEntry | SourceEntry | CommunityEntry | WikiEntry;
 export type CuratableEntry = NoteEntry | SourceEntry;
 
 export interface KbIndex {
@@ -159,6 +252,7 @@ export type ReindexResult = {
   notes: number;
   sources: number;
   communities: number;
+  wikis: number;
   principles: number;
   tags: number;
   entities?: number;
@@ -223,7 +317,7 @@ export type KbSearchInput = {
 
 export type KbDiagnoseInput = Record<string, never>;
 
-export type KbSearchScope = 'notes' | 'sources' | 'communities' | 'all';
+export type KbSearchScope = 'notes' | 'sources' | 'communities' | 'wiki' | 'all';
 export type KbSearchMode = 'text' | 'vector' | 'hybrid';
 
 export type KbPromoteInput = {
@@ -245,7 +339,7 @@ export type KbReadInput = {
 };
 
 export type KbReadResult = {
-  kind: 'memo' | 'note' | 'source' | 'community' | 'principle';
+  kind: 'memo' | 'note' | 'source' | 'community' | 'wiki' | 'principle';
   note: string;
   title: string;
   content: string;
@@ -337,6 +431,10 @@ export function communityEntryId(slug: string): KbEntryId {
   return `community:${slug}`;
 }
 
+export function wikiEntryId(slug: string): KbEntryId {
+  return `wiki:${slug}`;
+}
+
 export function parseKbEntryId(value: string): KbEntryId | null {
   if (value.startsWith('note:')) {
     try {
@@ -362,6 +460,14 @@ export function parseKbEntryId(value: string): KbEntryId | null {
     }
   }
 
+  if (value.startsWith('wiki:')) {
+    try {
+      return wikiEntryId(assertWikiSlug(value.slice('wiki:'.length), 'entryId'));
+    } catch {
+      return null;
+    }
+  }
+
   return null;
 }
 
@@ -374,11 +480,15 @@ export function entryIdToVaultLink(id: KbEntryId): string {
     return `[[sources/${id.slice('source:'.length)}]]`;
   }
 
+  if (id.startsWith('wiki:')) {
+    return `[[wiki/${id.slice('wiki:'.length)}]]`;
+  }
+
   return `[[communities/${id.slice('community:'.length)}]]`;
 }
 
 export function vaultLinkToEntryId(link: string): KbEntryId | null {
-  const match = link.trim().match(/^\[\[(notes|sources|communities)\/([^[\]/]+)\]\]$/);
+  const match = link.trim().match(/^\[\[(notes|sources|communities|wiki)\/([^[\]/]+)\]\]$/);
   if (match === null) {
     return null;
   }
@@ -394,6 +504,14 @@ export function vaultLinkToEntryId(link: string): KbEntryId | null {
   if (match[1] === 'sources') {
     try {
       return sourceEntryId(assertSourceSlug(match[2], 'vault link'));
+    } catch {
+      return null;
+    }
+  }
+
+  if (match[1] === 'wiki') {
+    try {
+      return wikiEntryId(assertWikiSlug(match[2], 'vault link'));
     } catch {
       return null;
     }
@@ -430,6 +548,10 @@ export function isSourceEntry(entry: EntryRecord): entry is SourceEntry {
 
 export function isCommunityEntry(entry: EntryRecord): entry is CommunityEntry {
   return entry.kind === 'community';
+}
+
+export function isWikiEntry(entry: EntryRecord): entry is WikiEntry {
+  return entry.kind === 'wiki';
 }
 
 /** Response shapes returned by KB hosted operations over IPC/HTTP. */

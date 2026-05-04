@@ -31,7 +31,7 @@ const optionalTransportContextFieldsShape = {
 export const kbSearchSchema = z
   .object({
     query: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
+    scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
@@ -40,7 +40,7 @@ export const kbSearchSchema = z
 export const kbSearchQuerySchema = z
   .object({
     q: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
+    scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.coerce.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
@@ -73,6 +73,60 @@ export const kbUpdateSchema = z
 export const kbDeleteSchema = z
   .object({
     note: z.string().min(1),
+  })
+  .strict();
+
+const kbWikiRefListSchema = z.array(z.string().min(1)).min(1);
+
+export const kbWikiCreateSchema = z
+  .object({
+    slug: slugSchema,
+    title: z.string().min(1).optional(),
+    tags: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+export const kbWikiRewriteSchema = z
+  .object({
+    slug: slugSchema,
+    understandingFile: z.string().min(1),
+  })
+  .strict();
+
+export const kbWikiLinkSchema = z
+  .object({
+    slug: slugSchema,
+    refs: kbWikiRefListSchema,
+  })
+  .strict();
+
+export const kbWikiUnlinkSchema = kbWikiLinkSchema;
+
+export const kbWikiCiteSchema = z
+  .object({
+    slug: slugSchema,
+    ref: z.string().min(1),
+    evidenceFile: z.string().min(1),
+  })
+  .strict();
+
+export const kbWikiAdoptSchema = z
+  .object({
+    slug: slugSchema,
+    memo: z.string().min(1),
+    title: z.string().min(1),
+    content: z.string(),
+    domain: z.string().min(1),
+    topic: z.string().min(1),
+  })
+  .strict();
+
+export const kbWikiDeleteSchema = z.object({ slug: slugSchema }).strict();
+export const kbWikiListSchema = z.object({}).strict();
+export const kbWikiReadSchema = z.object({ slug: slugSchema }).strict();
+export const kbWakeUpSchema = z
+  .object({
+    project: z.string().min(1).optional(),
   })
   .strict();
 
@@ -179,6 +233,12 @@ export const kbMemoReadRequestSchema = z
 export const kbPrinciplesListRequestSchema = kbPrinciplesQuerySchema;
 export const kbPrincipleReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbNoteCreateRequestSchema = kbPromoteSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiCreateRequestSchema = kbWikiCreateSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiRewriteRequestSchema = kbWikiRewriteSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiLinkRequestSchema = kbWikiLinkSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiUnlinkRequestSchema = kbWikiUnlinkSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiCiteRequestSchema = kbWikiCiteSchema.extend(transportContextFieldsShape).strict();
+export const kbWikiAdoptRequestSchema = kbWikiAdoptSchema.extend(transportContextFieldsShape).strict();
 export const kbSourceCreateRequestSchema = kbSourceImportSchema.extend(transportContextFieldsShape).strict();
 export const kbMemoCreateRequestSchema = kbMemoSchema
   .omit({ owner: true })
@@ -200,6 +260,10 @@ export const kbNoteUpdateRequestSchema = kbUpdateSchema
 export const kbNoteDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();
+export const kbWikiDeleteRequestSchema = kbWikiDeleteSchema.extend(optionalTransportContextFieldsShape).strict();
+export const kbWikiListRequestSchema = kbWikiListSchema;
+export const kbWikiReadRequestSchema = kbWikiReadSchema;
+export const kbWakeUpRequestSchema = kbWakeUpSchema;
 export const kbSourceDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();

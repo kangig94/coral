@@ -12,6 +12,7 @@ import {
   loadNotes,
   loadPrinciples,
   loadSources,
+  loadWikis,
   projectIncidents,
 } from './projections.js';
 import { buildCorpusScanView } from './scan.js';
@@ -22,7 +23,15 @@ import { curateDb } from '../../curate/db-access.js';
 
 export type RescanCounts = Pick<
   ReindexResult,
-  'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
+  | 'notes'
+  | 'sources'
+  | 'communities'
+  | 'wikis'
+  | 'principles'
+  | 'tags'
+  | 'entities'
+  | 'relationships'
+  | 'entityCoverage'
 >;
 
 /**
@@ -53,16 +62,18 @@ export async function performRescan(
   const initialScan = buildCorpusScanView(kb);
   const notes = loadNotes(initialScan);
   const sources = loadSources(initialScan);
+  const initialWikis = loadWikis(initialScan);
   const principles = loadPrinciples(initialScan);
   const rebuildInfo = await detectRescanInfo(kb, initialScan);
 
   // Topology refresh may rewrite community files on disk; rescan once afterwards
   // so the projected index reflects the regenerated communities.
-  const topologyIndex = buildKbIndex(initialScan, notes, sources, [], principles);
+  const topologyIndex = buildKbIndex(initialScan, notes, sources, [], initialWikis, principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   const finalScan = buildCorpusScanView(kb);
   const communities = loadCommunities(finalScan);
-  const index = buildKbIndex(finalScan, notes, sources, communities, principles);
+  const wikis = loadWikis(finalScan);
+  const index = buildKbIndex(finalScan, notes, sources, communities, wikis, principles);
 
   kb.writeIndex(index);
   kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined);
@@ -98,7 +109,7 @@ export async function performRescan(
   // discoveryHighSeq/discoveryOffset are clamped on disk, not just at read time.
   writeCurateState(curateDb(kb), readCurateState(curateDb(kb)));
 
-  return buildCounts(notes, sources, communities, principles, index);
+  return buildCounts(notes, sources, communities, wikis, principles, index);
 }
 
 /**

@@ -5,11 +5,19 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { GitSyncPathChange, GitSyncResult } from '../curate/git-sync.js';
-import { noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
+import { noteEntryId, sourceEntryId, wikiEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from './index-records.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry, cloneKbIndex } from './index-records.js';
+import { extractKnowledgeLinks } from './wiki-links.js';
 import { stripMdExt } from '../paths.js';
-import { extractBody, extractTitle, parseFrontmatter, parseSourceFrontmatter } from './frontmatter.js';
+import {
+  extractBody,
+  extractTitle,
+  parseFrontmatter,
+  parseSourceFrontmatter,
+  parseWikiBody,
+  parseWikiFrontmatter,
+} from './frontmatter.js';
 import {
   captureCommunityManifestDelta,
   captureEntityGraphManifestDelta,
@@ -19,7 +27,9 @@ import {
   captureRemovedNoteManifestDeltas,
   captureRemovedPrincipleManifestDelta,
   captureRemovedSourceManifestDeltas,
+  captureRemovedWikiManifestDeltas,
   captureSourceManifestDeltas,
+  captureWikiManifestDeltas,
   collectFullManifestSurfaceHashes,
   type ManifestAuthority,
 } from './manifest-authority.js';
@@ -32,11 +42,13 @@ import { mergeMutationLane } from './lanes.js';
 type InboundSyncTarget = Pick<
   KbRuntime,
   | 'notesDir'
+  | 'wikiDir'
   | 'sourcesDir'
   | 'principlesDir'
   | 'communitiesDir'
   | 'entityGraphPath'
   | 'notePath'
+  | 'wikiPath'
   | 'sourcePath'
   | 'communityPath'
   | 'principlePath'
@@ -52,6 +64,7 @@ export type InboundSyncMutationDiff = {
 
 type InboundSyncTrackedPath =
   | { kind: 'note'; slug: string }
+  | { kind: 'wiki'; slug: string }
   | { kind: 'source'; slug: string }
   | { kind: 'community'; slug: string }
   | { kind: 'principle'; slug: string }
@@ -59,6 +72,7 @@ type InboundSyncTrackedPath =
 
 export type CorpusFilesystemSnapshot = {
   notes: Map<string, { contentHash: string; metadataHash: string }>;
+  wikis: Map<string, { contentHash: string; metadataHash: string }>;
   sources: Map<string, { contentHash: string; metadataHash: string }>;
   principles: Map<string, string>;
   communities: Map<string, string>;
@@ -80,6 +94,14 @@ function resolveInboundSyncTrackedPath(path: string): InboundSyncTrackedPath | n
     return {
       kind: 'note',
       slug: noteMatch[1] ?? '',
+    };
+  }
+
+  const wikiMatch = normalized.match(/^wiki\/(.+)\.md$/);
+  if (wikiMatch !== null) {
+    return {
+      kind: 'wiki',
+      slug: wikiMatch[1] ?? '',
     };
   }
 
@@ -133,6 +155,39 @@ function captureNoteFileSnapshot(
         }),
         metadataHash: computeMetadataSurfaceHash({
           frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
+        }),
+      });
+    } catch {
+      const rawHash = createHash('sha256').update(raw).digest('hex');
+      snapshot.set(slug, {
+        contentHash: rawHash,
+        metadataHash: rawHash,
+      });
+    }
+  }
+
+  return snapshot;
+}
+
+function captureWikiFileSnapshot(
+  storage: SnapshotStorage,
+  dirPath: string,
+): Map<string, { contentHash: string; metadataHash: string }> {
+  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
+
+  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
+    const slug = stripMdExt(entry);
+    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
+    try {
+      const body = extractBody(raw);
+      parseWikiBody(body);
+      snapshot.set(slug, {
+        contentHash: computeContentSurfaceHash({
+          title: extractTitle(raw),
+          body,
+        }),
+        metadataHash: computeMetadataSurfaceHash({
+          frontmatter: parseWikiFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
         }),
       });
     } catch {
@@ -209,6 +264,7 @@ export function captureCorpusFilesystemSnapshot(target: InboundSyncTarget): Corp
   const storage = target.storagePort;
   return {
     notes: captureNoteFileSnapshot(storage, target.notesDir()),
+    wikis: captureWikiFileSnapshot(storage, target.wikiDir()),
     sources: captureSourceFileSnapshot(storage, target.sourcesDir()),
     principles: captureMarkdownFileHashes(storage, target.principlesDir()),
     communities: captureMarkdownFileHashes(storage, target.communitiesDir()),
@@ -236,6 +292,27 @@ export function detectInboundSyncMutation(
     }
 
     changedEntryIds.add(noteEntryId(slug));
+    if (beforeEntry === undefined || afterEntry === undefined) {
+      lane = mergeMutationLane(lane, 'both');
+      continue;
+    }
+    if (beforeEntry.contentHash !== afterEntry.contentHash) {
+      lane = mergeMutationLane(lane, 'content');
+    }
+    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
+      lane = mergeMutationLane(lane, 'metadata');
+    }
+  }
+
+  const wikiSlugs = new Set([...before.wikis.keys(), ...after.wikis.keys()]);
+  for (const slug of wikiSlugs) {
+    const beforeEntry = before.wikis.get(slug);
+    const afterEntry = after.wikis.get(slug);
+    if (beforeEntry === undefined && afterEntry === undefined) {
+      continue;
+    }
+
+    changedEntryIds.add(wikiEntryId(slug));
     if (beforeEntry === undefined || afterEntry === undefined) {
       lane = mergeMutationLane(lane, 'both');
       continue;
@@ -303,6 +380,23 @@ function captureInboundSyncTrackedPathDeltas(
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return captureRemovedNoteManifestDeltas(trackedPath.slug);
+      }
+      throw error;
+    }
+  }
+
+  if (trackedPath.kind === 'wiki') {
+    if (mode === 'deleted') {
+      return captureRemovedWikiManifestDeltas(trackedPath.slug);
+    }
+    try {
+      return captureWikiManifestDeltas(
+        trackedPath.slug,
+        storage.readFileSync(target.wikiPath(trackedPath.slug), 'utf-8'),
+      );
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return captureRemovedWikiManifestDeltas(trackedPath.slug);
       }
       throw error;
     }
@@ -403,6 +497,11 @@ function applyInboundSyncTrackedPathChange(
     return;
   }
 
+  if (trackedPath.kind === 'wiki') {
+    mutation.changedEntryIds.push(wikiEntryId(trackedPath.slug));
+    return;
+  }
+
   if (trackedPath.kind === 'source') {
     mutation.changedEntryIds.push(sourceEntryId(trackedPath.slug));
     return;
@@ -475,7 +574,7 @@ export function detectInboundSyncMutationFromFullCollectors(
     }
 
     lane = mergeMutationLane(lane, 'content');
-    if (manifestId.startsWith('note:') || manifestId.startsWith('source:')) {
+    if (manifestId.startsWith('note:') || manifestId.startsWith('source:') || manifestId.startsWith('wiki:')) {
       changedEntryIds.add(manifestId);
     }
   }
@@ -494,6 +593,10 @@ export function detectInboundSyncMutationFromFullCollectors(
     }
     if (manifestId.startsWith('source-meta:')) {
       changedEntryIds.add(sourceEntryId(manifestId.slice('source-meta:'.length)));
+      continue;
+    }
+    if (manifestId.startsWith('wiki-meta:')) {
+      changedEntryIds.add(wikiEntryId(manifestId.slice('wiki-meta:'.length)));
       continue;
     }
     requiresFullInstall = true;
@@ -517,6 +620,7 @@ export function detectInboundSyncMutationFromFullCollectors(
 
 type InboundIndexPaths = {
   notePath(note: string): string;
+  wikiPath(slug: string): string;
   sourcePath(source: string): string;
   storagePort: Pick<StoragePort, 'readFileSync'>;
 };
@@ -549,6 +653,30 @@ export function buildInboundSyncIndexDelta(
       continue;
     }
 
+    if (entryId.startsWith('wiki:')) {
+      const slug = entryId.slice('wiki:'.length);
+      const wikiPath = paths.wikiPath(slug);
+
+      try {
+        const raw = paths.storagePort.readFileSync(wikiPath, 'utf-8');
+        const frontmatter = parseWikiFrontmatter(raw);
+        const body = extractBody(raw);
+        const sections = parseWikiBody(body);
+        nextIndex.entries[entryId] = buildWikiIndexEntry({
+          slug,
+          title: extractTitle(raw),
+          ...frontmatter,
+          knowledge: extractKnowledgeLinks(sections.knowledge),
+        });
+      } catch (error: unknown) {
+        if (!isNoEntryError(error)) {
+          throw error;
+        }
+        delete nextIndex.entries[entryId];
+      }
+      continue;
+    }
+
     if (entryId.startsWith('source:')) {
       const slug = entryId.slice('source:'.length);
       const sourcePath = paths.sourcePath(slug);
@@ -570,3 +698,4 @@ export function buildInboundSyncIndexDelta(
 
   return nextIndex;
 }
+

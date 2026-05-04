@@ -34,6 +34,7 @@ import {
 } from './contract.js';
 import { isNeedleSnapshotManifest, type NeedleSnapshotManifest } from './artifact-port.js';
 import type {
+  RetrievalKind,
   RetrievalScope,
   VectorRetrievalHit,
   VectorRetrievalResult,
@@ -159,7 +160,7 @@ function toUnitVector(embedding: readonly number[]): Float32Array | null {
   return vector;
 }
 
-function scopeAllowsVectorKind(scope: RetrievalScope | undefined, kind: 'note' | 'source' | 'community'): boolean {
+function scopeAllowsVectorKind(scope: RetrievalScope | undefined, kind: RetrievalKind): boolean {
   if (scope === undefined || scope === 'all') {
     return kind === 'note' || kind === 'source';
   }

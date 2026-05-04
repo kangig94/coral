@@ -46,6 +46,16 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
   handleKbDelete,
+  handleKbWakeUp,
+  handleKbWikiAdopt,
+  handleKbWikiCite,
+  handleKbWikiCreate,
+  handleKbWikiDelete,
+  handleKbWikiLink,
+  handleKbWikiList,
+  handleKbWikiRead,
+  handleKbWikiRewrite,
+  handleKbWikiUnlink,
 } from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
@@ -104,8 +114,7 @@ function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): Expans
       getExpansionRpc().removeExpansionCatalog(request),
     listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> =>
       getExpansionRpc().listExpansion(request),
-    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> =>
-      getExpansionRpc().readBinding(request),
+    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> => getExpansionRpc().readBinding(request),
   };
 }
 
@@ -366,9 +375,11 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
       readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
       readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
+      readWiki: (slug) => withKb((kbSubsystem) => handleKbWikiRead(slug, kbSubsystem, runtime)),
       readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
       readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),
       listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
+      listWikis: () => withKbAsync((kbSubsystem) => handleKbWikiList({}, kbSubsystem)),
       listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx, runtime)),
       listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
       createNote: async (args, ctx) => {
@@ -387,6 +398,42 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         recordHostedKbFailure('delete', ctx, result);
         return result;
       },
+      createWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiCreate(args, kbSubsystem));
+        recordHostedKbFailure('wiki_create', ctx, result);
+        return result;
+      },
+      rewriteWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiRewrite(args, kbSubsystem));
+        recordHostedKbFailure('wiki_rewrite', ctx, result);
+        return result;
+      },
+      linkWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiLink(args, kbSubsystem));
+        recordHostedKbFailure('wiki_link', ctx, result);
+        return result;
+      },
+      unlinkWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiUnlink(args, kbSubsystem));
+        recordHostedKbFailure('wiki_unlink', ctx, result);
+        return result;
+      },
+      citeWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiCite(args, kbSubsystem));
+        recordHostedKbFailure('wiki_cite', ctx, result);
+        return result;
+      },
+      adoptWiki: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx));
+        recordHostedKbFailure('wiki_adopt', ctx, result);
+        return result;
+      },
+      deleteWiki: async (slug, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiDelete({ slug }, kbSubsystem));
+        recordHostedKbFailure('wiki_delete', ctx, result);
+        return result;
+      },
+      wakeUp: (args) => withKbAsync((kbSubsystem) => handleKbWakeUp(args, kbSubsystem)),
       createSource: async (args, ctx) => {
         const parsed = parseKbSourceImportRequest(args);
         if (!parsed.ok) {
@@ -439,8 +486,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
-    expansion:
-      createRefBackedExpansionRpc(storeServicesRef),
+    expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {

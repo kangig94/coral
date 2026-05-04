@@ -2,7 +2,12 @@ import { dirname, normalize } from 'node:path';
 import type { DirentLike, StorageData, StoragePort, TimePort } from '../../../src/infra/port-types.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
-type FileNode = {
+type FileIdentity = {
+  dev: number;
+  ino: number;
+};
+
+type FileNode = FileIdentity & {
   kind: 'file';
   content: Buffer;
   mode?: number;
@@ -10,7 +15,7 @@ type FileNode = {
   mtimeNs: bigint;
 };
 
-type DirectoryNode = {
+type DirectoryNode = FileIdentity & {
   kind: 'dir';
   mode?: number;
   mtimeMs: number;
@@ -20,12 +25,15 @@ type DirectoryNode = {
 type OpenFile = {
   path: string;
   position: number;
+  mode: 'r' | 'a';
+  identity: FileIdentity;
 };
 
 export type InMemoryStorageSnapshot = {
   files: Array<[string, FileNode]>;
   directories: Array<[string, DirectoryNode]>;
   nextFd: number;
+  nextIno: number;
   openFiles: Array<[number, OpenFile]>;
   lastStamp: number;
   subTickCounter: bigint;
@@ -80,6 +88,8 @@ function cloneFileNode(node: FileNode): FileNode {
     mode: node.mode,
     mtimeMs: node.mtimeMs,
     mtimeNs: node.mtimeNs,
+    dev: node.dev,
+    ino: node.ino,
   };
 }
 
@@ -89,6 +99,17 @@ function cloneDirectoryNode(node: DirectoryNode): DirectoryNode {
     mode: node.mode,
     mtimeMs: node.mtimeMs,
     mtimeNs: node.mtimeNs,
+    dev: node.dev,
+    ino: node.ino,
+  };
+}
+
+function cloneOpenFile(open: OpenFile): OpenFile {
+  return {
+    path: open.path,
+    position: open.position,
+    mode: open.mode,
+    identity: { ...open.identity },
   };
 }
 
@@ -105,6 +126,7 @@ export class InMemoryStorage implements StoragePort {
   private readonly childIndex = new Map<string, Set<string>>();
   private readonly openFiles = new Map<number, OpenFile>();
   private nextFd = 100;
+  private nextIno = 1;
   private lastStamp: number;
   private subTickCounter: bigint = 0n;
 
@@ -113,7 +135,7 @@ export class InMemoryStorage implements StoragePort {
     private readonly roots: InMemoryRoots = {},
   ) {
     this.lastStamp = this.time.now();
-    this.directories.set('/', { kind: 'dir', ...this.nextStamps() });
+    this.directories.set('/', { kind: 'dir', ...this.nextIdentity(), ...this.nextStamps() });
     this.childIndex.set('/', new Set());
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
     this.mkdirSync(this.coralRoot(), { recursive: true });
@@ -124,7 +146,8 @@ export class InMemoryStorage implements StoragePort {
       files: [...this.files.entries()].map(([path, node]) => [path, cloneFileNode(node)]),
       directories: [...this.directories.entries()].map(([path, node]) => [path, cloneDirectoryNode(node)]),
       nextFd: this.nextFd,
-      openFiles: [...this.openFiles.entries()].map(([fd, open]) => [fd, { ...open }]),
+      nextIno: this.nextIno,
+      openFiles: [...this.openFiles.entries()].map(([fd, open]) => [fd, cloneOpenFile(open)]),
       lastStamp: this.lastStamp,
       subTickCounter: this.subTickCounter,
     };
@@ -143,9 +166,10 @@ export class InMemoryStorage implements StoragePort {
       this.directories.set(path, cloneDirectoryNode(node));
     }
     for (const [fd, open] of snapshot.openFiles) {
-      this.openFiles.set(fd, { ...open });
+      this.openFiles.set(fd, cloneOpenFile(open));
     }
     this.nextFd = snapshot.nextFd;
+    this.nextIno = snapshot.nextIno;
     this.lastStamp = snapshot.lastStamp;
     this.subTickCounter = snapshot.subTickCounter;
     this.rebuildChildIndex();
@@ -170,10 +194,13 @@ export class InMemoryStorage implements StoragePort {
     if (this.directories.has(normalized)) {
       throw createErrnoError('EISDIR', normalized);
     }
+    const current = this.files.get(normalized);
+    const identity = current ? fileIdentityOf(current) : this.nextIdentity();
     this.files.set(normalized, {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
-      mode: options?.mode,
+      mode: current?.mode ?? options?.mode,
+      ...identity,
       ...this.nextStamps(),
     });
     this.registerChild(normalized);
@@ -203,6 +230,8 @@ export class InMemoryStorage implements StoragePort {
         kind: 'file',
         content: Buffer.from(existing.content),
         mode: existing.mode,
+        dev: existing.dev,
+        ino: existing.ino,
         ...this.nextStamps(),
       });
       this.registerChild(to);
@@ -244,6 +273,8 @@ export class InMemoryStorage implements StoragePort {
       this.directories.set(nextPath, {
         kind: 'dir',
         mode: node.mode,
+        dev: node.dev,
+        ino: node.ino,
         ...this.nextStamps(),
       });
       this.registerDirectory(nextPath);
@@ -254,6 +285,8 @@ export class InMemoryStorage implements StoragePort {
         kind: 'file',
         content: Buffer.from(node.content),
         mode: node.mode,
+        dev: node.dev,
+        ino: node.ino,
         ...this.nextStamps(),
       });
       this.registerChild(nextPath);
@@ -294,6 +327,7 @@ export class InMemoryStorage implements StoragePort {
         if (!this.directories.has(cursor)) {
           this.directories.set(cursor, {
             kind: 'dir',
+            ...this.nextIdentity(),
             ...this.nextStamps(),
           });
           this.registerDirectory(cursor);
@@ -305,6 +339,7 @@ export class InMemoryStorage implements StoragePort {
 
     this.directories.set(normalized, {
       kind: 'dir',
+      ...this.nextIdentity(),
       ...this.nextStamps(),
     });
     this.registerDirectory(normalized);
@@ -446,17 +481,36 @@ export class InMemoryStorage implements StoragePort {
 
   openSync(path: string, flags: string): number {
     const normalized = normalizePathForStorage(path);
-    if (flags !== 'r') {
-      throw new Error(`InMemoryStorage.openSync only supports 'r' (received ${flags})`);
+    if (flags !== 'r' && flags !== 'a') {
+      throw new Error(`InMemoryStorage.openSync only supports 'r' and 'a' (received ${flags})`);
     }
-    if (!this.files.has(normalized)) {
+    let file = this.files.get(normalized);
+    if (!file) {
       if (this.directories.has(normalized)) {
         throw createErrnoError('EISDIR', normalized);
       }
-      throw createErrnoError('ENOENT', normalized);
+      if (flags === 'r') {
+        throw createErrnoError('ENOENT', normalized);
+      }
+      const parent = parentPath(normalized);
+      this.requireDirectory(parent);
+      file = {
+        kind: 'file',
+        content: Buffer.alloc(0),
+        ...this.nextIdentity(),
+        ...this.nextStamps(),
+      };
+      this.files.set(normalized, file);
+      this.registerChild(normalized);
+      this.touchAncestors(parent);
     }
     const fd = this.nextFd++;
-    this.openFiles.set(fd, { path: normalized, position: 0 });
+    this.openFiles.set(fd, {
+      path: normalized,
+      position: flags === 'a' ? file.content.length : 0,
+      mode: flags,
+      identity: fileIdentityOf(file),
+    });
     return fd;
   }
 
@@ -465,10 +519,10 @@ export class InMemoryStorage implements StoragePort {
     if (!open) {
       throw createErrnoError('EBADF', String(fd));
     }
-    const file = this.files.get(open.path);
-    if (!file) {
-      throw createErrnoError('ENOENT', open.path);
+    if (open.mode !== 'r') {
+      throw createErrnoError('EBADF', String(fd));
     }
+    const file = this.requireOpenFileNode(open);
     const start = position ?? open.position;
     const end = Math.min(start + length, file.content.length);
     const slice = file.content.subarray(start, end);
@@ -488,17 +542,23 @@ export class InMemoryStorage implements StoragePort {
     const parent = parentPath(normalized);
     this.requireDirectory(parent);
     const current = this.files.get(normalized);
-    if (current && current.kind !== 'file') {
+    if (this.directories.has(normalized)) {
       throw createErrnoError('EISDIR', normalized);
     }
-    const content = current ? Buffer.concat([current.content, Buffer.from(data, 'utf-8')]) : Buffer.from(data, 'utf-8');
-    this.files.set(normalized, {
-      kind: 'file',
-      content,
-      mode: current?.mode,
-      ...this.nextStamps(),
-    });
-    this.registerChild(normalized);
+    if (current) {
+      current.content = Buffer.concat([current.content, Buffer.from(data, 'utf-8')]);
+      const stamps = this.nextStamps();
+      current.mtimeMs = stamps.mtimeMs;
+      current.mtimeNs = stamps.mtimeNs;
+    } else {
+      this.files.set(normalized, {
+        kind: 'file',
+        content: Buffer.from(data, 'utf-8'),
+        ...this.nextIdentity(),
+        ...this.nextStamps(),
+      });
+      this.registerChild(normalized);
+    }
     this.touchAncestors(parent);
   }
 
@@ -511,6 +571,40 @@ export class InMemoryStorage implements StoragePort {
         return false;
       }
       throw error;
+    }
+  }
+
+  appendFileWithCanonicalCheckSync(
+    path: string,
+    data: string,
+    options: { canonicalPath: string; maxRetries?: number },
+  ): { ok: boolean; retries: number; orphanPath?: string } {
+    const buffer = Buffer.from(data, 'utf-8');
+    const maxRetries = normalizeMaxRetries(options.maxRetries);
+    let retries = 0;
+    let targetPath = path;
+    let lastOrphanPath: string | undefined;
+
+    while (true) {
+      try {
+        const result = this.appendAndCheckCanonical(targetPath, buffer, options.canonicalPath);
+        if (result.ok) {
+          return { ok: true, retries };
+        }
+        lastOrphanPath = result.orphanPath;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return { ok: false, retries, ...(lastOrphanPath ? { orphanPath: lastOrphanPath } : {}) };
+        }
+        throw error;
+      }
+
+      if (retries >= maxRetries) {
+        return { ok: false, retries, ...(lastOrphanPath ? { orphanPath: lastOrphanPath } : {}) };
+      }
+
+      retries += 1;
+      targetPath = options.canonicalPath;
     }
   }
 
@@ -541,6 +635,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
+      ...this.nextIdentity(),
       ...this.nextStamps(),
     });
     this.registerChild(normalized);
@@ -560,6 +655,7 @@ export class InMemoryStorage implements StoragePort {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
+      ...this.nextIdentity(),
       ...this.nextStamps(),
     });
     this.registerChild(tempPath);
@@ -596,12 +692,103 @@ export class InMemoryStorage implements StoragePort {
     throw createErrnoError('ENOENT', normalized);
   }
 
+  private appendAndCheckCanonical(
+    path: string,
+    buffer: Buffer,
+    canonicalPath: string,
+  ): { ok: true } | { ok: false; orphanPath: string } {
+    const normalized = normalizePathForStorage(path);
+    this.mkdirSync(parentPath(normalized), { recursive: true });
+
+    const fd = this.openSync(normalized, 'a');
+    try {
+      this.writeOpenFileAppendSync(fd, buffer);
+      const openedIdentity = this.openFileIdentity(fd);
+      const canonicalIdentity = this.statIdentityIfPresent(canonicalPath);
+      if (canonicalIdentity && sameFileIdentity(openedIdentity, canonicalIdentity)) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        orphanPath: this.findPathByIdentity(openedIdentity) ?? normalized,
+      };
+    } finally {
+      this.closeSync(fd);
+    }
+  }
+
+  private writeOpenFileAppendSync(fd: number, buffer: Buffer): void {
+    const open = this.openFiles.get(fd);
+    if (!open || open.mode !== 'a') {
+      throw createErrnoError('EBADF', String(fd));
+    }
+    const [path, file] = this.requireOpenFileEntry(open);
+    file.content = Buffer.concat([file.content, buffer]);
+    const stamps = this.nextStamps();
+    file.mtimeMs = stamps.mtimeMs;
+    file.mtimeNs = stamps.mtimeNs;
+    open.path = path;
+    open.position = file.content.length;
+    this.touchAncestors(parentPath(path));
+  }
+
+  private openFileIdentity(fd: number): FileIdentity {
+    const open = this.openFiles.get(fd);
+    if (!open) {
+      throw createErrnoError('EBADF', String(fd));
+    }
+    return { ...open.identity };
+  }
+
+  private statIdentityIfPresent(path: string): FileIdentity | null {
+    const normalized = normalizePathForStorage(path);
+    const file = this.files.get(normalized);
+    if (file) {
+      return fileIdentityOf(file);
+    }
+    const directory = this.directories.get(normalized);
+    if (directory) {
+      return fileIdentityOf(directory);
+    }
+    return null;
+  }
+
+  private requireOpenFileNode(open: OpenFile): FileNode {
+    return this.requireOpenFileEntry(open)[1];
+  }
+
+  private requireOpenFileEntry(open: OpenFile): [string, FileNode] {
+    const entry = this.findFileEntryByIdentity(open.identity);
+    if (!entry) {
+      throw createErrnoError('ENOENT', open.path);
+    }
+    open.path = entry[0];
+    return entry;
+  }
+
+  private findPathByIdentity(identity: FileIdentity): string | undefined {
+    return this.findFileEntryByIdentity(identity)?.[0];
+  }
+
+  private findFileEntryByIdentity(identity: FileIdentity): [string, FileNode] | undefined {
+    for (const entry of this.files.entries()) {
+      if (sameFileIdentity(fileIdentityOf(entry[1]), identity)) {
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
   private jobsDirRoot(): string {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
 
   private coralRoot(): string {
     return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
+  }
+
+  private nextIdentity(): FileIdentity {
+    return { dev: 1, ino: this.nextIno++ };
   }
 
   private nextStamps(): { mtimeMs: number; mtimeNs: bigint } {
@@ -771,4 +958,22 @@ export class InMemoryStorage implements StoragePort {
 
 function bufferFromStorageData(data: StorageData, encoding: BufferEncoding = 'utf-8'): Buffer {
   return typeof data === 'string' ? Buffer.from(data, encoding) : Buffer.from(data);
+}
+
+function fileIdentityOf(node: FileIdentity): FileIdentity {
+  return { dev: node.dev, ino: node.ino };
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function normalizeMaxRetries(maxRetries: number | undefined): number {
+  if (maxRetries === undefined) {
+    return 3;
+  }
+  if (!Number.isFinite(maxRetries)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(maxRetries));
 }

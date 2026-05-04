@@ -98,6 +98,11 @@ export class CorpusMutationFinalizer {
     if (mutationContext === null) {
       throw new Error('KB manifest authority deltas can only be queued while the mutation lock is held.');
     }
+    if (mutationContext.finalized) {
+      throw new Error(
+        'queueManifestAuthorityDelta cannot be called from postFinalize — manifest state already committed.',
+      );
+    }
 
     mutationContext.pendingOpaqueDeltas.push(...deltas);
   }

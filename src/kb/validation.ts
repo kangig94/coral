@@ -25,7 +25,7 @@ export function assertNonEmptyText(value: unknown, label: string): string {
 export function assertSlug(value: unknown, label: string): string {
   const normalized = assertNonEmptyText(value, label);
   if (!LOWERCASE_SLUG_PATTERN.test(normalized)) {
-    throw new Error(`${label} must be slug-safe`);
+    throw new Error(`${label} must be kebab-case alphanumeric (e.g. my-topic)`);
   }
   return normalized;
 }
@@ -39,12 +39,16 @@ export function assertNoteSlug(value: unknown, label: string): string {
   const trimmed = assertNonEmptyText(value, label);
   const normalized = stripMdExt(trimmed);
   if (!NOTE_SLUG_PATTERN.test(normalized)) {
-    throw new Error(`${label} must be slug-safe`);
+    throw new Error(`${label} must be kebab-case alphanumeric (e.g. my-topic)`);
   }
   return normalized;
 }
 
 export function assertSourceSlug(value: unknown, label: string): string {
+  return assertNoteSlug(value, label);
+}
+
+export function assertWikiSlug(value: unknown, label: string): string {
   return assertNoteSlug(value, label);
 }
 

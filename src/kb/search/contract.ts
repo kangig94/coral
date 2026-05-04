@@ -21,7 +21,8 @@ export interface RetrievedDocument {
   readonly principles: readonly string[];
 }
 
-const kbSearchScopeSchema = z.enum(['notes', 'sources', 'communities', 'all'] satisfies [
+const kbSearchScopeSchema = z.enum(['notes', 'sources', 'communities', 'wiki', 'all'] satisfies [
+  KbSearchScope,
   KbSearchScope,
   KbSearchScope,
   KbSearchScope,

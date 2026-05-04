@@ -1,4 +1,4 @@
-export type KbReadKind = 'note' | 'source' | 'community' | 'memo' | 'principle';
+export type KbReadKind = 'note' | 'source' | 'community' | 'memo' | 'principle' | 'wiki';
 
 export type KbReadSelector = {
   kind: KbReadKind | null;
@@ -16,6 +16,7 @@ const MARKDOWN_EXTENSION = /\.md$/i;
 export const KB_BARE_READ_ORDER = [
   'memo',
   'note',
+  'wiki',
   'community',
   'source',
   'principle',
@@ -62,6 +63,13 @@ export function parseKbSelector(input: string): KbReadSelector {
     return {
       kind: 'community',
       slug: normalizeKbReadSlug(slug, 'community'),
+    };
+  }
+
+  if (kind === 'wiki') {
+    return {
+      kind: 'wiki',
+      slug: normalizeKbReadSlug(slug, 'wiki'),
     };
   }
 

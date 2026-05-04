@@ -134,6 +134,13 @@ export async function applyDetectedIncidentFixesLocked(
     let result: RepairResult;
 
     try {
+      if (incident.entryId.startsWith('wiki:')) {
+        result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
+        logRepairResult(result);
+        results.push(result);
+        continue;
+      }
+
       const classification = resolveRepairClassification(incident);
       if (classification === 'auto-fixable') {
         const outcome = applyAutoFixLocked(kb, mutation, incident);

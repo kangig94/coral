@@ -18,6 +18,7 @@ export interface CorpusPaths {
   sourcesDir: string;
   principlesDir: string;
   communitiesDir: string;
+  wikiDir: string;
 }
 
 export interface ExportsPaths {
@@ -64,6 +65,7 @@ export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): Corp
     sourcesDir: join(kbRootDir, 'sources'),
     principlesDir: join(kbRootDir, 'principles'),
     communitiesDir: join(kbRootDir, 'communities'),
+    wikiDir: join(kbRootDir, 'wiki'),
   };
 }
 

@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { StoragePort } from '../../../infra/port-types.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
-import { extractBody, parseSourceFrontmatter } from '../frontmatter.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry } from '../index-records.js';
+import {
+  extractBody,
+  extractTitle,
+  parseSourceFrontmatter,
+  parseWikiBody,
+  parseWikiFrontmatter,
+} from '../frontmatter.js';
 import { computeContentSurfaceHash } from '../snapshot.js';
-import { noteMetadataHash, sourceMetadataHash } from '../../metadata-hash.js';
+import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../metadata-hash.js';
 import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
@@ -14,13 +20,15 @@ import type { CorpusInterest } from '../../../store/consumer-contract.js';
 import {
   isNoteEntry,
   isSourceEntry,
+  isWikiEntry,
   noteEntryId,
   sourceEntryId,
+  wikiEntryId,
   type EntityGraph,
   type EntityRelationship,
   type KbIndex,
 } from '../../entry-types.js';
-import { projectIncidents } from './projections.js';
+import { extractWikiKnowledgeLinks, projectIncidents } from './projections.js';
 import type { CorpusEntityGraphScan, CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident } from './incidents/catalog.js';
 import type { EngineArtifactDescriptor, EngineArtifactProjectedSnapshot } from '../artifact-port.js';
@@ -234,7 +242,39 @@ async function detectStructuredTextDrift(
     },
   );
 
-  return mergeMutationLane(noteLane, sourceLane);
+  const wikiLane = detectKindDrift(
+    kb.storagePort,
+    'wiki',
+    scan,
+    index,
+    storedAuthorityHashes,
+    indexMtime,
+    pendingRepairIds,
+    {
+      entryId: wikiEntryId,
+      loadEntry: (file) => {
+        const raw = kb.storagePort.readFileSync(file.path, 'utf-8');
+        const frontmatter = parseWikiFrontmatter(raw);
+        const title = extractTitle(raw);
+        const body = extractBody(raw);
+        const sections = parseWikiBody(body);
+        const next = buildWikiIndexEntry({
+          slug: file.slug,
+          title,
+          knowledge: extractWikiKnowledgeLinks(sections.knowledge),
+          ...frontmatter,
+        });
+        return {
+          next,
+          contentHash: computeContentSurfaceHash({ title, body }),
+        };
+      },
+      isMatchingKind: isWikiEntry,
+      metadataHash: wikiMetadataHash,
+    },
+  );
+
+  return mergeMutationLane(mergeMutationLane(noteLane, sourceLane), wikiLane);
 }
 
 /**

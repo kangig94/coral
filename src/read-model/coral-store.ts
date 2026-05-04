@@ -5,12 +5,16 @@ import { createKbQueryHost, type KbQueryContext } from './kb-query-runtime.js';
 import {
   type KbQueryHost,
   diagnoseKnowledgeBase,
+  generateKnowledgeBaseWakeUpPacket,
   listKnowledgeBaseMemos,
   listKnowledgeBasePrinciples,
   listKnowledgeBaseSources,
-  readKnowledgeBaseEntry,
+  listKnowledgeBaseWikis,
+  readKnowledgeBaseEntryWithResolvedId,
   searchKnowledgeBase,
 } from '../kb/queries.js';
+import { appendTouchEvent } from '../kb/curate/touch-journal.js';
+import { kbRuntimeDir } from '../kb/paths.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { type EventsFilter, type EventsPage, getEvent, getEventsSince } from '../store/event-queries.js';
@@ -45,11 +49,15 @@ import type {
   KbMemoListResult,
   KbPrinciplesInput,
   KbPrinciplesResult,
+  KbEntryId,
   KbReadInput,
   KbReadResult,
   KbSearchInput,
   KbSearchResponse,
   KbSourceListResult,
+  KbWakeUpInput,
+  KbWakeUpResponse,
+  KbWikiListResult,
 } from '../kb/entry-types.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
@@ -87,7 +95,9 @@ export class CoralStore implements StoreReadContext {
     read: (selector: KbReadInput) => KbReadResult;
     listPrinciples: (args: KbPrinciplesInput) => Promise<KbPrinciplesResult>;
     listSources: () => Promise<KbSourceListResult>;
+    listWikis: () => Promise<KbWikiListResult>;
     listMemos: (args: KbMemoListInput) => KbMemoListResult;
+    wakeUp: (args: KbWakeUpInput) => Promise<KbWakeUpResponse>;
   };
   public readonly discuss: {
     snapshot: (ref: DiscussReadRef) => PersistedDiscussSnapshot | null;
@@ -134,15 +144,17 @@ export class CoralStore implements StoreReadContext {
     this.kb = {
       search: (args) => searchKnowledgeBase(args, this.kbQueryHost('kb.search')),
       diagnose: () => diagnoseKnowledgeBase(this.kbQueryHost('kb.diagnose')),
-      read: (selector) => readKnowledgeBaseEntry(selector, this.kbQueryHost('kb.read', { requireProjectRoot: true })),
+      read: (selector) => this.readKnowledgeBaseEntry(selector),
       listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryHost('kb.listPrinciples')),
       listSources: () => listKnowledgeBaseSources(this.kbQueryHost('kb.listSources')),
+      listWikis: () => listKnowledgeBaseWikis(this.kbQueryHost('kb.listWikis')),
       listMemos: (args) =>
         listKnowledgeBaseMemos(
           this.requireRuntime('kb.listMemos').storage,
           this.requireProjectRoot('kb.listMemos'),
           args,
         ),
+      wakeUp: (args) => generateKnowledgeBaseWakeUpPacket(args, this.kbQueryHost('kb.wakeUp')),
     };
 
     this.discuss = {
@@ -219,5 +231,30 @@ export class CoralStore implements StoreReadContext {
       context.runtime = this.runtime;
     }
     return createKbQueryHost(context);
+  }
+
+  private readKnowledgeBaseEntry(selector: KbReadInput): KbReadResult {
+    const resolved = readKnowledgeBaseEntryWithResolvedId(
+      selector,
+      this.kbQueryHost('kb.read', { requireProjectRoot: true }),
+    );
+    this.appendKbReadTouch(resolved.resolvedEntryId);
+    return resolved.result;
+  }
+
+  private appendKbReadTouch(target: KbEntryId | null): void {
+    if (target === null || this.runtime === undefined) {
+      return;
+    }
+
+    const runtime = this.runtime;
+    try {
+      appendTouchEvent(kbRuntimeDir(runtime.flavor), target, runtime.ids.uuid(), {
+        storage: runtime.storage,
+        now: () => runtime.time.now(),
+      });
+    } catch {
+      // KB reads are read-class operations; touch journaling is strictly fail-open.
+    }
   }
 }

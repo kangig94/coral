@@ -1,4 +1,4 @@
-import type { CommunityEntry, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
+import type { CommunityEntry, KbIndex, NoteEntry, SourceEntry, WikiEntry } from './entry-types.js';
 
 export type KbProjectionRecord =
   | {
@@ -14,6 +14,12 @@ export type KbProjectionRecord =
   | {
       readonly kind: 'community';
       readonly entry: CommunityEntry;
+      readonly body: string;
+      readonly rawContent: string;
+    }
+  | {
+      readonly kind: 'wiki';
+      readonly entry: WikiEntry;
       readonly body: string;
       readonly rawContent: string;
     };

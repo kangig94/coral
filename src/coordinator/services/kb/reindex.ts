@@ -78,10 +78,10 @@ export class KbReindexService {
       });
     }
 
-    const total = result.notes + result.sources + result.communities + result.principles;
+    const total = result.notes + result.sources + result.communities + result.wikis + result.principles;
     return {
       data: result,
-      terminalContent: `Reindexed ${total} KB entries.`,
+      terminalContent: `Reindexed ${total} KB entries.\nwikis: ${result.wikis}`,
     };
   }
 }
