@@ -4,6 +4,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
+import { serializeCoralSetupError } from '../runtime/errors.js';
 
 export class UsageError extends Error {
   constructor(message: string) {
@@ -79,6 +80,20 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
 
   if (error instanceof BackendUnreachableError) {
     return withExitCode({ error: true, code: 'backend_unreachable', message: error.message }, 69);
+  }
+
+  const setupError = serializeCoralSetupError(error);
+  if (setupError) {
+    return withExitCode(
+      {
+        error: true,
+        code: setupError.code,
+        message: setupError.userMessage,
+        remediation: setupError.remediation,
+        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+      },
+      errorCodeToExit(setupError.code),
+    );
   }
 
   if (error instanceof Error) {

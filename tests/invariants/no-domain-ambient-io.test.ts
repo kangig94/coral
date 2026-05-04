@@ -36,9 +36,7 @@ const TIMER_SCOPED_ROOTS = [
   'src/coordinator',
   'src/transport',
 ] as const;
-const DATE_NOW_SCOPED_ROOTS = [
-  'src/transport',
-] as const;
+const DATE_NOW_SCOPED_ROOTS = ['src/transport'] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
   'src/providers/claude-appserver/server.ts',
@@ -61,6 +59,12 @@ const TIMER_EXEMPT_FILES = new Set<string>([
   // just for this single ref, which is the boundary case `claude-appserver/server.ts`
   // is also exempt for.
   'src/coordinator/bootstrap.ts',
+]);
+const DATE_NOW_EXEMPT_FILES = new Set<string>([
+  // CLI-side daemon spawn records an ambient attempt timestamp before a Runtime
+  // exists. This transport bootstrap path is the boundary that creates the
+  // backend process, not request handling running inside the backend.
+  'src/transport/ipc/ensure.ts',
 ]);
 
 function listSourceFiles(root: string): string[] {
@@ -253,6 +257,7 @@ describe('domain modules use Runtime ports for ambient I/O', () => {
     for (const root of DATE_NOW_SCOPED_ROOTS) {
       for (const filePath of listSourceFiles(root)) {
         const canonical = canonicalSrcPath(filePath);
+        if (DATE_NOW_EXEMPT_FILES.has(canonical)) continue;
         const identifiers = findBareDateNow(readSource(filePath));
         if (identifiers.length > 0) {
           violations.push({ file: canonical, identifiers });

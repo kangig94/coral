@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,12 +6,11 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/infra/port-types.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
@@ -21,13 +20,6 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
@@ -50,7 +42,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   return db;
 }
 

@@ -1,4 +1,4 @@
-// Row shapes mirroring src/store/schemas/001_initial.sql. Compile-time check against column drift.
+// Row shapes mirroring src/store/schemas/*.sql. Compile-time check against column drift.
 export interface EventsRow {
   seq: number;
   ts: string;
@@ -12,4 +12,10 @@ export interface EventsRow {
   refs: string | null;
   body_version: number;
   body: Uint8Array;
+}
+
+export interface ExpansionManifestCatalogRow {
+  id: string;
+  manifest_json: string;
+  updated_at: string;
 }

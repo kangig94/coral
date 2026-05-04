@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 
 const fsSpyState = vi.hoisted(() => ({
   readCalls: [] as string[],
@@ -203,7 +205,7 @@ describe('runtime hot-path perf regressions', () => {
     const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
     bindOramaFtsForTest(kb);
     await reindex.reindex(kb);
-    await kb.fts.read().read().search('warmup', 1);
+    await kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().search('warmup', 1);
     const entry = kb.readIndexOrEmpty().entries['note:target-note'];
     if (entry === undefined || entry.kind !== 'note' || entry.entrySeq === undefined) {
       throw new Error('Expected target note to exist in the index.');

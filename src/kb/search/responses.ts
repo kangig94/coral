@@ -6,6 +6,7 @@ import {
   type KbResult,
   type KbSearchResponse,
 } from '../entry-types.js';
+import type { RetrievalDiagnostic, RetrievalEvidence } from './contract.js';
 import { extractSnippet, hasTokenOverlap, type QueryContext } from './snippets.js';
 import {
   type HybridKbSearchHit,
@@ -108,7 +109,13 @@ function buildCommunityContextMap(
   return contextMap;
 }
 
-function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
+function evidenceFrom(hit: ResolvedKbSearchEntry | ResolvedKbSearchHit | HybridKbSearchHit): RetrievalEvidence[] {
+  return 'evidence' in hit
+    ? hit.evidence.map((item) => (item.match === undefined ? { ...item } : { ...item, match: [...item.match] }))
+    : [];
+}
+
+function toResult(hit: ResolvedKbSearchHit, query: QueryContext, evidence: RetrievalEvidence[] = []): KbResult {
   const matchedBy = new Set<KbMatchSurface>();
 
   if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.slug))) {
@@ -138,11 +145,16 @@ function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
     matchedBy: sortedMatchedBy(matchedBy),
     tags: [...hit.tags],
     principles: [...hit.principles],
+    evidence,
     ...(snippet === undefined ? {} : { snippet }),
   };
 }
 
-function toVectorOnlyResult(hit: ResolvedKbSearchEntry, communityContext?: string[]): KbResult {
+function toVectorOnlyResult(
+  hit: ResolvedKbSearchEntry,
+  communityContext?: string[],
+  evidence: RetrievalEvidence[] = [],
+): KbResult {
   return withCommunityContext(
     {
       note: hit.slug,
@@ -151,6 +163,7 @@ function toVectorOnlyResult(hit: ResolvedKbSearchEntry, communityContext?: strin
       matchedBy: [],
       tags: [...hit.tags],
       principles: [...hit.principles],
+      evidence,
     },
     communityContext,
   );
@@ -161,13 +174,13 @@ function toHybridResult(
   query: QueryContext,
   communityContext?: string[],
 ): KbResult {
+  const evidence = evidenceFrom(hit);
   const base =
     hit.document === null
-      ? toVectorOnlyResult(hit, communityContext)
-      : withCommunityContext(toResult(hit as ResolvedKbSearchHit, query), communityContext);
-  const graphRank = 'graphRank' in hit ? hit.graphRank : undefined;
+      ? toVectorOnlyResult(hit, communityContext, evidence)
+      : withCommunityContext(toResult(hit as ResolvedKbSearchHit, query, evidence), communityContext);
 
-  return graphRank === undefined ? base : { ...base, graphRank };
+  return base;
 }
 
 export function buildTextResponse(
@@ -178,6 +191,7 @@ export function buildTextResponse(
   communitiesFresh: boolean,
   graphFresh: boolean,
   responseWarnings: SearchResponseWarnings = {},
+  retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
@@ -185,6 +199,7 @@ export function buildTextResponse(
   return {
     results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'text',
+    retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
     ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
   };
@@ -198,6 +213,7 @@ export function buildHybridResponse(
   communitiesFresh: boolean,
   graphFresh: boolean,
   responseWarnings: SearchResponseWarnings = {},
+  retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
@@ -205,19 +221,22 @@ export function buildHybridResponse(
   return {
     results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'hybrid',
+    retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
     ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
   };
 }
 
 export function buildVectorResponse(
-  hits: readonly ResolvedKbSearchEntry[],
+  hits: readonly (ResolvedKbSearchEntry | HybridKbSearchHit)[],
   topK: number,
   responseWarnings: SearchResponseWarnings = {},
+  retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
   return {
-    results: hits.slice(0, topK).map((hit) => toVectorOnlyResult(hit)),
+    results: hits.slice(0, topK).map((hit) => toVectorOnlyResult(hit, undefined, evidenceFrom(hit))),
     mode: 'vector',
+    retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
     ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
   };

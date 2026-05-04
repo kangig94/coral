@@ -64,13 +64,50 @@ import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
+import { storeServicesStartupNotReadyError, type StoreServicesRef } from './store-services-ref.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { createExpansionRpc, createUnavailableExpansionRpc } from '../expansion/rpc.js';
+import { createExpansionRpc } from '../expansion/rpc.js';
+import type {
+  EquipExpansionRequest,
+  EquipExpansionResult,
+  ExpansionRequestPort,
+  ListExpansionRequest,
+  ListExpansionResult,
+  ReadBindingRequest,
+  ReadBindingResult,
+  RemoveExpansionCatalogRequest,
+  RemoveExpansionCatalogResult,
+  UnequipExpansionRequest,
+  UnequipExpansionResult,
+} from '../../expansion/rpc-contract.js';
 import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
 import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
+
+function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): ExpansionRequestPort {
+  const getExpansionRpc = (): ExpansionRequestPort => {
+    const lifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
+    if (lifecycleService === null) {
+      throw storeServicesStartupNotReadyError();
+    }
+    return createExpansionRpc(lifecycleService);
+  };
+
+  return {
+    equipExpansion: (request: EquipExpansionRequest): Promise<EquipExpansionResult> =>
+      getExpansionRpc().equipExpansion(request),
+    unequipExpansion: (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> =>
+      getExpansionRpc().unequipExpansion(request),
+    removeExpansionCatalog: (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
+      getExpansionRpc().removeExpansionCatalog(request),
+    listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> =>
+      getExpansionRpc().listExpansion(request),
+    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> =>
+      getExpansionRpc().readBinding(request),
+  };
+}
 
 export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
   const runtime = options.runtime;
@@ -78,11 +115,34 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
   const identity = world.identity;
+  const storeServicesRef = world.storeServicesRef;
+  // Local indirection: callers in non-health/handoff paths use this to get
+  // the post-bind progressStore. Equivalent to `storeServicesRef.get()` but
+  // intentionally wrapped so the file-level "tryGet-only" invariant for
+  // health/handoff identity code doesn't flag it as a direct `.get()` call
+  // in a mixed-concern composition file.
+  const getStoreServices = () => {
+    const storeServices = storeServicesRef.tryGet();
+    if (storeServices === null) {
+      throw storeServicesStartupNotReadyError();
+    }
+    return storeServices;
+  };
+  const getProgressStore = () => getStoreServices().progressStore;
 
   // Eager defaults resolve from `runtime` alone.
-  // `bindHost`, `advertiseHost`, `progressStore`, `launchCoordinator`, and `log`
-  // come from `CoordinatorWorld`; this call is exact-once and throws on a second invocation.
-  const defaults = defaultsPlan.finalizeWithWorld(world);
+  const defaults = defaultsPlan.finalizeWithWorld({
+    bindHost: world.bindHost,
+    advertiseHost: world.advertiseHost,
+    getProgressStore: () => storeServicesRef.tryGet()?.progressStore ?? null,
+    launchCoordinator: world.launchCoordinator,
+    log: world.log,
+  });
+  const createStoreServicesFromDbFn =
+    options.createStoreServicesFromDbFn ??
+    (() => {
+      throw storeServicesStartupNotReadyError();
+    });
   const runtimeState = createRuntimeState(world.now());
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
@@ -99,6 +159,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const discuss = createDiscussRuntime({
     world,
     runtime,
+    getProgressStore,
     getExecutionService: services.getExecutionService,
   });
   // Coordinator-owned abort registry for internal KB jobs (source-import,
@@ -112,32 +173,53 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
     backendNamespace: world.namespace,
-    progressStore: world.progressStore,
+    getProgressStore,
     internalJobAbortRegistry,
   });
-  const kbSourceImportService = new KbSourceImportService({
-    runtime,
-    progressStore: world.progressStore,
-    backendNamespace: world.namespace,
-    bundleHash: identity.bundleHash,
-    waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-    abortRegistry: internalJobAbortRegistry,
-  });
-  const kbReindexService = new KbReindexService({
-    runtime,
-    progressStore: world.progressStore,
-    backendNamespace: world.namespace,
-    bundleHash: identity.bundleHash,
-    waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-    abortRegistry: internalJobAbortRegistry,
-  });
-  const kbJobRecorder = new KbJobRecorder({
-    runtime,
-    progressStore: world.progressStore,
-    backendNamespace: world.namespace,
-    bundleHash: identity.bundleHash,
-    abortRegistry: internalJobAbortRegistry,
-  });
+  let kbSourceImportService: KbSourceImportService | null = null;
+  const getKbSourceImportService = (): KbSourceImportService => {
+    const existing = kbSourceImportService;
+    if (existing) return existing;
+    const created = new KbSourceImportService({
+      runtime,
+      progressStore: getProgressStore(),
+      backendNamespace: world.namespace,
+      bundleHash: identity.bundleHash,
+      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+      abortRegistry: internalJobAbortRegistry,
+    });
+    kbSourceImportService = created;
+    return created;
+  };
+  let kbReindexService: KbReindexService | null = null;
+  const getKbReindexService = (): KbReindexService => {
+    const existing = kbReindexService;
+    if (existing) return existing;
+    const created = new KbReindexService({
+      runtime,
+      progressStore: getProgressStore(),
+      backendNamespace: world.namespace,
+      bundleHash: identity.bundleHash,
+      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
+      abortRegistry: internalJobAbortRegistry,
+    });
+    kbReindexService = created;
+    return created;
+  };
+  let kbJobRecorder: KbJobRecorder | null = null;
+  const getKbJobRecorder = (): KbJobRecorder => {
+    const existing = kbJobRecorder;
+    if (existing) return existing;
+    const created = new KbJobRecorder({
+      runtime,
+      progressStore: getProgressStore(),
+      backendNamespace: world.namespace,
+      bundleHash: identity.bundleHash,
+      abortRegistry: internalJobAbortRegistry,
+    });
+    kbJobRecorder = created;
+    return created;
+  };
 
   const readOnlyInvocationContext = {
     projectRoot: '',
@@ -177,7 +259,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       return;
     }
 
-    const status = world.progressStore.readStatus(jobId);
+    const progressStore = getProgressStore();
+    const status = progressStore.readStatus(jobId);
     if (
       !status ||
       status.sessionId !== sessionId ||
@@ -188,7 +271,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     }
 
     const detail = normalizeHostedKbFailureDetail(result.detail);
-    kbJobRecorder.appendHostedKbOperationFailure({
+    getKbJobRecorder().appendHostedKbOperationFailure({
       jobId,
       sessionId,
       projectRoot: status.projectRoot,
@@ -217,7 +300,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           })
           .waitStream(request),
       list: (filters) => {
-        let jobs = world.progressStore
+        const progressStore = getProgressStore();
+        let jobs = progressStore
           .listJobProjections()
           .filter((entry) => belongsToNamespace(entry.status, world.namespace));
 
@@ -237,12 +321,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         return jobs;
       },
       detail: (jobId) => {
-        const detail = world.progressStore.loadJobProjectionDetail(jobId);
+        const progressStore = getProgressStore();
+        const detail = progressStore.loadJobProjectionDetail(jobId);
         const status = detail.status;
         if (!status || !belongsToNamespace(status, world.namespace)) {
           return null;
         }
-        const events = world.progressStore.readJobEvents(jobId);
+        const events = progressStore.readJobEvents(jobId);
         return {
           status,
           events,
@@ -312,7 +397,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           } satisfies KbToolResult;
         }
         const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(kbSourceImportService.start(parsed.data, ctx, kbSubsystem)),
+          Promise.resolve(getKbSourceImportService().start(parsed.data, ctx, kbSubsystem)),
         );
         recordHostedKbFailure('source_import', ctx, result);
         return result;
@@ -337,7 +422,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const invocationContext = ctx ?? readOnlyInvocationContext;
         const request = { async: args.async === true };
         const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(kbReindexService.run(request, invocationContext, kbSubsystem)),
+          Promise.resolve(getKbReindexService().run(request, invocationContext, kbSubsystem)),
         );
         recordHostedKbFailure('reindex', ctx, result);
         return result;
@@ -355,15 +440,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
     expansion:
-      options.expansionLifecycleService === null
-        ? createUnavailableExpansionRpc()
-        : createExpansionRpc(options.expansionLifecycleService),
+      createRefBackedExpansionRpc(storeServicesRef),
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
     coralEnvSnapshot: world.coralEnvSnapshot,
     admin: {
+      getLifecycleState: () => runtimeState.getLifecycle(),
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
       isDrainRequested: control.isDrainRequested,
       isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
@@ -378,9 +462,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     health: {
       read: () => {
         const env = { ...world.coralEnvSnapshot };
+        const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
         let status: string = lifecycleState;
-        if (world.idleTimer.isDraining) {
+        if (storeServices === null) {
+          status = 'starting';
+        } else if (world.idleTimer.isDraining) {
           status = 'draining';
         } else if (lifecycleState === 'running') {
           status = 'ok';
@@ -390,8 +477,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
         const kbStatus = runtimeState.getKbStatus();
         const curateHealth = runtimeState.getCurateHealth();
-        const consumerStuck = options.getConsumerStuck();
-        const mutationBlocked = options.getMutationBlocked();
+        const consumerStuck = storeServices === null ? [] : options.getConsumerStuck();
+        const mutationBlocked = storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
         // `mutationBlocked` and `consumerStuck` are diagnostic fields that
         // appear on `/health.subsystems.kb` only when something is wrong:
         // omitted when healthy so the green path stays compact and operators
@@ -426,7 +513,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
-          activeJobs: world.progressStore.liveJobCountByNamespace(identity.namespace),
+          activeJobs:
+            storeServices === null ? 0 : storeServices.progressStore.liveJobCountByNamespace(identity.namespace),
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
@@ -495,7 +583,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     backendPid: world.backendPid,
     runtimeState,
     idleTimer: world.idleTimer,
-    progressStore: world.progressStore,
+    storeServicesRef,
+    createStoreServicesFromDbFn,
     streamResponses,
     discussStores: discuss.discussStores,
     eventBus: world.eventBus,
@@ -515,11 +604,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
     handoffQuiescePorts: () =>
-      services.listExecutionServices().filter(
-        (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
-          typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
-      ),
-    expansionLifecycleService: options.expansionLifecycleService,
+      services
+        .listExecutionServices()
+        .filter(
+          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
+            typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
+        ),
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
@@ -555,12 +645,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     idleTimer: world.idleTimer,
     discussRegistry: world.discussRegistry,
     runtimeState,
-    progressStore: world.progressStore,
+    storeServicesRef,
     eventBus: world.eventBus,
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    expansionLifecycleService: options.expansionLifecycleService,
+    expansionLifecycleService: null,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

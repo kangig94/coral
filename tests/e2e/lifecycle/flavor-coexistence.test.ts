@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -22,7 +21,6 @@ import { isProcessAlive } from '#src/infra/node-process.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
@@ -89,7 +87,6 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
     JSON.stringify({ bundleHash: sourceManifest.bundleHash, flavor }) + '\n',
     'utf-8',
   );
-  cpSync(join(process.cwd(), 'dist', 'store', 'schemas'), join(root, 'dist', 'store', 'schemas'), { recursive: true });
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(
     join(process.cwd(), 'node_modules', 'better-sqlite3'),
@@ -128,7 +125,6 @@ function seedCompletedJob(
   const db = openStoreDatabase({
     path: storePaths(flavor).dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
   const createdAt = new Date().toISOString();
   const sessionId = `${jobId}-session`;

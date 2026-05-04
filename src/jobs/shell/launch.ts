@@ -13,7 +13,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { type LaunchDecision, rejectLaunch } from '../launch.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
-import type { SessionEntry } from '../../sessions/entry.js';
+import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
 import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
 import type { JobProgressBody, JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
 import { type AbortRegistry } from './abort-registry.js';
@@ -50,6 +50,19 @@ function runProviderExecution(
   runtime: ProviderRuntime,
 ): AsyncIterable<ProviderEventBody> {
   return provider.run(request, runtime);
+}
+
+function mergeProviderMeta(
+  runtimeMeta: Record<string, unknown> | undefined,
+  recoveryMeta: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (runtimeMeta === undefined && recoveryMeta === undefined) {
+    return undefined;
+  }
+  return {
+    ...(recoveryMeta ?? {}),
+    ...(runtimeMeta ?? {}),
+  };
 }
 
 export interface LaunchOrchestratorDeps {
@@ -285,7 +298,13 @@ export class LaunchOrchestrator {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string } = {},
+    opts: {
+      pool?: LaunchPool;
+      projectRoot?: string;
+      parentWorkflowJobId?: string;
+      workflowSlotId?: string;
+      retention?: RetentionPolicy;
+    } = {},
   ): LaunchDecision {
     const { abortRegistry, backendNamespace, bundleHash, progressStore } = this.deps;
     const pool = opts.pool ?? 'default';
@@ -323,6 +342,7 @@ export class LaunchOrchestrator {
         systemPrompt: hostedRequest.systemPrompt,
         conversationRef: hostedRequest.conversationRef,
         instruction: hostedRequest.instruction,
+        ...(opts.retention !== undefined ? { retention: opts.retention } : {}),
         coralEnv: hostedRequest.coralEnv,
       },
       parentWorkflowJobId: opts.parentWorkflowJobId,
@@ -515,11 +535,12 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
   ): Promise<void> {
-    const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
+    const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool);
     let latestContinuity: JobContinuitySnapshot | null = null;
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     const consumed = await consumeJobStream({
       jobId,
+      providerName: provider.name,
       sessionId,
       initialVersion,
       stream: runProviderExecution(provider, request, runtime),
@@ -542,6 +563,12 @@ export class LaunchOrchestrator {
             };
           }
           return result;
+        },
+        recordArtifactHandleAtomic: async (claimedSessionId, options) => {
+          if (this.quiescedAppServerJobs.has(jobId)) {
+            return { ok: false as const };
+          }
+          return this.deps.sessionManager.recordArtifactHandleAtomic(claimedSessionId, options);
         },
       },
       appendProgress: (message) => {
@@ -626,22 +653,27 @@ export class LaunchOrchestrator {
   }
 
   private createProviderRuntime(
-    providerName: string,
+    provider: ProviderSpec,
+    request: ProviderRequest,
     sessionId: string,
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
   ): ProviderRuntime {
+    const recoveryMeta = provider.recovery?.buildRecoveryMeta?.(request);
     return {
       signal,
       runCli: bindProviderRunner(
         this.deps.durableSpawner,
-        providerName,
+        provider.name,
         signal,
         pool,
         this.deps.progressStore.jobDir(jobId),
         (record) => {
-          this.deps.progressStore.appendRuntimeStarted(jobId, record);
+          this.deps.progressStore.appendRuntimeStarted(jobId, {
+            ...record,
+            providerMeta: mergeProviderMeta(record.providerMeta, recoveryMeta),
+          });
         },
       ),
       time: this.deps.runtime.time,
@@ -652,7 +684,7 @@ export class LaunchOrchestrator {
         this.appServerJobs.add(jobId);
         return this.deps.acquireServer(spec, { jobId, signal });
       },
-      persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity ?? undefined,
+      persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
     };

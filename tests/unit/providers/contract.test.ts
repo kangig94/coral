@@ -4,10 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { sessionContinuityMutationSchema, type SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
 import {
   compose,
+  providerArtifactHandleEventBodySchema,
   providerFailureCauseSchema,
   providerContinuityEventBodySchema,
   providerTerminalEventBodySchema,
   type Provider,
+  type ProviderArtifactHandleEventBody,
   type ProviderContinuityEventBody,
   type ProviderEventBody,
   type ProviderMiddleware,
@@ -149,6 +151,8 @@ describe('compose', () => {
           return event.message;
         case 'continuity':
           return event.conversationRef ?? 'none';
+        case 'artifact_handle':
+          return event.handle;
         case 'terminal':
           return event.terminal.content;
       }
@@ -164,6 +168,7 @@ describe('contract schemas', () => {
     expectTypeParity<IsEqual<z.infer<typeof providerTerminalOutcomeSchema>, ProviderTerminalOutcome>>();
     expectTypeParity<IsEqual<z.infer<typeof providerFailureCauseSchema>, ProviderFailureCause>>();
     expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();
+    expectTypeParity<IsEqual<z.infer<typeof providerArtifactHandleEventBodySchema>, ProviderArtifactHandleEventBody>>();
     expectTypeParity<IsEqual<z.infer<typeof sessionContinuityMutationSchema>, SessionContinuityMutation>>();
 
     const failed = providerTerminalOutcomeSchema.parse({
@@ -184,6 +189,10 @@ describe('contract schemas', () => {
       providerContinuity: {
         conversationRef: 'conversation-1',
       },
+    });
+    const artifactHandle = providerArtifactHandleEventBodySchema.parse({
+      kind: 'artifact_handle',
+      handle: '/tmp/provider.jsonl',
     });
     const continuityMutation = sessionContinuityMutationSchema.parse({
       kind: 'set_resumable',
@@ -211,6 +220,10 @@ describe('contract schemas', () => {
       providerContinuity: {
         conversationRef: 'conversation-1',
       },
+    });
+    expect(artifactHandle).toEqual({
+      kind: 'artifact_handle',
+      handle: '/tmp/provider.jsonl',
     });
     expect(continuityMutation).toEqual({
       kind: 'set_resumable',

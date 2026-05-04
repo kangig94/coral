@@ -7,7 +7,12 @@ import { createServer, type Server as NetServer } from 'node:net';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { decode, encode, type JsonRpcRequestEnvelope, type JsonRpcResponseEnvelope } from '#src/transport/ipc/json-rpc.js';
+import {
+  decode,
+  encode,
+  type JsonRpcRequestEnvelope,
+  type JsonRpcResponseEnvelope,
+} from '#src/transport/ipc/json-rpc.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -114,9 +119,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         socketPath,
         desired: { bundleHash: 'new-bundle', flavor: 'prod', namespace: 'ns' },
         bindAttempt: async () =>
-          socketReleased
-            ? { kind: 'bound' as const }
-            : { kind: 'incumbent' as const, reason: 'live-listener' },
+          socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
         runtime,
         readVerifiedIncumbentFromDiscovery: () => null,
         totalBudgetMs: 5_000,

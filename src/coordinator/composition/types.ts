@@ -21,13 +21,15 @@ import type { TypedEventBus } from '../event-bus.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
-import type { JobStore } from '../../jobs/store.js';
-import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';
+import type { Database } from '../../store/db.js';
+import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
+
+export type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 
 export type CoordinatorBootSnapshot = {
   version?: string;
@@ -48,8 +50,6 @@ export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 export type CoordinatorCoreOptions = {
   runtime: Runtime;
   bootSnapshot?: CoordinatorBootSnapshot;
-  progressStore?: JobStore;
-  storeDb?: Database;
   pluginRoot?: string;
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
@@ -64,6 +64,7 @@ export type CoordinatorCoreOptions = {
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
+  createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   terminateAllFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
@@ -73,7 +74,6 @@ export type CoordinatorCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  expansionLifecycleService: ExpansionLifecycleService | null;
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
@@ -101,7 +101,7 @@ export type CoordinatorCoreResult = {
   idleTimer: IdleTimer;
   discussRegistry: DiscussContextRegistry;
   runtimeState: MutableCoordinatorRuntimeState;
-  progressStore: JobStore;
+  storeServicesRef: StoreServicesRef;
   eventBus: TypedEventBus;
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;

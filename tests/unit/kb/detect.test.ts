@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -136,7 +138,7 @@ describe('kb detection and paths', () => {
     bindOramaFtsForTest(kb);
 
     try {
-      const fts = kb.fts.read().read();
+      const fts = kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
 
       expect(fts.warnings()).toContain('fts_index_uninitialized');
       expect(existsSync(oramaPaths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);

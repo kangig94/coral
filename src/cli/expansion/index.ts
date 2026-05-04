@@ -1,7 +1,6 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
 import type { EngineManifest } from '../../expansion/contract.js';
-import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -16,13 +15,16 @@ import {
   catalogResultSchema,
   installResultSchema,
   readBindingResultSchema,
+  removeExpansionCatalogResultSchema,
   unequipExpansionResultSchema,
   type CatalogEntry,
   type InstallResponse,
   type InstallResult,
   type ReadBindingResult,
+  type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
 import { encodeInstallError } from './contract.js';
+import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
 import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';
 import { runExpansionOnboarding, type OnboardingContext } from './onboarding.js';
 
@@ -54,6 +56,8 @@ export interface CliExpansionActivation {
   update(name: string): Promise<InstallResponse>;
   activateExpansion(name: string): Promise<InstallResult>;
   deactivateExpansion(name: string): Promise<InstallResult>;
+  removeExpansionCatalog(name: string): Promise<RemoveExpansionCatalogResult>;
+  removeCatalog(name: string): Promise<InstallResponse>;
   readExpansionStatus(name?: string): Promise<ExpansionStatus>;
   readBinding(binding: string): Promise<ReadBindingResult>;
 }
@@ -62,20 +66,19 @@ function requiresLocalInstall(entry: EngineManifest): boolean {
   return entry.tier === 'installed' && entry.installer !== undefined;
 }
 
-function resolveManifestSlot(name: string): string | undefined {
-  return resolveEngineManifest(name)?.fills?.[0];
+function resolveManifestSlot(catalog: readonly EngineManifest[], name: string): string | undefined {
+  return resolveCatalogManifest(catalog, name)?.fills?.[0];
 }
 
-function withManifestSlot<T extends { name: string; status: string }>(view: T): T & { slot?: string } {
-  const slot = resolveManifestSlot(view.name);
+function withManifestSlot<T extends { name: string; status: string }>(
+  catalog: readonly EngineManifest[],
+  view: T,
+): T & { slot?: string } {
+  const slot = resolveManifestSlot(catalog, view.name);
   return {
     ...view,
     ...(slot === undefined ? {} : { slot }),
   };
-}
-
-function resolveEngineManifest(name: string): EngineManifest | null {
-  return BUNDLED_ENGINES.find((entry) => entry.id === name) ?? null;
 }
 
 function unknownExpansionResponse(name: string) {
@@ -88,6 +91,7 @@ function toCatalogEntry(
   passive: (ExpansionView & { slot?: string }) | null,
 ): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
+  const provides = passive?.provides ?? entry.provides;
   const status =
     passive?.status ??
     (requiresLocalInstall(entry)
@@ -107,14 +111,18 @@ function toCatalogEntry(
     ...(requiresLocalInstall(entry) && typeof local.addonPath === 'string' ? { addonPath: local.addonPath } : {}),
     version: local.version ?? entry.version,
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
+    ...(provides === undefined ? {} : { provides }),
+    ...(passive?.capabilityStatus === undefined ? {} : { capabilityStatus: passive.capabilityStatus }),
   });
 }
 
 function createNonInteractiveOnboardingContext(
   lowLevel: Pick<CliExpansionActivation, 'readBinding'>,
+  catalog: readonly EngineManifest[],
 ): OnboardingContext {
   const context: OnboardingContext = {
     interactive: false,
+    catalog,
     readBinding: (binding) => lowLevel.readBinding(binding),
     prompt: {
       choose: async () => null,
@@ -139,10 +147,12 @@ export function createCliExpansionActivation(): CliExpansionActivation {
   const lowLevel = {
     async activateExpansion(name: string) {
       const client = await ensure(resolvePluginRoot());
+      const runtime = resolveRuntime();
+      const catalog = readExpansionCatalog(runtime);
       const result = equipExpansionResultSchema.parse(await client.request('coordinator.equipExpansion', { name }));
       return installResultSchema.parse({
         ...result,
-        expansion: withManifestSlot(result.expansion),
+        expansion: withManifestSlot(catalog, result.expansion),
       });
     },
 
@@ -150,6 +160,13 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       const client = await ensure(resolvePluginRoot());
       const result = unequipExpansionResultSchema.parse(await client.request('coordinator.unequipExpansion', { name }));
       return installResultSchema.parse(result);
+    },
+
+    async removeExpansionCatalog(name: string) {
+      const client = await ensure(resolvePluginRoot());
+      return removeExpansionCatalogResultSchema.parse(
+        await client.request('coordinator.removeExpansionCatalog', { name }),
+      );
     },
 
     async readExpansionStatus(name?: string): Promise<ExpansionStatus> {
@@ -172,7 +189,8 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const result = listExpansionResultSchema.parse(
           await createIpcClient(record.socketPath).request('coordinator.listExpansion', {}),
         );
-        const expansions = result.expansions.map(withManifestSlot);
+        const catalog = readExpansionCatalog(runtime);
+        const expansions = result.expansions.map((entry) => withManifestSlot(catalog, entry));
 
         return {
           status: 'available',
@@ -192,7 +210,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     },
   } satisfies Pick<
     CliExpansionActivation,
-    'activateExpansion' | 'deactivateExpansion' | 'readExpansionStatus' | 'readBinding'
+    'activateExpansion' | 'deactivateExpansion' | 'removeExpansionCatalog' | 'readExpansionStatus' | 'readBinding'
   >;
 
   return {
@@ -200,15 +218,14 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     async list(): Promise<InstallResponse> {
       try {
         const runtime = resolveRuntime();
+        const catalog = readExpansionCatalog(runtime);
         const passive = await lowLevel.readExpansionStatus();
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
 
         return catalogResultSchema.parse({
           status: 'catalog',
-          packages: BUNDLED_ENGINES.map((entry) =>
-            toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null),
-          ),
+          packages: catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -217,7 +234,9 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async info(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveEngineManifest(name);
+        const runtime = resolveRuntime();
+        const catalog = readExpansionCatalog(runtime);
+        const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
@@ -227,7 +246,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
           status: 'info',
           package: toCatalogEntry(
             entry,
-            resolveRuntime(),
+            runtime,
             passive.status === 'available' ? (passive.expansions[0] ?? null) : null,
           ),
         });
@@ -238,15 +257,17 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async equip(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveEngineManifest(name);
+        const runtime = resolveRuntime();
+        const catalog = readExpansionCatalog(runtime);
+        const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
 
-        await runExpansionOnboarding(name, createNonInteractiveOnboardingContext(lowLevel));
+        await runExpansionOnboarding(name, createNonInteractiveOnboardingContext(lowLevel, catalog));
 
         if (requiresLocalInstall(entry)) {
-          const installResult = await installExpansion(name);
+          const installResult = await installExpansion(name, { runtime });
           if (installResult.status === 'error') {
             return installResult;
           }
@@ -260,22 +281,61 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async unequip(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveEngineManifest(name);
+        const runtime = resolveRuntime();
+        const catalog = readExpansionCatalog(runtime);
+        const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
 
-        const passive = await lowLevel.readExpansionStatus(name);
-        const activeEntry = passive.status === 'available' ? passive.expansions[0] : undefined;
-        if (activeEntry !== undefined) {
-          await lowLevel.deactivateExpansion(name);
+        const removal = await lowLevel.removeExpansionCatalog(name);
+        if (removal.status === 'blocked') {
+          return encodeInstallError(
+            documentedCoralSetupError({
+              code: 'capability_catalog_remove_blocked',
+              target: removal.target,
+              capabilities: removal.capabilities,
+              dependents: removal.dependents,
+            }),
+          );
+        }
+        if (removal.status === 'unknown') {
+          return unknownExpansionResponse(name);
         }
 
         if (!requiresLocalInstall(entry)) {
-          return installResultSchema.parse({ status: activeEntry ? 'uninstalled' : 'not_equipped' });
+          if (removal.status === 'immutable') {
+            return encodeInstallError(documentedCoralSetupError('expansion_bundled_immutable', { name }));
+          }
+          return installResultSchema.parse({ status: 'uninstalled' });
         }
 
-        return await uninstallExpansion(name);
+        return await uninstallExpansion(name, { runtime });
+      } catch (error: unknown) {
+        return encodeInstallError(error);
+      }
+    },
+
+    async removeCatalog(name: string): Promise<InstallResponse> {
+      try {
+        const removal = await lowLevel.removeExpansionCatalog(name);
+        if (removal.status === 'removed') {
+          return installResultSchema.parse({ status: 'uninstalled' });
+        }
+        if (removal.status === 'immutable') {
+          return encodeInstallError(documentedCoralSetupError('expansion_bundled_immutable', { name }));
+        }
+        if (removal.status === 'unknown') {
+          return unknownExpansionResponse(name);
+        }
+        return encodeInstallError(
+          documentedCoralSetupError({
+            code: 'capability_catalog_remove_blocked',
+            target: removal.target,
+            capabilities: removal.capabilities,
+            dependents: removal.dependents,
+          }),
+        );
       } catch (error: unknown) {
         return encodeInstallError(error);
       }
@@ -283,13 +343,15 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async update(name: string): Promise<InstallResponse> {
       try {
-        const entry = resolveEngineManifest(name);
+        const runtime = resolveRuntime();
+        const catalog = readExpansionCatalog(runtime);
+        const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           return unknownExpansionResponse(name);
         }
 
         if (requiresLocalInstall(entry)) {
-          const installResult = await installExpansion(name, { update: true });
+          const installResult = await installExpansion(name, { runtime, update: true });
           if (installResult.status === 'error' || installResult.status === 'already_up_to_date') {
             return installResult;
           }

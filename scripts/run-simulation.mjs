@@ -14,6 +14,7 @@ await esbuild.build({
   target: 'node18',
   format: 'cjs',
   external: ['node:*', 'better-sqlite3'],
+  loader: { '.sql': 'text' },
   minify: false,
 });
 

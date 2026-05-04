@@ -1,6 +1,6 @@
 import { normalizeWhitespace } from '../text-normalization.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
-import type { GraphRetrieval, GraphRetrievalResult } from './contract.js';
+import type { GraphRetrieval, GraphRetrievalResult, RetrievalDiagnostic, RetrievalRole } from './contract.js';
 import {
   compareRetrievalRoleHits,
   isVectorScope,
@@ -23,6 +23,15 @@ const GRAPH_RELATIONSHIP_WEIGHTS: Record<RelationshipType, number> = {
   abstracts: 0.54,
   replaces: 0.6,
 };
+
+const BUILTIN_GRAPH_ROLE_DESCRIPTOR = {
+  id: 'graph',
+  label: 'Graph (Structural)',
+  tags: ['structural'],
+  phase: 'retrieval-source',
+  provides: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'all'],
+} as const satisfies RetrievalRole['descriptor'];
 
 type GraphNeighbor = {
   entity: string;
@@ -330,4 +339,39 @@ export class RuntimeGraphRetrieval implements GraphRetrieval {
       hits: rankRetrievalRoleHits(buildGraphHits(this.index, query, scope, this.graph)),
     };
   }
+}
+
+function graphStaleDiagnostic(): RetrievalDiagnostic {
+  return {
+    roleId: 'graph',
+    code: 'graph_stale',
+    recoverable: true,
+  };
+}
+
+export function createBuiltinGraphRole(currentGraph: () => EntityGraph | null): RetrievalRole {
+  return {
+    id: BUILTIN_GRAPH_ROLE_DESCRIPTOR.id,
+    descriptor: BUILTIN_GRAPH_ROLE_DESCRIPTOR,
+    async search(ctx) {
+      const index = ctx.index();
+      const graph = currentGraph();
+      if (!isGraphSearchFresh(index, graph)) {
+        return {
+          hits: [],
+          diagnostic: graphStaleDiagnostic(),
+        };
+      }
+
+      const graphContext = buildGraphSearchContext(index, graph);
+      if (graphContext === null) {
+        return {
+          hits: [],
+          diagnostic: graphStaleDiagnostic(),
+        };
+      }
+
+      return new RuntimeGraphRetrieval(index, graphContext).search(ctx.rawQuery, ctx.scope);
+    },
+  };
 }

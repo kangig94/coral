@@ -128,6 +128,7 @@ function createPorts(): HttpHandlerPorts {
     expansion: {
       equipExpansion: vi.fn(),
       unequipExpansion: vi.fn(),
+      removeExpansionCatalog: vi.fn(async () => ({ status: 'removed' as const })),
       listExpansion: vi.fn(async () => ({ expansions: [] })),
       readBinding: vi.fn(async () => ({ bound: false })),
     },

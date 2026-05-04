@@ -1,58 +1,34 @@
-import type { KbRuntime } from '../contract.js';
-import type { KbSearchScope } from '../entry-types.js';
-import { serializeCoralSetupError } from '../../runtime/errors.js';
-import type { VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
-import type { SearchResponseWarnings } from './text-retrieval.js';
+import type { Backed, KbRuntime } from '../contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
+import type { RetrievalRole, VectorRetrieval, VectorRetrievalResult } from './contract.js';
 
 export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
-const VECTOR_PATH_BINDING_NAMES: ReadonlySet<string> = new Set(['kb.embedding', 'kb.vector']);
+const BUILTIN_VECTOR_ROLE_DESCRIPTOR = {
+  id: 'vector',
+  label: 'Vector (Semantic)',
+  tags: ['semantic'],
+  phase: 'retrieval-source',
+  provides: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'all'],
+  requires: [KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY],
+} as const satisfies RetrievalRole['descriptor'];
 
-async function embedQueryForVectorSearch(rt: KbRuntime, rawQuery: string): Promise<number[]> {
-  const embedding = rt.embedding.read().read();
-  return Array.from(await embedding.embedQuery(rawQuery));
-}
-
-export async function searchExplicitVectorResults(
-  rt: KbRuntime,
-  rawQuery: string,
-  topK: number,
-  scope: KbSearchScope,
-): Promise<{ hits: VectorRetrievalHit[]; responseWarnings: SearchResponseWarnings; fallbackToText: boolean }> {
-  let queryVector: number[];
-  try {
-    queryVector = await embedQueryForVectorSearch(rt, rawQuery);
-  } catch (error) {
-    if (serializeCoralSetupError(error)?.code === 'binding_empty') {
-      throw error;
-    }
-    return {
-      hits: [],
-      responseWarnings: {
-        warning: 'KB vector query embedding is unavailable.',
-      },
-      fallbackToText: true,
-    };
-  }
-
-  try {
-    return {
-      hits: (await rt.vector.read().read().search(queryVector, topK, scope)).hits,
-      responseWarnings: {},
-      fallbackToText: false,
-    };
-  } catch (error) {
-    const setupError = serializeCoralSetupError(error);
-    const binding = setupError?.context?.binding;
-    if (setupError?.code === 'binding_empty' && typeof binding === 'string' && VECTOR_PATH_BINDING_NAMES.has(binding)) {
-      throw error;
-    }
-    return {
-      hits: [],
-      responseWarnings: {
-        warning: 'KB vector search is unavailable for this query.',
-      },
-      fallbackToText: true,
-    };
-  }
+export function createBuiltinVectorRole(rt: KbRuntime): RetrievalRole {
+  return {
+    id: BUILTIN_VECTOR_ROLE_DESCRIPTOR.id,
+    descriptor: BUILTIN_VECTOR_ROLE_DESCRIPTOR,
+    async search(ctx) {
+      const queryVector = Array.from(await ctx.embedding());
+      return {
+        hits: (
+          await rt.capabilityRegistry
+            .runtimeView()
+            .read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY)
+            .read()
+            .search(queryVector, ctx.topK, ctx.scope)
+        ).hits,
+      };
+    },
+  };
 }

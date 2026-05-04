@@ -52,6 +52,7 @@ export function createWorkflowRecoveryFinalizer(options: {
         runtime: options.runtime,
         emitSessionReleased: options.emitSessionReleased ?? (() => {}),
         db: options.progressStore.getDb(),
+        commitEvents: options.coordinatorCommit,
         sessionId: status.sessionId,
         jobId: status.jobId,
       });

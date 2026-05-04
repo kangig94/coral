@@ -1,13 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { EngineManifest } from '#src/expansion/contract.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
-import { createRuntimeBinding } from '#src/runtime/binding.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 describe('createExpansionHost', () => {
+  function manifest(
+    id: string,
+    tier: EngineManifest['tier'] = 'installed',
+    overrides: Partial<EngineManifest> = {},
+  ): EngineManifest {
+    return {
+      id,
+      version: '0.0.0',
+      specifier: `#tests/${id}/expansion.js`,
+      tier,
+      description: id,
+      ...overrides,
+    };
+  }
+
   function createConsumerDriver(register: ConsumerDriverPort['register']): ConsumerDriverPort {
     return {
       register,
@@ -40,16 +56,15 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope,
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle', 'installed', { fills: [KB_VECTOR_CAPABILITY] }),
       consumerDriver: createConsumerDriver(vi.fn()),
     });
-    const binding = createRuntimeBinding<string>('kb.vector');
 
-    host.bind(binding, 'needle');
+    host.bind(KB_VECTOR_CAPABILITY, 'needle');
 
-    expect(binding.read()).toBe('needle');
-    expect(binding.heldBy).toBe('needle');
+    expect(kb.capabilityRegistry.runtimeView().read<string>(KB_VECTOR_CAPABILITY)).toBe('needle');
+    expect(kb.capabilityRegistry.runtimeView().status(KB_VECTOR_CAPABILITY)?.heldBy).toBe('needle');
   });
 
   it('rewraps binding-empty as binding-required', () => {
@@ -58,15 +73,16 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle', 'installed', {
+        onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
+      }),
       consumerDriver: createConsumerDriver(vi.fn()),
     });
-    const binding = createRuntimeBinding<string>('kb.embedding');
 
-    expect(() => host.require(binding)).toThrowError(CoralSetupError);
+    expect(() => host.require(KB_EMBEDDING_CAPABILITY)).toThrowError(CoralSetupError);
     try {
-      host.require(binding);
+      host.require(KB_EMBEDDING_CAPABILITY);
     } catch (error) {
       expect(error).toMatchObject({
         code: 'binding_required',
@@ -94,8 +110,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope,
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver,
     });
     const reg = {
@@ -136,8 +152,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'orama',
-      tier: 'bundled',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('orama', 'bundled'),
       consumerDriver,
     });
     bundledHost.registerConsumer(
@@ -155,8 +171,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'needle',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('needle'),
       consumerDriver,
     });
     installedApplyHost.registerConsumer(
@@ -174,8 +190,8 @@ describe('createExpansionHost', () => {
       runtime,
       kb,
       scope: { [Symbol.dispose]() {} },
-      id: 'gemini',
-      tier: 'installed',
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('gemini'),
       consumerDriver,
     });
     installedStatelessHost.registerConsumer({ id: 'gemini', kind: 'stateless' }, installedStatelessHost.scope);

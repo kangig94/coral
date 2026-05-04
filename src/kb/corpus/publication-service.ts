@@ -1,13 +1,10 @@
-import type {
-  KbCorpusPublication,
-  KbCorpusPublishCallbacks,
-  KbCorpusSnapshot,
-} from '../contract.js';
+import type { KbCorpusPublication, KbCorpusPublishCallbacks, KbCorpusSnapshot } from '../contract.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from '../state/corpus-snapshot-builder.js';
 import type { KbIndexStore } from './index-store.js';
 import { captureIndexStateSnapshot, mutationLanesFromDiff, type KbIndexStateSnapshot } from './lanes.js';
 import type { ManifestAuthority } from './manifest-authority.js';
-import { CorpusPublicationQueue, mergePublication } from './publication.js';
+import { mergePublication } from './publication.js';
+import type { CorpusPublicationQueue } from './publication.js';
 import type { KbRuntimeMutationLockContext } from './mutation-finalizer.js';
 
 export interface CorpusPublicationServiceOptions {

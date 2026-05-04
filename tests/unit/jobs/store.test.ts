@@ -1,13 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { type StoragePort } from '#src/infra/port-types.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -15,13 +13,6 @@ import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 const openDbs = new Set<Database>();
 
 afterEach(() => {
@@ -33,7 +24,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   openDbs.add(db);
   return db;
 }

@@ -205,7 +205,8 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
       try {
-        if (opts.vector === true && opts.hybrid === true) {
+        const selectedModes = [opts.vector, opts.hybrid].filter((selected) => selected === true).length;
+        if (selectedModes > 1) {
           throw new UsageError('Choose at most one of --vector or --hybrid');
         }
 

@@ -17,7 +17,7 @@ import {
   streamProviderTerminal,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
-import type { ProviderRequest } from '#src/providers/contract.js';
+import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
@@ -48,6 +48,9 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { rpcCatalog } from '#src/transport/rpc/catalog.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -598,6 +601,44 @@ async function _flushMicrotasks(count = 5): Promise<void> {
   }
 }
 
+function sessionsCreateSpec() {
+  const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+  if (!spec) {
+    throw new Error('sessions.create spec not found');
+  }
+  return spec;
+}
+
+function createSessionTransportPorts(service: ExecutionService, pluginRoot: string): HttpHandlerPorts {
+  return {
+    identity: {
+      pluginRoot,
+      token: 'test-token',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      namespace: TEST_BACKEND_NAMESPACE,
+      instanceId: 'test-instance',
+      now: () => 0,
+      log: vi.fn(),
+    },
+    coralEnvSnapshot: {},
+    admin: {
+      isLifecycleRunning: () => true,
+      isDrainRequested: () => false,
+      isLaunchFenceActive: () => false,
+      beginRequest: vi.fn(),
+      endRequest: vi.fn(),
+      requestDrain: vi.fn(),
+    },
+    sessions: {
+      start: service.start.bind(service),
+      resumeBySessionId: service.resumeBySessionId.bind(service),
+      forkBySessionId: service.forkBySessionId.bind(service),
+    },
+  } as unknown as HttpHandlerPorts;
+}
+
 function _makeStatusRecord(
   ctx: InvocationContext,
   jobId: string,
@@ -695,6 +736,94 @@ describe('ExecutionService launch', () => {
     }
   });
 
+  it('start persists explicit discard retention into session.opened and launch request audit', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start(
+      'codex',
+      { prompt: 'hello', retention: 'discard_provider_artifacts_on_terminal' },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    const { progressStore, sessionManager } =
+      /* @intentional-private-access — inspect launch retention persistence */
+      getInternals(service);
+    expect(sessionManager.get('codex', decision.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
+    expect(progressStore.readLaunchProjection(decision.job)?.request.retention).toBe(
+      'discard_provider_artifacts_on_terminal',
+    );
+  });
+
+  it('strict sessions.create transport path persists discard retention into session.opened', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const spec = sessionsCreateSpec();
+    const request = spec.requestSchema.parse({
+      provider: 'codex',
+      prompt: 'hello',
+      projectRoot: ctx.projectRoot,
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
+
+    const response = await executeCatalogRequest(spec, request, createSessionTransportPorts(service, ctx.pluginRoot));
+
+    expect(response.kind).toBe('unary');
+    if (response.kind !== 'unary') {
+      throw new Error('expected unary transport response');
+    }
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({ launchState: 'running' });
+    const body = response.body as { session: string; job: string };
+    trackJob(body.job);
+
+    const { sessionManager } =
+      /* @intentional-private-access — inspect transport-created session entry */
+      getInternals(service);
+    expect(sessionManager.get('codex', body.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
+  });
+
+  it.each(['discard_provider_artifacts_on_terminal', 'retain'] as const)(
+    'fork inherits source session retention=%s',
+    async (retention) => {
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+      const { sessionManager } =
+        /* @intentional-private-access — seed and inspect fork session entries */
+        getInternals(service);
+      const source = sessionManager.allocate({
+        provider: 'codex',
+        name: 'source',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        retention,
+      });
+
+      const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      expect(sessionManager.get('codex', decision.session)?.retention).toBe(retention);
+    },
+  );
+
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
     const provider: Provider = {
       name: 'codex',
@@ -787,6 +916,55 @@ describe('ExecutionService launch', () => {
     await vi.waitFor(() => {
       expect(sessionManager.get('codex', decision.session)?.activeJobId).toBeUndefined();
     });
+  });
+
+  it('records provider artifact handle events through the launch session API before continuity checkpoints', async () => {
+    const execute = vi.fn(() =>
+      streamProviderEvents<ProviderEventBody>((emit) => {
+        emit({
+          kind: 'artifact_handle',
+          handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+        });
+        emit(
+          providerContinuityEvent({
+            conversationRef: 'thread-1',
+            resumable: true,
+            providerContinuity: { threadId: 'thread-1' },
+          }),
+        );
+        emit(providerTerminalEvent({ content: 'ok', outcome: { kind: 'completed' as const } }));
+      }),
+    );
+    mockState.getNewProvider.mockReturnValue(
+      toProviderSpec({
+        name: 'codex',
+        execute,
+      })!,
+    );
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    await waitForTerminalEvent(service, decision.job);
+    const { sessionManager } =
+      /* @intentional-private-access — inspect launch-session recording integration */
+      getInternals(service);
+    const session = sessionManager.get('codex', decision.session);
+
+    expect(session?.conversationRef).toBe('thread-1');
+    expect(session?.artifactHandles).toMatchObject([
+      {
+        provider: 'codex',
+        handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+        sourceJobId: decision.job,
+      },
+    ]);
   });
 
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
@@ -1423,6 +1601,34 @@ describe('ExecutionService launch', () => {
         channel: 'system',
       },
     });
+  });
+
+  it('coralDispatch persists explicit workflow atom retention into session.opened', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent({ namespace: 'coral', name: 'sample' }, 'Injected coral content'),
+    );
+    const service = createService(ctx);
+
+    const decision = await service.coralDispatch(
+      'codex',
+      'sample',
+      { prompt: 'hello', retention: 'discard_provider_artifacts_on_terminal' },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    const { sessionManager } =
+      /* @intentional-private-access — inspect workflow atom retention persistence */
+      getInternals(service);
+    expect(sessionManager.get('codex', decision.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
   });
 
   it('coralDispatch forces the coral namespace for bare workflow atoms', async () => {

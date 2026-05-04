@@ -1,7 +1,17 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { join } from 'path';
 
 mkdirSync('build', { recursive: true });
 
@@ -24,28 +34,10 @@ function parseArgs(argv) {
   return { flavor, release };
 }
 
-function copyStoreSchemaAssets(outRoot) {
-  rmSync(`${outRoot}/store/schema.sql`, { force: true });
-  rmSync(`${outRoot}/store/migrations`, { recursive: true, force: true });
-  rmSync(`${outRoot}/store/__tests__`, { recursive: true, force: true });
-  for (const extension of ['.d.ts', '.d.ts.map', '.js', '.js.map']) {
-    rmSync(`${outRoot}/store/migrations${extension}`, { force: true });
-    rmSync(`${outRoot}/store/schemas${extension}`, { force: true });
-  }
-  rmSync(`${outRoot}/store/schemas`, { recursive: true, force: true });
-  mkdirSync(`${outRoot}/store/schemas`, { recursive: true });
-
-  for (const file of readdirSync('src/store/schemas')) {
-    if (!file.endsWith('.sql')) continue;
-    copyFileSync(`src/store/schemas/${file}`, `${outRoot}/store/schemas/${file}`);
-  }
-}
-
 const { flavor, release } = parseArgs(process.argv.slice(2));
 // Debug-only simulation must keep compiling against production source and must
 // stay sealed from concrete provider/bootstrap implementations.
 execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
-copyStoreSchemaAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
@@ -86,6 +78,7 @@ const sharedOpts = {
   target: 'node18',
   format: 'cjs',
   external: ['node:*', 'better-sqlite3'],
+  loader: { '.sql': 'text' },
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
   define: {
@@ -99,7 +92,6 @@ await esbuild.build({
   outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
-copyStoreSchemaAssets('build');
 console.log('Built build/coral-backend.cjs');
 
 await esbuild.build({
@@ -133,10 +125,19 @@ renameSync(manifestTmp, manifestPath);
 
 if (release) {
   mkdirSync('bridge', { recursive: true });
-  for (const file of ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json']) {
+  const bridgeFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
+  // Sweep stale leftovers from prior releases (e.g., bridge/store/schemas/
+  // from the pre-flatten era) so bridge contains only the current bundle
+  // surface. Anything not in `bridgeFiles` is removed.
+  const expected = new Set(bridgeFiles);
+  for (const entry of readdirSync('bridge')) {
+    if (!expected.has(entry)) {
+      rmSync(join('bridge', entry), { recursive: true, force: true });
+    }
+  }
+  for (const file of bridgeFiles) {
     copyFileSync(`build/${file}`, `bridge/${file}`);
   }
   chmodSync('bridge/coral-cli.cjs', 0o755);
-  copyStoreSchemaAssets('bridge');
   console.log('Copied build/ -> bridge/');
 }

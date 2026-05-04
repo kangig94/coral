@@ -12,7 +12,7 @@ type CreateBackendControlDeps = {
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
   backendNamespace: string;
-  progressStore: JobStore;
+  getProgressStore: () => JobStore;
   /** Coordinator-owned abort registry for internal KB jobs (source-import,
    * reindex). Consulted before returning `notFound` so that
    * `coral-cli abort <kb-job-id>` reaches the KB job's AbortController. */
@@ -23,7 +23,7 @@ export function createCoordinatorControl({
   world,
   listExecutionServices,
   getLifecycleController,
-  progressStore,
+  getProgressStore,
   internalJobAbortRegistry,
 }: CreateBackendControlDeps): {
   abortJobs: (jobIds: string[]) => AbortResult;
@@ -74,6 +74,7 @@ export function createCoordinatorControl({
     const missing: string[] = [];
     const mismatch: string[] = [];
     const recoveryRegistry = getLifecycleController()?.getRecoveryRegistry();
+    const progressStore = getProgressStore();
 
     for (const jobId of jobIds) {
       const status = progressStore.readStatus(jobId);

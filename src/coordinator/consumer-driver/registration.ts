@@ -25,7 +25,7 @@ export interface FinalizeStoppedConsumerDeps {
   readonly repository: ConsumerCursorRepository;
 }
 
-export interface UnregisterConsumerDeps extends FinalizeStoppedConsumerDeps {}
+export type UnregisterConsumerDeps = FinalizeStoppedConsumerDeps;
 
 export function assertValidRegistration(reg: ConsumerRegistration): void {
   const regLike = reg as { id?: unknown; authority?: unknown; kind?: unknown };

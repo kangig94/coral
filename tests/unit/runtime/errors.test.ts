@@ -152,10 +152,18 @@ describe('CoralSetupError', () => {
       'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
     ],
     [
-      'binding_required_by_active_engine',
-      { binding: 'kb.embedding', requiredBy: 'needle' },
-      "Binding 'kb.embedding' is required by active engine 'needle'.",
-      "Unequip 'needle' before unequipping the engine that fills 'kb.embedding'.",
+      'capability_required_by_active_engine',
+      {
+        target: 'gemini',
+        capabilities: [
+          {
+            capability: 'kb.embedding',
+            dependents: [{ expansion: 'needle', edgeKind: 'read', source: 'onboarding', state: 'active' }],
+          },
+        ],
+      },
+      "Capability removal for 'gemini' is blocked by an active engine dependency.",
+      'Unequip active dependent engines before removing the capability provider.',
     ],
   ] satisfies Array<[DocumentedCoralSetupErrorCode, Record<string, unknown>, string, string]>)(
     'renders documented setup error %s through CoralSetupError',

@@ -8,16 +8,10 @@
 // `transport.shutdown` is dispatched, regardless of lifecycle state".
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer, type Server as NetServer } from 'node:net';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import {
-  closeIpcServer,
-  createIpcServer,
-  listenIpcServer,
-  type IpcListener,
-} from '#src/transport/ipc/server.js';
+import { closeIpcServer, createIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts, HealthSnapshot } from '#src/transport/server-ports.js';
 

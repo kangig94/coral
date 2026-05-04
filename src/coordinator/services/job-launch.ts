@@ -78,6 +78,7 @@ export class JobLaunchService {
     const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
     const instruction = resolvedAgent?.instruction ?? input.instruction;
     const bypassPermissions = input.bypassPermissions ?? resolvedAgent !== null;
+    const retention = input.retention ?? 'retain';
 
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
@@ -86,6 +87,7 @@ export class JobLaunchService {
       cwd,
       projectRoot: ctx.projectRoot,
       backendNamespace: this.deps.backendNamespace,
+      retention,
       ...(resolvedAgent !== null ? { agentName: resolvedAgent.agentName } : {}),
       ...(instruction !== undefined ? { instruction } : {}),
       bypassPermissions,
@@ -122,6 +124,7 @@ export class JobLaunchService {
       projectRoot: ctx.projectRoot,
       parentWorkflowJobId: input.parentWorkflowJobId,
       workflowSlotId: input.workflowSlotId,
+      retention,
     });
   }
 
@@ -237,6 +240,7 @@ export class JobLaunchService {
         bypassPermissions,
         systemPrompt: input.systemPrompt,
         parentWorkflowJobId: input.parentWorkflowJobId,
+        ...(input.retention !== undefined ? { retention: input.retention } : {}),
       },
       ctx,
     );
@@ -396,6 +400,7 @@ export class JobLaunchService {
         cwd: continuation.cwd,
         projectRoot: ctx.projectRoot,
         backendNamespace: this.deps.backendNamespace,
+        retention: sourceSession.retention,
         ...(continuation.agentName !== undefined ? { agentName: continuation.agentName } : {}),
         ...(continuation.instruction !== undefined ? { instruction: continuation.instruction } : {}),
         bypassPermissions: continuation.bypassPermissions,
@@ -429,6 +434,7 @@ export class JobLaunchService {
       return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
         projectRoot: ctx.projectRoot,
         workflowSlotId: input.workflowSlotId,
+        retention: sourceSession.retention,
       });
     } finally {
       this.deps.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
@@ -472,7 +478,13 @@ export class JobLaunchService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string },
+    opts: {
+      pool?: LaunchPool;
+      projectRoot?: string;
+      parentWorkflowJobId?: string;
+      workflowSlotId?: string;
+      retention?: SessionEntry['retention'];
+    },
   ): LaunchDecision {
     return this.deps.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }

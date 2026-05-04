@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   readBackendInfo,
@@ -7,7 +9,9 @@ import {
   type BackendInfo,
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
+import { none } from '../../../src/providers/capability.js';
 import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
+import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
@@ -28,18 +32,26 @@ import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
 import type { Runtime } from '../../../src/runtime/ports.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
-import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
+import type {
+  CoordinatorCoreResult,
+  CoordinatorStoreServices,
+  CreateServerFn,
+  FetchFn,
+} from '../../../src/coordinator/composition/types.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
-import { openBackendStoreDb } from '../../../src/store/db.js';
+import { createExpansionManifestCatalog } from '../../../src/expansion/manifest-catalog.js';
+import { ExpansionStateStore } from '../../../src/coordinator/expansion/state.js';
+import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/store/read-port.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
+import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -210,10 +222,10 @@ function failureCauseForSimulationOutcome(
 export function createFakeProvider(
   runtime: SimulationRuntime,
   scenario: FakeProviderScenario | undefined,
-): ProviderSpec {
+): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  return {
+  return defineProvider({
     name: providerName,
     ...(preflightError
       ? {
@@ -325,7 +337,9 @@ export function createFakeProvider(
         };
       },
     },
-  };
+  })
+    .artifacts(none(`Simulation provider ${providerName} declares no provider artifacts.`))
+    .build();
 }
 
 export type SimulationHookLog = {
@@ -368,10 +382,13 @@ export type SimulationBackend = {
 };
 
 export function createSimulationBackend(scenario: SimulationScenario = {}): SimulationBackend {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'coral-sim-backend-'));
   const runtime = new SimulationRuntime({
     epochMs: scenario.epochMs,
     env: scenario.env,
+    roots: { coralRoot: runtimeRoot },
   });
+  mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
   for (const spawnScript of scenario.spawn ?? []) {
     runtime.spawner.enqueueSpawn(spawnScript);
   }
@@ -383,13 +400,21 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const storeDb = openBackendStoreDb(runtime, { path: ':memory:' });
+  const storeDb = openWritableStoreDbNoReset(runtime, { path: ':memory:' });
   const progressStore = new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
     eventBus,
     db: storeDb,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     providers: noProviderLookupPort,
   });
+  const storeServices: CoordinatorStoreServices = {
+    storeDb,
+    progressStore,
+    expansionManifestCatalog: createExpansionManifestCatalog({ db: storeDb }),
+    expansionStateStore: new ExpansionStateStore(storeDb),
+    expansionLifecycleService: null,
+    consumerDriver: null,
+  };
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
@@ -432,12 +457,10 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     runtime,
     pluginRoot,
     backendNamespace: namespace,
-    progressStore,
     launchCoordinator,
     eventBus,
     providerRegistry,
     providerHostManager,
-    expansionLifecycleService: null,
     getConsumerStuck: () => [],
     getMutationBlocked: () => ({ blocked: false }),
     resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
@@ -455,6 +478,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         ...deps,
         sessionLookup: createProjectionSessionLookup(storeDb),
       }),
+    createStoreServicesFromDbFn: (openedStoreDb) => {
+      if (openedStoreDb !== storeDb) {
+        openedStoreDb.close();
+      }
+      return storeServices;
+    },
     createServerFn,
     fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
     listenFn: async () => {
@@ -528,6 +557,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: createProjectionSessionLookup(storeDb),
+        coordinatorCommit: (cb) => progressStore.commit(cb),
       });
       assertStartupStillActive();
 
@@ -558,10 +588,26 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       return recoveredDiscussResumes;
     },
   });
+  setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
+
+  let cleanedRuntimeRoot = false;
+  const cleanupRuntimeRoot = (): void => {
+    if (cleanedRuntimeRoot) {
+      return;
+    }
+    cleanedRuntimeRoot = true;
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  };
 
   const backend: SimulationController = {
     start: () => core.lifecycleController.start(),
-    shutdown: (reason) => core.lifecycleController.shutdown(reason),
+    shutdown: async (reason) => {
+      try {
+        await core.lifecycleController.shutdown(reason);
+      } finally {
+        cleanupRuntimeRoot();
+      }
+    },
     waitForShutdown: () => core.lifecycleController.waitForShutdown(),
     getLifecycle: () => core.runtimeState.getLifecycle(),
   };

@@ -7,10 +7,7 @@ import type { Database } from '#src/store/db.js';
  * `new BetterSqlite3(':memory:')` test idiom under `node:sqlite`. Normalizes
  * the legacy `readonly` option name to node:sqlite's `readOnly`.
  */
-export function newRawDatabase(
-  path: string = ':memory:',
-  options?: { readonly?: boolean },
-): Database {
+export function newRawDatabase(path: string = ':memory:', options?: { readonly?: boolean }): Database {
   if (options?.readonly === true) {
     return new DatabaseSync(path, { readOnly: true }) as unknown as Database;
   }

@@ -15,6 +15,7 @@ import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
 import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
+import type { CommitEventsFn } from '../../../store/append.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,
@@ -65,6 +66,7 @@ type StartupRecoveryContext = {
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
   sessionLookup: SessionLookup;
+  coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
@@ -255,7 +257,7 @@ export function createRecoveryCoordinator({
           finalizeDeadAdoptedJob({
             jobId,
             launchRecord,
-            runtimeRecord,
+            runtimeRecord: adoptedRuntimeRecord,
             service,
             provider: recovery,
             progressStore,
@@ -332,6 +334,7 @@ export function createRecoveryCoordinator({
             emitSessionReleased: (payload) => {
               eventBus.emit('session:released', payload);
             },
+            coordinatorCommit: ctx.coordinatorCommit,
           });
         } catch (error: unknown) {
           logRecoveryActionFailure(action, error, log);

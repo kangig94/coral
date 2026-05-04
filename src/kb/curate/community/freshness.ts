@@ -7,11 +7,7 @@ import { curateDb } from '../db-access.js';
 
 type CommunityFreshnessRuntime = Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
-export function areCommunityDocumentsFresh(
-  kb: KbRuntime,
-  index: KbIndex,
-  state?: CurateState,
-): boolean {
+export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex, state?: CurateState): boolean {
   // Avoid touching curate state when there are no community entries.
   const hasCommunityEntries = Object.values(index.entries).some(isCommunityEntry);
   if (!hasCommunityEntries) {

@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -36,11 +36,6 @@ import { parseExpression } from '#src/workflow/parser.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 const NOW = new Date('2026-04-29T00:00:00.000Z');
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'unit', 'discuss', 'fixtures');
 
@@ -84,6 +79,9 @@ function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionE
     provider,
     name: sessionId,
     state: 'pending',
+    retention: 'retain',
+    artifactHandles: [],
+    retentionDiscard: { attempts: [] },
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',
     backendNamespace: 'invariant-ns',
@@ -125,7 +123,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
   it('commit-time reducer state == rebuildProjections state, row by row, for jobs/sessions/discuss/workflow', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 

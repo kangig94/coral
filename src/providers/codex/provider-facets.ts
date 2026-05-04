@@ -1,11 +1,17 @@
 import { join } from 'node:path';
 
+import { discardRecordedArtifacts, managed } from '../capability.js';
 import type {
   PreflightRuntime,
+  ProviderArtifactHandleInput,
   ProviderAppServerContract,
   ProviderRecoveryContract,
+  ProviderRequest,
+  ProviderRuntime,
   ProviderServerLease,
 } from '../contract.js';
+import type { StoragePort } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
   buildCodexProviderServerSpec,
@@ -18,11 +24,119 @@ const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
+const CODEX_ROLLOUT_SCAN_DEPTH = 4;
 
 type PreflightCacheEntry = {
   available: boolean;
   checkedAt: number;
 };
+
+type CodexArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
+type CodexArtifactLocatorEnv = Pick<Runtime['env'], 'homedir' | 'get'>;
+
+export type ProviderArtifactLocatorResult =
+  | { readonly kind: 'match'; readonly artifact: ProviderArtifactHandleInput }
+  | { readonly kind: 'no_match'; readonly diagnostic: string }
+  | { readonly kind: 'ambiguous'; readonly diagnostic: string; readonly matches: readonly string[] };
+
+export function resolveCodexSessionsRoot(env: CodexArtifactLocatorEnv): string {
+  const codexHome = env.get('CODEX_HOME')?.trim();
+  return join(codexHome && codexHome.length > 0 ? codexHome : join(env.homedir(), '.codex'), 'sessions');
+}
+
+export function locateCodexRolloutArtifact(options: {
+  readonly threadId: string;
+  readonly sessionsRoot: string;
+  readonly storage: CodexArtifactLocatorStorage;
+}): ProviderArtifactLocatorResult {
+  const matches = collectCodexRolloutMatches(options.storage, options.sessionsRoot, options.threadId);
+  if (matches.length === 0) {
+    return {
+      kind: 'no_match',
+      diagnostic: `No rollout JSONL found matching thread ${options.threadId} under ${options.sessionsRoot}.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      kind: 'ambiguous',
+      diagnostic: `${matches.length} rollout JSONL files matched thread ${options.threadId} under ${options.sessionsRoot}; cannot choose one.`,
+      matches,
+    };
+  }
+  const [handle] = matches;
+  return {
+    kind: 'match',
+    artifact: {
+      handle,
+    },
+  };
+}
+
+export function locateCodexRolloutArtifactFromRuntime(
+  threadId: string,
+  runtime: Pick<ProviderRuntime, 'env' | 'storage'>,
+): ProviderArtifactLocatorResult | null {
+  if (!runtime.env) {
+    return null;
+  }
+  return locateCodexRolloutArtifact({
+    threadId,
+    sessionsRoot: resolveCodexSessionsRoot(runtime.env),
+    storage: runtime.storage,
+  });
+}
+
+function collectCodexRolloutMatches(
+  storage: CodexArtifactLocatorStorage,
+  root: string,
+  threadId: string,
+): readonly string[] {
+  if (!safeExists(storage, root)) {
+    return [];
+  }
+
+  const matches: string[] = [];
+  const visit = (dir: string, depth: number): void => {
+    const entries = safeReadDir(storage, dir);
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isFile() && isCodexRolloutFile(entry.name, threadId)) {
+        matches.push(fullPath);
+        continue;
+      }
+      if (entry.isDirectory() && depth < CODEX_ROLLOUT_SCAN_DEPTH) {
+        visit(fullPath, depth + 1);
+      }
+    }
+  };
+
+  visit(root, 0);
+  return matches.sort();
+}
+
+function isCodexRolloutFile(name: string, threadId: string): boolean {
+  return name.startsWith('rollout-') && name.endsWith(`-${threadId}.jsonl`);
+}
+
+function safeExists(storage: CodexArtifactLocatorStorage, path: string): boolean {
+  try {
+    return storage.existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function safeReadDir(storage: CodexArtifactLocatorStorage, path: string) {
+  try {
+    return storage.readdirSync(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+export const codexArtifactCapability = managed({
+  discardArtifacts: discardRecordedArtifacts,
+});
 
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 let codexAuthTokensCache: PreflightCacheEntry | null = null;
@@ -126,6 +240,9 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const codexRecoveryLifecycle = {
+  buildRecoveryMeta(request: ProviderRequest) {
+    return request.conversationRef ? { threadId: request.conversationRef } : {};
+  },
   async probe(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
     const updatedContinuity = clearCodexTurnContinuity(continuity);
@@ -178,4 +295,4 @@ export const codexRecoveryLifecycle = {
       ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'probe' | 'finalizeInterrupted'>;

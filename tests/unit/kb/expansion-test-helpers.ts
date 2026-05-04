@@ -3,6 +3,7 @@ import { createOramaBaseProjection, type OramaBaseProjection } from '#src/engine
 import { createOramaFtsBacked } from '#src/engines/orama/index.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { VectorRetrieval, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/search/contract.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistrationKind } from '#src/store/consumer-contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
@@ -112,7 +113,7 @@ export async function bindEmbedding(
         },
       };
       host.registerConsumer({ id: provider.consumer.id, kind: provider.consumer.kind }, host.scope);
-      host.bind(host.kb.embedding, provider);
+      host.bind('kb.embedding', provider);
     };
   `;
   const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
@@ -124,7 +125,7 @@ export async function bindEmbedding(
       specifier,
       tier: 'installed',
       description: 'test embedder',
-      fills: ['kb.embedding'],
+      fills: [KB_EMBEDDING_CAPABILITY],
     },
   ]);
   rebind(embedderScopes, runtime, scopes, disposeScopes);
@@ -141,7 +142,7 @@ const oramaFtsScopes = new WeakMap<KbRuntime, Disposable>();
  * Test helper: binds `kb.fts` to a fresh Orama projection (matching what the
  * bundled-fallback pass does in production). KbRuntime no longer constructs
  * the projection internally, so tests that exercise the FTS read path through
- * `kb.fts.read()` need this explicit bind.
+ * reading the kb.fts capability need this explicit bind.
  */
 export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
   const previous = oramaFtsScopes.get(runtime);
@@ -156,7 +157,7 @@ export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
   const projection = createOramaBaseProjection(runtime, snapshotStore);
   const ftsBacked = createOramaFtsBacked(projection);
   const scope = createScope();
-  runtime.fts.bind(ftsBacked, scope, 'orama');
+  runtime.capabilityRegistry.runtimeView().bind(KB_FTS_CAPABILITY, ftsBacked, scope, 'orama');
   oramaFtsScopes.set(runtime, scope);
   return { projection, snapshotStore };
 }
@@ -192,11 +193,14 @@ export function createCorpusHandle(
 export function bindVectorBacked(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
   const scope = createScope();
   rebind(vectorScopes, runtime, scope, (previous) => previous[Symbol.dispose]());
-  runtime.vector.bind(
-    createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
-    scope,
-    handle.id,
-  );
+  runtime.capabilityRegistry
+    .runtimeView()
+    .bind(
+      KB_VECTOR_CAPABILITY,
+      createVectorBacked(retrieval, createCorpusConsumer(handle.id, handle.registrationKind)),
+      scope,
+      handle.id,
+    );
 }
 
 export function seedNeedleRouteState(

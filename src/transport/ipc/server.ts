@@ -56,7 +56,11 @@ function transportErrorResponse(message: string, data?: unknown): JsonRpcErrorEn
   };
 }
 
-function requestErrorResponse(id: JsonRpcRequestEnvelope['id'] | null, message: string, data?: unknown): JsonRpcErrorEnvelope {
+function requestErrorResponse(
+  id: JsonRpcRequestEnvelope['id'] | null,
+  message: string,
+  data?: unknown,
+): JsonRpcErrorEnvelope {
   return {
     kind: 'error',
     id,
@@ -335,7 +339,9 @@ async function dispatchFrame(
     return;
   }
 
-  if (!rpcPorts.admin.isLifecycleRunning() || rpcPorts.admin.isDrainRequested()) {
+  const lifecycleState =
+    rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
+  if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
     writeEnvelope(socket, {
       kind: 'response',
       id: request.id,

@@ -1,4 +1,5 @@
 import type { Expansion } from '#src/expansion/contract.js';
+import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId, normalizeEmbeddingVector } from '#src/kb/embedding-vector.js';
 import { fetchWithTransientRetry } from '#src/infra/http-retry.js';
@@ -169,7 +170,7 @@ const geminiExpansion: Expansion = (host) => {
   };
 
   host.registerConsumer({ id: consumer.id, kind: consumer.kind }, host.scope);
-  host.bind(host.kb.embedding, provider);
+  host.bind(KB_EMBEDDING_CAPABILITY, provider);
 };
 
 export default geminiExpansion;

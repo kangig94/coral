@@ -566,9 +566,7 @@ describe('architecture boundary guard', () => {
   });
   it('kb/corpus/* must not import the runtime facade module', () => {
     const runtimeFacadeImport = /from\s+['"]\.\.\/runtime(?:\.js)?['"]/u;
-    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) =>
-      filePath.endsWith('.ts'),
-    )
+    const violations = listFilesRecursive(resolve(REPO_ROOT, 'src/kb/corpus'), (filePath) => filePath.endsWith('.ts'))
       .flatMap((filePath) => {
         const source = readFileSync(filePath, 'utf8');
         return runtimeFacadeImport.test(source) ? [toCanonicalSrcPath(REPO_ROOT, filePath)] : [];
@@ -676,7 +674,7 @@ describe('architecture boundary guard', () => {
     expect(collectTestQuarantineResidue()).toEqual([]);
   });
   it('store schema baseline no longer contains projection_kb residue', () => {
-    const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schemas/001_initial.sql'), 'utf8');
+    const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');
 
     expect(initialSchema).not.toContain('projection_kb');
   });
@@ -950,7 +948,7 @@ describe('architecture boundary guard', () => {
     expect(source).not.toMatch(/\bOpenAICompatibleProvider\b/u);
     expect(source).not.toMatch(/\bLocalOnnxProvider\b/u);
     expect(source).not.toMatch(/['"]gemini['"]/u);
-    expect(source).toMatch(/host\.require\(host\.kb\.embedding\)/u);
+    expect(source).toMatch(/host\.require\(KB_EMBEDDING_CAPABILITY\)/u);
   });
   it('kb domain modules do not compose runtimes or load engines', () => {
     // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)

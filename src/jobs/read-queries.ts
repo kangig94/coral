@@ -55,6 +55,7 @@ type JobLaunchProjection = {
           content: string;
           channel: 'prompt' | 'system';
         };
+        retention?: 'retain' | 'discard_provider_artifacts_on_terminal';
         coralEnv: Record<string, string>;
       }
     | {
@@ -109,7 +110,6 @@ type JobExitProjection = {
   endTime: string;
   continuity?: JobContinuitySnapshot | null;
 };
-
 
 type ProjectionRow = {
   job_id: string;
@@ -271,10 +271,7 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
   return eventsByJob;
 }
 
-function readLatestProjectionStatusEvents(
-  db: Database,
-  jobIds: string[],
-): Map<string, JobStatusEventsByType> {
+function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<string, JobStatusEventsByType> {
   const eventsByJob = new Map<string, JobStatusEventsByType>();
   if (jobIds.length === 0) {
     return eventsByJob;
@@ -381,6 +378,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       systemPrompt: body.request.systemPrompt,
       conversationRef: body.request.conversationRef,
       instruction: body.request.instruction,
+      retention: body.request.retention,
       coralEnv: { ...body.request.coralEnv },
     },
     ...refs,
@@ -531,11 +529,7 @@ function hydrateJobProjectionDetail(
   };
 }
 
-export function loadJobProjectionDetail(
-  db: Database,
-  jobId: string,
-  ctx: StoreReadContext,
-): JobProjectionDetail {
+export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
   const projection = readProjectionRow(db, jobId);
   const requested = readLatestEvent(db, 'job', jobId, 'job.launch.requested');
   const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');

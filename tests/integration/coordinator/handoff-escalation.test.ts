@@ -10,14 +10,14 @@ import { bindWithHandoff, HandoffEscalationError } from '#src/coordinator/handof
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { IncumbentHealth, IncumbentIdentity } from '#src/transport/ipc/handoff.js';
+import type { IncumbentIdentity } from '#src/transport/ipc/handoff.js';
 
 vi.mock('#src/transport/ipc/handoff.js', async (orig) => {
-  const original = await orig<typeof import('#src/transport/ipc/handoff.js')>();
+  const original = await orig<object>();
   return { ...original, requestIncumbentShutdown: vi.fn() };
 });
 vi.mock('#src/infra/node-process.js', async (orig) => {
-  const original = await orig<typeof import('#src/infra/node-process.js')>();
+  const original = await orig<object>();
   return { ...original, probeProcessStartedAtSeconds: vi.fn() };
 });
 
@@ -103,9 +103,7 @@ describe('handoff escalation (AC7)', () => {
     const harness = buildEscalationHarness({ incumbentExitsAt, totalBudgetMs, identity });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe matches identity until the incumbent "exits" — after that, probe returns null.
-    mockedProbe.mockImplementation(() =>
-      harness.elapsedMs() < incumbentExitsAt ? identity.processStartedAt : null,
-    );
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.processStartedAt : null));
 
     const promise = bindWithHandoff(harness.options);
     // Drive virtual time forward.
@@ -155,9 +153,7 @@ describe('handoff escalation (AC7)', () => {
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe returns null after incumbent exits → 'gone'.
-    mockedProbe.mockImplementation(() =>
-      harness.elapsedMs() < 600 ? identity.processStartedAt : null,
-    );
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.processStartedAt : null));
 
     const promise = bindWithHandoff(harness.options);
     for (let i = 0; i < 30; i += 1) {

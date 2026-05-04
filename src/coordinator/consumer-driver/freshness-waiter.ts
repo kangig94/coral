@@ -2,12 +2,7 @@ import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { isSnapshotFresherForInterest } from '../../kb/state/corpus-state.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ConsumerCursorRepository } from './persistence.js';
-import type {
-  Authority,
-  ConsumerDriverTimers,
-  ConsumerState,
-  ForcedCorpusFreshnessTarget,
-} from './state.js';
+import type { Authority, ConsumerDriverTimers, ConsumerState, ForcedCorpusFreshnessTarget } from './state.js';
 import {
   consumerAuthorityMismatchError,
   consumerNotRegisteredError,

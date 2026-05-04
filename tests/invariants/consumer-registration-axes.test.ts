@@ -14,27 +14,18 @@
 // This file holds the *runtime* half: `ConsumerDriver.register()` must accept
 // every type-valid two-axis combination.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/infra/port-types.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   return db;
 }
 

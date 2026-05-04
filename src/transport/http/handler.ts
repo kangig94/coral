@@ -637,7 +637,9 @@ export function createHttpHandler(
       return;
     }
 
-    if (!deps.admin.isLifecycleRunning() || deps.admin.isDrainRequested()) {
+    const lifecycleState =
+      deps.admin.getLifecycleState?.() ?? (deps.admin.isLifecycleRunning() ? 'running' : 'stopped');
+    if (lifecycleState === 'draining' || lifecycleState === 'stopped' || deps.admin.isDrainRequested()) {
       req.resume();
       sendJson(res, 503, { code: 'backend_shutting_down', message: 'Backend shutting down' });
       return;

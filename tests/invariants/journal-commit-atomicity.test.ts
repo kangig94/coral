@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
@@ -14,9 +14,8 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { StoragePort } from '#src/infra/port-types.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/events.js';
@@ -41,13 +40,6 @@ const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
 const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution.ts';
 const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization.ts';
 const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-recovery-finalizer.ts';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 type Db = Database;
 
 type OrphanKbFailureRow = {
@@ -137,7 +129,7 @@ const FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL = `
 
 function createDb(): Db {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: nodeStorage });
+  applyBundledStoreSchema(db);
   return db;
 }
 
@@ -409,7 +401,6 @@ function createWorkflowExecutionPort(
       );
     },
     waitForJobTerminal: async () => {},
-    cleanupWorkflowSessions: () => {},
   };
 }
 
@@ -549,9 +540,7 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
     launchOrchestrator: {
       markJobRunning() {},
     } as never,
-    executionPort: {
-      cleanupWorkflowSessions() {},
-    } as never,
+    executionPort: {} as never,
   });
 
   (

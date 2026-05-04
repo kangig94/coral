@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -8,18 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
 
 describe('jobs queries', () => {
   let db: Database;
@@ -27,7 +19,7 @@ describe('jobs queries', () => {
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
-    applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+    applyBundledStoreSchema(db);
 
     const reducers = composeReducers(jobsRegistry);
     const upcasters = createDefaultUpcasterRegistry();

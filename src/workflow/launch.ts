@@ -105,6 +105,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       workflowSlotId: slot.slotId,
       cwd: workDir ?? ctx.projectRoot,
       parentWorkflowJobId: context.workflowJobId,
+      retention: 'discard_provider_artifacts_on_terminal',
     },
     ctx,
   );

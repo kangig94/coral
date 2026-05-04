@@ -16,6 +16,8 @@ import {
   type ListExpansionResult,
   type ReadBindingRequest,
   type ReadBindingResult,
+  type RemoveExpansionCatalogRequest,
+  type RemoveExpansionCatalogResult,
   type UnequipExpansionRequest,
   type UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
@@ -27,6 +29,8 @@ function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): E
     tier: view.tier,
     status: view.status === 'active' ? 'equipped' : view.status,
     ...(view.lastError === undefined ? {} : { lastError: view.lastError }),
+    ...(view.provides === undefined ? {} : { provides: view.provides }),
+    ...(view.capabilityStatus === undefined ? {} : { capabilityStatus: view.capabilityStatus }),
   };
 }
 
@@ -54,6 +58,8 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
       await lifecycleService.unequip(request.name);
       return { status: 'uninstalled' };
     },
+    removeExpansionCatalog: async (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
+      lifecycleService.removeExpansionCatalog(request.name),
     listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({
       expansions: lifecycleService.list().map(toExpansionView),
     }),
@@ -70,6 +76,9 @@ export function createUnavailableExpansionRpc(): ExpansionRequestPort {
     unequipExpansion: async (_request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => ({
       status: 'not_equipped',
     }),
+    removeExpansionCatalog: async (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> => {
+      throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
+    },
     listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({ expansions: [] }),
     readBinding: async (_request: ReadBindingRequest): Promise<ReadBindingResult> => ({ bound: false }),
   };

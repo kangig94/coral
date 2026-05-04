@@ -1,20 +1,44 @@
 import type {
   FusedResult,
   FusedRetrievalHit,
-  GraphRetrievalResult,
+  FusionProfile,
   HybridFusion,
-  TextRetrievalResult,
-  VectorRetrievalResult,
+  RetrievalEvidence,
+  RetrievalHit,
+  RoleExecutionResult,
 } from './contract.js';
 
 export const HYBRID_RRF_K = 60;
-// Graph hits stay as an explicit third retrieval role. They are ranked by their
-// graph search result order and contribute a weighted RRF term so graph evidence
-// survives hybrid routing without overwhelming text/vector consensus.
-export const GRAPH_RRF_WEIGHT = 0.22;
 
-function rrfScore(rank: number): number {
-  return 1 / (HYBRID_RRF_K + rank);
+function rrfContribution(rank: number, weight: number, profile: FusionProfile): number {
+  return weight / (profile.rrfK + rank);
+}
+
+function roleWeight(roleResult: RoleExecutionResult, profile: FusionProfile): number {
+  const { descriptor } = roleResult.registeredRole;
+  const primaryTag = descriptor.tags[0];
+  return (
+    profile.overrides.get(descriptor.id) ??
+    (primaryTag === undefined ? undefined : profile.classWeights.get(primaryTag)) ??
+    1.0
+  );
+}
+
+function evidence(
+  roleResult: RoleExecutionResult,
+  hit: RetrievalHit,
+  weight: number,
+  profile: FusionProfile,
+): RetrievalEvidence {
+  const contribution = rrfContribution(hit.rank, weight, profile);
+  return {
+    roleId: roleResult.registeredRole.descriptor.id,
+    label: roleResult.registeredRole.descriptor.label,
+    rank: hit.rank,
+    weight,
+    contribution,
+    ...(hit.match === undefined ? {} : { match: [...hit.match] }),
+  };
 }
 
 function compareFusedHits(left: FusedRetrievalHit, right: FusedRetrievalHit): number {
@@ -26,73 +50,41 @@ function compareFusedHits(left: FusedRetrievalHit, right: FusedRetrievalHit): nu
 }
 
 export class ReciprocalRankFusion implements HybridFusion {
-  fuse(text: TextRetrievalResult, vector: VectorRetrievalResult, graph: GraphRetrievalResult): FusedResult {
+  fuse(roleResults: ReadonlyArray<RoleExecutionResult>, profile: FusionProfile): FusedResult {
     const fused = new Map<FusedRetrievalHit['entryId'], FusedRetrievalHit>();
 
-    for (const hit of text.hits) {
-      fused.set(hit.entryId, {
-        entryId: hit.entryId,
-        slug: hit.slug,
-        kind: hit.kind,
-        title: hit.title,
-        tags: [...hit.tags],
-        principles: [...hit.principles],
-        rank: 0,
-        score: rrfScore(hit.rank),
-        document: hit.document,
-        textRank: hit.rank,
-      });
-    }
-
-    for (const hit of vector.hits) {
-      const previous = fused.get(hit.entryId);
-      if (previous === undefined) {
-        fused.set(hit.entryId, {
-          entryId: hit.entryId,
-          slug: hit.slug,
-          kind: hit.kind,
-          title: hit.title,
-          tags: [...hit.tags],
-          principles: [...hit.principles],
-          rank: 0,
-          score: rrfScore(hit.rank),
-          document: null,
-          vectorRank: hit.rank,
-        });
+    for (const roleResult of roleResults) {
+      if ('diagnostic' in roleResult) {
         continue;
       }
 
-      fused.set(hit.entryId, {
-        ...previous,
-        score: previous.score + rrfScore(hit.rank),
-        vectorRank: hit.rank,
-      });
-    }
+      const weight = roleWeight(roleResult, profile);
+      for (const hit of roleResult.hits) {
+        const roleEvidence = evidence(roleResult, hit, weight, profile);
+        const previous = fused.get(hit.entryId);
+        if (previous === undefined) {
+          fused.set(hit.entryId, {
+            entryId: hit.entryId,
+            slug: hit.slug,
+            kind: hit.kind,
+            title: hit.title,
+            tags: [...hit.tags],
+            principles: [...hit.principles],
+            rank: 0,
+            score: roleEvidence.contribution,
+            document: hit.document ?? null,
+            evidence: [roleEvidence],
+          });
+          continue;
+        }
 
-    for (const hit of graph.hits) {
-      const previous = fused.get(hit.entryId);
-      const contribution = GRAPH_RRF_WEIGHT * rrfScore(hit.rank);
-      if (previous === undefined) {
         fused.set(hit.entryId, {
-          entryId: hit.entryId,
-          slug: hit.slug,
-          kind: hit.kind,
-          title: hit.title,
-          tags: [...hit.tags],
-          principles: [...hit.principles],
-          rank: 0,
-          score: contribution,
-          document: null,
-          graphRank: hit.rank,
+          ...previous,
+          document: previous.document ?? hit.document ?? null,
+          score: previous.score + roleEvidence.contribution,
+          evidence: [...previous.evidence, roleEvidence],
         });
-        continue;
       }
-
-      fused.set(hit.entryId, {
-        ...previous,
-        score: previous.score + contribution,
-        graphRank: hit.rank,
-      });
     }
 
     return {
@@ -104,7 +96,7 @@ export class ReciprocalRankFusion implements HybridFusion {
   }
 }
 
-/** Creates the project-standard hybrid ranker that blends text, vector, and graph evidence. */
+/** Creates the project-standard ranker that blends retrieval-role evidence. */
 export function createHybridFusion(): HybridFusion {
   return new ReciprocalRankFusion();
 }

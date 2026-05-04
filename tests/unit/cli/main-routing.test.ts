@@ -16,7 +16,6 @@ import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from
 import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 const mockState = vi.hoisted(() => ({
@@ -39,6 +38,7 @@ const mockState = vi.hoisted(() => ({
   expansionInfo: vi.fn(),
   expansionEquip: vi.fn(),
   expansionUnequip: vi.fn(),
+  expansionRemoveCatalog: vi.fn(),
   expansionUpdate: vi.fn(),
   kbSearch: vi.fn(),
   kbDiagnose: vi.fn(),
@@ -94,6 +94,7 @@ vi.mock('#src/cli/expansion/index.js', () => ({
     info: mockState.expansionInfo,
     equip: mockState.expansionEquip,
     unequip: mockState.expansionUnequip,
+    removeCatalog: mockState.expansionRemoveCatalog,
     update: mockState.expansionUpdate,
   }),
 }));
@@ -171,9 +172,20 @@ function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
 }
 
+// `program.js` exports `buildProgram(providerRegistry)`, a pure factory
+// that constructs a fresh Command tree on every call. No module-level
+// mutation — most call sites can reuse a cached module across tests.
+// Tests that change `process.env.HOME` (or other module-load-time env)
+// must call `loadMainModuleFresh()` to re-evaluate captured env.
+let cachedMainModule: MainModule | null = null;
 async function loadMainModule(): Promise<MainModule> {
+  cachedMainModule ??= await import('#src/cli/program.js');
+  return cachedMainModule;
+}
+async function loadMainModuleFresh(): Promise<MainModule> {
   vi.resetModules();
-  return import('#src/cli/program.js');
+  cachedMainModule = null;
+  return loadMainModule();
 }
 
 async function parseWithExpansionNormalization(program: Command, argv: string[]): Promise<void> {
@@ -237,7 +249,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const db = openStoreDatabase({
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {
@@ -318,6 +329,7 @@ describe('cli main routing', () => {
     mockState.expansionInfo.mockReset();
     mockState.expansionEquip.mockReset();
     mockState.expansionUnequip.mockReset();
+    mockState.expansionRemoveCatalog.mockReset();
     mockState.expansionUpdate.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbDiagnose.mockReset();
@@ -352,7 +364,6 @@ describe('cli main routing', () => {
     restoreStdin();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('exposes a reusable program factory', async () => {
@@ -428,6 +439,18 @@ describe('cli main routing', () => {
       },
       assertCall: () => {
         expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle');
+      },
+    },
+    {
+      label: 'remove-catalog',
+      argv: ['expansion', 'remove-catalog', 'needle'],
+      setup: () => {
+        mockState.expansionRemoveCatalog.mockResolvedValueOnce({
+          status: 'uninstalled',
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionRemoveCatalog).toHaveBeenCalledWith('needle');
       },
     },
     {
@@ -520,6 +543,19 @@ describe('cli main routing', () => {
       },
     },
     {
+      label: 'remove-catalog',
+      argv: ['expansion', 'remove-catalog', 'needle'],
+      setup: () => {
+        mockState.expansionRemoveCatalog.mockResolvedValueOnce({
+          status: 'error',
+          code: 'unknown_expansion',
+          userMessage: 'Unknown expansion.',
+          remediation: 'Run coral-cli expansion list.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+    {
       label: 'update',
       argv: ['expansion', 'update', 'needle'],
       setup: () => {
@@ -589,7 +625,7 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const kbSearchCommand = findCommand(program, 'kb', 'search');
 
-    mockState.kbSearch.mockResolvedValueOnce({ results: [], mode: 'text' });
+    mockState.kbSearch.mockResolvedValueOnce({ results: [], mode: 'text', retrievalDiagnostics: [] });
 
     await program.parseAsync(['node', 'coral-cli', ...argv]);
 
@@ -1037,7 +1073,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {});
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { retention: 'retain' });
   });
 
   it.each([
@@ -1078,6 +1114,7 @@ describe('cli main routing', () => {
       model: 'gpt-5',
       owner: 'owner-1',
       bypassPermissions: true,
+      retention: 'discard_provider_artifacts_on_terminal',
     });
   });
 
@@ -1094,7 +1131,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:architect', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:architect' });
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      agent: 'coral:architect',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('preserves explicit coral:debugger for codex agent launches', async () => {
@@ -1110,7 +1150,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:debugger', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:debugger' });
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      agent: 'coral:debugger',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('dispatches provider agent launches for the claude provider', async () => {
@@ -1126,7 +1169,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'claude', 'debugger', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', { agent: 'debugger' });
+    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', {
+      agent: 'debugger',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it('keeps detach launches on the one-shot path with text output', async () => {
@@ -1251,6 +1297,7 @@ describe('cli main routing', () => {
 
     expect(mockState.createSession).toHaveBeenCalledWith('codex', 'check func(x) behavior', {
       agent: 'architect',
+      retention: 'discard_provider_artifacts_on_terminal',
     });
   });
 
@@ -1275,6 +1322,7 @@ describe('cli main routing', () => {
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'first content second content', {
         agent: 'architect',
+        retention: 'discard_provider_artifacts_on_terminal',
       });
     } finally {
       unlinkSync(firstFile);
@@ -1303,6 +1351,7 @@ describe('cli main routing', () => {
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hello func(x)', {
         agent: 'architect',
+        retention: 'discard_provider_artifacts_on_terminal',
       });
     } finally {
       unlinkSync(materializedPromptFile);
@@ -1381,7 +1430,8 @@ describe('cli main routing', () => {
       process.env.HOME = fixture.home;
       process.env.TMPDIR = fixture.home;
 
-      const { buildProgram } = await loadMainModule();
+      // Module-load-time env capture: this test needs fresh import.
+      const { buildProgram } = await loadMainModuleFresh();
       const program = buildProgram();
       const terminalEvent = {
         type: 'terminal' as const,
@@ -1624,9 +1674,13 @@ describe('cli main routing', () => {
           title: 'KB CLI Tooling',
           matchedBy: ['filename', 'content'],
           snippet: 'Use the read surface.',
+          tags: [],
+          principles: [],
+          evidence: [],
         },
       ],
       mode: 'text',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel']);
@@ -1667,6 +1721,7 @@ describe('cli main routing', () => {
       results: [],
       mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--top-k', '5', '--output-format', 'json']);
@@ -1676,6 +1731,7 @@ describe('cli main routing', () => {
       results: [],
       mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
+      retrievalDiagnostics: [],
     });
   });
 
@@ -1744,10 +1800,14 @@ describe('cli main routing', () => {
           kind: 'note',
           title: 'Hybrid Note',
           matchedBy: [],
+          tags: [],
+          principles: [],
+          evidence: [],
         },
       ],
       mode: 'hybrid',
       warning: 'Run kb_reindex again to refresh it.',
+      retrievalDiagnostics: [],
     });
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'semantic']);

@@ -4,6 +4,7 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 
 export interface OnboardingContext {
   readBinding(id: string): Promise<{ bound: boolean; heldBy?: string }>;
+  readonly catalog?: readonly EngineManifest[];
   readonly interactive?: boolean;
   readonly prompt: {
     choose<T>(message: string, options: readonly T[]): Promise<T | null>;
@@ -14,8 +15,12 @@ export interface OnboardingContext {
   equip(id: string): Promise<void>;
 }
 
-function resolveEngine(id: string): EngineManifest | null {
-  return BUNDLED_ENGINES.find((entry) => entry.id === id) ?? null;
+function catalogFor(ctx: OnboardingContext): readonly EngineManifest[] {
+  return ctx.catalog ?? BUNDLED_ENGINES;
+}
+
+function resolveEngine(id: string, ctx: OnboardingContext): EngineManifest | null {
+  return catalogFor(ctx).find((entry) => entry.id === id) ?? null;
 }
 
 async function requireBinding(
@@ -28,7 +33,7 @@ async function requireBinding(
     return;
   }
 
-  const choices = BUNDLED_ENGINES.filter((entry) => entry.fills?.includes(step.binding));
+  const choices = catalogFor(ctx).filter((entry) => entry.fills?.includes(step.binding));
   if (ctx.interactive === false) {
     throw documentedCoralSetupError('binding_required', {
       binding: step.binding,
@@ -85,7 +90,7 @@ async function runStep(engine: EngineManifest, step: OnboardingStep, ctx: Onboar
 }
 
 export async function runExpansionOnboarding(id: string, ctx: OnboardingContext): Promise<void> {
-  const engine = resolveEngine(id);
+  const engine = resolveEngine(id, ctx);
   if (!engine) {
     throw documentedCoralSetupError('unknown_expansion', { name: id });
   }

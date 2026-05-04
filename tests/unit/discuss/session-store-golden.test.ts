@@ -6,7 +6,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { CoralEvent } from '#src/store/envelope.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { reduceDiscussProjection } from '#src/discuss/projections.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
 import type { DiscussDomainEvent } from '#src/discuss/events.js';
@@ -14,12 +14,6 @@ import type { DiscussDomainEvent } from '#src/discuss/events.js';
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const FIXTURE_JSON = join(FIXTURE_DIR, 'session-store-golden.json');
 const FIXTURE_EVENTS = join(FIXTURE_DIR, 'session-store-golden.events.jsonl');
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-const storageAdapter = {
-  readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
-  readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
-};
-
 function loadFixtureEvents(): DiscussDomainEvent[] {
   return fs
     .readFileSync(FIXTURE_EVENTS, 'utf8')
@@ -36,7 +30,7 @@ describe('discuss session-store golden master', () => {
     const db = newRawDatabase(':memory:');
 
     try {
-      applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
+      applyBundledStoreSchema(db);
 
       for (const [index, domainEvent] of events.entries()) {
         const input = toJournalInput(domainEvent);

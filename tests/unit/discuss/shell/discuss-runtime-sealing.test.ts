@@ -129,7 +129,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime), providers: permissiveProviderLookupPort },
+    { db: openTestStoreDb(runtime, ':memory:'), providers: permissiveProviderLookupPort },
   );
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),
@@ -145,8 +145,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     },
     jobStatusReader: {
       read: (jobId) => progressStore.readStatus(jobId),
-    readExit: () => null,
-  },
+      readExit: () => null,
+    },
   });
   const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };

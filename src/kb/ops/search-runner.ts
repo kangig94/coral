@@ -1,205 +1,205 @@
-import { serializeCoralSetupError } from '../../runtime/errors.js';
+import { CoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
 import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
-import { normalizeWhitespace } from '../text-normalization.js';
-import type { FtsRetrieval, KbRuntime } from '../contract.js';
+import type { Backed, EmbeddingService, FtsRetrieval, KbRuntime } from '../contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
 import type { EntityGraph, KbIndex, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
+import { normalizeWhitespace } from '../text-normalization.js';
+import { isGraphSearchFresh } from '../search/graph-retrieval.js';
+import { createHybridFusion } from '../search/hybrid.js';
 import {
-  buildGraphSearchContext,
-  isGraphSearchFresh,
-  RuntimeGraphRetrieval,
-  type GraphSearchContext,
-} from '../search/graph-retrieval.js';
+  createQueryPlanner,
+  type KbSearchIntent,
+  type QueryPlan,
+  type RoleInvocation,
+} from '../search/query-planner.js';
 import { buildHybridResponse, buildTextResponse, buildVectorResponse } from '../search/responses.js';
-import { createRouter } from '../search/router.js';
 import type { QueryContext } from '../search/snippets.js';
-import {
-  emptySearchResponse,
-  filterHitsByScope,
-  filterSearchableHits,
-  fuseRetrievalRoles,
-  rerankHits,
-  resolveHit,
-  shouldContinueWidening,
-  type HybridKbSearchHit,
-  type ResolvedKbSearchHit,
-  type SearchResponseWarnings,
-} from '../search/text-retrieval.js';
-import { EMPTY_VECTOR_RETRIEVAL_RESULT, searchExplicitVectorResults } from '../search/vector-query.js';
-import type { GraphRetrievalResult, VectorRetrievalHit } from '../search/contract.js';
+import { emptySearchResponse, type HybridKbSearchHit, type SearchResponseWarnings } from '../search/text-retrieval.js';
+import type {
+  RetrievalDiagnostic,
+  RetrievalDiagnosticCode,
+  RoleExecutionResult,
+  RoleQueryContext,
+  RoleSearchResult,
+} from '../search/contract.js';
+import { defaultFusionProfile } from '../search/default-fusion-profile.js';
 
-export type VectorBindingName = 'kb.embedding' | 'kb.vector';
+export type VectorBindingName = typeof KB_VECTOR_CAPABILITY | typeof KB_EMBEDDING_CAPABILITY;
 
-const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set(['kb.embedding', 'kb.vector']);
+const VECTOR_BINDING_NAMES: ReadonlySet<VectorBindingName> = new Set([KB_VECTOR_CAPABILITY, KB_EMBEDDING_CAPABILITY]);
+
+const neverAbortSignal = new AbortController().signal;
+
+const fallbackFts: FtsRetrieval = {
+  async search() {
+    return { hits: [], exhausted: true };
+  },
+  tokenize(text) {
+    const normalized = normalizeWhitespace(text.toLowerCase());
+    return normalized === '' ? [] : normalized.split(/\s+/u);
+  },
+  warnings() {
+    return [];
+  },
+};
 
 export type SearchRequest = {
   rawQuery: string;
   topK: number;
   scope: KbSearchScope;
-  mode?: KbSearchMode;
+  intent: KbSearchIntent;
+  signal: AbortSignal;
 };
 
-export type SearchRuntime = {
-  fts: FtsRetrieval;
+type SearchRuntime = {
   index: KbIndex;
 };
 
-export type RuntimeResolution =
-  | { kind: 'ready'; runtime: SearchRuntime }
-  | { kind: 'response'; response: KbSearchResponse };
+type RuntimeResolution = { kind: 'ready'; runtime: SearchRuntime } | { kind: 'response'; response: KbSearchResponse };
 
-type TextSearchState = {
-  queryCtx: QueryContext;
-  selectedHits: ResolvedKbSearchHit[];
-  communitiesFresh: boolean;
-  graphFresh: boolean;
-};
-
-type TextGraphSearchState = TextSearchState & {
-  router: ReturnType<typeof createRouter>;
-  graphResult: GraphRetrievalResult;
-  textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit>;
-};
-
-export type SearchExecutionContext = SearchRuntime & {
+type SearchExecutionContext = SearchRuntime & {
   rt: KbRuntime;
   request: SearchRequest;
+  roleQueryContext: RoleQueryContext;
   getQueryContext(): QueryContext;
   getCommunitiesFresh(): boolean;
   getGraphFresh(): boolean;
-  getGraphContext(): GraphSearchContext | null;
-  getTextState(): Promise<TextSearchState>;
-  getTextGraphState(): Promise<TextGraphSearchState>;
-  searchVectorResults(explicit: boolean): Promise<Awaited<ReturnType<typeof searchExplicitVectorResults>>>;
 };
 
-type SearchRetrieval =
-  | {
-      mode: 'text';
-      hits: Array<ResolvedKbSearchHit | HybridKbSearchHit>;
-      queryCtx: QueryContext;
-      communitiesFresh: boolean;
-      graphFresh: boolean;
-      responseWarnings?: SearchResponseWarnings;
-    }
-  | {
-      mode: 'vector';
-      hits: readonly VectorRetrievalHit[];
-      responseWarnings?: SearchResponseWarnings;
-    }
-  | {
-      mode: 'hybrid';
-      hits: HybridKbSearchHit[];
-      queryCtx: QueryContext;
-      communitiesFresh: boolean;
-      graphFresh: boolean;
-      responseWarnings?: SearchResponseWarnings;
-    };
+type StageExecution = {
+  results: RoleExecutionResult[];
+  diagnostics: RetrievalDiagnostic[];
+  fallbackRequired: boolean;
+};
 
-type SearchExecutionOptions = {
-  rethrowMissingVectorBinding(error: unknown): never;
+type SearchRetrieval = {
+  mode: KbSearchMode;
+  hits: HybridKbSearchHit[];
+  diagnostics: RetrievalDiagnostic[];
+  responseWarnings: SearchResponseWarnings;
 };
 
 export function isVectorBindingName(binding: string): binding is VectorBindingName {
   return VECTOR_BINDING_NAMES.has(binding as VectorBindingName);
 }
 
+function missingBindingRemediation(binding: VectorBindingName): string {
+  return binding === KB_EMBEDDING_CAPABILITY
+    ? "Run `coral-cli expansion list` to find an engine that fills 'kb.embedding', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config."
+    : "Run `coral-cli expansion list` to find an engine that fills 'kb.vector', then `coral-cli expansion equip <name>`. FTS-only search continues to work zero-config.";
+}
+
+function rethrowAsMissingVectorBinding(error: unknown): never {
+  const setupError = serializeCoralSetupError(error);
+  const binding = setupError?.context?.binding;
+  if (
+    setupError === null ||
+    setupError.code !== 'binding_empty' ||
+    typeof binding !== 'string' ||
+    !isVectorBindingName(binding)
+  ) {
+    throw error;
+  }
+
+  throw Object.assign(
+    new CoralSetupError({
+      code: 'binding_empty',
+      userMessage: `Vector search needs ${binding}.`,
+      remediation: missingBindingRemediation(binding),
+      context: { binding },
+    }),
+    { binding, cause: error },
+  );
+}
+
 export function createSearchRequest(
   query: string,
   topKInput: number,
   scope: KbSearchScope,
-  mode?: KbSearchMode,
+  intent: KbSearchIntent = 'auto',
+  signal: AbortSignal = neverAbortSignal,
 ): SearchRequest {
   return {
     rawQuery: query.trim(),
     topK: Number.isInteger(topKInput) && topKInput > 0 ? topKInput : 20,
     scope,
-    mode,
+    intent,
+    signal,
   };
 }
 
-export function resolveSearchRuntime(rt: KbRuntime, request: SearchRequest): RuntimeResolution {
-  let ftsBacked: ReturnType<typeof rt.fts.read>;
-  try {
-    ftsBacked = rt.fts.read();
-  } catch (error) {
-    const setupError = serializeCoralSetupError(error);
-    if (setupError?.code === 'binding_empty' && setupError.context?.binding === 'kb.fts') {
-      return { kind: 'response', response: degradedSearchResponse() };
-    }
-    throw error;
+function resolveSearchRuntime(rt: KbRuntime, request: SearchRequest): RuntimeResolution {
+  const storedIndex = rt.readIndex();
+  if (storedIndex === null) {
+    const emptyResponseForMissingIndex = emptySearchResponse(request.intent);
+    return {
+      kind: 'response',
+      response: {
+        ...emptyResponseForMissingIndex,
+        warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+      },
+    };
   }
 
-  const fts: FtsRetrieval = ftsBacked.read();
-  const ftsWarnings = fts.warnings();
-  if (ftsWarnings.includes('fts_index_uninitialized') || ftsWarnings.includes('fts_index_stale')) {
-    return { kind: 'response', response: degradedSearchResponse() };
-  }
-
-  const index = rt.readIndex() ?? rt.readIndexOrEmpty();
+  const index = storedIndex;
   if (Object.keys(index.entries).length === 0) {
-    return { kind: 'response', response: emptySearchResponse(request.mode) };
+    return { kind: 'response', response: emptySearchResponse(request.intent) };
   }
 
-  return { kind: 'ready', runtime: { fts, index } };
+  return { kind: 'ready', runtime: { index } };
 }
 
-function degradedSearchResponse(): KbSearchResponse {
-  return {
-    mode: 'text',
-    results: [],
-    warnings: ['kb_search_degraded_until_coordinator_rebuild'],
-  };
-}
-
-function resolveQueryContext(
-  _rt: KbRuntime,
-  request: SearchRequest & { fts: FtsRetrieval },
-): { queryContext: QueryContext; normalizedQuery: string; queryTokens: readonly string[] } {
-  const normalizedQuery = normalizeWhitespace(request.rawQuery);
-  const queryTokens = request.fts.tokenize(normalizedQuery);
-
-  return {
-    normalizedQuery,
-    queryTokens,
-    queryContext: {
-      rawQuery: request.rawQuery,
-      normalizedQuery,
-      queryTokens,
-      fts: request.fts,
-    },
-  };
-}
-
-export function createSearchExecutionContext(
+function createSearchExecutionContext(
   rt: KbRuntime,
   request: SearchRequest,
   runtime: SearchRuntime,
-  options: SearchExecutionOptions,
 ): SearchExecutionContext {
-  const { fts, index } = runtime;
-  let queryCtx: QueryContext | undefined;
+  const { index } = runtime;
+  let normalizedQuery: string | undefined;
+  let queryTokens: readonly string[] | undefined;
+  let queryContext: QueryContext | undefined;
+  let fts: FtsRetrieval | undefined;
   let communitiesFresh: boolean | undefined;
   let currentGraphLoaded = false;
   let currentGraph: EntityGraph | null = null;
   let graphFresh: boolean | undefined;
-  let graphContextLoaded = false;
-  let graphContext: GraphSearchContext | null = null;
-  let textStatePromise: Promise<TextSearchState> | undefined;
-  let textGraphStatePromise: Promise<TextGraphSearchState> | undefined;
+  let embeddingPromise: Promise<Float32Array> | undefined;
+
+  const getNormalizedQuery = (): string => {
+    normalizedQuery ??= normalizeWhitespace(request.rawQuery);
+    return normalizedQuery;
+  };
+
+  const readFts = (): FtsRetrieval => {
+    fts ??= rt.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
+    return fts;
+  };
 
   const getQueryContext = (): QueryContext => {
-    if (queryCtx !== undefined) {
-      return queryCtx;
+    if (queryContext !== undefined) {
+      return queryContext;
     }
-    queryCtx = resolveQueryContext(rt, { ...request, fts }).queryContext;
-    return queryCtx;
+
+    let queryFts: FtsRetrieval;
+    try {
+      queryFts = readFts();
+    } catch {
+      queryFts = fallbackFts;
+    }
+
+    const normalized = getNormalizedQuery();
+    const tokens = queryFts.tokenize(normalized);
+    queryContext = {
+      rawQuery: request.rawQuery,
+      normalizedQuery: normalized,
+      queryTokens: tokens,
+      fts: queryFts,
+    };
+    return queryContext;
   };
 
   const getCommunitiesFresh = (): boolean => {
-    if (communitiesFresh !== undefined) {
-      return communitiesFresh;
-    }
-    communitiesFresh = areCommunityDocumentsFresh(rt, index);
+    communitiesFresh ??= areCommunityDocumentsFresh(rt, index);
     return communitiesFresh;
   };
 
@@ -212,276 +212,316 @@ export function createSearchExecutionContext(
   };
 
   const getGraphFresh = (): boolean => {
-    if (graphFresh !== undefined) {
-      return graphFresh;
-    }
-    if (graphContextLoaded) {
-      graphFresh = graphContext !== null;
-      return graphFresh;
-    }
-    graphFresh = isGraphSearchFresh(index, getCurrentGraph());
+    graphFresh ??= isGraphSearchFresh(index, getCurrentGraph());
     return graphFresh;
   };
 
-  const getGraphContext = (): GraphSearchContext | null => {
-    if (!graphContextLoaded) {
-      graphContext = buildGraphSearchContext(index, getCurrentGraph());
-      graphContextLoaded = true;
-      graphFresh = graphContext !== null;
-    }
-    return graphContext;
-  };
-
-  const getTextState = async (): Promise<TextSearchState> => {
-    if (textStatePromise !== undefined) {
-      return textStatePromise;
-    }
-
-    textStatePromise = (async () => {
-      const nextQueryCtx = getQueryContext();
-      const nextCommunitiesFresh = getCommunitiesFresh();
-      const resolvedHits: ResolvedKbSearchHit[] = [];
-
-      if (nextQueryCtx.queryTokens.length > 0) {
-        let limit = request.topK;
-        let result = await fts.search(nextQueryCtx.normalizedQuery, limit, request.scope);
-        resolvedHits.push(...result.hits.map((hit) => resolveHit(hit, index)));
-
-        while (
-          shouldContinueWidening(
-            result.hits,
-            resolvedHits,
-            nextCommunitiesFresh,
-            request.scope,
-            request.topK,
-            result.exhausted,
-          )
-        ) {
-          const prevCount = result.hits.length;
-          limit = Math.max(limit + 1, limit * 2);
-          result = await fts.search(nextQueryCtx.normalizedQuery, limit, request.scope);
-          for (let i = prevCount; i < result.hits.length; i += 1) {
-            resolvedHits.push(resolveHit(result.hits[i], index));
-          }
-        }
+  const roleQueryContext: RoleQueryContext = {
+    rawQuery: request.rawQuery,
+    topK: request.topK,
+    scope: request.scope,
+    signal: request.signal,
+    normalizedQuery: getNormalizedQuery,
+    tokens() {
+      if (queryTokens !== undefined) {
+        return queryTokens;
       }
-
-      const searchableHits = filterSearchableHits(resolvedHits, nextCommunitiesFresh);
-      return {
-        queryCtx: nextQueryCtx,
-        selectedHits:
-          request.scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, request.scope),
-        communitiesFresh: nextCommunitiesFresh,
-        graphFresh: getGraphFresh(),
-      };
-    })();
-
-    return textStatePromise;
-  };
-
-  const getTextGraphState = async (): Promise<TextGraphSearchState> => {
-    if (textGraphStatePromise !== undefined) {
-      return textGraphStatePromise;
-    }
-
-    textGraphStatePromise = (async () => {
-      const textState = await getTextState();
-      const router = createRouter(rt, {
-        graph: new RuntimeGraphRetrieval(index, getGraphContext()),
-      });
-      const nextGraphResult = await router.graph.search(request.rawQuery, request.scope);
-
-      return {
-        ...textState,
-        graphFresh: getGraphFresh(),
-        router,
-        graphResult: nextGraphResult,
-        textHits:
-          nextGraphResult.hits.length === 0
-            ? textState.selectedHits
-            : fuseRetrievalRoles(
-                router.hybrid,
-                textState.selectedHits,
-                EMPTY_VECTOR_RETRIEVAL_RESULT.hits,
-                nextGraphResult,
-              ),
-      };
-    })();
-
-    return textGraphStatePromise;
-  };
-
-  const searchVectorResults = async (explicit: boolean) => {
-    try {
-      return await searchExplicitVectorResults(rt, request.rawQuery, request.topK, request.scope);
-    } catch (error) {
-      const setupError = serializeCoralSetupError(error);
-      const binding = setupError?.context?.binding;
-      if (setupError?.code === 'binding_empty' && typeof binding === 'string' && isVectorBindingName(binding)) {
-        if (explicit) {
-          options.rethrowMissingVectorBinding(error);
-        }
-        return {
-          hits: [],
-          responseWarnings: {},
-          fallbackToText: true as const,
-        };
-      }
-      throw error;
-    }
+      queryTokens = readFts().tokenize(getNormalizedQuery());
+      return queryTokens;
+    },
+    embedding() {
+      embeddingPromise ??= rt.capabilityRegistry
+        .runtimeView()
+        .read<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY)
+        .read()
+        .embedQuery(request.rawQuery);
+      return embeddingPromise;
+    },
+    index() {
+      return index;
+    },
+    graphContext: getCurrentGraph,
   };
 
   return {
     ...runtime,
     rt,
     request,
+    roleQueryContext,
     getQueryContext,
     getCommunitiesFresh,
     getGraphFresh,
-    getGraphContext,
-    getTextState,
-    getTextGraphState,
-    searchVectorResults,
   };
 }
 
-function textRetrieval(
-  state: TextSearchState,
-  responseWarnings?: SearchResponseWarnings,
-  hits: Array<ResolvedKbSearchHit | HybridKbSearchHit> = state.selectedHits,
-): SearchRetrieval {
+function isSetupFailure(error: unknown): boolean {
+  return serializeCoralSetupError(error) !== null;
+}
+
+function diagnosticCode(error: unknown, signal: AbortSignal): RetrievalDiagnosticCode {
+  const setupError = serializeCoralSetupError(error);
+  if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+    return 'role_aborted';
+  }
+  if (setupError?.code === 'binding_empty') {
+    return 'binding_missing';
+  }
+  return 'role_failed';
+}
+
+function setupBinding(error: unknown): string | undefined {
+  const binding = serializeCoralSetupError(error)?.context?.binding;
+  return typeof binding === 'string' ? binding : undefined;
+}
+
+function diagnosticPublicText(invocation: RoleInvocation, error: unknown, recoverable: boolean): string | undefined {
+  if (recoverable) {
+    return undefined;
+  }
+
+  const setupError = serializeCoralSetupError(error);
+  if (setupError !== null) {
+    return setupError.userMessage;
+  }
+  if (invocation.registeredRole.descriptor.id === 'vector') {
+    return 'KB vector search is unavailable for this query.';
+  }
+  return undefined;
+}
+
+function diagnosticFromError(
+  invocation: RoleInvocation,
+  error: unknown,
+  recoverable: boolean,
+  signal: AbortSignal,
+): RetrievalDiagnostic {
+  const code = diagnosticCode(error, signal);
+  const publicText = diagnosticPublicText(invocation, error, recoverable);
   return {
-    mode: 'text',
-    hits,
-    queryCtx: state.queryCtx,
-    communitiesFresh: state.communitiesFresh,
-    graphFresh: state.graphFresh,
-    responseWarnings,
+    roleId: invocation.registeredRole.descriptor.id,
+    code,
+    recoverable,
+    ...(publicText === undefined ? {} : { publicText }),
   };
 }
 
-async function runFtsOnly(ctx: SearchExecutionContext): Promise<SearchRetrieval> {
-  return textRetrieval(await ctx.getTextState());
-}
-
-async function runVectorOnly(ctx: SearchExecutionContext): Promise<SearchRetrieval> {
-  if (ctx.request.scope === 'communities') {
-    return { mode: 'vector', hits: [] };
-  }
-
-  const vectorResult = await ctx.searchVectorResults(true);
-  if (vectorResult.fallbackToText) {
-    return textRetrieval(await ctx.getTextState(), vectorResult.responseWarnings);
-  }
-
-  return { mode: 'vector', hits: vectorResult.hits, responseWarnings: vectorResult.responseWarnings };
-}
-
-async function runHybrid(ctx: SearchExecutionContext): Promise<SearchRetrieval> {
-  if (ctx.request.scope === 'communities') {
-    const textGraphState = await ctx.getTextGraphState();
-    return {
-      mode: 'hybrid',
-      hits: fuseRetrievalRoles(
-        textGraphState.router.hybrid,
-        textGraphState.selectedHits,
-        EMPTY_VECTOR_RETRIEVAL_RESULT.hits,
-        textGraphState.graphResult,
-      ),
-      queryCtx: textGraphState.queryCtx,
-      communitiesFresh: textGraphState.communitiesFresh,
-      graphFresh: textGraphState.graphFresh,
-    };
-  }
-
-  const vectorResult = await ctx.searchVectorResults(true);
-  if (vectorResult.fallbackToText) {
-    return textRetrieval(await ctx.getTextState(), vectorResult.responseWarnings);
-  }
-
-  const textGraphState = await ctx.getTextGraphState();
-  return {
-    mode: 'hybrid',
-    hits: fuseRetrievalRoles(
-      textGraphState.router.hybrid,
-      textGraphState.selectedHits,
-      vectorResult.hits,
-      textGraphState.graphResult,
-    ),
-    queryCtx: textGraphState.queryCtx,
-    communitiesFresh: textGraphState.communitiesFresh,
-    graphFresh: textGraphState.graphFresh,
-    responseWarnings: vectorResult.responseWarnings,
-  };
-}
-
-async function runAuto(ctx: SearchExecutionContext): Promise<SearchRetrieval> {
-  if (ctx.request.scope === 'communities') {
-    return runFtsOnly(ctx);
-  }
-
-  const textGraphState = await ctx.getTextGraphState();
-  const vectorResult = await ctx.searchVectorResults(false);
-  if (vectorResult.fallbackToText) {
-    return textRetrieval(textGraphState, vectorResult.responseWarnings, textGraphState.textHits);
-  }
-
-  const fusedHits = fuseRetrievalRoles(
-    textGraphState.router.hybrid,
-    textGraphState.selectedHits,
-    vectorResult.hits,
-    textGraphState.graphResult,
+function isBuiltinRequiredSemantic(invocation: RoleInvocation): boolean {
+  const { registeredRole } = invocation;
+  return (
+    invocation.required &&
+    registeredRole.origin === 'builtin' &&
+    registeredRole.criticality === 'core' &&
+    registeredRole.descriptor.tags[0] === 'semantic'
   );
-  const usedVector = fusedHits.slice(0, ctx.request.topK).some((hit) => hit.vectorRank !== undefined);
-  if (!usedVector) {
-    return textRetrieval(textGraphState, vectorResult.responseWarnings, textGraphState.textHits);
+}
+
+function shouldTriggerFallback(
+  intent: KbSearchIntent,
+  invocation: RoleInvocation,
+  error: unknown,
+  signal: AbortSignal,
+): boolean {
+  return (
+    intent === 'vector' &&
+    !isSetupFailure(error) &&
+    diagnosticCode(error, signal) !== 'role_aborted' &&
+    isBuiltinRequiredSemantic(invocation)
+  );
+}
+
+function fulfilledRoleResult(invocation: RoleInvocation, result: RoleSearchResult): StageExecution {
+  if (result.diagnostic !== undefined) {
+    const executionResult: RoleExecutionResult = {
+      registeredRole: invocation.registeredRole,
+      diagnostic: result.diagnostic,
+    };
+    return { results: [executionResult], diagnostics: [result.diagnostic], fallbackRequired: false };
   }
 
   return {
-    mode: 'hybrid',
-    hits: fusedHits,
-    queryCtx: textGraphState.queryCtx,
-    communitiesFresh: textGraphState.communitiesFresh,
-    graphFresh: textGraphState.graphFresh,
-    responseWarnings: vectorResult.responseWarnings,
+    results: [
+      {
+        registeredRole: invocation.registeredRole,
+        hits: result.hits,
+      },
+    ],
+    diagnostics: [],
+    fallbackRequired: false,
   };
 }
 
-export async function runRetrieval(ctx: SearchExecutionContext): Promise<SearchRetrieval> {
-  if (ctx.request.mode === 'text') {
-    return runFtsOnly(ctx);
+function rejectedRoleResult(ctx: SearchExecutionContext, invocation: RoleInvocation, error: unknown): StageExecution {
+  const setupFailure = isSetupFailure(error);
+  if (invocation.required && setupFailure) {
+    // Rule 1: required setup failures keep their CoralSetupError remediation.
+    const binding = setupBinding(error);
+    if (binding !== undefined && isVectorBindingName(binding)) {
+      rethrowAsMissingVectorBinding(error);
+    }
+    throw error;
   }
-  if (ctx.request.mode === 'vector') {
-    return runVectorOnly(ctx);
-  }
-  if (ctx.request.mode === 'hybrid') {
-    return runHybrid(ctx);
-  }
-  return runAuto(ctx);
+
+  // Rule 2: required + non-setup -> non-recoverable (Rule 1 above already
+  // threw for required + setup, so this branch only handles non-setup).
+  // Rule 3: optional (any failure) -> recoverable. Combined: recoverable
+  // when !required (Rule 3) OR when required+setup which we never reach.
+  const diagnostic = diagnosticFromError(invocation, error, !invocation.required || setupFailure, ctx.request.signal);
+  return {
+    results: [
+      {
+        registeredRole: invocation.registeredRole,
+        diagnostic,
+      },
+    ],
+    diagnostics: [diagnostic],
+    fallbackRequired: shouldTriggerFallback(ctx.request.intent, invocation, error, ctx.request.signal),
+  };
 }
 
-export function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetrieval): KbSearchResponse {
+async function executeStage(
+  ctx: SearchExecutionContext,
+  invocations: readonly RoleInvocation[],
+): Promise<StageExecution> {
+  const settled = await Promise.allSettled(
+    invocations.map((invocation) => invocation.registeredRole.role.search(ctx.roleQueryContext)),
+  );
+  const execution: StageExecution = { results: [], diagnostics: [], fallbackRequired: false };
+
+  for (let index = 0; index < settled.length; index += 1) {
+    const invocation = invocations[index];
+    const settledResult = settled[index];
+    const classified =
+      settledResult.status === 'fulfilled'
+        ? fulfilledRoleResult(invocation, settledResult.value)
+        : rejectedRoleResult(ctx, invocation, settledResult.reason);
+
+    execution.results.push(...classified.results);
+    execution.diagnostics.push(...classified.diagnostics);
+    execution.fallbackRequired ||= classified.fallbackRequired;
+  }
+
+  return execution;
+}
+
+function roleHasTag(results: readonly RoleExecutionResult[], roleId: string, tag: string): boolean {
+  const result = results.find((candidate) => candidate.registeredRole.descriptor.id === roleId);
+  return result?.registeredRole.descriptor.tags.includes(tag) ?? false;
+}
+
+function topKEvidenceHasTag(
+  hits: readonly HybridKbSearchHit[],
+  results: readonly RoleExecutionResult[],
+  topK: number,
+  tag: string,
+): boolean {
+  return hits.slice(0, topK).some((hit) => hit.evidence.some((evidence) => roleHasTag(results, evidence.roleId, tag)));
+}
+
+function hasSuccessfulSemanticContributor(results: readonly RoleExecutionResult[]): boolean {
+  return results.some((result) => 'hits' in result && result.registeredRole.descriptor.tags.includes('semantic'));
+}
+
+function deriveResponseMode(
+  intent: KbSearchIntent,
+  plan: QueryPlan,
+  results: readonly RoleExecutionResult[],
+  fusedHits: readonly HybridKbSearchHit[],
+  topK: number,
+): KbSearchMode {
+  if (intent === 'text') {
+    return 'text';
+  }
+  if (intent === 'hybrid') {
+    return 'hybrid';
+  }
+  if (intent === 'vector') {
+    if (plan.primaryInvocations.length === 0 || hasSuccessfulSemanticContributor(results)) {
+      return 'vector';
+    }
+    return 'text';
+  }
+  return topKEvidenceHasTag(fusedHits, results, topK, 'semantic') ? 'hybrid' : 'text';
+}
+
+function responseWarningsFromDiagnostics(diagnostics: readonly RetrievalDiagnostic[]): SearchResponseWarnings {
+  const warnings = [
+    ...new Set(
+      diagnostics.map((diagnostic) => diagnostic.publicText).filter((text): text is string => text !== undefined),
+    ),
+  ];
+  return warnings.length === 0 ? {} : { warnings };
+}
+
+function emptyResponse(
+  mode: KbSearchMode,
+  diagnostics: readonly RetrievalDiagnostic[],
+  responseWarnings: SearchResponseWarnings,
+): KbSearchResponse {
+  return {
+    mode,
+    results: [],
+    retrievalDiagnostics: [...diagnostics],
+    ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
+    ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
+  };
+}
+
+function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetrieval): KbSearchResponse {
+  if (retrieval.hits.length === 0) {
+    return emptyResponse(retrieval.mode, retrieval.diagnostics, retrieval.responseWarnings);
+  }
+
   if (retrieval.mode === 'vector') {
-    return buildVectorResponse(retrieval.hits, ctx.request.topK, retrieval.responseWarnings);
+    return buildVectorResponse(retrieval.hits, ctx.request.topK, retrieval.responseWarnings, retrieval.diagnostics);
   }
   if (retrieval.mode === 'hybrid') {
     return buildHybridResponse(
       retrieval.hits,
-      retrieval.queryCtx,
+      ctx.getQueryContext(),
       ctx.request.topK,
       ctx.index,
-      retrieval.communitiesFresh,
-      retrieval.graphFresh,
+      ctx.getCommunitiesFresh(),
+      ctx.getGraphFresh(),
       retrieval.responseWarnings,
+      retrieval.diagnostics,
     );
   }
   return buildTextResponse(
     retrieval.hits,
-    retrieval.queryCtx,
+    ctx.getQueryContext(),
     ctx.request.topK,
     ctx.index,
-    retrieval.communitiesFresh,
-    retrieval.graphFresh,
+    ctx.getCommunitiesFresh(),
+    ctx.getGraphFresh(),
     retrieval.responseWarnings,
+    retrieval.diagnostics,
   );
+}
+
+export async function runRetrieval(rt: KbRuntime, request: SearchRequest): Promise<KbSearchResponse> {
+  const resolution = resolveSearchRuntime(rt, request);
+  if (resolution.kind === 'response') {
+    return resolution.response;
+  }
+
+  const ctx = createSearchExecutionContext(rt, request, resolution.runtime);
+  const planner = createQueryPlanner();
+  const plan = planner.plan(request.intent, rt.roleRegistry.executionView(), ctx.roleQueryContext);
+  const primary = await executeStage(ctx, plan.primaryInvocations);
+  const fallback =
+    primary.fallbackRequired && plan.fallbackInvocations !== undefined
+      ? await executeStage(ctx, plan.fallbackInvocations)
+      : { results: [], diagnostics: [], fallbackRequired: false };
+  const results = [...primary.results, ...fallback.results];
+  const diagnostics = [...primary.diagnostics, ...fallback.diagnostics];
+  const fused = createHybridFusion().fuse(results, defaultFusionProfile);
+  const mode = deriveResponseMode(request.intent, plan, results, fused.hits, request.topK);
+  const responseWarnings = responseWarningsFromDiagnostics(diagnostics);
+
+  return buildSearchResponse(ctx, {
+    mode,
+    hits: fused.hits,
+    diagnostics,
+    responseWarnings,
+  });
 }

@@ -1,4 +1,5 @@
 import type { Expansion } from '#src/expansion/contract.js';
+import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';
 
 type FakeEmbeddingService = EmbeddingService & {
@@ -37,7 +38,7 @@ const fakeEmbedder: Expansion = (host) => {
   };
 
   host.registerConsumer(provider.consumer as unknown as Parameters<typeof host.registerConsumer>[0], host.scope);
-  host.bind(host.kb.embedding, provider);
+  host.bind(KB_EMBEDDING_CAPABILITY, provider);
 };
 
 export default fakeEmbedder;

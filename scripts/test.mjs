@@ -45,11 +45,24 @@ async function runVitestStrict(cmd) {
   }
 }
 
-try {
-  await runAsync('npx tsc -p tests/types/tsconfig.json');
-  await runAsync('npx tsc -p tsconfig.test.json --noEmit');
-  await runVitestStrict('npx vitest run --config vitest/default.ts');
-  await runVitestStrict('npx vitest run --config vitest/simulation.ts');
-} catch {
+// Parallelize typecheck and vitest. tsc is mostly single-threaded (1 core);
+// vitest spawns N workers (5-6 cores). They don't contend on the same
+// resources, so wall-clock drops to max(tsc, vitest) instead of sum.
+//
+// `tests/types/tsconfig.json` (4 .test-d.ts files) is a strict subset of
+// `tsconfig/typecheck.json` (whole repo) — running both is redundant.
+// The comprehensive typecheck covers the .test-d.ts assertions too.
+const tasks = [
+  runAsync('npx tsc -p tsconfig/typecheck.json'),
+  runVitestStrict('npx vitest run --config vitest/default.ts'),
+  runVitestStrict('npx vitest run --config vitest/simulation.ts'),
+];
+
+const results = await Promise.allSettled(tasks);
+const failed = results.filter((r) => r.status === 'rejected');
+if (failed.length > 0) {
+  for (const failure of failed) {
+    console.error(failure.reason instanceof Error ? failure.reason.message : String(failure.reason));
+  }
   process.exit(1);
 }

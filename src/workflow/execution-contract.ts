@@ -9,6 +9,7 @@ import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
+import type { RetentionPolicy } from '../sessions/entry.js';
 
 export type StepDetail = {
   stepIndex: number;
@@ -22,11 +23,6 @@ export type PipelineResult = {
   stepDetails: StepDetail[];
 };
 
-export interface WorkflowSessionHandle {
-  providerName: string;
-  sessionId: string;
-}
-
 export interface CoralDispatchInput {
   prompt: string;
   sessionId?: string;
@@ -37,6 +33,7 @@ export interface CoralDispatchInput {
   bypassPermissions?: boolean;
   systemPrompt?: string;
   parentWorkflowJobId?: string;
+  retention?: RetentionPolicy;
 }
 
 export interface ResumeInput {
@@ -88,7 +85,6 @@ export interface WorkflowExecutionPort {
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
-  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void;
 }
 
 export type LaunchedAtom = {

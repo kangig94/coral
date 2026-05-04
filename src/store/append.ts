@@ -41,6 +41,8 @@ export interface AppendedEvent extends CoralEvent {
   readonly ts: string;
 }
 
+export type PostCommitObserver = (appended: readonly AppendedEvent[]) => void;
+
 export type CommitClosureResult = undefined;
 
 type IsAny<T> = 0 extends 1 & T ? true : false;

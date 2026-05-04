@@ -18,16 +18,20 @@ Commands:
 exports[`cli main routing > preserves help output for 'codex' via snapshot 1`] = `
 "Usage: coral-cli codex [options] [agent]
 
-codex provider operations
+Run a prompt via codex
 
 Arguments:
-  agent                          Agent name (omit for raw execution)
+  agent                          Agent name (provider session artifacts are
+                                 discarded on completion when an agent is set;
+                                 omit for raw execution)
 
 Options:
   -i, --input <text-or-file...>  Prompt text or file path (multiple tokens are
                                  joined with spaces; a single existing path is
                                  read as a file)
-  -s, --session <id>             Session ID
+  -s, --session <id>             Session ID to resume; retention policy of the
+                                 existing session applies (--agent does not
+                                 change retention on resume)
   -w, --work-dir <path>          Working directory
   -m, --model <model>            Model override
   -o, --owner <id>               Owner ID for memo isolation
@@ -62,15 +66,17 @@ exports[`cli main routing > preserves help output for 'expansion' via snapshot 1
 Manage expansion packages
 
 Options:
-  -h, --help      display help for command
+  -h, --help             display help for command
 
 Commands:
-  list            List installed and available expansions
-  equip <name>    Install or activate an expansion
-  unequip <name>  Deactivate and uninstall an expansion
-  update <name>   Update an installed expansion
-  info <name>     Show expansion metadata and install state
-  help [command]  display help for command
+  list                   List installed and available expansions
+  equip <name>           Install or activate an expansion
+  unequip <name>         Remove an expansion from the coordinator catalog and
+                         local install
+  remove-catalog <name>  Remove an installed expansion catalog entry
+  update <name>          Update an installed expansion
+  info <name>            Show expansion metadata and install state
+  help [command]         display help for command
 "
 `;
 
@@ -166,8 +172,8 @@ Options:
   -h, --help                display help for command
 
 Commands:
-  codex [options] [agent]   codex provider operations
-  claude [options] [agent]  claude provider operations
+  codex [options] [agent]   Run a prompt via codex
+  claude [options] [agent]  Run a prompt via claude
   jobs [options]            List jobs for the current project
   wait [options]            Stream job progress (text output)
   abort [options]           Abort running jobs

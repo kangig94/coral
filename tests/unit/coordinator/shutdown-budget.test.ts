@@ -44,6 +44,13 @@ function buildHarness(opts: {
   } as unknown as Server;
 
   const ipcServer = { server: {}, sockets: new Set(), socketPath: '/tmp/x' } as unknown as IpcListener;
+  const storeServices = {
+    expansionLifecycleService: {
+      shutdownActiveExpansions: async () => {
+        callLog.push('shutdownActiveExpansions');
+      },
+    },
+  };
 
   let closeIpcResolved = false;
   const closeIpcServerFn =
@@ -94,10 +101,11 @@ function buildHarness(opts: {
       },
       shutdown: async () => {},
     } as never,
-    expansionLifecycleService: {
-      shutdownActiveExpansions: async () => {
-        callLog.push('shutdownActiveExpansions');
-      },
+    storeServicesRef: {
+      tryGet: () => storeServices,
+      get: () => storeServices,
+      set: () => {},
+      clear: () => {},
     } as never,
     terminateAllFn: () => {},
     handoffQuiescePorts: () => [],
@@ -159,9 +167,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(elapsed).toBeLessThanOrEqual(HANDOFF_DRAIN_TIMEOUT_MS + 100);
 
     // Warn line for the hanging hooks.onShutdown finalizer must be present.
-    const warnedHooks = harness.logLines.some((line) =>
-      line.includes('hooks.onShutdown: exceeded drain budget'),
-    );
+    const warnedHooks = harness.logLines.some((line) => line.includes('hooks.onShutdown: exceeded drain budget'));
     expect(warnedHooks).toBe(true);
 
     // Socket release happens regardless.
@@ -191,9 +197,7 @@ describe('runShutdownSequence drain budget', () => {
     const sawExceeded = harness.logLines.some((l) =>
       l.includes('provider host drain for handoff: exceeded drain budget'),
     );
-    const sawSkipped = harness.logLines.some((l) =>
-      l.includes('hooks.onShutdown: skipped (drain budget exhausted)'),
-    );
+    const sawSkipped = harness.logLines.some((l) => l.includes('hooks.onShutdown: skipped (drain budget exhausted)'));
     expect(sawExceeded).toBe(true);
     expect(sawSkipped).toBe(true);
     expect(harness.closeIpcCalled()).toBe(true);
@@ -229,11 +233,12 @@ describe('runShutdownSequence drain budget', () => {
       },
       shutdown: async () => {},
     } as never;
-    const origExpansion = harness.ctx.expansionLifecycleService!.shutdownActiveExpansions;
-    harness.ctx.expansionLifecycleService = {
+    const storeServices = harness.ctx.storeServicesRef.get();
+    const origExpansion = storeServices.expansionLifecycleService!.shutdownActiveExpansions;
+    storeServices.expansionLifecycleService = {
       shutdownActiveExpansions: async () => {
         order.push('expansion:start');
-        await origExpansion.call(harness.ctx.expansionLifecycleService);
+        await origExpansion.call(storeServices.expansionLifecycleService);
         order.push('expansion:resolved');
       },
     } as never;
@@ -330,9 +335,7 @@ describe('runShutdownSequence drain budget', () => {
 
     // No "exceeded drain budget" line should appear for hooks.onShutdown:
     // when the task wins, the sleep is aborted in `finally`.
-    const sawHooksTimeout = harness.logLines.some((l) =>
-      l.includes('hooks.onShutdown: exceeded drain budget'),
-    );
+    const sawHooksTimeout = harness.logLines.some((l) => l.includes('hooks.onShutdown: exceeded drain budget'));
     expect(sawHooksTimeout).toBe(false);
     expect(harness.closeIpcCalled()).toBe(true);
   });

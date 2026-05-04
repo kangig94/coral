@@ -1,9 +1,4 @@
-import type {
-  KbCorpusPublication,
-  KbInboundSyncOptions,
-  KbIndexMutationLane,
-  KbMutationEffects,
-} from '../contract.js';
+import type { KbCorpusPublication, KbInboundSyncOptions, KbIndexMutationLane, KbMutationEffects } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import {

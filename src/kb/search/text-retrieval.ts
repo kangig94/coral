@@ -1,12 +1,17 @@
-import { denormalizeSlug } from '../text-normalization.js';
+import { serializeCoralSetupError } from '../../runtime/errors.js';
+import { KB_FTS_CAPABILITY } from '../capability/constants.js';
+import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
+import { denormalizeSlug, normalizeWhitespace } from '../text-normalization.js';
 import type {
   FtsHit,
   FusedRetrievalHit,
-  HybridFusion,
   RetrievedDocument,
-  TextRetrievalResult,
-  VectorRetrievalHit,
+  RetrievalDiagnostic,
+  RetrievalRole,
+  RoleQueryContext,
+  RoleSearchResult,
 } from './contract.js';
+import type { Backed, FtsRetrieval, KbRuntime } from '../contract.js';
 import {
   getEntry,
   isCommunityEntry,
@@ -25,6 +30,16 @@ const KIND_ORDER: Record<KbResult['kind'], number> = {
   community: 1,
   source: 2,
 };
+
+const BUILTIN_TEXT_ROLE_DESCRIPTOR = {
+  id: 'text',
+  label: 'Text (FTS)',
+  tags: ['lexical'],
+  phase: 'retrieval-source',
+  provides: 'retrieval-source',
+  supportsScopes: ['notes', 'sources', 'communities', 'all'],
+  requires: [KB_FTS_CAPABILITY],
+} as const satisfies RetrievalRole['descriptor'];
 
 export type ResolvedKbSearchEntry = {
   entryId: KbEntryId;
@@ -102,24 +117,6 @@ export function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: num
     ...hit,
     rank: index + 1,
   }));
-}
-
-function toTextRetrievalResult(hits: readonly ResolvedKbSearchHit[]): TextRetrievalResult {
-  return {
-    hits: rankRetrievalRoleHits(hits).map((hit) => ({
-      ...hit,
-      document: hit.document,
-    })),
-  };
-}
-
-export function fuseRetrievalRoles(
-  hybrid: HybridFusion,
-  textHits: readonly ResolvedKbSearchHit[],
-  vectorHits: readonly VectorRetrievalHit[],
-  graph: Parameters<HybridFusion['fuse']>[2],
-): HybridKbSearchHit[] {
-  return hybrid.fuse(toTextRetrievalResult(textHits), { hits: [...vectorHits] }, graph).hits;
 }
 
 export function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
@@ -204,6 +201,100 @@ export function shouldContinueWidening(
   return !exhausted && rerankedHits[topK - 1].score <= maxPossibleOmittedScore(hits);
 }
 
+function textBindingMissingDiagnostic(): RetrievalDiagnostic {
+  return {
+    roleId: 'text',
+    code: 'binding_missing',
+    recoverable: true,
+    publicText: 'kb_search_degraded_until_coordinator_rebuild',
+  };
+}
+
+function isFtsBindingMissing(error: unknown): boolean {
+  const setupError = serializeCoralSetupError(error);
+  return setupError?.code === 'binding_empty' && setupError.context?.binding === KB_FTS_CAPABILITY;
+}
+
+function isFtsUnavailable(fts: FtsRetrieval): boolean {
+  const warnings = fts.warnings();
+  return warnings.includes('fts_index_uninitialized') || warnings.includes('fts_index_stale');
+}
+
+function degradedTextRoleSearchResult(): RoleSearchResult {
+  return {
+    hits: [],
+    diagnostic: textBindingMissingDiagnostic(),
+  };
+}
+
+function textRoleSearchResult(hits: readonly ResolvedKbSearchHit[]): RoleSearchResult {
+  return {
+    hits: rankRetrievalRoleHits(hits).map((hit) => ({
+      entryId: hit.entryId,
+      slug: hit.slug,
+      kind: hit.kind,
+      title: hit.title,
+      tags: [...hit.tags],
+      principles: [...hit.principles],
+      rank: hit.rank,
+      score: hit.score,
+      document: hit.document,
+    })),
+  };
+}
+
+async function searchTextRoleHits(rt: KbRuntime, ctx: RoleQueryContext): Promise<RoleSearchResult> {
+  let fts: FtsRetrieval;
+  try {
+    fts = rt.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
+  } catch (error) {
+    if (isFtsBindingMissing(error)) {
+      return degradedTextRoleSearchResult();
+    }
+    throw error;
+  }
+
+  if (isFtsUnavailable(fts)) {
+    return degradedTextRoleSearchResult();
+  }
+
+  const normalizedQuery = normalizeWhitespace(ctx.rawQuery);
+  const queryTokens = fts.tokenize(normalizedQuery);
+  if (queryTokens.length === 0) {
+    return { hits: [] };
+  }
+
+  const index = ctx.index();
+  const communitiesFresh = areCommunityDocumentsFresh(rt, index);
+  const resolvedHits: ResolvedKbSearchHit[] = [];
+  let limit = ctx.topK;
+  let result = await fts.search(normalizedQuery, limit, ctx.scope);
+  resolvedHits.push(...result.hits.map((hit) => resolveHit(hit, index)));
+
+  while (shouldContinueWidening(result.hits, resolvedHits, communitiesFresh, ctx.scope, ctx.topK, result.exhausted)) {
+    const prevCount = result.hits.length;
+    limit = Math.max(limit + 1, limit * 2);
+    result = await fts.search(normalizedQuery, limit, ctx.scope);
+    for (let i = prevCount; i < result.hits.length; i += 1) {
+      resolvedHits.push(resolveHit(result.hits[i], index));
+    }
+  }
+
+  const searchableHits = filterSearchableHits(resolvedHits, communitiesFresh);
+  const selectedHits = ctx.scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, ctx.scope);
+  return textRoleSearchResult(selectedHits);
+}
+
+export function createBuiltinTextRole(rt: KbRuntime): RetrievalRole {
+  return {
+    id: BUILTIN_TEXT_ROLE_DESCRIPTOR.id,
+    descriptor: BUILTIN_TEXT_ROLE_DESCRIPTOR,
+    search(ctx) {
+      return searchTextRoleHits(rt, ctx);
+    },
+  };
+}
+
 export function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {
   if (kind === 'community') {
     return false;
@@ -224,21 +315,24 @@ export function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boo
   return false;
 }
 
-export function emptySearchResponse(mode?: KbSearchMode): KbSearchResponse {
+export function emptySearchResponse(mode?: KbSearchMode | 'auto'): KbSearchResponse {
   if (mode === 'vector') {
     return {
       results: [],
       mode: 'vector',
+      retrievalDiagnostics: [],
     };
   }
   if (mode === 'hybrid') {
     return {
       results: [],
       mode: 'hybrid',
+      retrievalDiagnostics: [],
     };
   }
   return {
     results: [],
     mode: 'text',
+    retrievalDiagnostics: [],
   };
 }

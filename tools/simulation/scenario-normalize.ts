@@ -1,9 +1,4 @@
-import type {
-  ChildOutputChunk,
-  MockDurableScript,
-  MockKillAction,
-  MockSpawnScript,
-} from './core/mock-script-types.js';
+import type { ChildOutputChunk, MockDurableScript, MockKillAction, MockSpawnScript } from './core/mock-script-types.js';
 import type { FakeProviderScenario, SimulationScenario } from './core/backend.js';
 import type { ProviderTerminalOutcome } from '../../src/providers/contract.js';
 import { toError } from './core/constants.js';

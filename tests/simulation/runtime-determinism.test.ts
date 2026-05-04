@@ -1,26 +1,18 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { StoragePort } from '#src/infra/port-types.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openStoreDatabase, type Database } from '#src/store/db.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
-const SCHEMAS_DIR = join(MODULE_DIR, '../../src/store/schemas');
-const SIM_SCHEMAS_DIR = '/tmp/sim/store/schemas';
 const CONSUMER_ID = 'journal-projection-consumer';
 const EVENT_COUNT = 1_000;
 const SIM_EPOCH_MS = Date.parse('2026-04-18T00:00:00.000Z');
@@ -45,44 +37,11 @@ interface Snapshot {
   readonly serialized: string;
 }
 
-type SchemaStorage = Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'>;
-
-function openMemoryDatabase(storage: SchemaStorage, schemasDir: string): Database {
+function openMemoryDatabase(runtime: Pick<Runtime, 'storage'>): Database {
   return openStoreDatabase({
     path: ':memory:',
-    storage: storage as StoragePort,
-    schemasDir,
-  });
-}
-
-function seedSchemas(storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>): void {
-  storage.mkdirSync(SIM_SCHEMAS_DIR, { recursive: true });
-
-  for (const entry of readdirSync(SCHEMAS_DIR, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.sql')) {
-      continue;
-    }
-
-    storage.writeFileSync(join(SIM_SCHEMAS_DIR, entry.name), readFileSync(join(SCHEMAS_DIR, entry.name), 'utf-8'));
-  }
-}
-
-function createSchemaStorage(runtime: { storage: SchemaStorage }): {
-  storage: SchemaStorage;
-  schemasDir: string;
-} {
-  if (runtime instanceof SimulationRuntime) {
-    seedSchemas(runtime.storage);
-    return {
-      storage: runtime.storage,
-      schemasDir: SIM_SCHEMAS_DIR,
-    };
-  }
-
-  return {
     storage: runtime.storage,
-    schemasDir: SCHEMAS_DIR,
-  };
+  });
 }
 
 function registerConsumer(driver: ConsumerDriver): void {
@@ -147,8 +106,7 @@ function captureSnapshot(db: Database): Snapshot {
 
 async function runSimulationSequence(): Promise<Snapshot> {
   const runtime = new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } });
-  const { storage, schemasDir } = createSchemaStorage(runtime);
-  const db = openMemoryDatabase(storage, schemasDir);
+  const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createDefaultUpcasterRegistry();
@@ -156,7 +114,6 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const counterIds = Array.from({ length: 5 }, () => runtime.ids.uuid());
 
   try {
-    applyStoreSchemas({ db, storage, schemasDir });
     applyTestCounterSchema(db);
     registerConsumer(driver);
 
@@ -205,15 +162,13 @@ function createSequencePlan(): SequencePlan {
   };
 }
 
-async function runPlannedSequence(runtime: { storage: SchemaStorage }, plan: SequencePlan): Promise<Snapshot> {
-  const { storage, schemasDir } = createSchemaStorage(runtime);
-  const db = openMemoryDatabase(storage, schemasDir);
+async function runPlannedSequence(runtime: Pick<Runtime, 'storage'>, plan: SequencePlan): Promise<Snapshot> {
+  const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createDefaultUpcasterRegistry();
 
   try {
-    applyStoreSchemas({ db, storage, schemasDir });
     applyTestCounterSchema(db);
     registerConsumer(driver);
 

@@ -44,14 +44,14 @@ export type ResolvedBackendDefaults = BackendEagerDefaults & BackendWorldBoundDe
 export type BackendDefaultsBindings = {
   readonly bindHost: string;
   readonly advertiseHost?: string;
-  readonly progressStore: JobStore;
+  readonly getProgressStore: () => JobStore | null;
   readonly launchCoordinator: Pick<LaunchCoordinator, 'terminateAll'>;
   readonly log: (message: string) => void;
 };
 
 /**
  * Two-phase backend defaults plan. Eager defaults resolve from `runtime` only;
- * defaults that close over `bindHost`, `advertiseHost`, `progressStore`,
+ * defaults that close over `bindHost`, `advertiseHost`, store services,
  * `launchCoordinator`, or `log` belong in `finalizeWithWorld(...)` because
  * those bindings come from `CoordinatorWorld`.
  */
@@ -68,7 +68,6 @@ export function resolveCoordinatorDefaults(
   options: CoordinatorCoreOptions,
   runtime: CoordinatorCoreOptions['runtime'],
   pluginRoot?: string,
-  progressStore?: JobStore,
 ): BackendDefaultsPlan {
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   if (pluginRoot !== undefined && pluginRoot !== resolvedPluginRoot) {
@@ -119,22 +118,22 @@ export function resolveCoordinatorDefaults(
       }
       finalized = true;
 
-      if (progressStore !== undefined && progressStore !== bindings.progressStore) {
-        throw new Error('resolveCoordinatorDefaults received a mismatched progressStore bridge input');
-      }
-
       const listenFn =
         options.listenFn ?? ((server) => defaultListen(server, bindings.bindHost, bindings.advertiseHost));
       const cleanupStaleJobsFn =
         options.cleanupStaleJobsFn ??
         ((currentBundleHash: string) => {
-          cleanupStaleJobs(bindings.progressStore, currentBundleHash, bindings.log, runtime.storage);
+          const progressStore = bindings.getProgressStore();
+          if (progressStore === null) return;
+          cleanupStaleJobs(progressStore, currentBundleHash, bindings.log, runtime.storage);
         });
       const markJobsAsErrorFn =
         options.markJobsAsErrorFn ??
         ((currentNamespace: string, message: string) => {
+          const progressStore = bindings.getProgressStore();
+          if (progressStore === null) return;
           markJobsAsError(
-            bindings.progressStore,
+            progressStore,
             currentNamespace,
             message,
             runtime.storage,

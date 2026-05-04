@@ -9,7 +9,6 @@ import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
@@ -147,7 +146,6 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
   const db = openStoreDatabase({
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
 
   try {
@@ -195,9 +193,18 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
   };
 }
 
+// `cli/follow.js` is a pure-function module; no module-level state mutates
+// per test. Cache once and reuse. Tests that change `process.env.HOME` and
+// need module-load-time env capture must call `loadFollowModuleFresh()`.
+let cachedFollowModule: FollowModule | null = null;
 async function loadFollowModule(): Promise<FollowModule> {
+  cachedFollowModule ??= await import('#src/cli/follow.js');
+  return cachedFollowModule;
+}
+async function loadFollowModuleFresh(): Promise<FollowModule> {
   vi.resetModules();
-  return import('#src/cli/follow.js');
+  cachedFollowModule = null;
+  return loadFollowModule();
 }
 
 describe('cli follow', () => {
@@ -242,7 +249,6 @@ describe('cli follow', () => {
     process.exitCode = undefined;
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('writes launch output and a path-first terminal summary in text mode', async () => {
@@ -485,7 +491,7 @@ describe('cli follow', () => {
   });
 
   it('renders local cause chains from the store for failed terminal outcomes', async () => {
-    const { launchAndFollow } = await loadFollowModule();
+    // Module-load-time env capture: this test needs fresh import after HOME change.
     const fixture = createCauseRenderFixture();
     const originalHome = process.env.HOME;
     const originalTmpdir = process.env.TMPDIR;
@@ -493,6 +499,8 @@ describe('cli follow', () => {
     try {
       process.env.HOME = fixture.home;
       process.env.TMPDIR = fixture.home;
+
+      const { launchAndFollow } = await loadFollowModuleFresh();
 
       mockState.ensure.mockResolvedValueOnce(makeBackend());
       mockState.subscribe.mockResolvedValueOnce(

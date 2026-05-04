@@ -41,7 +41,17 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Backed, EmbeddingService, FtsRetrieval } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
+import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from '#src/kb/capability/constants.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
+import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/tool-result.js';
 import {
@@ -62,13 +72,14 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '#src/kb/tool-handlers.js';
-// Use the bundled FTS projection id so the fallback registration matches the
-// consumer.id exposed by mocked bindings that rely on waitFreshUntil resolution.
-const MOCK_BASE_CONSUMER_ID = 'orama-base';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
+import {
+  createStoreServicesRef,
+  type CoordinatorStoreServices,
+} from '#src/coordinator/composition/store-services-ref.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -87,6 +98,9 @@ import {
 } from '#src/discuss/shell/tools.js';
 import { ZodError, ZodIssueCode } from 'zod';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -113,6 +127,21 @@ function createProgressStore(
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
   });
+}
+
+function createStoreServicesForProgressStore(progressStore: JobStore): CoordinatorStoreServices {
+  const db = progressStore.getDb();
+  return {
+    storeDb: db,
+    progressStore,
+    expansionManifestCatalog: createExpansionManifestCatalog({
+      db,
+      now: () => new Date(runtime.time.now()).toISOString(),
+    }),
+    expansionStateStore: new ExpansionStateStore(db),
+    expansionLifecycleService: null,
+    consumerDriver: null,
+  };
 }
 
 function createSessionManager(projectRoot: string): SessionManager {
@@ -346,18 +375,29 @@ async function openHttpStream(
   });
 }
 
+// Cache modules across tests: these are pure imports from the coordinator
+// graph (no module-level mutation per test). 7 call sites previously paid
+// the cost of vi.resetModules + re-resolving the coordinator graph each
+// time; the first call took ~700ms.
+let cachedExecutionModules: {
+  serverModule: ServerModule;
+  backendInfo: BackendInfoModule;
+  lifecycleModule: LifecycleModule;
+} | null = null;
 async function loadExecutionModules(): Promise<{
   serverModule: ServerModule;
   backendInfo: BackendInfoModule;
   lifecycleModule: LifecycleModule;
 }> {
-  vi.resetModules();
-  const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
-    import('#src/coordinator/index.js'),
-    import('#src/infra/backend-discovery.js'),
-    import('#src/coordinator/lifecycle.js'),
-  ]);
-  return { serverModule, backendInfo, lifecycleModule };
+  if (cachedExecutionModules === null) {
+    const [serverModule, backendInfo, lifecycleModule] = await Promise.all([
+      import('#src/coordinator/index.js'),
+      import('#src/infra/backend-discovery.js'),
+      import('#src/coordinator/lifecycle.js'),
+    ]);
+    cachedExecutionModules = { serverModule, backendInfo, lifecycleModule };
+  }
+  return cachedExecutionModules;
 }
 
 function stubLaunchRecord(
@@ -493,7 +533,11 @@ describe('execution backend server', () => {
     }
     createdJobIds.clear();
     vi.restoreAllMocks();
-    vi.resetModules();
+    // vi.resetModules() removed: 116 tests × ~40ms = ~4.6s of pure cache
+    // invalidation. The few tests needing fresh modules call
+    // `loadExecutionModules()` (which resets internally). vi.mock at module
+    // scope is hoisted and persistent across tests; restoreAllMocks() undoes
+    // any vi.spyOn from individual tests.
     try {
       rmSync(mockState.tmpHome, { recursive: true, force: true });
     } catch {
@@ -504,25 +548,20 @@ describe('execution backend server', () => {
   });
 
   function createMockKbSubsystem() {
-    const baseConsumer = {
-      id: MOCK_BASE_CONSUMER_ID,
-      authority: 'corpus' as const,
-      kind: 'apply' as const,
-      registrationKind: 'base' as const,
-      corpusInterest: 'content' as const,
-      apply: vi.fn(async () => {}),
-    };
-    const vectorRetrieval: VectorRetrieval = {
-      search: vi.fn(async () => ({ hits: [] })),
-    };
-    const vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-    vector.bind(
-      { read: () => vectorRetrieval, consumer: baseConsumer },
-      { [Symbol.dispose]() {} },
-      MOCK_BASE_CONSUMER_ID,
+    const capabilityRegistry = createCapabilityRegistry();
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
     );
-    const fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
-    const embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
+    );
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
+    );
+    const roleRegistry = createRoleRegistry();
     const engineArtifactRegistry = new EngineArtifactRegistry();
     const runtimeDir = join(mockState.tmpHome, 'kb-runtime');
     mkdirSync(runtimeDir, { recursive: true });
@@ -555,9 +594,10 @@ describe('execution backend server', () => {
             communityFresh: false,
           })),
         },
-        vector,
-        fts,
-        embedding,
+        capabilityRegistry,
+        capabilities: capabilityRegistry.catalogView(),
+        roleRegistry,
+        roleCatalog: roleRegistry.catalogView(),
         engineArtifactRegistry,
         corpusAuthorityBaseline: {
           ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
@@ -884,7 +924,6 @@ describe('execution backend server', () => {
       },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
-      progressStore,
       providerHostManager,
       createExecutionService: (ctx, deps) => {
         capturedManagers.push(deps.providerHostManager);
@@ -958,9 +997,7 @@ describe('execution backend server', () => {
 
   it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
     const progressStore = createProgressStore();
-    const backend = await startBackendServer({
-      progressStore,
-    });
+    const backend = await startBackendServer();
 
     createdJobIds.add('job-local-health');
     createdJobIds.add('job-foreign-health');
@@ -1124,7 +1161,6 @@ describe('execution backend server', () => {
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
       discussRegistry,
-      progressStore,
     });
 
     expect(setSpy).toHaveBeenCalledWith(projectRoot, expect.objectContaining({ projectRoot }));
@@ -3661,7 +3697,6 @@ describe('execution backend server', () => {
     });
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
-      progressStore,
     });
 
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
@@ -3715,7 +3750,6 @@ describe('execution backend server', () => {
     });
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
-      progressStore,
     });
     const encodedCursor = Buffer.from(
       JSON.stringify({
@@ -3799,9 +3833,7 @@ describe('execution backend server', () => {
 
   it('lists jobs and returns replayed job detail', async () => {
     const progressStore = createProgressStore();
-    const backend = await startBackendServer({
-      progressStore,
-    });
+    const backend = await startBackendServer();
 
     createdJobIds.add('job-1');
     createdJobIds.add('job-2');
@@ -3917,7 +3949,6 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const backend = await startBackendServer({
         createExecutionService: () => fakeService as never,
-        progressStore,
       });
 
       createdJobIds.add('job-running');
@@ -4122,7 +4153,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
 
-    const backend = await startBackendServer({ progressStore });
+    const backend = await startBackendServer();
     const [missingResponse, mismatchResponse] = await Promise.all([
       fetch(`${backend.baseUrl}/sessions/missing-session/messages`, {
         method: 'POST',
@@ -4228,7 +4259,6 @@ describe('execution backend server', () => {
 
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
-      progressStore,
     });
 
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
@@ -4303,7 +4333,7 @@ describe('execution backend server', () => {
     createSessionManager(projectA).claimForJobSync(sessionA.sessionId, 'missing-job-a');
     createSessionManager(projectB).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
-    await startBackendServer({ progressStore });
+    await startBackendServer();
 
     expect(createSessionManager(projectA).get('codex', sessionA.sessionId)).toMatchObject({
       sessionId: sessionA.sessionId,
@@ -4352,7 +4382,7 @@ describe('execution backend server', () => {
     );
     createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
-    await startBackendServer({ progressStore });
+    await startBackendServer();
 
     // Terminal jobs should have their session claims released during startup recovery
     const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
@@ -4376,7 +4406,7 @@ describe('execution backend server', () => {
     });
     createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
-    const backend = await startBackendServer({ progressStore });
+    const backend = await startBackendServer();
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
@@ -4459,7 +4489,7 @@ describe('execution backend server', () => {
       backendNamespace: foreignBackendNamespace,
     });
 
-    const backend = await startBackendServer({ pluginRoot, progressStore });
+    const backend = await startBackendServer({ pluginRoot });
     const statusBeforeShutdown = progressStore.readStatus(foreignJobId);
 
     expect(statusBeforeShutdown).toMatchObject({
@@ -4612,6 +4642,10 @@ describe('execution backend server', () => {
       const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
+      const storeServicesRef = createStoreServicesRef();
+      setStoreServicesForTest(storeServicesRef, createStoreServicesForProgressStore(progressStore), {
+        storeDbPath: runtime.paths.coral.store.dbFile,
+      });
       runtimeState.setLifecycle('running');
 
       const controller = lifecycleModule.createLifecycle({
@@ -4626,11 +4660,14 @@ describe('execution backend server', () => {
           now: () => 1,
           log: () => {},
         },
-        runtime: createRealRuntime('prod'),
+        runtime,
         backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
-        progressStore,
+        storeServicesRef,
+        createStoreServicesFromDbFn: () => {
+          throw new Error('Unexpected store services factory during shutdown-only test');
+        },
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4653,7 +4690,6 @@ describe('execution backend server', () => {
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
-      expansionLifecycleService: null,
         handoffQuiescePorts: () => [fakeService as never],
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
@@ -4805,15 +4841,13 @@ describe('execution backend server', () => {
           flavor: 'prod',
           log: () => {},
         },
-        createKbSubsystemFn: async () => createMockKbSubsystem(),
-        cleanupStaleJobsFn: () => {},
-        discussRegistry: startupRegistry,
-        progressStore,
-        listenIpcFn: async () => {
+        createKbSubsystemFn: async () => {
           startupBlocked.resolve();
           await releaseStartup.promise;
           throw new Error('startup interrupted for shutdown test');
         },
+        cleanupStaleJobsFn: () => {},
+        discussRegistry: startupRegistry,
       });
 
       const startPromise = controller.start().catch((error: unknown) => error);
@@ -4851,7 +4885,6 @@ describe('execution backend server', () => {
       const restartRegistry = createDiscussContextRegistry();
       const restarted = await startBackendServer({
         discussRegistry: restartRegistry,
-        progressStore,
       });
       const restartedSessions = [...restartRegistry.contexts.values()].flatMap((context) => [
         ...context.sessions.keys(),
@@ -5075,7 +5108,7 @@ describe('execution backend server', () => {
       createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
       expect(progressStore.readLaunchProjection(jobId)).not.toBeNull();
 
-      const _backend = await startBackendServer({ progressStore });
+      const _backend = await startBackendServer();
 
       const status = progressStore.readStatus(jobId);
       expect(status).toMatchObject({
@@ -5115,7 +5148,7 @@ describe('execution backend server', () => {
       });
       createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
-      const backend = await startBackendServer({ progressStore });
+      const backend = await startBackendServer();
 
       const status = progressStore.readStatus(jobId);
       expect(status).toMatchObject({

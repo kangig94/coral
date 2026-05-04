@@ -179,82 +179,69 @@ export async function executePlannedSteps(
   const stepDetails: StepDetail[] = [...(options.completedStepDetails ?? [])];
   let stepPrompt = initialPrompt;
   const workingPlan = plan;
-  const allLaunchedAtoms: LaunchedAtom[] = [];
   const finalStepIndex = maxStepIndex(workingPlan);
   const startStepIndex = options.startStepIndex ?? 0;
 
-  try {
-    for (let stepIndex = startStepIndex; stepIndex <= finalStepIndex; stepIndex += 1) {
-      options.onProgress(`step ${stepIndex} started`);
+  for (let stepIndex = startStepIndex; stepIndex <= finalStepIndex; stepIndex += 1) {
+    options.onProgress(`step ${stepIndex} started`);
 
-      const { launchedAtoms, launchError } = await launchStepAtoms(
-        workingPlan,
-        stepIndex,
-        stepPrompt,
-        executionSvc,
-        ctx,
-        {
-          context: options.context,
-          workDir: options.workDir,
-          signal: options.signal,
-          workflowJobId: options.workflowJobId,
-          completedStepDetails: stepDetails,
-        },
-      );
-      allLaunchedAtoms.push(...launchedAtoms);
-
-      if (launchError !== null) {
-        await handleStepLaunchFailure(launchError, launchedAtoms, {
-          completedStepDetails: stepDetails,
-          drainLaunchedAtoms: () =>
-            drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
-              signal: options.signal,
-              staleTimeoutMs: options.staleTimeoutMs,
-              staleCheckIntervalMs: options.staleCheckIntervalMs,
-              staleAbortTimeoutMs: options.staleAbortTimeoutMs,
-              drainDeadlineMs: options.drainDeadlineMs,
-              workDir: options.workDir,
-              workflowJobId: options.workflowJobId,
-              onProgress: options.onProgress,
-              time: options.time,
-            }),
-        });
-      }
-
-      const stepResults = await awaitLaunchedStepResults(launchedAtoms, stepIndex, executionSvc, ctx, {
-        signal: options.signal,
-        staleTimeoutMs: options.staleTimeoutMs,
-        staleCheckIntervalMs: options.staleCheckIntervalMs,
-        staleAbortTimeoutMs: options.staleAbortTimeoutMs,
-        drainDeadlineMs: options.drainDeadlineMs,
+    const { launchedAtoms, launchError } = await launchStepAtoms(
+      workingPlan,
+      stepIndex,
+      stepPrompt,
+      executionSvc,
+      ctx,
+      {
+        context: options.context,
         workDir: options.workDir,
-        onProgress: options.onProgress,
-        time: options.time,
-        completedStepDetails: stepDetails,
+        signal: options.signal,
         workflowJobId: options.workflowJobId,
-        journal: options.journal,
+        completedStepDetails: stepDetails,
+      },
+    );
+
+    if (launchError !== null) {
+      await handleStepLaunchFailure(launchError, launchedAtoms, {
+        completedStepDetails: stepDetails,
+        drainLaunchedAtoms: () =>
+          drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
+            signal: options.signal,
+            staleTimeoutMs: options.staleTimeoutMs,
+            staleCheckIntervalMs: options.staleCheckIntervalMs,
+            staleAbortTimeoutMs: options.staleAbortTimeoutMs,
+            drainDeadlineMs: options.drainDeadlineMs,
+            workDir: options.workDir,
+            workflowJobId: options.workflowJobId,
+            onProgress: options.onProgress,
+            time: options.time,
+          }),
       });
-      const completedStep = finalizeStep(stepIndex, launchedAtoms, stepResults);
-      stepDetails.push(...completedStep.stepDetails);
-      stepPrompt = completedStep.stepPrompt;
-      options.onProgress(`step ${stepIndex} completed`);
     }
 
-    return {
-      finalOutput: stepPrompt,
-      stepDetails,
-      plan: workingPlan,
-    };
-  } finally {
-    executionSvc.cleanupWorkflowSessions([
-      ...new Map(
-        allLaunchedAtoms.map((atom) => [
-          `${atom.providerName}:${atom.sessionId}`,
-          { providerName: atom.providerName, sessionId: atom.sessionId },
-        ]),
-      ).values(),
-    ]);
+    const stepResults = await awaitLaunchedStepResults(launchedAtoms, stepIndex, executionSvc, ctx, {
+      signal: options.signal,
+      staleTimeoutMs: options.staleTimeoutMs,
+      staleCheckIntervalMs: options.staleCheckIntervalMs,
+      staleAbortTimeoutMs: options.staleAbortTimeoutMs,
+      drainDeadlineMs: options.drainDeadlineMs,
+      workDir: options.workDir,
+      onProgress: options.onProgress,
+      time: options.time,
+      completedStepDetails: stepDetails,
+      workflowJobId: options.workflowJobId,
+      journal: options.journal,
+    });
+    const completedStep = finalizeStep(stepIndex, launchedAtoms, stepResults);
+    stepDetails.push(...completedStep.stepDetails);
+    stepPrompt = completedStep.stepPrompt;
+    options.onProgress(`step ${stepIndex} completed`);
   }
+
+  return {
+    finalOutput: stepPrompt,
+    stepDetails,
+    plan: workingPlan,
+  };
 }
 
 export async function executePipeline(

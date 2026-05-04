@@ -7,12 +7,16 @@ import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
 import {
   sessionAdapterUnparseableBodySchema,
+  sessionArtifactHandleRecordedBodySchema,
   sessionClaimReleasedBodySchema,
   sessionClaimedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
   sessionProviderFailedBodySchema,
+  sessionRetentionDiscardCompletedBodySchema,
+  sessionRetentionDiscardFailedBodySchema,
+  sessionRetentionDiscardRequestedBodySchema,
 } from './event-bodies.js';
 import { continuitySentenceFragment, type SessionContinuityState } from './fault.js';
 
@@ -44,10 +48,26 @@ const continuityCheckpointed = typedDescriber(
   sessionContinuityCheckpointedBodySchema,
   () => 'Session continuity checkpointed.',
 );
+const artifactHandleRecorded = typedDescriber(
+  sessionArtifactHandleRecordedBodySchema,
+  (body) => `Session artifact handle recorded for ${body.provider}.`,
+);
 const claimed = typedDescriber(sessionClaimedBodySchema, (body) => `Session claimed by job ${body.jobId}.`);
 const claimReleased = typedDescriber(
   sessionClaimReleasedBodySchema,
   (body) => `Session claim released by job ${body.jobId}.`,
+);
+const retentionDiscardRequested = typedDescriber(
+  sessionRetentionDiscardRequestedBodySchema,
+  (body) => `Session retention discard attempt ${body.attempt} requested.`,
+);
+const retentionDiscardCompleted = typedDescriber(
+  sessionRetentionDiscardCompletedBodySchema,
+  (body) => `Session retention discard attempt ${body.attempt} completed with ${body.outcome}.`,
+);
+const retentionDiscardFailed = typedDescriber(
+  sessionRetentionDiscardFailedBodySchema,
+  (body) => `Session retention discard attempt ${body.attempt} failed: ${ensureSentence(body.reason)}`,
 );
 
 const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
@@ -81,8 +101,12 @@ const adapterUnparseable = typedDescriber(
 export const sessionsEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
   ['session:session.opened', opened],
   ['session:session.continuity.checkpointed', continuityCheckpointed],
+  ['session:session.artifact.handle.recorded', artifactHandleRecorded],
   ['session:session.claimed', claimed],
   ['session:session.claim.released', claimReleased],
+  ['session:session.retention.discard.requested', retentionDiscardRequested],
+  ['session:session.retention.discard.completed', retentionDiscardCompleted],
+  ['session:session.retention.discard.failed', retentionDiscardFailed],
   ['session:session.interrupted', interrupted],
   ['session:session.provider_failed', providerFailed],
   ['session:session.adapter_unparseable', adapterUnparseable],

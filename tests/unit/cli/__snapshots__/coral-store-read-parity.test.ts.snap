@@ -19,6 +19,6 @@ exports[`cli coral-store read parity > preserves kb read output via CoralStore r
 `;
 
 exports[`cli coral-store read parity > preserves kb search output via CoralStore reads 1`] = `
-"{"results":[{"note":"coral-kb-mode","kind":"note","title":"KB Mode","matched":["content"],"snippet":"## Rule Keep the JSON index authoritative."}],"mode":"text","count":1}
+"{"results":[{"note":"coral-kb-mode","kind":"note","title":"KB Mode","matched":["content"],"snippet":"## Rule Keep the JSON index authoritative.","evidence":["[text:#1(w=1,c=0.016)]"]}],"mode":"text","count":1}
 "
 `;

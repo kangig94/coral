@@ -1,11 +1,7 @@
 import { z } from 'zod';
 
-import {
-  providerInstructionSchema,
-  type EffortLevel,
-  type ProviderAction,
-  type ProviderInstruction,
-} from '../providers/contract.js';
+import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
+import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import type { LaunchPool } from './contracts/admission.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
@@ -58,14 +54,15 @@ export interface JobLaunchRequest {
   parentWorkflowJobId?: string;
   agent?: string;
   pool?: LaunchPool;
+  retention?: RetentionPolicy;
 }
 
-export interface JobResumeRequest extends JobLaunchRequest {
+export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
   sessionId: string;
   provider?: string;
 }
 
-export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent' | 'pool'> {
+export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent' | 'pool' | 'retention'> {
   sessionId: string;
   provider?: string;
   prompt?: string;
@@ -93,6 +90,7 @@ export const providerJobLaunchRequestBodySchema = z
         systemPrompt: z.string().optional(),
         conversationRef: z.string().optional(),
         instruction: providerInstructionSchema.optional(),
+        retention: retentionPolicySchema.optional(),
         coralEnv: z.record(z.string()),
       })
       .strict(),

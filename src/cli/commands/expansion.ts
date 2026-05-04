@@ -144,11 +144,21 @@ export function registerExpansionCommands(program: Command): void {
 
   expansion
     .command('unequip <name>')
-    .description('Deactivate and uninstall an expansion')
+    .description('Remove an expansion from the coordinator catalog and local install')
     .action(async (name: string) => {
       const activation = createCliExpansionActivation();
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
         activation.unequip(parsedName),
+      );
+    });
+
+  expansion
+    .command('remove-catalog <name>')
+    .description('Remove an installed expansion catalog entry')
+    .action(async (name: string) => {
+      const activation = createCliExpansionActivation();
+      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
+        activation.removeCatalog(parsedName),
       );
     });
 

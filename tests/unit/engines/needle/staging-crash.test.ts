@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from '#src/store/db.js';
@@ -8,13 +15,14 @@ import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
-import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
+import type { Backed, EmbeddingService, KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { VectorRetrieval as BoundVectorRetrieval } from '#src/kb/search/contract.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
-import type { StoragePort } from '#src/infra/port-types.js';
 import { bindEmbedding } from '#tests/unit/kb/expansion-test-helpers.js';
+import { resolveBoundNeedleEmbedder } from '#src/engines/needle/projection-identity.js';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
   return async (publication: {
@@ -38,9 +46,8 @@ function createNeedleRuntime(kb: KbRuntime, driver: ConsumerDriver): KbEngineRun
     corpusProjectionReader: kb.corpusProjectionReader,
     journalReader: driver.getJournalReader(),
     corpusStateReader: driver.getCorpusStateReader(),
-    vector: kb.vector,
-    embedding: kb.embedding,
-    fts: kb.fts,
+    capabilities: kb.capabilityRegistry.catalogView(),
+    roleCatalog: kb.roleCatalog,
   };
 }
 
@@ -171,23 +178,9 @@ vi.mock('#src/engines/needle/store.js', async () => {
     }),
   };
 });
-
-const nodeStorage = {
-  existsSync(path: string): boolean {
-    return existsSync(path);
-  },
-  readFileSync(path: string, encoding: BufferEncoding): string {
-    return readFileSync(path, encoding);
-  },
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({
-    db,
-    storage: nodeStorage,
-  });
+  applyBundledStoreSchema(db);
   return db;
 }
 
@@ -220,7 +213,8 @@ function createRuntimeHarness(
           return owner.search(embedding, topK, scope);
         },
       };
-      kb.vector.bind(
+      kb.capabilityRegistry.runtimeView().bind(
+        KB_VECTOR_CAPABILITY,
         {
           read: () => retrieval,
           consumer: {
@@ -237,6 +231,12 @@ function createRuntimeHarness(
       );
     },
   };
+}
+
+function resolvedEmbedder(kb: KbRuntime) {
+  return resolveBoundNeedleEmbedder(
+    kb.capabilityRegistry.runtimeView().read<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
+  );
 }
 
 function writeNeedleAddon(runtimeDir: string): string {
@@ -388,7 +388,10 @@ describe('needle staging crash replay', () => {
         now: () => FIXED_NOW,
       });
       const notifyCorpusMutation = createNotifyCorpusMutation(firstDriver);
-      const firstBackend = createNeedleBackend(firstNeedleRuntime, { addonPath });
+      const firstBackend = createNeedleBackend(firstNeedleRuntime, {
+        addonPath,
+        embedder: resolvedEmbedder(firstRuntime),
+      });
       firstRuntimeHarness.equip(firstBackend, firstDriver.register(firstBackend));
 
       let crashedStagingDir = '';
@@ -448,7 +451,10 @@ describe('needle staging crash replay', () => {
         corpusProjectionReader: secondRuntime.corpusProjectionReader,
       });
       secondNeedleRuntime = createNeedleRuntime(secondRuntime, secondDriver);
-      const secondBackend = createNeedleBackend(secondNeedleRuntime, { addonPath });
+      const secondBackend = createNeedleBackend(secondNeedleRuntime, {
+        addonPath,
+        embedder: resolvedEmbedder(secondRuntime),
+      });
       secondRuntimeHarness.equip(secondBackend, secondDriver.register(secondBackend));
 
       secondDriver.notifyCorpus(readCorpusState(db));

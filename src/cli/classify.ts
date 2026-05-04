@@ -10,6 +10,7 @@ export type StaticCommandPath =
   | 'expansion list'
   | 'expansion equip'
   | 'expansion unequip'
+  | 'expansion remove-catalog'
   | 'expansion update'
   | 'expansion info'
   | 'kb search'
@@ -41,6 +42,7 @@ export const commandClassMap = {
   'expansion list': 'read',
   'expansion equip': 'mutate',
   'expansion unequip': 'mutate',
+  'expansion remove-catalog': 'mutate',
   'expansion update': 'mutate',
   'expansion info': 'read',
   'kb search': 'read',

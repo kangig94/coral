@@ -2,6 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -15,12 +16,9 @@ import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
-import {
-  IncumbentMatchesError,
-  requestIncumbentShutdown,
-  type DesiredIncumbentIdentity,
-} from './handoff.js';
+import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
 import type { TimePort } from '../../infra/port-types.js';
+import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
 
 export const STARTUP_POLL_MS = 200;
 export const STARTUP_TIMEOUT_MS = 60_000;
@@ -68,6 +66,28 @@ export type EnsuredIpcClient = IpcClient & {
   readonly port: number;
   readonly token: string;
   readonly version: string;
+};
+
+type SpawnedCoordinator = {
+  readonly pid: number;
+  readonly attemptId: string;
+  readonly spawnedAt: number;
+};
+
+type BackendReadyWaitContext =
+  | { readonly kind: 'current-attempt'; readonly attemptId: string; readonly spawnedAt: number }
+  | { readonly kind: 'existing-starting' };
+
+type StartupErrorSentinel = {
+  readonly version: 1;
+  readonly attemptId: string;
+  readonly pid: number;
+  readonly startedAt: number;
+  readonly socketPath: string;
+  readonly bundleHash: string;
+  readonly flavor: 'prod' | 'dev';
+  readonly namespace: string;
+  readonly error: SerializedCoralSetupError;
 };
 
 function summarizeBackend(info: VerifiedBackendInfo, timePort: TimePort): EnsuredIpcClient {
@@ -136,6 +156,32 @@ function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
   );
 }
 
+function isSerializedStartupError(value: unknown): value is SerializedCoralSetupError {
+  return (
+    isRecord(value) &&
+    typeof value.code === 'string' &&
+    typeof value.userMessage === 'string' &&
+    typeof value.remediation === 'string'
+  );
+}
+
+function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.attemptId === 'string' &&
+    Number.isInteger(value.pid) &&
+    (value.pid as number) > 0 &&
+    Number.isFinite(value.startedAt) &&
+    (value.startedAt as number) > 0 &&
+    typeof value.socketPath === 'string' &&
+    typeof value.bundleHash === 'string' &&
+    (value.flavor === 'prod' || value.flavor === 'dev') &&
+    typeof value.namespace === 'string' &&
+    isSerializedStartupError(value.error)
+  );
+}
+
 async function readRawCoordinatorHealth(client: IpcClient): Promise<RawCoordinatorHealth | null> {
   try {
     const health = await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
@@ -178,6 +224,84 @@ function isCompatibleHealth(health: RawCoordinatorHealth, desired: DesiredCoordi
   );
 }
 
+function startupSentinelIdentityMatches(
+  sentinel: StartupErrorSentinel,
+  paths: CoordinatorPaths,
+  desired: DesiredCoordinator,
+): boolean {
+  return (
+    sentinel.socketPath === paths.socketPath &&
+    sentinel.bundleHash === desired.bundleHash &&
+    sentinel.flavor === desired.flavor &&
+    sentinel.namespace === desired.namespace
+  );
+}
+
+function readStartupErrorSentinel(paths: CoordinatorPaths): { sentinel: StartupErrorSentinel; mtimeMs: number } | null {
+  try {
+    const raw = readFileSync(paths.startupErrorFile, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!isStartupErrorSentinel(parsed)) return null;
+    return { sentinel: parsed, mtimeMs: statSync(paths.startupErrorFile).mtimeMs };
+  } catch (error: unknown) {
+    if (isNoEntryError(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+function clearStartupErrorSentinel(paths: CoordinatorPaths): void {
+  try {
+    unlinkSync(paths.startupErrorFile);
+  } catch {
+    // absent or already removed
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function matchingStartupError(
+  paths: CoordinatorPaths,
+  desired: DesiredCoordinator,
+  waitContext: BackendReadyWaitContext,
+  observedPid?: number,
+): CoralSetupError | null {
+  const record = readStartupErrorSentinel(paths);
+  if (!record) return null;
+
+  const { sentinel, mtimeMs } = record;
+  if (!startupSentinelIdentityMatches(sentinel, paths, desired)) {
+    return null;
+  }
+
+  if (waitContext.kind === 'current-attempt') {
+    if (sentinel.attemptId !== waitContext.attemptId) {
+      return null;
+    }
+    const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
+    const latestMtime = waitContext.spawnedAt + STARTUP_TIMEOUT_MS;
+    if (mtimeMs < earliestMtime || mtimeMs > latestMtime) {
+      return null;
+    }
+    return new CoralSetupError(sentinel.error);
+  }
+
+  if (observedPid !== undefined && sentinel.pid !== observedPid) {
+    return null;
+  }
+  if (!isPidAlive(sentinel.pid)) {
+    clearStartupErrorSentinel(paths);
+    return null;
+  }
+  return new CoralSetupError(sentinel.error);
+}
+
 function rotateLogIfLarge(runDir: string): void {
   const path = join(runDir, 'coordinator.log');
   const archive = `${path}.1`;
@@ -194,12 +318,15 @@ function rotateLogIfLarge(runDir: string): void {
   }
 }
 
-function spawnCoordinator(backendBin: string, runDir: string): void {
+function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedCoordinator {
+  const attemptId = randomUUID();
+  const spawnedAt = Date.now();
   let stderr: 'ignore' | number = 'ignore';
   try {
-    mkdirSync(runDir, { recursive: true });
-    rotateLogIfLarge(runDir);
-    stderr = openSync(join(runDir, 'coordinator.log'), 'a');
+    mkdirSync(paths.runDir, { recursive: true });
+    clearStartupErrorSentinel(paths);
+    rotateLogIfLarge(paths.runDir);
+    stderr = openSync(join(paths.runDir, 'coordinator.log'), 'a');
   } catch {
     // fail-open: spawn without log if dir creation fails
   }
@@ -208,8 +335,17 @@ function spawnCoordinator(backendBin: string, runDir: string): void {
     const child = spawn(process.execPath, [backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
+      env: {
+        ...process.env,
+        CORAL_STARTUP_ATTEMPT_ID: attemptId,
+        CORAL_STARTUP_STARTED_AT: String(spawnedAt),
+      },
     });
+    if (child.pid === undefined) {
+      throw new Error('Spawned coordinator pid was unavailable.');
+    }
     child.unref();
+    return { pid: child.pid, attemptId, spawnedAt };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -266,15 +402,26 @@ async function waitForBackendReady(
   desired: DesiredCoordinator,
   timeoutMs: number,
   timePort: TimePort,
+  waitContext: BackendReadyWaitContext,
 ): Promise<VerifiedBackendInfo> {
   const deadline = timePort.now() + timeoutMs;
   while (timePort.now() < deadline) {
     const info = readDiscoverySnapshot(paths);
+    let observedPid: number | undefined = info?.pid;
     if (info) {
       const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
+      observedPid = health?.pid ?? observedPid;
       if (health && health.status === 'ok' && isCompatibleHealth(health, desired)) {
         return mergeDiscoveryWithHealth(info, health);
       }
+    } else if (waitContext.kind === 'existing-starting') {
+      const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+      observedPid = health?.pid;
+    }
+
+    const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
+    if (startupError) {
+      throw startupError;
     }
     await timePort.sleep(STARTUP_POLL_MS);
   }
@@ -339,7 +486,10 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     }
     // Compatible incumbent is still `starting`, or `coordinator.json` lags
     // behind the bound socket; wait for the daemon to finish writing it.
-    return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
+    return summarizeBackend(
+      await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, { kind: 'existing-starting' }),
+      ipcTime,
+    );
   }
 
   if (health && isCompatibleHealth(health, desired) && health.status === 'draining') {
@@ -361,7 +511,10 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
         // re-classified as compatible. Re-converge by re-reading discovery.
         const info = readDiscoverySnapshot(paths);
         if (info) {
-          return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
+          return summarizeBackend(
+            await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, { kind: 'existing-starting' }),
+            ipcTime,
+          );
         }
       }
       // ignore other errors: bounded escalation happens via socket-release wait
@@ -370,6 +523,13 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   }
   // else: health unreachable → fall through to spawn
 
-  spawnCoordinator(backendBin, paths.runDir);
-  return summarizeBackend(await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime), ipcTime);
+  const spawned = spawnCoordinator(backendBin, paths);
+  return summarizeBackend(
+    await waitForBackendReady(paths, desired, STARTUP_TIMEOUT_MS, ipcTime, {
+      kind: 'current-attempt',
+      attemptId: spawned.attemptId,
+      spawnedAt: spawned.spawnedAt,
+    }),
+    ipcTime,
+  );
 }

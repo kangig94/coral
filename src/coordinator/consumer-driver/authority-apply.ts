@@ -88,15 +88,13 @@ export function scheduleJournalApply(state: ConsumerState, target: number, deps:
   })();
 }
 
-export function scheduleCorpusApply(
-  state: ConsumerState,
-  snapshot: KbCorpusSnapshot,
-  deps: AuthorityApplyDeps,
-): void {
+export function scheduleCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot, deps: AuthorityApplyDeps): void {
   if (state.stopped || state.kind !== 'corpus') {
     return;
   }
-  if (!isSnapshotFresherForInterest(snapshot, deps.repository.readCorpusCursor(state.reg.id), state.reg.corpusInterest)) {
+  if (
+    !isSnapshotFresherForInterest(snapshot, deps.repository.readCorpusCursor(state.reg.id), state.reg.corpusInterest)
+  ) {
     return;
   }
 
@@ -228,10 +226,7 @@ export async function runCorpusApply(
 ): Promise<boolean> {
   try {
     const current = deps.repository.readCorpusCursor(reg.id);
-    if (
-      options.forceGeneration === undefined &&
-      !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)
-    ) {
+    if (options.forceGeneration === undefined && !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
       return true;
     }
 

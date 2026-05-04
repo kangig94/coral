@@ -1,14 +1,11 @@
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoragePort } from '#src/infra/port-types.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
   applyTestCounterSchema,
@@ -17,17 +14,10 @@ import {
 } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const SCHEMAS_DIR = join(process.cwd(), 'src/store/schemas');
-
-const storageAdapter: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'> = {
-  existsSync: fs.existsSync,
-  readdirSync: fs.readdirSync as StoragePort['readdirSync'],
-  readFileSync: (path, encoding) => fs.readFileSync(path, encoding),
-};
 
 function setupDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyStoreSchemas({ db, storage: storageAdapter, schemasDir: SCHEMAS_DIR });
+  applyBundledStoreSchema(db);
   applyTestCounterSchema(db);
   return db;
 }

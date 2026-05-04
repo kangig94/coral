@@ -5,10 +5,12 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
+import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -47,6 +49,7 @@ async function loadModules() {
     sessionLookupModule,
     sessionQueriesModule,
     providerRegistryModule,
+    recoveryActionsModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -58,6 +61,7 @@ async function loadModules() {
     import('#src/sessions/lookup.js'),
     import('#src/sessions/read-queries.js'),
     import('#src/providers/registry.js'),
+    import('#src/coordinator/services/recovery/actions.js'),
   ]);
 
   return {
@@ -71,6 +75,7 @@ async function loadModules() {
     sessionLookupModule,
     sessionQueriesModule,
     providerRegistryModule,
+    recoveryActionsModule,
   };
 }
 
@@ -78,6 +83,43 @@ function createProjectRoot(name: string): string {
   const projectRoot = join(mockState.tmpHome, name);
   mkdirSync(projectRoot, { recursive: true });
   return projectRoot;
+}
+
+function createStoreServicesHarness(progressStore: { getDb(): { close(): void } }): {
+  storeServicesRef: never;
+  createStoreServicesFromDbFn: (storeDb: { close(): void }) => never;
+} {
+  const services = {
+    storeDb: progressStore.getDb(),
+    progressStore,
+    expansionManifestCatalog: null,
+    expansionStateStore: null,
+    expansionLifecycleService: null,
+    consumerDriver: null,
+  };
+  let current: typeof services | null = null;
+  return {
+    storeServicesRef: {
+      tryGet: () => current,
+      get: () => {
+        if (current === null) throw new Error('store services not set');
+        return current;
+      },
+      set: (next: typeof services) => {
+        current = next;
+      },
+      clear: () => {
+        current = null;
+      },
+    } as never,
+    createStoreServicesFromDbFn: (storeDb) => {
+      if (storeDb !== services.storeDb) {
+        storeDb.close();
+      }
+      current = services;
+      return services as never;
+    },
+  };
 }
 
 function createLaunchCoordinator(
@@ -184,6 +226,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
+    recordRecoveredArtifactHandles: vi.fn(async () => ({ ok: true as const, nextVersion: 1 })),
     ...overrides,
   };
 }
@@ -385,6 +428,7 @@ function createLifecycleHarness(
       return service;
     });
   const getRecoveryService = options.getRecoveryService ?? getExecutionService;
+  const storeServices = createStoreServicesHarness(options.progressStore);
 
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
@@ -402,7 +446,8 @@ function createLifecycleHarness(
     backendPid: 1234,
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
-    progressStore: options.progressStore,
+    storeServicesRef: storeServices.storeServicesRef,
+    createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
     streamResponses: new Set(),
     discussStores: new Map(),
     eventBus: options.eventBus,
@@ -425,7 +470,6 @@ function createLifecycleHarness(
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
-      expansionLifecycleService: null,
     handoffQuiescePorts: () => [],
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
@@ -453,6 +497,7 @@ function createLifecycleHarness(
         log: identity.log,
         cleanupStaleJobs,
         sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),
+        coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
         interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return [];
@@ -536,12 +581,137 @@ describe('lifecycle recovery', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.resetModules();
+    // vi.resetModules() removed: loadModules() resets before each fresh
+    // import; the afterEach copy was redundant cache invalidation across
+    // 24 tests.
     if (mockState.tmpRoot) {
       rmSync(mockState.tmpRoot, { recursive: true, force: true });
     }
     mockState.tmpHome = '';
     mockState.tmpRoot = '';
+  });
+
+  it('records recovered provider artifact handles before recovered terminal completion', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-recovered-handles');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-recovered-handles');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      {
+        db: openTestStoreDb(runtime, ':memory:'),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    const jobId = 'dead-recovered-handles';
+    const sessionId = 'session-recovered-handles';
+    const callOrder: string[] = [];
+    const launchRecord: JobLaunch = {
+      jobId,
+      sessionId,
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 1,
+      providerAction: 'exec',
+      request: {
+        prompt: 'recover',
+        cwd: projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+        conversationRef: 'fallback-thread',
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const runtimeRecord = {
+      pid: 42,
+      stdoutPath: '/tmp/recovered-stdout',
+      stderrPath: '/tmp/recovered-stderr',
+      startTime: '2026-04-12T00:00:00.000Z',
+      providerMeta: { threadId: 'thread-from-runtime-meta' },
+    };
+    const finalizeFromArtifacts = vi.fn<ProviderRecoveryContract['finalizeFromArtifacts']>(async () => ({
+      terminal: {
+        kind: 'terminal',
+        terminal: {
+          content: 'recovered content',
+          outcome: { kind: 'completed' },
+        },
+        diagnostics: {},
+      },
+      artifactHandles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+      continuity: {
+        conversationRef: 'thread-from-runtime-meta',
+        resumable: true,
+      },
+    }));
+    const provider = {
+      finalizeFromArtifacts,
+    } as unknown as ProviderRecoveryContract;
+    const service = createFakeExecutionAndRecoveryService({
+      recordRecoveredArtifactHandles: vi.fn(async () => {
+        expect(progressStore.readTerminalProjection(jobId)).toBeNull();
+        callOrder.push('handles');
+        return { ok: true as const, nextVersion: 2 };
+      }),
+      completeRecoveredJob: vi.fn(() => {
+        expect(progressStore.readTerminalProjection(jobId)).toMatchObject({
+          content: 'recovered content',
+          outcome: { kind: 'completed' },
+        });
+        callOrder.push('complete');
+      }),
+    });
+
+    progressStore.initJob({
+      jobId,
+      sessionId,
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      initialPhase: 'running',
+    });
+    vi.spyOn(progressStore, 'readExitProjection').mockReturnValue({
+      exitCode: 0,
+      signal: null,
+      endTime: '2026-04-12T00:01:00.000Z',
+    });
+
+    modules.recoveryActionsModule.finalizeDeadAdoptedJob({
+      jobId,
+      launchRecord,
+      runtimeRecord,
+      service,
+      provider,
+      progressStore,
+      runtime,
+      log: () => {},
+    });
+
+    await vi.waitFor(() => {
+      expect(service.completeRecoveredJob).toHaveBeenCalled();
+    });
+    expect(finalizeFromArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stdoutPath: '/tmp/recovered-stdout',
+        stderrPath: '/tmp/recovered-stderr',
+        providerMeta: { threadId: 'thread-from-runtime-meta' },
+        env: runtime.env,
+        storage: runtime.storage,
+      }),
+    );
+    expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
+      jobId,
+      provider: 'fakeprovider',
+      handles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+    });
+    expect(callOrder).toEqual(['handles', 'complete']);
   });
 
   it('1. queued recoverable jobs are restored in FIFO enqueueSequence order', async () => {
@@ -555,7 +725,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -638,7 +808,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -715,7 +885,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -769,7 +939,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -831,7 +1001,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -886,7 +1056,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -938,7 +1108,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -995,7 +1165,7 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-terminal-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const db = openTestStoreDb(runtime);
+    const db = openTestStoreDb(runtime, ':memory:');
     const progressStore = new modules.progressStoreModule.JobStore(
       namespace,
       runtime,
@@ -1073,7 +1243,7 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-orphan-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const db = openTestStoreDb(runtime);
+    const db = openTestStoreDb(runtime, ':memory:');
     const progressStore = new modules.progressStoreModule.JobStore(
       namespace,
       runtime,
@@ -1135,7 +1305,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1209,7 +1379,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1280,7 +1450,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1344,7 +1514,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1405,7 +1575,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1454,7 +1624,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1511,7 +1681,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1562,7 +1732,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1611,7 +1781,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1668,7 +1838,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },
@@ -1721,7 +1891,7 @@ describe('lifecycle recovery', () => {
       runtime,
       createDefaultUpcasterRegistry(),
       {
-        db: openTestStoreDb(runtime),
+        db: openTestStoreDb(runtime, ':memory:'),
         eventBus,
         providers: permissiveProviderLookupPort,
       },

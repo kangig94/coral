@@ -246,7 +246,12 @@ export async function runPrincipleDiscovery(
   await drainPendingDiscoveries(kb, processedThrough);
 
   const currentIndex = kb.readIndexOrEmpty();
-  const preparedBatch = prepareDiscoveryBatch(curateDb(kb),currentIndex, readCurateState(curateDb(kb)), processedThrough);
+  const preparedBatch = prepareDiscoveryBatch(
+    curateDb(kb),
+    currentIndex,
+    readCurateState(curateDb(kb)),
+    processedThrough,
+  );
   if (preparedBatch === null) {
     return;
   }
@@ -270,7 +275,7 @@ export async function runPrincipleDiscovery(
   await kb.withMutationLock(async (mutation) => {
     const refreshedState = readCurateState(curateDb(kb));
     const refreshedIndex = kb.readIndexOrEmpty();
-    const refreshedBatch = prepareDiscoveryBatch(curateDb(kb),refreshedIndex, refreshedState, processedThrough);
+    const refreshedBatch = prepareDiscoveryBatch(curateDb(kb), refreshedIndex, refreshedState, processedThrough);
     if (
       refreshedBatch === null ||
       compareCursor(refreshedBatch.processedThrough, preparedBatch.processedThrough) !== 0 ||

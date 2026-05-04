@@ -19,6 +19,19 @@ import type {
   KbRuntime,
 } from './contract.js';
 import type { VectorRetrieval } from './search/contract.js';
+import { createCapabilityRegistry } from './capability/registry.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  KB_EMBEDDING_CAPABILITY,
+  KB_FTS_CAPABILITY,
+  KB_VECTOR_CAPABILITY,
+} from './capability/constants.js';
+import { createBuiltinGraphRole } from './search/graph-retrieval.js';
+import { createRoleRegistry } from './search/role-registry.js';
+import { createBuiltinTextRole } from './search/text-retrieval.js';
+import { createBuiltinVectorRole } from './search/vector-query.js';
 import {
   createKbMutationLock,
   DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
@@ -87,9 +100,10 @@ class KbRuntimeImpl implements KbRuntime {
   readonly spawnCli: SpawnCliFn;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
-  readonly vector: KbRuntime['vector'];
-  readonly embedding: KbRuntime['embedding'];
-  readonly fts: KbRuntime['fts'];
+  readonly capabilityRegistry: KbRuntime['capabilityRegistry'];
+  readonly capabilities: KbRuntime['capabilities'];
+  readonly roleRegistry: KbRuntime['roleRegistry'];
+  readonly roleCatalog: KbRuntime['roleCatalog'];
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
   readonly projectionArtifacts: KbProjectionArtifactPort;
@@ -101,7 +115,12 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly publicationQueue: CorpusPublicationQueue;
   private activeMutationContext: KbRuntimeMutationLockContext | null = null;
-  private readonly mutationLockController: KbMutationLockController<KbIndex, KbCorpusPublication, KbIndexMutationLane, ManifestAuthorityDelta>;
+  private readonly mutationLockController: KbMutationLockController<
+    KbIndex,
+    KbCorpusPublication,
+    KbIndexMutationLane,
+    ManifestAuthorityDelta
+  >;
   private readonly publicationService: CorpusPublicationService;
   private readonly authorityBaselineRefresh: CorpusAuthorityBaselineRefresh;
   private readonly mutationFinalizer: CorpusMutationFinalizer;
@@ -133,9 +152,24 @@ class KbRuntimeImpl implements KbRuntime {
     this.processPort = processPort;
     this.envPort = envPort;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
-    this.vector = createRuntimeBinding<Backed<VectorRetrieval>>('kb.vector');
-    this.embedding = createRuntimeBinding<Backed<EmbeddingService>>('kb.embedding');
-    this.fts = createRuntimeBinding<Backed<FtsRetrieval>>('kb.fts');
+    const capabilityRegistry = createCapabilityRegistry();
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
+    );
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
+    );
+    capabilityRegistry.registerBuiltin(
+      BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+      createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
+    );
+    this.capabilityRegistry = capabilityRegistry;
+    this.capabilities = capabilityRegistry.catalogView();
+    const roleRegistry = createRoleRegistry();
+    this.roleRegistry = roleRegistry;
+    this.roleCatalog = roleRegistry.catalogView();
     this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
     this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
     this.projectionArtifacts = {
@@ -273,6 +307,10 @@ class KbRuntimeImpl implements KbRuntime {
       },
     });
 
+    roleRegistry.registerBuiltin(createBuiltinTextRole(this), { criticality: 'core' });
+    roleRegistry.registerBuiltin(createBuiltinVectorRole(this), { criticality: 'core' });
+    roleRegistry.registerBuiltin(createBuiltinGraphRole(() => this.readEntityGraph()));
+
     storage.mkdirSync(this.runtimeDir, { recursive: true });
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
@@ -280,16 +318,36 @@ class KbRuntimeImpl implements KbRuntime {
     this.manifestAuthority.seedFromFullCollectors(this);
   }
 
-  notesDir(): string { return this.paths.notesDir(); }
-  sourcesDir(): string { return this.paths.sourcesDir(); }
-  communitiesDir(): string { return this.paths.communitiesDir(); }
-  principlesDir(): string { return this.paths.principlesDir(); }
-  entityGraphPath(): string { return this.paths.entityGraphPath(); }
-  notePath(note: string): string { return this.paths.notePath(note); }
-  sourcePath(source: string): string { return this.paths.sourcePath(source); }
-  communityPath(community: string): string { return this.paths.communityPath(community); }
-  principlePath(principle: string): string { return this.paths.principlePath(principle); }
-  sourceImportStageDir(): string { return this.paths.sourceImportStageDir(); }
+  notesDir(): string {
+    return this.paths.notesDir();
+  }
+  sourcesDir(): string {
+    return this.paths.sourcesDir();
+  }
+  communitiesDir(): string {
+    return this.paths.communitiesDir();
+  }
+  principlesDir(): string {
+    return this.paths.principlesDir();
+  }
+  entityGraphPath(): string {
+    return this.paths.entityGraphPath();
+  }
+  notePath(note: string): string {
+    return this.paths.notePath(note);
+  }
+  sourcePath(source: string): string {
+    return this.paths.sourcePath(source);
+  }
+  communityPath(community: string): string {
+    return this.paths.communityPath(community);
+  }
+  principlePath(principle: string): string {
+    return this.paths.principlePath(principle);
+  }
+  sourceImportStageDir(): string {
+    return this.paths.sourceImportStageDir();
+  }
 
   readEntityGraph(): EntityGraph | null {
     return readEntityGraphFile(this.storagePort, this.entityGraphPath());
@@ -301,13 +359,27 @@ class KbRuntimeImpl implements KbRuntime {
     });
   }
 
-  readIndex(): KbIndex | null { return this.indexStore.readIndex(); }
-  persistIndexToDisk(index: KbIndex): KbIndex { return this.indexStore.persistIndexToDisk(index); }
-  writeIndex(index: KbIndex): KbIndex { return this.indexStore.writeIndex(index); }
-  readIndexOrEmpty(): KbIndex { return this.indexStore.readIndexOrEmpty(); }
-  readIndexStateIfPresent(): KbIndexState | null { return this.indexStore.readIndexStateIfPresent(); }
-  readIndexState(): KbIndexState { return this.indexStore.readIndexState(); }
-  writeIndexState(state: KbIndexState): void { this.indexStore.writeIndexState(state); }
+  readIndex(): KbIndex | null {
+    return this.indexStore.readIndex();
+  }
+  persistIndexToDisk(index: KbIndex): KbIndex {
+    return this.indexStore.persistIndexToDisk(index);
+  }
+  writeIndex(index: KbIndex): KbIndex {
+    return this.indexStore.writeIndex(index);
+  }
+  readIndexOrEmpty(): KbIndex {
+    return this.indexStore.readIndexOrEmpty();
+  }
+  readIndexStateIfPresent(): KbIndexState | null {
+    return this.indexStore.readIndexStateIfPresent();
+  }
+  readIndexState(): KbIndexState {
+    return this.indexStore.readIndexState();
+  }
+  writeIndexState(state: KbIndexState): void {
+    this.indexStore.writeIndexState(state);
+  }
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
     this.publicationService.register(corpusPublishCallbacks);
   }
@@ -361,11 +433,21 @@ class KbRuntimeImpl implements KbRuntime {
     return nextState;
   }
 
-  getCorpusStateSnapshot(): KbCorpusSnapshot { return this.corpusStateMirror.get(); }
-  captureCorpusSnapshot(): KbCorpusSnapshot { return this.publicationService.captureCorpusSnapshot(); }
-  invalidateCorpusStateSnapshot(): void { this.corpusStateMirror.invalidate(); }
-  invalidateKbCache(): void { this.indexStore.invalidateIndexCache(); }
-  invalidateTextSnapshot(reason: string): KbIndexState { return this.recordIndexSyncFailure(reason); }
+  getCorpusStateSnapshot(): KbCorpusSnapshot {
+    return this.corpusStateMirror.get();
+  }
+  captureCorpusSnapshot(): KbCorpusSnapshot {
+    return this.publicationService.captureCorpusSnapshot();
+  }
+  invalidateCorpusStateSnapshot(): void {
+    this.corpusStateMirror.invalidate();
+  }
+  invalidateKbCache(): void {
+    this.indexStore.invalidateIndexCache();
+  }
+  invalidateTextSnapshot(reason: string): KbIndexState {
+    return this.recordIndexSyncFailure(reason);
+  }
   ensureCorpusFreshness(options: EnsureCorpusFreshnessOptions = {}): Promise<KbIndex> {
     return this.freshnessService.ensureCorpusFreshness(options);
   }

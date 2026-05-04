@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
+import { retentionPolicySchema } from './entry.js';
 
 const modelNameSchema = z
   .string()
@@ -49,6 +50,7 @@ export const sessionCreateSchema = z
     claudeModelCap: claudeModelCapSchema,
     bypassPermissions: z.boolean().optional(),
     systemPrompt: z.string().optional(),
+    retention: retentionPolicySchema.optional(),
   })
   .strict();
 

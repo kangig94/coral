@@ -6,8 +6,9 @@
 
 import { z } from 'zod';
 
+import { causeRefSchema } from '../causality/cause-ref.js';
 import { continuitySnapshotSchema } from './continuity.js';
-import { sessionEntrySchema } from './entry.js';
+import { retentionDiscardCompletedOutcomeSchema, sessionEntrySchema } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
   sessionInterruptedFaultSchema,
@@ -27,6 +28,15 @@ export const sessionContinuityCheckpointedBodySchema = z
   .object({
     entry: sessionEntrySchema,
     snapshot: continuitySnapshotSchema,
+  })
+  .strict();
+
+export const sessionArtifactHandleRecordedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    provider: z.string().min(1),
+    handle: z.string().min(1),
+    sourceJobId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -57,8 +67,42 @@ export const sessionClaimReleasedBodySchema = z
   })
   .strict();
 
+const retentionDiscardHandlesSchema = z.array(z.string()).readonly();
+const retentionDiscardAttemptSchema = z.number().int().nonnegative();
+
+export const sessionRetentionDiscardRequestedBodySchema = z
+  .object({
+    sessionId: z.string().min(1),
+    attempt: retentionDiscardAttemptSchema,
+    handles: retentionDiscardHandlesSchema,
+  })
+  .strict();
+
+export const sessionRetentionDiscardCompletedBodySchema = z
+  .object({
+    sessionId: z.string().min(1),
+    attempt: retentionDiscardAttemptSchema,
+    handles: retentionDiscardHandlesSchema,
+    outcome: retentionDiscardCompletedOutcomeSchema,
+  })
+  .strict();
+
+export const sessionRetentionDiscardFailedBodySchema = z
+  .object({
+    sessionId: z.string().min(1),
+    attempt: retentionDiscardAttemptSchema,
+    handles: retentionDiscardHandlesSchema,
+    reason: z.string(),
+    causeRef: causeRefSchema.optional(),
+  })
+  .strict();
+
 export type SessionOpenedBody = z.infer<typeof sessionOpenedBodySchema>;
 export type SessionContinuityCheckpointedBody = z.infer<typeof sessionContinuityCheckpointedBodySchema>;
+export type SessionArtifactHandleRecordedBody = z.infer<typeof sessionArtifactHandleRecordedBodySchema>;
 export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema>;
 export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
 export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;
+export type SessionRetentionDiscardRequestedBody = z.infer<typeof sessionRetentionDiscardRequestedBodySchema>;
+export type SessionRetentionDiscardCompletedBody = z.infer<typeof sessionRetentionDiscardCompletedBodySchema>;
+export type SessionRetentionDiscardFailedBody = z.infer<typeof sessionRetentionDiscardFailedBodySchema>;

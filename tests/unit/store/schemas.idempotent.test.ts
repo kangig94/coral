@@ -1,19 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase, pragmaSimple, totalChanges } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
-import type { StoragePort } from '#src/infra/port-types.js';
-
-const nodeStorage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync'> = {
-  existsSync,
-  readFileSync: (path, encoding) => readFileSync(path, encoding),
-  readdirSync: readdirSync as StoragePort['readdirSync'],
-};
-
+import { applyBundledStoreSchema } from '#src/store/db.js';
 function tableColumns(db: Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info('${table}')`).all() as Array<{ name: string }>).map((row) => row.name);
 }
@@ -28,34 +20,30 @@ describe('store schema idempotency', () => {
     const db = newRawDatabase(join(tempDir, 'store.db'));
 
     try {
-      applyStoreSchemas({ db, storage: nodeStorage });
+      applyBundledStoreSchema(db);
       const firstChanges = totalChanges(db);
       const firstSchemaVersion = pragmaSimple(db, 'schema_version');
-      const firstMetaVersion = (
-        db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }
-      ).value;
+      const firstUserVersion = pragmaSimple(db, 'user_version');
 
-      applyStoreSchemas({ db, storage: nodeStorage });
+      applyBundledStoreSchema(db);
       const secondChanges = totalChanges(db);
       const secondSchemaVersion = pragmaSimple(db, 'schema_version');
-      const secondMetaVersion = (
-        db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }
-      ).value;
+      const secondUserVersion = pragmaSimple(db, 'user_version');
 
       expect(secondChanges).toBe(firstChanges);
       expect(secondSchemaVersion).toBe(firstSchemaVersion);
-      expect(secondMetaVersion).toBe(firstMetaVersion);
+      expect(secondUserVersion).toBe(firstUserVersion);
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  it('001_initial.sql creates the expected baseline schema state', () => {
+  it('store schema migrations create the expected baseline schema state', () => {
     const db = newRawDatabase(':memory:');
 
     try {
-      applyStoreSchemas({ db, storage: nodeStorage });
+      applyBundledStoreSchema(db);
 
       const objects = (
         db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name").all() as Array<{
@@ -68,6 +56,7 @@ describe('store schema idempotency', () => {
       expect(objects).toContain('kb_corpus_state');
       expect(objects).toContain('consumer_cursors');
       expect(objects).toContain('kb_curate_scheduler');
+      expect(objects).toContain('expansion_manifest_catalog');
 
       const meta = (
         db.prepare('SELECT key, value FROM meta ORDER BY key').all() as { key: string; value: string }[]
@@ -75,8 +64,8 @@ describe('store schema idempotency', () => {
         key,
         value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value,
       }));
-      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(meta.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
+      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version']);
+      expect(pragmaSimple(db, 'user_version')).not.toBe(0);
 
       expect(
         db
@@ -107,6 +96,7 @@ describe('store schema idempotency', () => {
         'registered_at',
         'registration_kind',
       ]);
+      expect(tableColumns(db, 'expansion_manifest_catalog')).toEqual(['id', 'manifest_json', 'updated_at']);
 
       expect(tableColumns(db, 'expansion_state')).toEqual(['id', 'version', 'installed_at']);
 

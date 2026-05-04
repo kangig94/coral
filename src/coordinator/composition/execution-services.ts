@@ -31,14 +31,17 @@ export function createExecutionServices({
   listExecutionServices: () => ProjectRequestPort[];
 } {
   const services = new Map<string, ProjectRequestPort>();
+  const storeServicesRef = world.storeServicesRef;
+  const getProgressStore = () => storeServicesRef.get().progressStore;
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
     if (existing) return existing;
+    const progressStore = getProgressStore();
     const created = createExecutionService(ctx, {
       runtime,
-      progressStore: world.progressStore,
+      progressStore,
       bundleHash,
       backendNamespace,
       providerHostManager: world.providerHostManager,
@@ -46,14 +49,15 @@ export function createExecutionServices({
       eventBus: world.eventBus,
       providerRegistry: world.providerRegistry,
       pluginRegistry: world.pluginRegistry,
-      loadJobProjectionDetail: (jobId) => world.progressStore.loadJobProjectionDetail(jobId),
-      readJobEvents: (jobId) => world.progressStore.readJobEvents(jobId),
+      loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
+      readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (
-          world.progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as {
-            seq: number;
-          }
+          getProgressStore()
+            .getDb()
+            .prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
+            .get() as { seq: number }
         ).seq,
     });
     services.set(key, created);

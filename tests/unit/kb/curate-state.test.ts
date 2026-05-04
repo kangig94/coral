@@ -434,7 +434,8 @@ describe('curate state', () => {
     ]);
 
     expect(
-      normalizeCurateStateRepairFrontier(curateDb(runtime),
+      normalizeCurateStateRepairFrontier(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-alpha', 5),
           lastAttemptedThrough: cursor('coral-gamma', 5),
@@ -1014,7 +1015,8 @@ describe('curate state', () => {
       contentSeq: 6,
       metadataSeq: 6,
     });
-    writeCurateState(curateDb(runtime),
+    writeCurateState(
+      curateDb(runtime),
       createCurateState({
         processedThrough: cursor('coral-valid', 12),
         lastAttemptedThrough: cursor('coral-valid', 12),
@@ -1134,7 +1136,8 @@ describe('curate state', () => {
       contentSeq: 4,
       metadataSeq: 4,
     });
-    writeCurateState(curateDb(runtime),
+    writeCurateState(
+      curateDb(runtime),
       createCurateState({
         initialized: true,
         lastRunDay: '2026-03-25',

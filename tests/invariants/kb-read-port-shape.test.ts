@@ -6,6 +6,8 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
+import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 import type { KbQueryContext } from '#src/read-model/kb-query-runtime.js';
 import {
   createProductionFileIndex,
@@ -193,13 +195,11 @@ async function createWritableKbRuntime() {
   const [
     { createRealRuntime },
     { openStoreDatabase },
-    { ensureStoreSchemasDir },
     { createKbRuntime },
     { kbRuntimeDir },
   ] = await Promise.all([
     import('#src/runtime/real.js'),
     import('#src/store/db.js'),
-    import('#src/store/schema-loader.js'),
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
   ]);
@@ -208,7 +208,6 @@ async function createWritableKbRuntime() {
   const db = openStoreDatabase({
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
-    schemasDir: ensureStoreSchemasDir(runtime.storage),
   });
   const kb = createKbRuntime({
     markdownRoot: runtime.paths.coral.corpus.kbRoot,
@@ -322,13 +321,23 @@ describe('KB read port shape', () => {
     expect(existsSync(artifactPath)).toBe(false);
     expect(existsSync(metadataPath)).toBe(false);
     bindOramaFtsForTest(kb);
-    expect(kb.fts.read().read().warnings()).toContain('fts_index_uninitialized');
+    expect(
+      kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().warnings(),
+    ).toContain('fts_index_uninitialized');
 
     const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, host);
 
     expect(degraded).toEqual({
       mode: 'text',
       results: [],
+      retrievalDiagnostics: [
+        {
+          roleId: 'text',
+          code: 'binding_missing',
+          recoverable: true,
+          publicText: 'kb_search_degraded_until_coordinator_rebuild',
+        },
+      ],
       warnings: ['kb_search_degraded_until_coordinator_rebuild'],
     });
     expect(existsSync(artifactPath)).toBe(false);

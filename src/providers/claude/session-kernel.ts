@@ -1,12 +1,14 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord, readString } from '../../infra/json.js';
-import type { Provider, ProviderRuntime, ProviderServerLease, ProviderTerminalEventBody } from '../contract.js';
+import type {
+  Provider,
+  ProviderEventBody,
+  ProviderRuntime,
+  ProviderServerLease,
+  ProviderTerminalEventBody,
+} from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
-import {
-  bindAppServerNotificationHandler,
-  buildProviderFailureMessage,
-  requireAppServerLease,
-} from '../app-server.js';
+import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
@@ -24,6 +26,7 @@ import {
   readTurnConversationRef,
   type PreparedClaudeRequest,
 } from './request-prep.js';
+import { locateClaudeJsonlArtifactFromRuntime } from './provider-facets.js';
 
 function buildClaudeSessionFailureCause(message: string) {
   return providerRequestFailed({
@@ -53,6 +56,7 @@ type ClaudeTurnState = {
   brokerSessionKey?: string;
   bootstrapSignature?: ClaudeBootstrapSignature;
   conversationRef?: string;
+  artifactHandleEmissionAttempted: boolean;
   brokerTurnId?: string;
   turnRequested: boolean;
   completed: boolean;
@@ -94,6 +98,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
         throw new Error('Claude broker session key missing from session/ensure response.');
       }
       checkpointBrokerContinuity(runtime, state);
+      emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       if (runtime.signal.aborted) {
         emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
@@ -114,6 +119,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
       checkpointBrokerContinuity(runtime, state);
+      emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       const outcome = await Promise.race([
         state.terminal,
@@ -157,6 +163,7 @@ function createInitialState(
     brokerSessionKey: persistedContinuity.brokerSessionKey,
     bootstrapSignature: persistedContinuity.bootstrapSignature,
     conversationRef: persistedContinuity.conversationRef,
+    artifactHandleEmissionAttempted: false,
     brokerTurnId: persistedContinuity.brokerTurnId,
     turnRequested: false,
     completed: false,
@@ -192,6 +199,31 @@ function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnS
   });
 }
 
+function emitClaudeArtifactHandleOnce(
+  state: ClaudeTurnState,
+  runtime: ProviderRuntime,
+  emit: (event: ProviderEventBody) => void,
+): void {
+  if (state.artifactHandleEmissionAttempted || !state.conversationRef) {
+    return;
+  }
+  state.artifactHandleEmissionAttempted = true;
+
+  const result = locateClaudeJsonlArtifactFromRuntime(state.conversationRef, runtime);
+  if (!result) {
+    return;
+  }
+  if (result.kind === 'match') {
+    emit({
+      kind: 'artifact_handle',
+      handle: result.artifact.handle,
+    });
+    return;
+  }
+
+  emit({ kind: 'progress', message: result.diagnostic });
+}
+
 function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): void {
   if (state.completed) {
     return;
@@ -205,7 +237,7 @@ function applyNotification(
   state: ClaudeTurnState,
   message: { method: string; params?: Record<string, unknown> },
   runtime: ProviderRuntime,
-  emit: (event: ReturnType<typeof buildFailedTerminal> | { kind: 'progress'; message: string }) => void,
+  emit: (event: ProviderEventBody) => void,
 ): void {
   if (!isRecord(message)) {
     return;
@@ -235,6 +267,7 @@ function applyNotification(
   const updatedConversationRef = readTurnConversationRef(params);
   if (updatedConversationRef) {
     state.conversationRef = updatedConversationRef;
+    emitClaudeArtifactHandleOnce(state, runtime, emit);
   }
 
   if (message.method === sessionUpdated) {

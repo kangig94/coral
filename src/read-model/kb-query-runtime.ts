@@ -13,15 +13,27 @@ import {
   sourcePathFromName,
 } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import { BUNDLED_ENGINES, loadBundledEngine } from '../expansion/bundled.js';
-import { createExpansionHost } from '../expansion/host.js';
+import { loadBundledEngine } from '../expansion/bundled.js';
+import { createExpansionHost, disposeExpansionScope } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
+import { validateManifestCompleteness } from '../expansion/manifest-completeness.js';
+import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
+import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import { serializeCoralSetupError } from '../runtime/errors.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+} from '../kb/capability/constants.js';
 import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
+
+const MANIFEST_CATALOG_UNAVAILABLE_MESSAGE =
+  /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
@@ -122,10 +134,17 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
   });
 }
 
+function isManifestCatalogUnavailableError(error: unknown): boolean {
+  if (serializeCoralSetupError(error) !== null) {
+    return false;
+  }
+  return error instanceof Error && MANIFEST_CATALOG_UNAVAILABLE_MESSAGE.test(error.message);
+}
+
 /**
  * Loads bundled read-side capabilities onto a read-only KB runtime once per
  * `kb` instance. Read-side CLI does not run the coordinator's bundled
- * fallback, so this is the dual; without it `kb.fts.read()` throws
+ * fallback, so this is the dual; without it reading the kb.fts capability throws
  * `binding_empty` and the search degrades silently.
  */
 export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQueryContext): Promise<void> {
@@ -134,6 +153,20 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
   }
 
   const runtime = resolveQueryRuntime(context);
+  let manifestCatalog: ReturnType<typeof createExpansionManifestCatalog>;
+  try {
+    manifestCatalog = createExpansionManifestCatalog({ readDb: getDefaultKbQueryDb(context) });
+  } catch (error) {
+    if (!isManifestCatalogUnavailableError(error)) {
+      throw error;
+    }
+    manifestCatalog = createExpansionManifestCatalog();
+  }
+  initializeCapabilityCatalog(kb.capabilityRegistry, manifestCatalog.listManifests(), [
+    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  ]);
 
   const noopDriver = {
     register(_reg: ConsumerRegistration): ConsumerHandle {
@@ -180,7 +213,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     },
   };
 
-  for (const entry of BUNDLED_ENGINES) {
+  for (const entry of manifestCatalog.listManifests()) {
     if (entry.tier !== 'bundled') {
       continue;
     }
@@ -188,12 +221,18 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
     const host: ExpansionHost = createExpansionHost({
       runtime,
       kb,
+      roleRegistry: kb.roleRegistry,
       scope,
-      id: entry.id,
-      tier: entry.tier,
+      manifest: entry,
       consumerDriver: noopDriver,
     });
-    await loadBundledEngine(entry, host);
+    try {
+      await loadBundledEngine(entry, host);
+      validateManifestCompleteness(entry, kb.roleRegistry, kb.capabilityRegistry);
+    } catch (error) {
+      await disposeExpansionScope(scope);
+      throw error;
+    }
   }
 
   defaultRegistry.markBundledLoaded(kb);

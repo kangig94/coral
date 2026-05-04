@@ -6,9 +6,9 @@ import type { IdleTimer } from './live/idle.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
-import type { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
+import type { StoreServicesRef } from './composition/store-services-ref.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -57,7 +57,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
-  expansionLifecycleService: ExpansionLifecycleService | null;
+  storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };
@@ -127,7 +127,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
-  expansionLifecycleService,
+  storeServicesRef,
   terminateAllFn,
   handoffQuiescePorts,
   hooks,
@@ -159,7 +159,9 @@ export async function runShutdownSequence({
   state.ownershipCheckerTeardown = null;
 
   if (mode === 'hard') {
-    markJobsAsErrorFn(namespace, 'Backend shutting down');
+    if (storeServicesRef.tryGet() !== null) {
+      markJobsAsErrorFn(namespace, 'Backend shutting down');
+    }
     await providerHostManager.shutdown();
     terminateAllFn();
   } else {
@@ -198,14 +200,9 @@ export async function runShutdownSequence({
   const kbSubsystem = kbStatus.kind === 'ok' ? kbStatus.subsystem : null;
   const curateSchedulerStop = kbSubsystem?.curateScheduler.stop?.bind(kbSubsystem.curateScheduler);
   if (curateSchedulerStop) {
-    await withBudget(
-      'kb curate scheduler stop',
-      async () => curateSchedulerStop(),
-      remainingDrain,
-      runtime.time,
-      log,
-    );
+    await withBudget('kb curate scheduler stop', async () => curateSchedulerStop(), remainingDrain, runtime.time, log);
   }
+  const expansionLifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
   if (expansionLifecycleService) {
     await withBudget(
       'expansion shutdown',
@@ -218,13 +215,7 @@ export async function runShutdownSequence({
       log,
     );
   }
-  await withBudget(
-    'hooks.onShutdown',
-    async () => hooks.onShutdown(mode),
-    remainingDrain,
-    runtime.time,
-    log,
-  );
+  await withBudget('hooks.onShutdown', async () => hooks.onShutdown(mode), remainingDrain, runtime.time, log);
   for (const store of discussStores.values()) {
     store.dispose();
   }

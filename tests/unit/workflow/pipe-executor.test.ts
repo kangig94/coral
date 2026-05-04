@@ -80,7 +80,6 @@ type MockExecutionService = WorkflowExecutionPort & {
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
-  cleanupWorkflowSessions: ReturnType<typeof vi.fn>;
   waitForJobTerminal: ReturnType<typeof vi.fn>;
 };
 
@@ -91,7 +90,6 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
     waitStream: vi.fn((_req: WaitRequest) => emit([])),
-    cleanupWorkflowSessions: vi.fn(),
     waitForJobTerminal: vi.fn(async () => {}),
     ...overrides,
   } as MockExecutionService;
@@ -416,7 +414,7 @@ describe('workflow pipe executor', () => {
     }
   });
 
-  it('success path passes all launched sessions to cleanup port', async () => {
+  it('success path returns outputs from all launched atoms', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async (_provider, coralName) => {
         if (coralName === 'architect') {
@@ -455,13 +453,9 @@ describe('workflow pipe executor', () => {
       expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
       ctx,
     );
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
-      { providerName: 'claude', sessionId: 'session-1' },
-      { providerName: 'claude', sessionId: 'session-2' },
-    ]);
   });
 
-  it('abort path still invokes cleanup with launched sessions', async () => {
+  it('abort path still reports the launched atom failure', async () => {
     const controller = new AbortController();
     let waitCalls = 0;
     const executionSvc = createExecutionService({
@@ -488,14 +482,9 @@ describe('workflow pipe executor', () => {
       message: 'Pipeline aborted (launched atoms may continue)',
       aborted: true,
     });
-
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledTimes(1);
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
-      { providerName: 'claude', sessionId: 'session-1' },
-    ]);
   });
 
-  it('error path still invokes cleanup with launched sessions', async () => {
+  it('error path still reports launched atom diagnostics', async () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds[0] === 'job-1') {
@@ -528,13 +517,9 @@ describe('workflow pipe executor', () => {
       message: "Step 0, atom 'architect' failed: Failed: session/session-1#1",
       aborted: false,
     });
-
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
-      { providerName: 'claude', sessionId: 'session-1' },
-    ]);
   });
 
-  it('very-early-abort invokes cleanup with an empty session list', async () => {
+  it('very-early-abort skips atom launch', async () => {
     const controller = new AbortController();
     controller.abort();
 
@@ -549,11 +534,10 @@ describe('workflow pipe executor', () => {
       }),
     ).rejects.toMatchObject({ aborted: true });
 
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([]);
     expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
   });
 
-  it('codex-only pipeline delegates cleanup routing to the port', async () => {
+  it('codex-only pipeline returns its atom output', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
       waitStream: vi.fn((req: WaitRequest) => {
@@ -570,12 +554,9 @@ describe('workflow pipe executor', () => {
     });
 
     expect(result.finalOutput).toBe('DONE');
-    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
-      { providerName: 'codex', sessionId: 'session-1' },
-    ]);
   });
 
-  it('invokes cleanup with the (providerName, sessionId) pair after stale recovery', async () => {
+  it('preserves launched atom identity after stale recovery', async () => {
     // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
     let mockNow = 10_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
@@ -617,10 +598,6 @@ describe('workflow pipe executor', () => {
         },
         ctx,
       );
-      expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledTimes(1);
-      expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
-        { providerName: 'claude', sessionId: 'session-1' },
-      ]);
     } finally {
       vi.restoreAllMocks();
     }
@@ -871,6 +848,28 @@ describe('launchAtomWithRetry', () => {
       'architect',
       expect.objectContaining({
         cwd: '/tmp/coral-workflow-cwd',
+      }),
+      ctx,
+    );
+  });
+
+  it('marks new workflow atom launches for provider artifact discard', async () => {
+    const executionSvc = createExecutionService();
+
+    await launchAtomWithRetry({
+      slot: planSlot(),
+      atomIndex: 0,
+      stepPrompt: 'do work',
+      executionSvc,
+      ctx,
+      completedStepDetails: [],
+    });
+
+    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
+      'codex',
+      'architect',
+      expect.objectContaining({
+        retention: 'discard_provider_artifacts_on_terminal',
       }),
       ctx,
     );

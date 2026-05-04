@@ -1,7 +1,8 @@
-import type { RuntimeBinding } from '../runtime/binding.js';
 import type { KbEngineRuntime } from '../kb/contract.js';
+import type { KbCapabilityDescriptor, KbCapabilityName } from '../kb/capability/contract.js';
 import type { EngineArtifactPort } from '../kb/corpus/artifact-port.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
+import type { RetrievalRole, RetrievalRoleDescriptor, RoleHandle } from '../kb/search/contract.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
 import type {
   ConsumerHandle,
@@ -22,8 +23,9 @@ export type ExpansionConsumerRegistration =
   | HostDerivedRegistrationKind<StatelessProviderLifecycleRegistration>;
 
 export interface ExpansionHost {
-  bind<T>(binding: RuntimeBinding<T>, value: T): void;
-  require<T>(binding: RuntimeBinding<T>): T;
+  bind<T>(name: KbCapabilityName, value: T): void;
+  require<T>(name: KbCapabilityName): T;
+  registerRetrievalRole(role: RetrievalRole, scope: Disposable): RoleHandle;
   registerConsumer(reg: ExpansionConsumerRegistration, scope: Disposable): ConsumerHandle;
   registerArtifactPort(
     port: EngineArtifactPort,
@@ -68,9 +70,14 @@ export interface EngineInstaller {
 }
 
 export type OnboardingStep =
-  | { readonly kind: 'require-binding'; readonly binding: string }
+  | { readonly kind: 'require-binding'; readonly binding: KbCapabilityName }
   | { readonly kind: 'env-var'; readonly name: string; readonly message?: string }
   | { readonly kind: 'confirm-download'; readonly message: string };
+
+export interface EngineManifestProvides {
+  readonly retrievalRoles?: RetrievalRoleDescriptor[];
+  readonly capabilities?: KbCapabilityDescriptor[];
+}
 
 export interface EngineManifest {
   readonly id: string;
@@ -80,5 +87,6 @@ export interface EngineManifest {
   readonly description: string;
   readonly installer?: EngineInstaller;
   readonly onboarding?: readonly OnboardingStep[];
-  readonly fills?: readonly string[];
+  readonly fills?: readonly KbCapabilityName[];
+  readonly provides?: EngineManifestProvides;
 }

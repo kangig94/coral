@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ProviderSpec } from '#src/providers/contract.js';
+import { managed, none } from '#src/providers/capability.js';
+import type { ProviderArtifactCapability, ProviderSpec } from '#src/providers/contract.js';
+import { defineProvider, type ProviderDefinition } from '#src/providers/define.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 
-function makeSpec(name: string, overrides: Partial<ProviderSpec> = {}): ProviderSpec {
-  return {
+type ProviderFacetOverrides = Partial<Pick<ProviderSpec, 'preflight' | 'appServer' | 'recovery'>> & {
+  readonly artifacts?: ProviderArtifactCapability;
+};
+
+function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): ProviderDefinition {
+  const definition = defineProvider({
     name,
     run: async function* () {
       yield {
@@ -16,8 +22,14 @@ function makeSpec(name: string, overrides: Partial<ProviderSpec> = {}): Provider
         diagnostics: {},
       };
     },
-    ...overrides,
-  };
+    ...(overrides.preflight ? { preflight: overrides.preflight } : {}),
+    ...(overrides.appServer ? { appServer: overrides.appServer } : {}),
+    ...(overrides.recovery ? { recovery: overrides.recovery } : {}),
+  })
+    .artifacts(overrides.artifacts ?? none(`Test provider ${name} declares no provider artifacts.`))
+    .build();
+
+  return definition;
 }
 
 function providerNames(providers: ProviderSpec[]): string[] {
@@ -43,7 +55,10 @@ describe('ProviderRegistry', () => {
 
     expect(registry.get('claude')?.appServer).toBeUndefined();
     expect(registry.get('claude')?.recovery).toBeUndefined();
-    expect(registry.get('claude')?.cleanup).toBeUndefined();
+    expect(registry.get('claude')?.artifacts).toEqual({
+      kind: 'none',
+      reason: 'Test provider claude declares no provider artifacts.',
+    });
   });
 
   it('retains registered facets on the spec', () => {
@@ -68,17 +83,16 @@ describe('ProviderRegistry', () => {
         },
       }),
     };
-    const cleanup = {
-      name: 'claude',
-      cleanupSessions: async () => {},
-    };
-    const spec = makeSpec('claude', { appServer, recovery, cleanup });
+    const artifacts = managed({
+      discardArtifacts: async () => ({ kind: 'discarded' as const }),
+    });
+    const spec = makeSpec('claude', { appServer, recovery, artifacts });
 
     registry.register(spec);
 
     expect(registry.get('claude')?.appServer).toBe(appServer);
     expect(registry.get('claude')?.recovery).toBe(recovery);
-    expect(registry.get('claude')?.cleanup).toBe(cleanup);
+    expect(registry.get('claude')?.artifacts).toBe(artifacts);
   });
 
   it('rejects reserved provider names', () => {

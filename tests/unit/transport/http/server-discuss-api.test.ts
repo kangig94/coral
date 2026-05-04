@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage as ClientIncomingMessage,
+} from 'node:http';
 
 import { makeEvent } from '#src/discuss/events.js';
 import type { DiscussDetailResponse, DiscussSummaryDto } from '#src/discuss/read-contract.js';
@@ -12,8 +16,11 @@ import {
 import { attachSession } from '#src/discuss/shell/registry.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import { type CoordinatorServerController, createCoordinatorServer } from '#src/coordinator/index.js';
+import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import {
   appendPersistedEvents,
   cleanupDiscussHarnesses,
@@ -27,6 +34,22 @@ type HttpStream = {
   waitForText: (check: (text: string) => boolean, timeoutMs?: number) => Promise<string>;
   close: () => void;
 };
+
+type TestServerController = Pick<
+  CoordinatorServerController,
+  'server' | 'start' | 'shutdown' | 'waitForShutdown' | 'getLifecycle'
+>;
+
+function createStoreServices(progressStore: JobStore): CoordinatorStoreServices {
+  return {
+    storeDb: progressStore.getDb(),
+    progressStore,
+    expansionManifestCatalog: {} as never,
+    expansionStateStore: {} as never,
+    expansionLifecycleService: null,
+    consumerDriver: null,
+  };
+}
 
 function extractSsePayload(text: string, eventName: string): Record<string, unknown> | null {
   for (const block of text.split('\n\n')) {
@@ -127,7 +150,7 @@ function realTimePort(): Runtime['time'] {
 }
 
 describe('server discuss API', () => {
-  let controller: CoordinatorServerController | null = null;
+  let controller: TestServerController | null = null;
 
   afterEach(async () => {
     if (!controller) return;
@@ -157,6 +180,89 @@ describe('server discuss API', () => {
     resolveProjectSourceFn?: (projectRoot: string) => string,
     progressStore?: JobStore,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
+    if (progressStore) {
+      if (!runtime) {
+        throw new Error('startServer with progressStore requires its matching runtime');
+      }
+      const effectiveRuntime = runtime ? { ...runtime, time: realTimePort() } : undefined;
+  const core = createCoordinatorCore({
+        runtime: effectiveRuntime as Runtime,
+        resolveProjectSourceFn,
+        bootSnapshot: {
+          instanceId: 'server-discuss-api-test',
+          token: 'test-token',
+          version: '9.9.9',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          log: () => {},
+        },
+        discussRegistry: registry,
+        createExecutionService: () => service as never,
+        createServerFn: (handler) => createServer(handler),
+        closeServerFn: async (server) => {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        },
+        runStartupRecoveryFn: async () => [],
+        getConsumerStuck: () => [],
+        getMutationBlocked: () => ({ blocked: false }),
+      });
+      setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), { storeDbPath: ':memory:' });
+      const liveSessions = [...registry.contexts.entries()].flatMap(([projectRoot, context]) =>
+        [...context.sessions.values()].map((session) => ({
+          projectRoot,
+          snapshot: session.snapshot,
+          watchBuffer: session.watchBuffer,
+          abortEnded: session.abortEnded,
+        })),
+      );
+      registry.contexts.clear();
+      for (const session of liveSessions) {
+        const ctx = core.getDiscussContext({
+          projectRoot: session.projectRoot,
+          pluginRoot: core.identity.pluginRoot,
+          coralEnv: {},
+        });
+        attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
+      }
+      core.runtimeState.setLifecycle('running');
+      core.runtimeState.setStartedAt(Date.now());
+      const port = await new Promise<number>((resolve, reject) => {
+        core.server.once('error', reject);
+        core.server.listen(0, '127.0.0.1', () => {
+          core.server.off('error', reject);
+          const address = core.server.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('server did not bind to a TCP port'));
+            return;
+          }
+          resolve(address.port);
+        });
+      });
+      controller = {
+        server: core.server,
+        start: async () => ({
+          port,
+          host: '127.0.0.1',
+          token: 'test-token',
+          socketPath: '',
+          version: '9.9.9',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          namespace: core.identity.namespace,
+          instanceId: 'server-discuss-api-test',
+          startedAt: Date.now(),
+        }),
+        shutdown: (reason) => core.lifecycleController.shutdown(reason),
+        waitForShutdown: () => core.lifecycleController.waitForShutdown(),
+        getLifecycle: () => core.runtimeState.getLifecycle(),
+      };
+      return {
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        registry,
+      };
+    }
+
     controller = createCoordinatorServer({
       runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,
       resolveProjectSourceFn,
@@ -169,7 +275,6 @@ describe('server discuss API', () => {
         log: () => {},
       },
       discussRegistry: registry,
-      progressStore,
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
         kb: {} as never,
@@ -368,11 +473,14 @@ describe('server discuss API', () => {
     const sharedSource = 'test-org/shared-repo';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
     const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
-    await persistSession(firstHarness, { sessionId: 'shared-session' });
+    const snapshot = await persistSession(firstHarness, { sessionId: 'shared-session' });
+    attachSession(firstHarness.context, snapshot);
+    const registry = createDiscussContextRegistry();
+    registry.contexts.set(firstHarness.projectRoot, firstHarness.context);
 
     const backend = await startServer(
       secondHarness.projectRoot,
-      createDiscussContextRegistry(),
+      registry,
       secondHarness.service,
       firstHarness.runtime,
       () => sharedSource,
@@ -447,7 +555,7 @@ describe('server discuss API', () => {
 
   it('emits discuss:updated over SSE and detail reads observe the emitted lastSeq', async () => {
     const harness = createDiscussHarness();
-    await persistSession(harness, {
+    const snapshot = await persistSession(harness, {
       sessionId: 'manual-live-session',
       agents: [
         { name: 'alpha', persona: '# Alpha', participation: 'required' },
@@ -491,6 +599,8 @@ describe('server discuss API', () => {
     });
 
     const registry = createDiscussContextRegistry();
+    attachSession(harness.context, snapshot);
+    registry.contexts.set(harness.projectRoot, harness.context);
     const backend = await startServer(
       harness.projectRoot,
       registry,

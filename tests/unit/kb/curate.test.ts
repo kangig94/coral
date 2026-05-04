@@ -884,7 +884,8 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-beta', 2),
         }),
@@ -931,7 +932,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-24',
         }),
@@ -981,7 +983,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-24',
         }),
@@ -1029,7 +1032,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           lastRunDay: '2026-03-25',
         }),
@@ -1496,7 +1500,8 @@ describe('curate', () => {
     });
 
     it('persists failure and retry clearing through the standalone wrappers', async () => {
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           lastAttemptedThrough: cursor('coral-retry', 9),
           activeClaim: {
@@ -1554,7 +1559,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-54', 54),
           pendingDiscoveries,
@@ -1616,7 +1622,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-replay-10', 10),
           discoveryHighSeq: 4,
@@ -1685,7 +1692,8 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
         }),
@@ -1759,7 +1767,8 @@ describe('curate', () => {
         entityMeta: {},
         relationships: [],
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
           pendingDiscoveries: [
@@ -1819,7 +1828,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-stale-50', 50),
         }),
@@ -1853,7 +1863,8 @@ describe('curate', () => {
         notes: ['coral-stale-01'],
         createdAt: '2026-03-25T11:58:00.000Z',
       };
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-stale-10', 10),
           discoveryHighSeq: 9,
@@ -2043,7 +2054,8 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           initialized: true,
         }),
@@ -2131,7 +2143,8 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           processedThrough: cursor('coral-discovery-50', 50),
         }),
@@ -2170,7 +2183,8 @@ describe('curate', () => {
         contentSeq: 10,
         metadataSeq: 10,
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           initialized: true,
         }),
@@ -2315,7 +2329,8 @@ describe('curate', () => {
         ],
       };
       await runtime.writeEntityGraph(graph);
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           initialized: true,
           consecutiveClaimFailures: 3,
@@ -2394,7 +2409,8 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(curateDb(runtime),
+      writeCurateState(
+        curateDb(runtime),
         createCurateState({
           initialized: true,
           consecutiveClaimFailures: 2,
@@ -2438,7 +2454,9 @@ describe('curate', () => {
         consecutiveClaimFailures: 2,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(Object.keys(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
+      expect(Object.keys(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints ?? {})).not.toHaveLength(
+        0,
+      );
     });
 
     it('backs off community batch retries by scheduler tick and resets on success', async () => {

@@ -6,10 +6,11 @@ import { isRecord } from '../../infra/json.js';
 
 export async function consumeJobStream(options: {
   jobId: string;
+  providerName: string;
   sessionId: string;
   initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
-  sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic'>;
+  sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'>;
   appendProgress(message: string): void;
   recordTerminal(event: ProviderTerminalEventBody): void;
 }): Promise<{
@@ -47,6 +48,25 @@ export async function consumeJobStream(options: {
 
       expectedVersion = result.nextVersion;
       finalContinuity = continuity;
+      continue;
+    }
+
+    if (event.kind === 'artifact_handle') {
+      const result = await sessionApi.recordArtifactHandleAtomic(sessionId, {
+        expectedActiveJobId: options.jobId,
+        expectedVersion,
+        provider: options.providerName,
+        handle: event.handle,
+        sourceJobId: options.jobId,
+      });
+      if (!result.ok) {
+        backendLog.warn(
+          `Artifact handle recording went stale for claimed job ${options.jobId} on session ${sessionId}; draining terminal.`,
+        );
+        continue;
+      }
+
+      expectedVersion = result.nextVersion;
       continue;
     }
 

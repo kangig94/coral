@@ -57,10 +57,7 @@ export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaseli
   );
 }
 
-export function replaceCorpusAuthorityBaseline(
-  db: Database,
-  records: readonly CorpusAuthorityBaselineRecord[],
-): void {
+export function replaceCorpusAuthorityBaseline(db: Database, records: readonly CorpusAuthorityBaselineRecord[]): void {
   ensureCorpusAuthorityBaselineTable(db);
   withImmediate(db, () => {
     db.prepare('DELETE FROM kb_corpus_authority_baseline').run();
@@ -153,10 +150,7 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
   return records;
 }
 
-export function rebuildCorpusAuthorityBaseline(
-  db: Database,
-  scan: CorpusScanView,
-): CorpusAuthorityBaselineMap {
+export function rebuildCorpusAuthorityBaseline(db: Database, scan: CorpusScanView): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
   replaceCorpusAuthorityBaseline(db, records);
   return new Map(records.map((record) => [record.entryId, record]));

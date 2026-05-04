@@ -1,34 +1,19 @@
-import { join } from 'node:path';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { applyStoreSchemas } from '#src/store/schema-loader.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 
-describe('applyStoreSchemas with Runtime.storage', () => {
-  it('reads SQL schema files from a storage port and ignores non-sql entries', () => {
-    const runtime = new SimulationRuntime();
-    const schemasDir = '/tmp/sim/schemas';
+describe('applyBundledStoreSchema', () => {
+  it('applies the bundled store schema to a raw database', () => {
     const db = newRawDatabase(':memory:');
 
-    runtime.storage.mkdirSync(join(schemasDir, 'nested'), { recursive: true });
-    runtime.storage.writeFileSync(
-      join(schemasDir, '001_initial.sql'),
-      [
-        'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);',
-        "INSERT INTO meta(key, value) VALUES ('schema_version', '1');",
-        'CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL);',
-      ].join('\n'),
-    );
-    runtime.storage.writeFileSync(join(schemasDir, 'notes.txt'), 'ignore me');
-
     try {
-      applyStoreSchemas({ db, storage: runtime.storage, schemasDir });
+      applyBundledStoreSchema(db);
 
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '1' });
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'widgets'").get()).toEqual({
-        name: 'widgets',
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'").get()).toEqual({
+        name: 'events',
       });
+      expect(db.prepare<[], { user_version: number }>('PRAGMA user_version').get()?.user_version).not.toBe(0);
     } finally {
       db.close();
     }
