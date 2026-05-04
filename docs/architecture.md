@@ -104,8 +104,12 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `GET /kb/principles` | 200 | Search KB principles |
 | `GET /kb/wikis` | 200 | List wiki entries |
 | `GET /kb/wikis/:slug` | 200 | Read a wiki entry by slug |
-| `POST /kb/wikis` | 201 | Create a wiki entry |
-| `PUT /kb/wikis/:slug` | 200 | Update a wiki entry by slug |
+| `POST /kb/wikis` | 201 | Create an empty wiki entry |
+| `POST /kb/wikis/:slug/understanding` | 200 | Replace the Understanding section |
+| `POST /kb/wikis/:slug/knowledge` | 200 | Append refs to the Knowledge section |
+| `POST /kb/wikis/:slug/knowledge/unlink` | 200 | Remove refs from the Knowledge section |
+| `POST /kb/wikis/:slug/knowledge/cite` | 200 | Append an evidence sub-bullet under a Knowledge link |
+| `POST /kb/wikis/:slug/knowledge/adopt` | 201 | Promote a memo into a note and link it at the front of Knowledge atomically |
 | `DELETE /kb/wikis/:slug` | 200 | Delete a wiki entry by slug |
 | `GET /kb/wake-up` | 200 | Generate the SessionStart wake-up packet |
 | `POST /kb/index` | 200 | Rebuild KB text artifacts through an internal job |
