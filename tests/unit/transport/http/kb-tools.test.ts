@@ -397,10 +397,7 @@ Wiki entries keep durable understanding.
 ## Knowledge
 
 - [[notes/contract-first-design]]
-
-## Evidence
-
-- 2026-04-01 initial row
+  - 2026-04-01 initial row
 `,
     );
 
@@ -418,10 +415,7 @@ Wiki entries keep durable understanding.
           '## Knowledge',
           '',
           '- [[notes/contract-first-design]]',
-          '',
-          '## Evidence',
-          '',
-          '- 2026-04-01 initial row',
+          '  - 2026-04-01 initial row',
         ].join('\n'),
         tags: ['kb', 'wiki'],
         principles: ['single-source-of-truth'],

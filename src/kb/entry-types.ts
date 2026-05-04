@@ -464,23 +464,6 @@ export function parseKbEntryId(value: string): KbEntryId | null {
   return null;
 }
 
-/** Vault-relative slug used in plain-text Evidence rows (e.g. `notes/alpha`, `sources/foo`). */
-export function entryIdToEvidenceSlug(id: KbEntryId): string {
-  if (id.startsWith('note:')) {
-    return `notes/${id.slice('note:'.length)}`;
-  }
-
-  if (id.startsWith('source:')) {
-    return `sources/${id.slice('source:'.length)}`;
-  }
-
-  if (id.startsWith('wiki:')) {
-    return `wiki/${id.slice('wiki:'.length)}`;
-  }
-
-  return `communities/${id.slice('community:'.length)}`;
-}
-
 export function entryIdToVaultLink(id: KbEntryId): string {
   if (id.startsWith('note:')) {
     return `[[notes/${id.slice('note:'.length)}]]`;

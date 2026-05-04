@@ -126,7 +126,6 @@ function registerKbWikiCommands(kb: Command): void {
     .option('--title <text>', 'Wiki title')
     .option('--understanding <text>', 'Understanding section text')
     .option('--knowledge <link>', 'Knowledge wikilink or entry ID (repeatable, comma-separated)', appendDelimitedOption)
-    .option('--evidence <text>', 'Evidence section text')
     .option('--tags <tag>', 'Tags (repeatable, comma-separated)', appendDelimitedOption)
     .option(
       '--references-principles <principle>',
@@ -143,7 +142,6 @@ function registerKbWikiCommands(kb: Command): void {
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
           ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
-          ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
           ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
           ...(opts.referencesPrinciples !== undefined ? { references_principles: opts.referencesPrinciples } : {}),
         });
@@ -159,8 +157,14 @@ function registerKbWikiCommands(kb: Command): void {
     .argument('<slug>', 'Wiki slug without extension')
     .option('--understanding <text>', 'Replace Understanding section with literal text')
     .option('--understanding-file <path>', 'Replace Understanding section with file contents')
-    .option('--evidence-append <text>', 'Append literal text to Evidence section')
-    .option('--evidence-append-file <path>', 'Append file contents to Evidence section')
+    .option(
+      '--evidence-append <text>',
+      'Append evidence to a Knowledge entry. Format: "[[link]] <text>" — the leading wikilink targets the existing Knowledge block whose evidence list to append to.',
+    )
+    .option(
+      '--evidence-append-file <path>',
+      'Append evidence to a Knowledge entry from a file. File contents must begin with [[link]] then the evidence text.',
+    )
     .option(
       '--knowledge-reorder <link-list>',
       'Reorder Knowledge — provide ALL current links in new order (space/comma-separated entry IDs or [[wikilinks]])',

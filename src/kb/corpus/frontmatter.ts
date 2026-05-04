@@ -387,11 +387,10 @@ export function parseSummaryFromBody(body: string): string | undefined {
 export type WikiBodySections = {
   understanding: string;
   knowledge: string;
-  evidence: string;
 };
 
-const WIKI_BODY_HEADERS = ['Understanding', 'Knowledge', 'Evidence'] as const;
-const WIKI_BODY_HEADER_PATTERN = /^## (Understanding|Knowledge|Evidence)[ \t]*(?:\r?\n|$)/gm;
+const WIKI_BODY_HEADERS = ['Understanding', 'Knowledge'] as const;
+const WIKI_BODY_HEADER_PATTERN = /^## (Understanding|Knowledge)[ \t]*(?:\r?\n|$)/gm;
 
 export function parseWikiBody(body: string): WikiBodySections {
   const matches = Array.from(body.matchAll(WIKI_BODY_HEADER_PATTERN));
@@ -413,7 +412,7 @@ export function parseWikiBody(body: string): WikiBodySections {
 
   const ordered = WIKI_BODY_HEADERS.map((header) => byHeader.get(header) as RegExpMatchArray);
   if (!ordered.every((match, index) => (match.index ?? -1) === matches[index]?.index)) {
-    throw new Error('Wiki body headers must appear in Understanding, Knowledge, Evidence order');
+    throw new Error('Wiki body headers must appear in Understanding, Knowledge order');
   }
 
   const firstHeaderIndex = ordered[0].index ?? 0;
@@ -431,35 +430,62 @@ export function parseWikiBody(body: string): WikiBodySections {
   return {
     understanding: sectionContent(0),
     knowledge: sectionContent(1),
-    evidence: sectionContent(2),
   };
 }
 
-export type EvidenceRow = {
-  date: string;
-  slug: string;
-  summary: string;
+/**
+ * One Knowledge entry: a top-level `- [[link]]` line plus any indented
+ * sub-bullet lines that follow it (each carrying date + evidence text).
+ * Knowledge owns its evidence physically — removing the block removes
+ * its evidence in the same write, no separate sync.
+ */
+export type KnowledgeBlock = {
+  entryId: KbEntryId;
+  /** Original top-level line text, e.g. `- [[notes/foo]]`. */
+  header: string;
+  /** Indented sub-bullet lines as written, in order. Each entry is a single line. */
+  evidence: string[];
 };
 
-// `{ISO-8601 date} {slug} → {summary}` — slug stored as plain text so Knowledge
-// (canonical [[wikilinks]]) and Evidence (audit trail) cannot drift.
-const EVIDENCE_ROW_PATTERN = /^-\s+(\d{4}-\d{2}-\d{2}(?:T[\d:.Z+-]+)?)\s+(\S+)\s+(?:→|->)\s+(.+)$/;
+const KNOWLEDGE_TOP_LEVEL_PATTERN = /^-\s+(\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\])\s*$/;
+const KNOWLEDGE_SUB_BULLET_PATTERN = /^[ \t]+-\s+\S/;
 
-export function parseEvidenceRow(line: string): EvidenceRow | null {
-  const match = line.trim().match(EVIDENCE_ROW_PATTERN);
-  if (match === null) {
-    return null;
+export function parseKnowledgeBlocks(knowledge: string): KnowledgeBlock[] {
+  const blocks: KnowledgeBlock[] = [];
+  const lines = knowledge.split(/\r?\n/u);
+  let current: KnowledgeBlock | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/u, '');
+    if (line.length === 0) {
+      continue;
+    }
+    const headerMatch = line.match(KNOWLEDGE_TOP_LEVEL_PATTERN);
+    if (headerMatch !== null) {
+      const entryId = vaultLinkToEntryId(headerMatch[1]);
+      if (entryId === null) {
+        continue;
+      }
+      current = { entryId, header: line.trimStart(), evidence: [] };
+      blocks.push(current);
+      continue;
+    }
+    if (KNOWLEDGE_SUB_BULLET_PATTERN.test(line) && current !== null) {
+      current.evidence.push(line);
+      continue;
+    }
+    // Unrecognized line under a block (e.g. malformed indentation or stray
+    // text between blocks). Strict parser: skip silently — extractKnowledgeLinks
+    // and serializeKnowledgeBlocks operate on the recognized structure only.
   }
 
-  return {
-    date: match[1],
-    slug: match[2],
-    summary: match[3].trim(),
-  };
+  return blocks;
 }
 
-export function serializeEvidenceRow(row: EvidenceRow): string {
-  return `- ${row.date} ${row.slug} → ${row.summary}`.trim();
+export function serializeKnowledgeBlocks(blocks: readonly KnowledgeBlock[]): string {
+  return blocks
+    .map((block) => (block.evidence.length === 0 ? block.header : `${block.header}\n${block.evidence.join('\n')}`))
+    .join('\n');
 }
 
 export function serializeNote(meta: KbNoteFrontmatter, title: string, body: string): string {

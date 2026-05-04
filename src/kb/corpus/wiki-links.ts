@@ -2,24 +2,31 @@ import { vaultLinkToEntryId, type KbEntryId } from '../entry-types.js';
 
 /**
  * Canonical Knowledge section wikilink extractor — restrictive prefix-anchored
- * pattern is correct per plan AC4. Only matches `[[notes/...]]`, `[[sources/...]]`,
- * `[[communities/...]]`, and `[[wiki/...]]` shapes; any other bracket sequence
- * inside a Knowledge section is ignored rather than treated as a knowledge link.
+ * pattern. Only matches `[[notes/...]]`, `[[sources/...]]`,
+ * `[[communities/...]]`, and `[[wiki/...]]` shapes.
  */
 export const KNOWLEDGE_WIKILINK_PATTERN = /\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\]/g;
 
+/** Top-level Knowledge entry line: `- [[link]]` at column 0. */
+const KNOWLEDGE_TOP_LEVEL_LINE = /^-\s+(\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\])\s*$/;
+
 /**
- * Extract deduplicated KB entry IDs from the Knowledge section body of a wiki.
- * Non-knowledge wikilinks are skipped silently — the restrictive regex above
- * never matches them, and `vaultLinkToEntryId` returning `null` (e.g. invalid
- * slug) is treated as a skip rather than an error.
+ * Extract deduplicated KB entry IDs from a wiki Knowledge section, considering
+ * only top-level `- [[link]]` lines. Indented sub-bullet evidence lines may
+ * themselves contain wikilinks (e.g. cross-references inside an evidence note),
+ * but those do not count as Knowledge entries.
  */
 export function extractKnowledgeLinks(body: string): KbEntryId[] {
   const links: KbEntryId[] = [];
   const seen = new Set<KbEntryId>();
 
-  for (const match of body.matchAll(KNOWLEDGE_WIKILINK_PATTERN)) {
-    const entryId = vaultLinkToEntryId(match[0]);
+  for (const rawLine of body.split(/\r?\n/u)) {
+    const line = rawLine.replace(/\s+$/u, '');
+    const match = line.match(KNOWLEDGE_TOP_LEVEL_LINE);
+    if (match === null) {
+      continue;
+    }
+    const entryId = vaultLinkToEntryId(match[1]);
     if (entryId === null || seen.has(entryId)) {
       continue;
     }

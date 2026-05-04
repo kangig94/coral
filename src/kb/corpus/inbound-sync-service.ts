@@ -2,7 +2,6 @@ import type { KbCorpusPublication, KbInboundSyncOptions, KbIndexMutationLane, Kb
 import type { KbIndex } from '../entry-types.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import {
-  applyInboundEvidenceSyncForRemovedKnowledge,
   buildInboundSyncIndexDelta,
   captureCorpusFilesystemSnapshot,
   detectInboundSyncMutation,
@@ -85,17 +84,6 @@ export class CorpusInboundSyncService {
       }
 
       if (mutationDiff.lane !== null) {
-        if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
-          // Knowledge↔Evidence 1:1 sync — strip Evidence rows whose Knowledge link disappeared in the external edit.
-          const evidenceSync = applyInboundEvidenceSyncForRemovedKnowledge(
-            lockContext.startIndex,
-            mutationDiff.changedEntryIds,
-            target,
-          );
-          if (evidenceSync.manifestDeltas.length > 0) {
-            mutationDiff.manifestDeltas.push(...evidenceSync.manifestDeltas);
-          }
-        }
         if (mutationDiff.manifestDeltas.length > 0) {
           this.options.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
         }

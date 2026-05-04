@@ -250,7 +250,6 @@ export type KbWikiCreateOptions = {
   title?: string;
   understanding?: string;
   knowledge?: string[];
-  evidence?: string;
   tags?: string[];
   referencesPrinciples?: string[];
 };

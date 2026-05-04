@@ -23,7 +23,6 @@ export type KbWikiCreateInput = {
   title?: string;
   understanding?: string;
   knowledge?: string | readonly string[];
-  evidence?: string;
   tags?: readonly string[];
   references_principles?: readonly string[];
   referencesPrinciples?: readonly string[];
@@ -64,11 +63,10 @@ function normalizeKnowledgeSection(value: string | readonly string[] | undefined
   return value.map((link) => `- ${entryIdToVaultLink(normalizeEntryReference(link, 'knowledge'))}`).join('\n');
 }
 
-function buildWikiBody(input: Pick<KbWikiCreateInput, 'understanding' | 'knowledge' | 'evidence'>): string {
+function buildWikiBody(input: Pick<KbWikiCreateInput, 'understanding' | 'knowledge'>): string {
   const understanding =
     input.understanding === undefined ? '' : assertString(input.understanding, 'understanding').trim();
   const knowledge = normalizeKnowledgeSection(input.knowledge);
-  const evidence = input.evidence === undefined ? '' : assertString(input.evidence, 'evidence').trim();
 
   return `## Understanding
 
@@ -76,11 +74,7 @@ ${understanding}
 
 ## Knowledge
 
-${knowledge}
-
-## Evidence
-
-${evidence}`;
+${knowledge}`;
 }
 
 function parseWikiIndexPayload(

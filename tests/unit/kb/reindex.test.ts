@@ -88,10 +88,7 @@ function renderWiki(): string {
     '## Knowledge',
     '',
     '- [[notes/coral-alpha]]',
-    '',
-    '## Evidence',
-    '',
-    '- 2026-05-04 note:coral-alpha Seeded from disk.',
+    '  - 2026-05-04 Seeded from disk.',
     '',
   ].join('\n');
 }
@@ -351,11 +348,7 @@ Make the contract explicit first.
         '',
         '## Understanding',
         '',
-        'This wiki is missing its strict Evidence section.',
-        '',
-        '## Knowledge',
-        '',
-        '- [[notes/coral-alpha]]',
+        'This wiki is missing its strict Knowledge section.',
         '',
       ].join('\n'),
       'utf-8',
@@ -373,7 +366,7 @@ Make the contract explicit first.
         warnSpy.mock.calls.some(
           ([message]) =>
             message.includes('Skipping malformed KB wiki broken-wiki.md') &&
-            message.includes('Wiki body is missing ## Evidence header'),
+            message.includes('Wiki body is missing ## Knowledge header'),
         ),
       ).toBe(true);
     } finally {

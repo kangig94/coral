@@ -48,14 +48,11 @@ Original understanding.
 ## Knowledge
 
 - [[notes/alpha]]
+  - 2026-04-01 seed
 - [[notes/beta]]
+  - 2026-04-01 seed
 - [[notes/gamma]]
-
-## Evidence
-
-- 2026-04-01 notes/alpha → seed
-- 2026-04-01 notes/beta → seed
-- 2026-04-01 notes/gamma → seed
+  - 2026-04-01 seed
 `;
 
 function seedWiki(paths: Awaited<ReturnType<typeof loadModules>>['paths'], slug = 'living-knowledge'): string {
@@ -94,26 +91,52 @@ describe('updateWiki', () => {
     expect(frontmatter.parseWikiFrontmatter(raw).updatedAt).toBe('2026-04-15T05:06:07.000Z');
   });
 
-  it('appends to Evidence rather than overwriting', async () => {
+  it('appends evidence as a sub-bullet under the targeted Knowledge block', async () => {
     const { updateWiki, paths, frontmatter } = await loadModules();
     const kb = createRuntime(paths);
     const wikiPath = seedWiki(paths);
 
-    await updateWiki(kb, { slug: 'living-knowledge', evidenceAppend: '- 2026-04-15 notes/alpha → follow-up' });
+    await updateWiki(kb, {
+      slug: 'living-knowledge',
+      evidenceAppend: '[[notes/alpha]] 2026-04-15 follow-up finding',
+    });
 
     const raw = readFileSync(wikiPath, 'utf-8');
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
-    expect(sections.evidence).toBe(
+    expect(sections.knowledge).toBe(
       [
-        '- 2026-04-01 notes/alpha → seed',
-        '- 2026-04-01 notes/beta → seed',
-        '- 2026-04-01 notes/gamma → seed',
-        '- 2026-04-15 notes/alpha → follow-up',
+        '- [[notes/alpha]]',
+        '  - 2026-04-01 seed',
+        '  - 2026-04-15 follow-up finding',
+        '- [[notes/beta]]',
+        '  - 2026-04-01 seed',
+        '- [[notes/gamma]]',
+        '  - 2026-04-01 seed',
       ].join('\n'),
     );
   });
 
-  it('adds, removes, and reorders Knowledge links and projects them into the index', async () => {
+  it('rejects evidence-append that does not begin with a wikilink', async () => {
+    const { updateWiki, paths } = await loadModules();
+    const kb = createRuntime(paths);
+    seedWiki(paths);
+
+    await expect(
+      updateWiki(kb, { slug: 'living-knowledge', evidenceAppend: '2026-04-15 missing link prefix' }),
+    ).rejects.toThrow('evidence-append must begin with [[link]]');
+  });
+
+  it('rejects evidence-append targeting a Knowledge link that is not present', async () => {
+    const { updateWiki, paths } = await loadModules();
+    const kb = createRuntime(paths);
+    seedWiki(paths);
+
+    await expect(
+      updateWiki(kb, { slug: 'living-knowledge', evidenceAppend: '[[notes/absent]] 2026-04-15 stray' }),
+    ).rejects.toThrow('not in the Knowledge section');
+  });
+
+  it('removing a Knowledge link physically drops its evidence sub-bullets in the same write', async () => {
     const { updateWiki, paths, frontmatter } = await loadModules();
     const kb = createRuntime(paths);
     const wikiPath = seedWiki(paths);
@@ -127,9 +150,16 @@ describe('updateWiki', () => {
 
     const raw = readFileSync(wikiPath, 'utf-8');
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
-    expect(sections.knowledge).toBe('- [[notes/alpha]]\n- [[notes/delta]]\n- [[notes/gamma]]');
-    // Knowledge↔Evidence 1:1 — removing note:beta auto-removes its trailing Evidence row.
-    expect(sections.evidence).toBe(['- 2026-04-01 notes/alpha → seed', '- 2026-04-01 notes/gamma → seed'].join('\n'));
+    // beta block (link + its sub-bullet evidence) gone in the same atomic write.
+    expect(sections.knowledge).toBe(
+      [
+        '- [[notes/alpha]]',
+        '  - 2026-04-01 seed',
+        '- [[notes/delta]]',
+        '- [[notes/gamma]]',
+        '  - 2026-04-01 seed',
+      ].join('\n'),
+    );
     expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
       knowledge: ['note:alpha', 'note:delta', 'note:gamma'],
     });

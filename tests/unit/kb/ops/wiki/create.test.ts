@@ -59,7 +59,6 @@ describe('createWiki', () => {
       title: 'Living Knowledge',
       understanding: '  First insight.  ',
       knowledge: ['note:alpha', '[[notes/beta]]', 'source:s-one'],
-      evidence: '- 2026-04-10 sources/s-one → seed',
       tags: ['kb'],
       references_principles: ['contract-first-design'],
       related: ['[[notes/alpha]]'],
@@ -79,7 +78,6 @@ describe('createWiki', () => {
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
     expect(sections.understanding).toBe('First insight.');
     expect(sections.knowledge).toBe('- [[notes/alpha]]\n- [[notes/beta]]\n- [[sources/s-one]]');
-    expect(sections.evidence).toBe('- 2026-04-10 sources/s-one → seed');
   });
 
   it('populates the wiki index entry knowledge field from the body', async () => {

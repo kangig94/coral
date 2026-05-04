@@ -185,10 +185,7 @@ Existing understanding.
 ## Knowledge
 
 - [[notes/existing-note]]
-
-## Evidence
-
-- 2026-03-20 seed
+  - 2026-03-20 seed
 `,
       'utf-8',
     );
@@ -211,7 +208,7 @@ Existing understanding.
       entrySeq: 2,
     });
     expect(frontmatter.parseWikiBody(frontmatter.extractBody(wiki)).knowledge).toBe(
-      '- [[notes/coral-kb-promotion]]\n- [[notes/existing-note]]',
+      '- [[notes/coral-kb-promotion]]\n- [[notes/existing-note]]\n  - 2026-03-20 seed',
     );
     expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
       kind: 'wiki',
@@ -504,10 +501,7 @@ Wiki body.
 ## Knowledge
 
 - [[notes/coral-kb-read]]
-
-## Evidence
-
-- 2026-03-21 seed
+  - 2026-03-21 seed
 `,
       'utf-8',
     );
@@ -537,10 +531,7 @@ level: 0
         '## Knowledge',
         '',
         '- [[notes/coral-kb-read]]',
-        '',
-        '## Evidence',
-        '',
-        '- 2026-03-21 seed',
+        '  - 2026-03-21 seed',
       ].join('\n'),
       tags: ['kb'],
       principles: ['contract-first-design'],

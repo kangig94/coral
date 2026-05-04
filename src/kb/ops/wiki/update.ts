@@ -3,14 +3,16 @@ import { captureWikiManifestDeltas } from '../../corpus/manifest-authority.js';
 import {
   extractBody,
   extractTitle,
+  parseKnowledgeBlocks,
   parseWikiBody,
   parseWikiFrontmatter,
+  serializeKnowledgeBlocks,
   serializeWiki,
+  type KnowledgeBlock,
 } from '../../corpus/frontmatter.js';
 import { commitCorpusEntryLocked } from '../../corpus/index-mutations.js';
 import { buildWikiIndexEntry } from '../../corpus/index-records.js';
 import { extractKnowledgeLinks } from '../../corpus/wiki-links.js';
-import { syncEvidenceForRemovedKnowledge } from './rewrite.js';
 import {
   entryIdToVaultLink,
   parseKbEntryId,
@@ -30,6 +32,10 @@ export type WikiTextOrFile = string | { text: string } | { file: string };
  * `evidence_append` / `evidenceAppend`, `knowledge_reorder` / `knowledgeReorder`,
  * `knowledge_add` / `knowledgeAdd`, `knowledge_remove` / `knowledgeRemove`, and
  * `references_principles` / `referencesPrinciples`.
+ *
+ * Evidence is owned by Knowledge: each evidence entry is a sub-bullet under
+ * its target Knowledge block. `evidenceAppend` value must begin with the
+ * target `[[link]]`; the remainder becomes the evidence text.
  */
 export type KbWikiUpdateInput = {
   slug: string;
@@ -56,13 +62,10 @@ export type KbWikiUpdateResponse = {
 type WikiSections = {
   understanding: string;
   knowledge: string;
-  evidence: string;
 };
 
-// Permissive pattern used only by `tokenizeLinkList` to find candidate wikilinks
-// inside CLI-provided link-list arguments. Knowledge-section parsing uses the
-// canonical restrictive helper from `corpus/wiki-links.js`.
 const LINK_LIST_TOKEN_PATTERN = /\[\[[^\]\r\n]+\]\]/g;
+const EVIDENCE_LEADING_LINK_PATTERN = /^\s*(\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\])\s*(.*)$/u;
 
 function normalizeStringList(values: readonly string[], field: string): string[] {
   return values.map((value) => assertNonEmptyText(value, field));
@@ -140,10 +143,6 @@ function sameEntrySet(left: readonly KbEntryId[], right: readonly KbEntryId[]): 
   return left.every((entry) => rightSet.has(entry));
 }
 
-function formatKnowledgeLinks(links: readonly KbEntryId[]): string {
-  return links.map((link) => `- ${entryIdToVaultLink(link)}`).join('\n');
-}
-
 function buildWikiBody(sections: WikiSections): string {
   return `## Understanding
 
@@ -151,11 +150,7 @@ ${sections.understanding.trim()}
 
 ## Knowledge
 
-${sections.knowledge.trim()}
-
-## Evidence
-
-${sections.evidence.trim()}`;
+${sections.knowledge.trim()}`;
 }
 
 function resolveTextOrFile(rt: KbRuntime, value: WikiTextOrFile, field: string): string {
@@ -168,17 +163,15 @@ function resolveTextOrFile(rt: KbRuntime, value: WikiTextOrFile, field: string):
   return rt.storagePort.readFileSync(assertNonEmptyText(value.file, `${field} file`), 'utf-8');
 }
 
-function appendEvidence(existing: string, addition: string): string {
-  const normalized = assertNonEmptyText(addition, 'evidence-append');
-  const current = existing.trim();
-  return current ? `${current}\n${normalized}` : normalized;
+function blockHeaderFor(entryId: KbEntryId): string {
+  return `- ${entryIdToVaultLink(entryId)}`;
 }
 
-function applyKnowledgeUpdate(
-  current: readonly KbEntryId[],
+function applyKnowledgeStructuralUpdate(
+  blocks: readonly KnowledgeBlock[],
   input: KbWikiUpdateInput,
-): { links: KbEntryId[]; contentChanged: boolean; metadataChanged: boolean } {
-  let links = [...current];
+): { blocks: KnowledgeBlock[]; contentChanged: boolean; metadataChanged: boolean } {
+  let next: KnowledgeBlock[] = [...blocks];
   let contentChanged = false;
   let metadataChanged = false;
   const addValue = input.knowledgeAdd ?? input.knowledge_add;
@@ -187,8 +180,8 @@ function applyKnowledgeUpdate(
 
   if (addValue !== undefined) {
     for (const entry of parseLinkList(addValue, 'knowledge-add')) {
-      if (!links.includes(entry)) {
-        links.push(entry);
+      if (!next.some((block) => block.entryId === entry)) {
+        next.push({ entryId: entry, header: blockHeaderFor(entry), evidence: [] });
         contentChanged = true;
       }
     }
@@ -196,25 +189,63 @@ function applyKnowledgeUpdate(
 
   if (removeValue !== undefined) {
     const removals = new Set(parseLinkList(removeValue, 'knowledge-remove'));
-    const nextLinks = links.filter((entry) => !removals.has(entry));
-    if (!sameOrderedEntries(links, nextLinks)) {
-      links = nextLinks;
+    const filtered = next.filter((block) => !removals.has(block.entryId));
+    if (filtered.length !== next.length) {
+      next = filtered;
       contentChanged = true;
     }
   }
 
   if (reorderValue !== undefined) {
     const reordered = parseLinkList(reorderValue, 'knowledge-reorder');
-    if (!sameEntrySet(reordered, links)) {
+    const currentIds = next.map((block) => block.entryId);
+    if (!sameEntrySet(reordered, currentIds)) {
       throw new Error('knowledge-reorder must contain exactly the current Knowledge links');
     }
-    if (!sameOrderedEntries(reordered, links)) {
-      links = reordered;
+    if (!sameOrderedEntries(reordered, currentIds)) {
+      const byId = new Map(next.map((block) => [block.entryId, block]));
+      next = reordered.map((entryId) => {
+        const block = byId.get(entryId);
+        if (block === undefined) {
+          // sameEntrySet above guarantees coverage; defensive fallback satisfies lint.
+          return { entryId, header: blockHeaderFor(entryId), evidence: [] };
+        }
+        return block;
+      });
       metadataChanged = true;
     }
   }
 
-  return { links, contentChanged, metadataChanged };
+  return { blocks: next, contentChanged, metadataChanged };
+}
+
+function applyEvidenceAppend(
+  blocks: readonly KnowledgeBlock[],
+  rawEvidence: string,
+): { blocks: KnowledgeBlock[]; changed: boolean } {
+  const trimmed = assertNonEmptyText(rawEvidence, 'evidence-append');
+  const match = trimmed.match(EVIDENCE_LEADING_LINK_PATTERN);
+  if (match === null) {
+    throw new Error('evidence-append must begin with [[link]] referencing an existing Knowledge entry');
+  }
+  const entryId = vaultLinkToEntryId(match[1]);
+  if (entryId === null) {
+    throw new Error(`evidence-append target ${match[1]} is not a valid KB entry link`);
+  }
+  const evidenceText = match[2].trim();
+  if (evidenceText.length === 0) {
+    throw new Error('evidence-append must include evidence text after the [[link]]');
+  }
+
+  const targetIndex = blocks.findIndex((block) => block.entryId === entryId);
+  if (targetIndex === -1) {
+    throw new Error(`evidence-append target ${match[1]} is not in the Knowledge section — add the link first`);
+  }
+
+  const next = blocks.map((block, index) =>
+    index === targetIndex ? { ...block, evidence: [...block.evidence, `  - ${evidenceText}`] } : block,
+  );
+  return { blocks: next, changed: true };
 }
 
 function parseWikiIndexPayload(
@@ -306,31 +337,23 @@ export async function applyWikiUpdateLocked(
     }
   }
 
+  let blocks = parseKnowledgeBlocks(nextSections.knowledge);
+
+  const structural = applyKnowledgeStructuralUpdate(blocks, input);
+  blocks = structural.blocks;
+  contentChanged = contentChanged || structural.contentChanged;
+  metadataChanged = metadataChanged || structural.metadataChanged;
+
   const evidenceAppend = input.evidenceAppend ?? input.evidence_append;
   if (evidenceAppend !== undefined) {
-    const evidence = appendEvidence(nextSections.evidence, resolveTextOrFile(rt, evidenceAppend, 'evidence-append'));
-    if (nextSections.evidence !== evidence) {
-      nextSections.evidence = evidence;
-      contentChanged = true;
-    }
+    const evidence = applyEvidenceAppend(blocks, resolveTextOrFile(rt, evidenceAppend, 'evidence-append'));
+    blocks = evidence.blocks;
+    contentChanged = contentChanged || evidence.changed;
   }
 
-  const existingKnowledge = extractKnowledgeLinks(nextSections.knowledge);
-  const knowledgeUpdate = applyKnowledgeUpdate(existingKnowledge, input);
-  if (knowledgeUpdate.contentChanged || knowledgeUpdate.metadataChanged) {
-    nextSections.knowledge = formatKnowledgeLinks(knowledgeUpdate.links);
-    contentChanged = contentChanged || knowledgeUpdate.contentChanged;
-    metadataChanged = metadataChanged || knowledgeUpdate.metadataChanged;
-    // Knowledge↔Evidence 1:1 sync — removing a Knowledge link drops its trailing Evidence row.
-    const remaining = new Set(knowledgeUpdate.links);
-    const removedEntryIds = existingKnowledge.filter((entryId) => !remaining.has(entryId));
-    if (removedEntryIds.length > 0) {
-      const syncedEvidence = syncEvidenceForRemovedKnowledge(nextSections.evidence, removedEntryIds);
-      if (syncedEvidence !== nextSections.evidence) {
-        nextSections.evidence = syncedEvidence;
-        contentChanged = true;
-      }
-    }
+  const nextKnowledge = serializeKnowledgeBlocks(blocks);
+  if (nextKnowledge !== nextSections.knowledge) {
+    nextSections.knowledge = nextKnowledge;
   }
 
   if (!contentChanged && !metadataChanged) {

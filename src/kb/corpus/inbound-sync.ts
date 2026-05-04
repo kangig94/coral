@@ -5,15 +5,7 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { GitSyncPathChange, GitSyncResult } from '../curate/git-sync.js';
-import {
-  entryIdToEvidenceSlug,
-  isWikiEntry,
-  noteEntryId,
-  sourceEntryId,
-  wikiEntryId,
-  type KbEntryId,
-  type KbIndex,
-} from '../entry-types.js';
+import { noteEntryId, sourceEntryId, wikiEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry, cloneKbIndex } from './index-records.js';
 import { extractKnowledgeLinks } from './wiki-links.js';
@@ -21,12 +13,10 @@ import { stripMdExt } from '../paths.js';
 import {
   extractBody,
   extractTitle,
-  parseEvidenceRow,
   parseFrontmatter,
   parseSourceFrontmatter,
   parseWikiBody,
   parseWikiFrontmatter,
-  serializeWiki,
 } from './frontmatter.js';
 import {
   captureCommunityManifestDelta,
@@ -709,109 +699,3 @@ export function buildInboundSyncIndexDelta(
   return nextIndex;
 }
 
-type InboundEvidenceSyncTarget = {
-  wikiPath(slug: string): string;
-  storagePort: Pick<StoragePort, 'readFileSync' | 'writeFileSync'>;
-};
-
-export type InboundEvidenceSyncResult = {
-  rewrittenSlugs: string[];
-  manifestDeltas: ManifestAuthorityDelta[];
-};
-
-function removeLastEvidenceRowForSlug(evidence: string, slug: string): string {
-  const lines = evidence.split(/\r?\n/u);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const parsed = parseEvidenceRow(lines[i]);
-    if (parsed !== null && parsed.slug === slug) {
-      lines.splice(i, 1);
-      return lines.join('\n').trim();
-    }
-  }
-  return evidence;
-}
-
-function serializeWikiBody(sections: { understanding: string; knowledge: string; evidence: string }): string {
-  return ['## Understanding', sections.understanding.trim(), '## Knowledge', sections.knowledge.trim(), '## Evidence', sections.evidence.trim()]
-    .join('\n\n')
-    .trim();
-}
-
-/**
- * External edits that drop a `[[wikilink]]` from a wiki's Knowledge body must
- * also drop the corresponding Evidence rows — otherwise the timeline retains
- * "this used to be true" claims contradicting the canonical Knowledge view.
- * Mirrors the in-process Knowledge-remove → Evidence-row removal performed by
- * `rewriteWikiInMutation` for CLI/IPC mutations.
- */
-export function applyInboundEvidenceSyncForRemovedKnowledge(
-  startIndex: KbIndex | null,
-  changedEntryIds: readonly string[],
-  target: InboundEvidenceSyncTarget,
-): InboundEvidenceSyncResult {
-  const result: InboundEvidenceSyncResult = { rewrittenSlugs: [], manifestDeltas: [] };
-  if (startIndex === null) {
-    return result;
-  }
-
-  for (const entryId of changedEntryIds) {
-    if (!entryId.startsWith('wiki:')) {
-      continue;
-    }
-
-    const previousEntry = startIndex.entries[entryId];
-    if (previousEntry === undefined || !isWikiEntry(previousEntry)) {
-      continue;
-    }
-
-    const slug = entryId.slice('wiki:'.length);
-    const wikiPath = target.wikiPath(slug);
-
-    let raw: string;
-    try {
-      raw = target.storagePort.readFileSync(wikiPath, 'utf-8');
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) {
-        continue;
-      }
-      throw error;
-    }
-
-    let frontmatter: ReturnType<typeof parseWikiFrontmatter>;
-    let title: string;
-    let sections: ReturnType<typeof parseWikiBody>;
-    try {
-      frontmatter = parseWikiFrontmatter(raw);
-      title = extractTitle(raw);
-      sections = parseWikiBody(extractBody(raw));
-    } catch {
-      continue;
-    }
-
-    const nextKnowledge = extractKnowledgeLinks(sections.knowledge);
-    const remaining = new Set(nextKnowledge);
-    const removed: KbEntryId[] = previousEntry.knowledge.filter((entry) => !remaining.has(entry));
-    if (removed.length === 0) {
-      continue;
-    }
-
-    let evidence = sections.evidence;
-    for (const entry of removed) {
-      evidence = removeLastEvidenceRowForSlug(evidence, entryIdToEvidenceSlug(entry));
-    }
-    if (evidence === sections.evidence) {
-      continue;
-    }
-
-    const nextRaw = serializeWiki(frontmatter, title, serializeWikiBody({ ...sections, evidence }));
-    if (nextRaw === raw) {
-      continue;
-    }
-
-    target.storagePort.writeFileSync(wikiPath, nextRaw, { encoding: 'utf-8' });
-    result.rewrittenSlugs.push(slug);
-    result.manifestDeltas.push(...captureWikiManifestDeltas(slug, nextRaw));
-  }
-
-  return result;
-}

@@ -65,19 +65,7 @@ function wikiEntry(slug: string, updatedAt: string): WikiEntry {
 }
 
 function wikiBody(firstParagraph: string, secondParagraph = 'Second paragraph should not appear.'): string {
-  return [
-    '## Understanding',
-    '',
-    firstParagraph,
-    '',
-    secondParagraph,
-    '',
-    '## Knowledge',
-    '',
-    '',
-    '## Evidence',
-    '',
-  ].join('\n');
+  return ['## Understanding', '', firstParagraph, '', secondParagraph, '', '## Knowledge', ''].join('\n');
 }
 
 function wikiRaw(slug: string, title: string, updatedAt: string, understanding: string): string {

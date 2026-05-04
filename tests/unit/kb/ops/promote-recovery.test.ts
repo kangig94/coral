@@ -74,10 +74,7 @@ Original understanding.
 ## Knowledge
 
 - [[notes/existing-note]]
-
-## Evidence
-
-- 2026-03-20 seed
+  - 2026-03-20 seed
 `;
 
 const WIKI_NEW_RAW = `---
@@ -97,10 +94,7 @@ Original understanding.
 
 - [[notes/coral-recovery]]
 - [[notes/existing-note]]
-
-## Evidence
-
-- 2026-03-20 seed
+  - 2026-03-20 seed
 `;
 
 interface MarkerSpec {

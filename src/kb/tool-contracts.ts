@@ -91,7 +91,6 @@ export const kbWikiCreateSchema = z
     title: z.string().min(1).optional(),
     understanding: z.string().optional(),
     knowledge: z.union([z.string(), z.array(z.string().min(1))]).optional(),
-    evidence: z.string().optional(),
     tags: z.array(z.string().min(1)).optional(),
     references_principles: z.array(z.string().min(1)).optional(),
     referencesPrinciples: z.array(z.string().min(1)).optional(),

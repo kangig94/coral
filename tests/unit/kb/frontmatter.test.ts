@@ -218,11 +218,8 @@ Keep the body stable.
       '## Knowledge',
       '',
       '- [[notes/alpha]]',
+      '  - 2026-04-01 seed evidence for alpha',
       '- [[notes/beta]]',
-      '',
-      '## Evidence',
-      '',
-      '- 2026-04-01 seed',
     ].join('\n');
 
     it('round-trips parse → serialize via serializeWiki without losing the section content', () => {
@@ -244,15 +241,21 @@ Keep the body stable.
     it.each([
       ['Understanding', sampleBody.replace('## Understanding', '## understanding-typo')],
       ['Knowledge', sampleBody.replace('## Knowledge', '## knowledge-typo')],
-      ['Evidence', sampleBody.replace('## Evidence', '## evidence-typo')],
     ])('throws when the %s header is missing', (header, malformed) => {
       expect(() => parseWikiBody(malformed)).toThrow(`Wiki body is missing ## ${header} header`);
     });
 
-    it('keeps both Understanding paragraphs in the parsed section but extractFirstParagraph only uses the first', () => {
+    it('keeps both Understanding paragraphs in the parsed section', () => {
       const sections = parseWikiBody(sampleBody);
       expect(sections.understanding).toContain('First understanding paragraph.');
       expect(sections.understanding).toContain('Second understanding paragraph.');
+    });
+
+    it('keeps Knowledge sub-bullet evidence with its parent link block', () => {
+      const sections = parseWikiBody(sampleBody);
+      expect(sections.knowledge).toContain('- [[notes/alpha]]');
+      expect(sections.knowledge).toContain('  - 2026-04-01 seed evidence for alpha');
+      expect(sections.knowledge).toContain('- [[notes/beta]]');
     });
   });
 

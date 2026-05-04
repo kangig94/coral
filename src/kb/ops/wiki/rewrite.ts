@@ -4,16 +4,17 @@ import { commitCorpusEntryLocked } from '../../corpus/index-mutations.js';
 import {
   extractBody,
   extractTitle,
-  parseEvidenceRow,
+  parseKnowledgeBlocks,
   parseWikiBody,
   parseWikiFrontmatter,
+  serializeKnowledgeBlocks,
   serializeWiki,
+  type KnowledgeBlock,
   type WikiBodySections,
 } from '../../corpus/frontmatter.js';
 import { buildWikiIndexEntry } from '../../corpus/index-records.js';
 import { extractKnowledgeLinks } from '../../corpus/wiki-links.js';
 import {
-  entryIdToEvidenceSlug,
   entryIdToVaultLink,
   setEntry,
   wikiEntryId,
@@ -55,14 +56,7 @@ export type RewriteWikiInMutationOptions = {
 };
 
 function serializeWikiBodySections(sections: WikiBodySections): string {
-  return [
-    '## Understanding',
-    sections.understanding.trim(),
-    '## Knowledge',
-    sections.knowledge.trim(),
-    '## Evidence',
-    sections.evidence.trim(),
-  ]
+  return ['## Understanding', sections.understanding.trim(), '## Knowledge', sections.knowledge.trim()]
     .join('\n\n')
     .trim();
 }
@@ -75,12 +69,7 @@ function mergeWikiSections(current: WikiBodySections, patch: Partial<WikiBodySec
   return {
     understanding: patch.understanding ?? current.understanding,
     knowledge: patch.knowledge ?? current.knowledge,
-    evidence: patch.evidence ?? current.evidence,
   };
-}
-
-function uniqueEntryIds(entryIds: readonly KbEntryId[]): KbEntryId[] {
-  return [...new Set(entryIds)];
 }
 
 function readCurrentWiki(rt: KbRuntime, slug: string): WikiRewriteCurrent {
@@ -104,64 +93,40 @@ function readCurrentWiki(rt: KbRuntime, slug: string): WikiRewriteCurrent {
   };
 }
 
-function removeKnowledgeLineForEntry(lines: readonly string[], entryId: KbEntryId): string[] {
-  const link = entryIdToVaultLink(entryId);
-  return lines.filter((line) => !line.includes(link));
-}
-
-function knowledgeLines(knowledge: string): string[] {
-  return knowledge
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function prependKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
-  const unique = uniqueEntryIds(entryIds);
-  const remaining = unique.reduce(
-    (lines, entryId) => removeKnowledgeLineForEntry(lines, entryId),
-    knowledgeLines(knowledge),
-  );
-  return [...unique.map((entryId) => `- ${entryIdToVaultLink(entryId)}`), ...remaining].join('\n').trim();
+function blockHeaderFor(entryId: KbEntryId): string {
+  return `- ${entryIdToVaultLink(entryId)}`;
 }
 
 /**
- * Knowledge↔Evidence stay 1:1. When a Knowledge link is removed (intentional —
- * the user judges the link wrong/superseded), drop the trailing Evidence row
- * tied to that slug so it cannot become a misleading "this used to be true"
- * claim. Git history preserves the audit trail.
+ * Prepend new Knowledge entries to the front of the section. If a link is
+ * already present, its existing block (header + evidence sub-bullets) is
+ * moved to the front intact. New links are added with empty evidence lists.
  */
-function removeLastEvidenceRowForSlug(evidence: string, slug: string): string {
-  const lines = evidence.split(/\r?\n/u);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const parsed = parseEvidenceRow(lines[i]);
-    if (parsed !== null && parsed.slug === slug) {
-      lines.splice(i, 1);
-      return lines.join('\n').trim();
+function prependKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
+  const seen = new Set<KbEntryId>();
+  const ordered: KbEntryId[] = [];
+  for (const entryId of entryIds) {
+    if (!seen.has(entryId)) {
+      seen.add(entryId);
+      ordered.push(entryId);
     }
   }
-  return evidence;
-}
 
-export function syncEvidenceForRemovedKnowledge(evidence: string, removedEntryIds: readonly KbEntryId[]): string {
-  let next = evidence;
-  for (const entryId of removedEntryIds) {
-    next = removeLastEvidenceRowForSlug(next, entryIdToEvidenceSlug(entryId));
-  }
-  return next;
-}
+  const blocks = parseKnowledgeBlocks(knowledge);
+  const remaining = blocks.filter((block) => !seen.has(block.entryId));
+  const front: KnowledgeBlock[] = ordered.map((entryId) => {
+    const existing = blocks.find((block) => block.entryId === entryId);
+    return existing ?? { entryId, header: blockHeaderFor(entryId), evidence: [] };
+  });
 
-function diffRemovedEntryIds(before: readonly KbEntryId[], after: readonly KbEntryId[]): KbEntryId[] {
-  const remaining = new Set(after);
-  return before.filter((entryId) => !remaining.has(entryId));
+  return serializeKnowledgeBlocks([...front, ...remaining]);
 }
 
 /**
  * Self-organizing list via the transposition heuristic (Rivest 1976,
- * Bitner 1979): each touch swaps the matched link with its immediate
- * predecessor. Under stationary access frequencies, transposition
- * converges to the optimal frequency-sorted order, while move-to-front
- * over-reacts to single accesses and never converges.
+ * Bitner 1979): each touch swaps the matched Knowledge block with its
+ * immediate predecessor. The block carries its evidence sub-bullets, so
+ * physical ordering and evidence stay grouped — no separate sync needed.
  *
  * Per-event semantics: each entry in `entryIds` is one touch event and
  * causes at most one swap. Multiple events for the same link in one
@@ -169,16 +134,15 @@ function diffRemovedEntryIds(before: readonly KbEntryId[], after: readonly KbEnt
  * Touched links already at index 0, or absent from the list, no-op.
  */
 function bubbleUpKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
-  const lines = knowledgeLines(knowledge);
+  const blocks = parseKnowledgeBlocks(knowledge);
   for (const entryId of entryIds) {
-    const link = entryIdToVaultLink(entryId);
-    const index = lines.findIndex((line) => line.includes(link));
+    const index = blocks.findIndex((block) => block.entryId === entryId);
     if (index <= 0) {
       continue;
     }
-    [lines[index - 1], lines[index]] = [lines[index], lines[index - 1]];
+    [blocks[index - 1], blocks[index]] = [blocks[index], blocks[index - 1]];
   }
-  return lines.join('\n').trim();
+  return serializeKnowledgeBlocks(blocks);
 }
 
 export async function rewriteWiki(
@@ -212,23 +176,9 @@ export async function rewriteWikiInMutation(
   const title = patch.title ?? current.title;
   const frontmatterPatch = patch.frontmatter ?? {};
   const sectionsTouched = patch.body !== undefined || patch.sections !== undefined;
-  const patchedSections =
-    patch.body !== undefined
-      ? parseWikiBody(patch.body)
-      : mergeWikiSections(current.sections, patch.sections);
-  const patchedKnowledge = extractKnowledgeLinks(patchedSections.knowledge);
-  const removedKnowledge = sectionsTouched
-    ? diffRemovedEntryIds(current.knowledge, patchedKnowledge)
-    : [];
   const nextSections =
-    removedKnowledge.length === 0
-      ? patchedSections
-      : { ...patchedSections, evidence: syncEvidenceForRemovedKnowledge(patchedSections.evidence, removedKnowledge) };
-  const body = !sectionsTouched
-    ? current.body
-    : patch.body !== undefined && removedKnowledge.length === 0
-      ? patch.body
-      : serializeWikiBodySections(nextSections);
+    patch.body !== undefined ? parseWikiBody(patch.body) : mergeWikiSections(current.sections, patch.sections);
+  const body = !sectionsTouched ? current.body : (patch.body ?? serializeWikiBodySections(nextSections));
   const nextKnowledge = extractKnowledgeLinks(nextSections.knowledge);
   const frontmatter = {
     ...current.frontmatter,
