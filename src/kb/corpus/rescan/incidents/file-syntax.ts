@@ -6,7 +6,12 @@ const MALFORMED_MARKDOWN_CANONICAL = REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MA
 
 const CONFLICT_MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)(?: .*)?$/;
 const FENCE_PATTERN = /^(?:```|~~~)[^\r\n]*$/;
-const ATX_HEADER_NO_SPACE_PATTERN = /^#{1,6}\S/;
+// Matches ATX headings where the `#` run is immediately followed by a
+// non-whitespace, non-`#` character (i.e. `##Rule` is malformed). Without the
+// `[^#\s]` exclusion, the engine backtracks: for `## Rule` it would match a
+// single `#` and then accept the second `#` as `\S`, false-flagging every
+// well-formed heading.
+const ATX_HEADER_NO_SPACE_PATTERN = /^#{1,6}[^#\s]/;
 const SETEXT_UNDERLINE_PATTERN = /^(=+|-+)\s*$/;
 const BLOCK_DELIMITER_PATTERN = /^(?:---|```|~~~|\*\*\*|___)\s*$/;
 
