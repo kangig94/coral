@@ -931,7 +931,7 @@ async function main() {
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.4";
+  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.5";
   let col1Claude, col1Codex, col2Claude, col2Codex;
   const addonTier = codexData.additionalLabel?.toLowerCase() || null;
   const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;

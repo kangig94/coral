@@ -192,7 +192,7 @@ and unknown behavior at their structural boundaries.
 
 ```
 opus 4.6 │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ $1.57 50m │ coral:analyze
-gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
 
 ## Skills
@@ -222,7 +222,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | Variable | Default | Description |
 |---|---|---|
 | `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB markdown root |
-| `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
+| `CORAL_CODEX_MODEL` | `gpt-5.5` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle (`1` = fast, `0` = flex); falls back to `~/.codex/config.toml` top-level `service_tier` |
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh`; the adapter collapses `xhigh` to the provider ceiling (`max`) |

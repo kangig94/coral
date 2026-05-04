@@ -389,8 +389,8 @@ describe('resolveCodexModel uses coralEnv', () => {
 
     const request = makeRequest();
 
-    expect(mapThreadStartParams(request).model).toBe('gpt-5.4');
-    expect(mapThreadResumeParams(request, 'thread-1').model).toBe('gpt-5.4');
-    expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.4');
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.5');
+    expect(mapThreadResumeParams(request, 'thread-1').model).toBe('gpt-5.5');
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.5');
   });
 });
