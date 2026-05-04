@@ -23,7 +23,6 @@ import {
 import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
-import { WAKE_UP_CONSUMER_ID } from '#src/kb/ops/wake-up.js';
 
 // Match the orama projection's id so the bundled fallback's registration matches.
 const MOCK_BASE_CONSUMER_ID = 'orama-base';
@@ -185,7 +184,7 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      expect(waitFreshUntil).toHaveBeenCalledTimes(7);
+      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
         1,
         'corpus',
@@ -200,17 +199,10 @@ describe('coordinator startup ordering', () => {
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        3,
-        'corpus',
-        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        WAKE_UP_CONSUMER_ID,
-        expect.any(Number),
-      );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(7, 'journal', expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
     } finally {
@@ -314,7 +306,7 @@ describe('coordinator startup ordering', () => {
       ];
 
       expect(coordinator.getLifecycle()).toBe('running');
-      expect(waitFreshUntil).toHaveBeenCalledTimes(7);
+      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(
         1,
         'corpus',
@@ -329,17 +321,10 @@ describe('coordinator startup ordering', () => {
         MOCK_BASE_CONSUMER_ID,
         expect.any(Number),
       );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        3,
-        'corpus',
-        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        WAKE_UP_CONSUMER_ID,
-        expect.any(Number),
-      );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'jobs', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'sessions', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'discuss', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(7, 'journal', expect.any(Number), 'workflow', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(5, 'journal', expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(6, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('listenFn (bind)'));
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));

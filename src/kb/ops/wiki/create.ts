@@ -11,28 +11,13 @@ import {
   vaultLinkToEntryId,
   wikiEntryId,
   type KbEntryId,
+  type KbWikiCreateInput,
+  type KbWikiCreateResponse,
   type KbWikiFrontmatter,
 } from '../../entry-types.js';
 import { currentEntrySeq } from '../../index-state.js';
 import { assertNonEmptyText, assertString, assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
-
-/** Accepts both snake_case (wire format) and camelCase (TS convenience) for `references_principles` / `referencesPrinciples`. */
-export type KbWikiCreateInput = {
-  slug: string;
-  title?: string;
-  understanding?: string;
-  knowledge?: string | readonly string[];
-  tags?: readonly string[];
-  references_principles?: readonly string[];
-  referencesPrinciples?: readonly string[];
-  related?: readonly string[];
-};
-
-export type KbWikiCreateResponse = {
-  slug: string;
-  path: string;
-};
 
 function normalizeStringList(values: readonly string[] | undefined, field: string): string[] {
   return (values ?? []).map((value) => assertNonEmptyText(value, field));
@@ -108,6 +93,7 @@ export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promi
         input.references_principles ?? input.referencesPrinciples,
         'references_principles',
       ),
+      project: assertNonEmptyText(input.project, 'project'),
       createdAt,
       updatedAt: createdAt,
       entrySeq: currentEntrySeq(rt.readIndexState()) + 1,

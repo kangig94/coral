@@ -228,6 +228,7 @@ Keep the body stable.
         {
           tags: ['kb'],
           references_principles: [],
+          project: 'kangig94/coral',
           createdAt: '2026-04-01',
           updatedAt: '2026-04-01',
         },

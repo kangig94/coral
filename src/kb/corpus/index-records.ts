@@ -69,6 +69,7 @@ export function buildWikiIndexEntry(meta: WikiIndexEntrySource): WikiEntry {
     title: meta.title,
     tags: [...meta.tags],
     references_principles: [...meta.references_principles],
+    project: meta.project,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     knowledge: [...meta.knowledge],

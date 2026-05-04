@@ -96,7 +96,7 @@ export async function generateKnowledgeBaseWakeUpPacket(
   host: KbQueryHost,
 ): Promise<KbWakeUpResponse> {
   const kb = await host.acquireKbRuntime();
-  return { content: await generateWakeUpPacket(kb, args.tokenBudget) };
+  return { content: await generateWakeUpPacket(kb, args.project) };
 }
 
 export function diagnoseKnowledgeBase(host: KbQueryHost): KbDiagnoseResult {

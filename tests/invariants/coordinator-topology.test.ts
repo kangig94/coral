@@ -66,7 +66,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/kb/reindex.ts',
   'src/coordinator/services/kb/shell.ts',
   'src/coordinator/services/kb/source-import.ts',
-  'src/coordinator/services/kb/wake-up.ts',
   'src/coordinator/services/recovery/actions.ts',
   'src/coordinator/services/recovery/index.ts',
   'src/coordinator/services/recovery/service.ts',

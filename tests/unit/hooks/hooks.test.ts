@@ -123,6 +123,167 @@ describe('session-start.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('owner instruction');
   });
+
+  describe('wake-up payload', () => {
+    function seedKbWiki(kbRoot: string, slug: string, project: string, updatedAt: string, understanding: string): void {
+      const wikiDir = join(kbRoot, 'wiki');
+      mkdirSync(wikiDir, { recursive: true });
+      writeFileSync(
+        join(wikiDir, `${slug}.md`),
+        [
+          '---',
+          'tags: [wake]',
+          'references_principles: []',
+          `project: ${project}`,
+          'createdAt: 2026-05-04T00:00:00.000Z',
+          `updatedAt: ${updatedAt}`,
+          '---',
+          `# ${slug}`,
+          '',
+          '## Understanding',
+          '',
+          understanding,
+          '',
+          '## Knowledge',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+    }
+
+    it('appends only project-matching wikis to additionalContext', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      seedKbWiki(kbRoot, 'in-scope', 'acme/repo', '2026-05-04T01:00:00.000Z', 'In-scope understanding.');
+      seedKbWiki(kbRoot, 'out-of-scope', 'other/repo', '2026-05-04T02:00:00.000Z', 'Other understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).toContain('## in-scope (2026-05-04T01:00:00.000Z)');
+      expect(output.hookSpecificOutput.additionalContext).toContain('In-scope understanding.');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## out-of-scope');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');
+    });
+
+    it('prepends identity.md content before wiki blocks', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      mkdirSync(kbRoot, { recursive: true });
+      writeFileSync(join(kbRoot, 'identity.md'), 'Coral identity context.\n', 'utf-8');
+      seedKbWiki(kbRoot, 'in-scope', 'acme/repo', '2026-05-04T01:00:00.000Z', 'In-scope understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const output = expectHookOutput(result);
+      const ctx = output.hookSpecificOutput.additionalContext;
+      expect(ctx.indexOf('Coral identity context.')).toBeLessThan(ctx.indexOf('## in-scope'));
+    });
+
+    it('sorts matching wikis by updatedAt DESC (newest first)', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      seedKbWiki(kbRoot, 'older', 'acme/repo', '2026-05-04T01:00:00.000Z', 'Older understanding.');
+      seedKbWiki(kbRoot, 'newer', 'acme/repo', '2026-05-04T02:00:00.000Z', 'Newer understanding.');
+      seedKbWiki(kbRoot, 'newest', 'acme/repo', '2026-05-04T03:00:00.000Z', 'Newest understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const ctx = expectHookOutput(result).hookSpecificOutput.additionalContext;
+      expect(ctx.indexOf('## newest')).toBeLessThan(ctx.indexOf('## newer'));
+      expect(ctx.indexOf('## newer')).toBeLessThan(ctx.indexOf('## older'));
+    });
+
+    it('omits the wake-up block entirely when no wikis match and identity is absent', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      seedKbWiki(kbRoot, 'foreign', 'other/repo', '2026-05-04T01:00:00.000Z', 'Foreign understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## foreign');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('Foreign understanding.');
+      // No wake-up "## " block follows the inject content.
+      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## /u);
+    });
+
+    it('skips a single malformed-frontmatter wiki and continues with the rest (fail-open per file)', () => {
+      const fixture = createFixture();
+      writeInjectMd(fixture.pluginRoot, 'inject content');
+      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
+      const kbRoot = join(fixture.root, 'kb');
+      const wikiDir = join(kbRoot, 'wiki');
+      mkdirSync(wikiDir, { recursive: true });
+      // Malformed wiki: unclosed YAML scalar.
+      writeFileSync(
+        join(wikiDir, 'broken.md'),
+        '---\ntags: [unterminated\nproject: acme/repo\n---\n# Broken\n\n## Understanding\n\nBroken.\n',
+        'utf-8',
+      );
+      seedKbWiki(kbRoot, 'good', 'acme/repo', '2026-05-04T01:00:00.000Z', 'Good understanding.');
+
+      const result = runHook(
+        SESSION_START_HOOK,
+        { session_id: 'sess-wake' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          CORAL_KB_PATH: kbRoot,
+          HOME: fixture.root,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).toContain('## good (2026-05-04T01:00:00.000Z)');
+      expect(output.hookSpecificOutput.additionalContext).toContain('Good understanding.');
+    });
+  });
 });
 
 describe('subagent-start.mjs', () => {

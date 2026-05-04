@@ -385,6 +385,7 @@ Clusters graph-backed retrieval notes.
       `---
 tags: [kb, wiki]
 references_principles: [single-source-of-truth]
+project: kangig94/coral
 createdAt: 2026-04-01T00:00:00.000Z
 updatedAt: 2026-04-02T00:00:00.000Z
 ---
@@ -608,9 +609,15 @@ level: 1
     const kbSubsystem = createKbSubsystem();
     mockState.createWiki.mockResolvedValue({ slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbSubsystem);
+    const result = await handleKbWikiCreate(
+      { slug: 'living-knowledge', project: 'kangig94/coral' },
+      kbSubsystem,
+    );
 
-    expect(mockState.createWiki).toHaveBeenCalledWith(kbSubsystem.kb, { slug: 'living-knowledge' });
+    expect(mockState.createWiki).toHaveBeenCalledWith(kbSubsystem.kb, {
+      slug: 'living-knowledge',
+      project: 'kangig94/coral',
+    });
     expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toEqual({
       ok: true,
@@ -646,7 +653,7 @@ level: 1
   it('handleKbWikiList wraps listWikis in the wikis envelope', async () => {
     const kbSubsystem = createKbSubsystem();
     mockState.listWikis.mockResolvedValue([
-      { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], references_principles: [], createdAt: '', updatedAt: '', related: [] },
+      { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], references_principles: [], project: 'kangig94/coral', createdAt: '', updatedAt: '', related: [] },
     ]);
 
     const result = await handleKbWikiList({}, kbSubsystem);
@@ -655,23 +662,24 @@ level: 1
     expect(result).toMatchObject({ ok: true, data: { wikis: expect.any(Array) } });
   });
 
-  it('handleKbWakeUp returns the generated wake-up packet content', async () => {
+  it('handleKbWakeUp forwards the project arg after schema parsing', async () => {
     const kbSubsystem = createKbSubsystem();
     mockState.generateWakeUpPacket.mockReturnValue('## wake-up packet body');
+
+    const result = await handleKbWakeUp({ project: 'acme/repo' }, kbSubsystem);
+
+    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, 'acme/repo');
+    expect(result).toEqual({ ok: true, data: { content: '## wake-up packet body' } });
+  });
+
+  it('handleKbWakeUp returns an empty packet when project is omitted', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.generateWakeUpPacket.mockReturnValue('');
 
     const result = await handleKbWakeUp({}, kbSubsystem);
 
     expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, undefined);
-    expect(result).toEqual({ ok: true, data: { content: '## wake-up packet body' } });
-  });
-
-  it('handleKbWakeUp forwards the tokenBudget after schema parsing', async () => {
-    const kbSubsystem = createKbSubsystem();
-    mockState.generateWakeUpPacket.mockReturnValue('packet');
-
-    await handleKbWakeUp({ tokenBudget: 600 }, kbSubsystem);
-
-    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, 600);
+    expect(result).toEqual({ ok: true, data: { content: '' } });
   });
 
   it('still validates memo owners after Zod parsing', () => {

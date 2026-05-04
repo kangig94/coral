@@ -133,7 +133,7 @@ Commands:
   promote [options]         Promote a memo into a KB note
   update [options] <note>   Update an existing KB note
   delete <note>             Delete a KB note
-  wake-up [options]         Generate the KB wake-up packet
+  wake-up                   Generate the KB wake-up packet
   reindex [options]         Rebuild the KB index
   help [command]            display help for command
 "

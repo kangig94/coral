@@ -252,6 +252,7 @@ export type KbWikiCreateOptions = {
   knowledge?: string[];
   tags?: string[];
   referencesPrinciples?: string[];
+  project?: string;
 };
 
 export type KbWikiUpdateOptions = {

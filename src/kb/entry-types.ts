@@ -126,6 +126,7 @@ export type CommunityEntry = CommunityFrontmatter & {
 export interface KbWikiFrontmatter {
   tags: string[];
   references_principles: string[];
+  project: string;
   createdAt: string;
   updatedAt: string;
   entrySeq?: number;
@@ -139,12 +140,13 @@ export type WikiEntry = KbWikiFrontmatter & {
   knowledge: KbEntryId[];
 };
 
+/** Accepts both snake_case (wire format) and camelCase (TS convenience) for `references_principles` / `referencesPrinciples`. */
 export type KbWikiCreateInput = {
   slug: string;
+  project: string;
   title?: string;
   understanding?: string;
   knowledge?: string | readonly string[];
-  evidence?: string;
   tags?: readonly string[];
   references_principles?: readonly string[];
   referencesPrinciples?: readonly string[];
@@ -201,7 +203,7 @@ export type KbWikiReadInput = {
 };
 
 export type KbWakeUpInput = {
-  tokenBudget?: number;
+  project?: string;
 };
 
 export type KbWakeUpResponse = {

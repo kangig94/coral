@@ -228,6 +228,7 @@ export function parseWikiFrontmatter(content: string): KbWikiFrontmatter {
   return {
     tags: normalizeStringList(record.tags, 'tags'),
     references_principles: normalizePrincipleReferenceList(record.references_principles, 'references_principles'),
+    project: assertNonEmptyText(record.project, 'project'),
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     related,
@@ -324,6 +325,7 @@ export function serializeWikiFrontmatter(meta: KbWikiFrontmatter): string {
   return serializeFrontmatterRecord({
     tags: normalizeStringList(meta.tags, 'tags'),
     references_principles: normalizePrincipleReferenceList(meta.references_principles, 'references_principles'),
+    project: assertNonEmptyText(meta.project, 'project'),
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
     ...(entrySeq === undefined ? {} : { entrySeq }),

@@ -249,6 +249,7 @@ function parseWikiIndexEntry(entryId: string, value: Record<string, unknown>): W
     title: assertNonEmptyText(value.title, 'KB index entry title'),
     tags: parseStringArray(value.tags),
     references_principles: parseStringArray(value.references_principles),
+    project: assertNonEmptyText(value.project, 'KB index entry project'),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
     ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),

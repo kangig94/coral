@@ -285,6 +285,7 @@ export function buildKbIndex(
       title: wiki.title,
       tags: wiki.tags,
       references_principles: wiki.references_principles,
+      project: wiki.project,
       createdAt: wiki.createdAt,
       updatedAt: wiki.updatedAt,
       knowledge: wiki.knowledge,

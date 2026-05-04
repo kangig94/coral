@@ -513,7 +513,7 @@ export async function handleKbWakeUp(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   }
 
   return runKbAction(async () => ({
-    content: await generateWakeUpPacket(kbSubsystem.kb, parsed.data.tokenBudget),
+    content: await generateWakeUpPacket(kbSubsystem.kb, parsed.data.project),
   }));
 }
 

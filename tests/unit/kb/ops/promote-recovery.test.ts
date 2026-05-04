@@ -61,6 +61,7 @@ Recovery body.
 const WIKI_OLD_RAW = `---
 tags: [kb]
 references_principles: []
+project: kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-20T00:00:00.000Z
 entrySeq: 2
@@ -80,6 +81,7 @@ Original understanding.
 const WIKI_NEW_RAW = `---
 tags: [kb]
 references_principles: []
+project: kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-23T00:00:00.000Z
 entrySeq: 2

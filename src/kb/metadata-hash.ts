@@ -38,6 +38,12 @@ export function sourceMetadataHash(entry: SourceMetadataHashInput): string {
   });
 }
 
+// `project` is intentionally excluded from this hash. `wikiMetadataHash` covers
+// the index-record fields consumed by `authority-baseline.ts` / `drift.ts` /
+// `engines/orama/backend.ts` — a separate surface from the full-frontmatter hash
+// computed by `inbound-sync.ts`'s `computeMetadataSurfaceHash` (which does include
+// `project`). The two surfaces are never directly compared, so this asymmetry is
+// benign; `project` is set-once at create time and has no update path.
 export function wikiMetadataHash(entry: WikiMetadataHashInput): string {
   return computeMetadataSurfaceHash({
     frontmatter: {

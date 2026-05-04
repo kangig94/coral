@@ -89,6 +89,7 @@ export function resolveProjectSource(projectDir) {
       cwd: projectDir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 2000,
     }).trim().replace(/\.git$/, '');
     const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
     const rawPath = sshPath ?? remote.replace(/^[^:]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/^[^/]+\/+/, '');
@@ -110,96 +111,18 @@ export function resolveKbRoot() {
   return join(homedir(), '.coral', buildFlavor() === 'dev' ? 'kb-dev' : 'kb');
 }
 
-function coralDataDir(flavor) {
-  return join(homedir(), '.coral', flavor === 'dev' ? 'data-dev' : 'data');
-}
+let _yaml;
+let _yamlLoaded = false;
 
-export function kbRuntimeDir(flavor = buildFlavor()) {
-  return join(coralDataDir(flavor), 'kb');
-}
-
-export function storeDbPath(flavor = buildFlavor()) {
-  return join(coralDataDir(flavor), 'store', 'store.db');
-}
-
-function corpusStoreDbPathFromInput(inputPath) {
-  if (typeof inputPath !== 'string' || inputPath.length === 0) return null;
-  if (basename(inputPath) === 'kb') return join(dirname(inputPath), 'store', 'store.db');
-  return inputPath;
-}
-
-let _betterSqlite3;
-let _betterSqlite3Loaded = false;
-
-function loadBetterSqlite3() {
-  if (_betterSqlite3Loaded) return _betterSqlite3;
-  _betterSqlite3Loaded = true;
+export function loadYaml() {
+  if (_yamlLoaded) return _yaml;
+  _yamlLoaded = true;
   try {
-    _betterSqlite3 = require('better-sqlite3');
+    _yaml = require('yaml');
   } catch {
-    _betterSqlite3 = null;
+    _yaml = null;
   }
-  return _betterSqlite3;
-}
-
-function sqliteInteger(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'bigint') {
-    const numberValue = Number(value);
-    return Number.isSafeInteger(numberValue) ? numberValue : null;
-  }
-  return null;
-}
-
-export function readCorpusSnapshotStamp(dbPath) {
-  try {
-    const resolvedDbPath = corpusStoreDbPathFromInput(dbPath);
-    if (!resolvedDbPath) return null;
-
-    const BetterSqlite3 = loadBetterSqlite3();
-    if (!BetterSqlite3) return null;
-
-    const db = new BetterSqlite3(resolvedDbPath, { readonly: true, fileMustExist: true });
-    try {
-      const row = db
-        .prepare(
-          `SELECT snapshot_id AS snapshotId,
-                  content_seq AS contentSeq,
-                  metadata_seq AS metadataSeq,
-                  content_manifest_hash AS contentManifestHash,
-                  metadata_manifest_hash AS metadataManifestHash
-             FROM kb_corpus_state
-            WHERE id = 1
-            LIMIT 1`,
-        )
-        .get();
-      if (!row) return null;
-
-      const contentSeq = sqliteInteger(row.contentSeq);
-      const metadataSeq = sqliteInteger(row.metadataSeq);
-      if (
-        typeof row.snapshotId !== 'string' ||
-        contentSeq === null ||
-        metadataSeq === null ||
-        typeof row.contentManifestHash !== 'string' ||
-        typeof row.metadataManifestHash !== 'string'
-      ) {
-        return null;
-      }
-
-      return {
-        snapshotId: row.snapshotId,
-        contentSeq,
-        metadataSeq,
-        contentManifestHash: row.contentManifestHash,
-        metadataManifestHash: row.metadataManifestHash,
-      };
-    } finally {
-      db.close();
-    }
-  } catch {
-    return null;
-  }
+  return _yaml;
 }
 
 const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;

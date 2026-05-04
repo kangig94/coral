@@ -63,8 +63,8 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
-import { registerWakeUpCorpusConsumer } from './services/kb/wake-up.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
+import { join } from 'node:path';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -471,17 +471,19 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await getExpansionLifecycleService().recoverOnBoot();
       // Boot step 4: repair unchanged-snapshot projection artifacts before readiness waits.
       await repairProjectionArtifactLagOnBoot(kbSubsystem.kb, driver, bootFreshnessTimeoutMs);
-      const wakeUpConsumer = registerWakeUpCorpusConsumer(driver, kbSubsystem.kb);
+      // Boot step 4.5: best-effort cleanup of orphan wake-up cache from prior coordinator-owned consumer.
+      try {
+        kbSubsystem.kb.storagePort.rmSync(join(kbSubsystem.kb.runtimeDir, 'wake-up.md'), { force: true });
+      } catch {
+        // Fail-open: cache cleanup is idempotent best-effort; missing file or rm failure is non-fatal.
+      }
       // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
       const corpusSnapshot = kbSubsystem.kb.getCorpusStateSnapshot();
       driver.notifyCorpus(corpusSnapshot);
       const ftsConsumerId = kbSubsystem.kb.capabilityRegistry
         .runtimeView()
         .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id;
-      await Promise.all([
-        driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs),
-        driver.waitFreshUntil('corpus', corpusSnapshot, wakeUpConsumer.id, bootFreshnessTimeoutMs),
-      ]);
+      await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
       if (kbSubsystem.curateScheduler) {
         // Boot step 6: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();

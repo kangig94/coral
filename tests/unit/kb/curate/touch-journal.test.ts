@@ -38,6 +38,7 @@ function indexWithWikis(map: Record<string, string[]>): KbIndex {
           title: slug,
           tags: [],
           references_principles: [],
+          project: 'kangig94/coral',
           createdAt: '2026-05-04T00:00:00.000Z',
           updatedAt: '2026-05-04T00:00:00.000Z',
           knowledge: knowledgeSlugs.map(noteEntryId),

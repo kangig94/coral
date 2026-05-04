@@ -4,6 +4,7 @@ import { Option, type Command } from 'commander';
 import type { KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
+import { resolveProjectSource } from '../../infra/project-source.js';
 import { UsageError } from '../errors.js';
 import {
   makeClient,
@@ -131,11 +132,14 @@ function registerKbWikiCommands(kb: Command): void {
       'Referenced principles (repeatable, comma-separated)',
       appendDelimitedOption,
     )
+    .option('--project <source>', 'Override auto-detected project source (advanced)')
     .action(async (slug: string, opts: KbWikiCreateOptions) => {
       try {
         const client = makeClient(process.cwd(), kbWikiCreateCommand);
+        const project = opts.project ?? resolveProjectSource(process.cwd());
         const result = await client.kbWikiCreate({
           slug: assertWikiSlug(slug, 'wiki'),
+          project,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.understanding !== undefined ? { understanding: opts.understanding } : {}),
           ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
@@ -499,15 +503,10 @@ export function registerKbCommands(program: Command): void {
   const kbWakeUpCommand = kb.command('wake-up');
   kbWakeUpCommand
     .description('Generate the KB wake-up packet')
-    .option('--token-budget <n>', 'Max token budget (default: 900)')
-    .action(async (opts: { tokenBudget?: string }) => {
+    .action(async () => {
       try {
         const client = makeClient(process.cwd(), kbWakeUpCommand);
-        const result = await client.kbWakeUp(
-          opts.tokenBudget !== undefined
-            ? { tokenBudget: parseIntegerFlag('--token-budget', opts.tokenBudget) }
-            : {},
-        );
+        const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()) });
         emitText(result, formatKbWakeUp);
       } catch (error) {
         emitError(error);
