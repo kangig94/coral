@@ -180,32 +180,7 @@ describe('session-start.mjs', () => {
       expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');
     });
 
-    it('prepends identity.md content before the wiki block', () => {
-      const fixture = createFixture();
-      writeInjectMd(fixture.pluginRoot, 'inject content');
-      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
-      const kbRoot = join(fixture.root, 'kb');
-      mkdirSync(kbRoot, { recursive: true });
-      writeFileSync(join(kbRoot, 'identity.md'), 'Coral identity context.\n', 'utf-8');
-      seedKbWiki(kbRoot, PROJECT_SLUG, '2026-05-04T01:00:00.000Z', 'In-scope understanding.');
-
-      const result = runHook(
-        SESSION_START_HOOK,
-        { session_id: 'sess-wake' },
-        {
-          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-          CLAUDE_PROJECT_DIR: fixture.projectRoot,
-          CORAL_KB_PATH: kbRoot,
-          HOME: fixture.root,
-        },
-      );
-
-      const output = expectHookOutput(result);
-      const ctx = output.hookSpecificOutput.additionalContext;
-      expect(ctx.indexOf('Coral identity context.')).toBeLessThan(ctx.indexOf(`## ${PROJECT_SLUG}`));
-    });
-
-    it('omits the wake-up block entirely when the project wiki is absent and identity is absent', () => {
+    it('omits the wake-up block entirely when the project wiki is absent', () => {
       const fixture = createFixture();
       writeInjectMd(fixture.pluginRoot, 'inject content');
       initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');

@@ -70,9 +70,8 @@ afterEach(() => {
 
 describe('generateWakeUpPacket', () => {
   it('returns an empty string when projectSlug is undefined', async () => {
-    const { kb, db, vault } = createRuntime();
+    const { kb, db } = createRuntime();
     try {
-      writeFileSync(join(vault, 'identity.md'), 'Coral identity context.\n', 'utf-8');
       seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'Alpha understanding.' });
 
       expect(await generateWakeUpPacket(kb, undefined)).toBe('');
@@ -98,7 +97,7 @@ describe('generateWakeUpPacket', () => {
     }
   });
 
-  it('returns an empty packet when the project wiki is absent and identity is absent', async () => {
+  it('returns an empty packet when the project wiki is absent', async () => {
     const { kb, db } = createRuntime();
     try {
       seedWiki(kb, { slug: 'foreign', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'Foreign understanding.' });
@@ -124,40 +123,12 @@ describe('generateWakeUpPacket', () => {
       db.close();
     }
   });
-
-  it('prepends identity.md content before the wiki block', async () => {
-    const { kb, db, vault } = createRuntime();
-    try {
-      writeFileSync(join(vault, 'identity.md'), 'Coral identity context.\n', 'utf-8');
-      seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'In-scope understanding.' });
-
-      const packet = await generateWakeUpPacket(kb, 'kangig94-coral');
-
-      expect(packet.indexOf('Coral identity context.')).toBeLessThan(packet.indexOf('## kangig94-coral'));
-    } finally {
-      db.close();
-    }
-  });
-
-  it('returns identity content alone when the project wiki is absent', async () => {
-    const { kb, db, vault } = createRuntime();
-    try {
-      writeFileSync(join(vault, 'identity.md'), 'Coral identity context.\n', 'utf-8');
-
-      const packet = await generateWakeUpPacket(kb, 'kangig94-coral');
-
-      expect(packet).toBe('Coral identity context.\n\n');
-    } finally {
-      db.close();
-    }
-  });
 });
 
 describe('hook ↔ backend wake-up parity', () => {
-  it('readProjectScopedWakeUp matches generateWakeUpPacket byte-for-byte (project wiki + identity.md)', async () => {
+  it('readProjectScopedWakeUp matches generateWakeUpPacket byte-for-byte when the project wiki exists', async () => {
     const { kb, db, vault } = createRuntime();
     try {
-      writeFileSync(join(vault, 'identity.md'), 'Coral identity context.\n', 'utf-8');
       seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'Project understanding.' });
       seedWiki(kb, { slug: 'other-subject', updatedAt: '2026-05-04T03:00:00.000Z', understanding: 'Subject understanding.' });
 
@@ -170,28 +141,13 @@ describe('hook ↔ backend wake-up parity', () => {
     }
   });
 
-  it('readProjectScopedWakeUp matches generateWakeUpPacket for the (no wiki, no identity) empty case', async () => {
+  it('readProjectScopedWakeUp matches generateWakeUpPacket for the empty case (no wiki)', async () => {
     const { kb, db, vault } = createRuntime();
     try {
       const backendOutput = await generateWakeUpPacket(kb, 'kangig94-coral');
       const hookPayload = readProjectScopedWakeUp(vault, 'kangig94-coral');
 
       expect(hookPayload ?? '').toBe(backendOutput);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('readProjectScopedWakeUp matches generateWakeUpPacket for the (no wiki, identity PRESENT) case', async () => {
-    const { kb, db, vault } = createRuntime();
-    try {
-      writeFileSync(join(vault, 'identity.md'), 'Coral identity context.\n', 'utf-8');
-
-      const backendOutput = await generateWakeUpPacket(kb, 'kangig94-coral');
-      const hookPayload = readProjectScopedWakeUp(vault, 'kangig94-coral');
-
-      expect(hookPayload ?? '').toBe(backendOutput);
-      expect(backendOutput).toContain('Coral identity context.');
     } finally {
       db.close();
     }
