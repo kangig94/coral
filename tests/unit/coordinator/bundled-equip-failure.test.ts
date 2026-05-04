@@ -303,16 +303,15 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
         kbCurate: 'ok',
       });
 
-      const kbSearch = await requestIpcMethod<Record<string, unknown>>(
-        info.socketPath,
-        'kb.entries.search',
-        { q: 'hello' },
-        { timeoutMs: 1_000 },
-      );
-      expect(kbSearch).toMatchObject({
-        code: 'kb_unavailable',
-        message: 'Knowledge base is not available. Check backend health for details.',
-      });
+      // KB-routed calls during degraded mode now ride a JSON-RPC error
+      // envelope, so the client rejects with the structured cause instead of
+      // resolving with the error body — preventing CLI formatters from
+      // silently rendering an error envelope as success.
+      await expect(
+        requestIpcMethod<Record<string, unknown>>(info.socketPath, 'kb.entries.search', { q: 'hello' }, {
+          timeoutMs: 1_000,
+        }),
+      ).rejects.toThrow('Knowledge base is not available');
 
       await expect(
         requestIpcMethod(info.socketPath, 'jobs.list', { all: true }, { timeoutMs: 1_000 }),

@@ -46,6 +46,7 @@ export class ConsumerCursorRepository {
     [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
   >;
   private readonly updateRegistrationKindStmt: Statement<[ConsumerRegistrationKind, string]>;
+  private readonly updateCorpusInterestStmt: Statement<[CorpusInterest, CorpusLaneHint | null, string]>;
   private readonly deleteCursorRowStmt: Statement<[string]>;
   private readonly readJournalCursorStmt: Statement<[string], JournalCursorRow>;
   private readonly readCorpusCursorStmt: Statement<[string], CorpusCursorRow>;
@@ -100,6 +101,9 @@ export class ConsumerCursorRepository {
     );
     this.updateRegistrationKindStmt = this.db.prepare<[ConsumerRegistrationKind, string]>(
       'UPDATE consumer_cursors SET registration_kind = ? WHERE consumer_id = ?',
+    );
+    this.updateCorpusInterestStmt = this.db.prepare<[CorpusInterest, CorpusLaneHint | null, string]>(
+      'UPDATE consumer_cursors SET corpus_interest = ?, lane = ? WHERE consumer_id = ?',
     );
     this.deleteCursorRowStmt = this.db.prepare<[string]>('DELETE FROM consumer_cursors WHERE consumer_id = ?');
     this.readJournalCursorStmt = this.db.prepare<[string], JournalCursorRow>(
@@ -165,7 +169,7 @@ export class ConsumerCursorRepository {
 
   ensureCursorRow(
     reg: ConsumerRegistration,
-    allowRegistrationKindUpdate = true,
+    allowMetadataUpdate = true,
     preloadedRow?: CursorMetadataRow,
   ): ConsumerRegistrationKind {
     if (reg.kind === 'stateless') {
@@ -186,13 +190,26 @@ export class ConsumerCursorRepository {
       if (reg.authority === 'corpus') {
         const storedInterest = parseStoredCorpusInterest(row);
         if (storedInterest !== reg.corpusInterest) {
-          throw consumerInterestMismatchError(reg.id);
+          // Stored interest came from a previous coral version. The interest
+          // is declared in code (bundled engines or expansion adapters), not
+          // user state, so a fresh registration may legitimately widen or
+          // narrow it across version bumps. Update in place; cursor counters
+          // (snapshot_id, content_seq, metadata_seq) reset on next apply when
+          // the consumer rebuilds against the current corpus snapshot.
+          if (!allowMetadataUpdate) {
+            throw consumerInterestMismatchError(reg.id);
+          }
+          this.updateCorpusInterestStmt.run(
+            reg.corpusInterest,
+            laneHintFromInterest(reg.corpusInterest),
+            reg.id,
+          );
         }
       }
 
       const storedKind = this.parseStoredRegistrationKind(reg.id, row.registration_kind);
       if (requestedKind !== undefined && storedKind !== requestedKind) {
-        if (!allowRegistrationKindUpdate) {
+        if (!allowMetadataUpdate) {
           throw consumerRegistrationKindMismatchError(reg.id, requestedKind, storedKind);
         }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);

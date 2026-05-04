@@ -372,6 +372,18 @@ async function dispatchFrame(
     subscriptionController = new AbortController();
     const invocation = await entry.dispatch(parsed.data, subscriptionController.signal);
     if (invocation.kind === 'unary') {
+      // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
+      // envelope so the client rejects with a typed error instead of
+      // resolving with the error body. Without this, callers that expect a
+      // success-shaped result silently mis-render the error payload (e.g. a
+      // CLI formatter accessing `data.slug` on `{code, message}`).
+      if (typeof invocation.statusCode === 'number' && invocation.statusCode >= 400) {
+        const body = invocation.body as { code?: unknown; message?: unknown };
+        const message = typeof body.message === 'string' ? body.message : 'request failed';
+        writeEnvelope(socket, requestErrorResponse(request.id, message, invocation.body));
+        socket.end();
+        return;
+      }
       writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope);
       socket.end();
       return;

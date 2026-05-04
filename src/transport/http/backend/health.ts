@@ -21,7 +21,7 @@ export interface BackendHealth {
   queueDepth: number;
   subsystems: {
     kb: {
-      kind: 'ok' | 'unavailable';
+      kind: 'ok' | 'initializing' | 'unavailable';
       reason?: string;
       mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
       consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
@@ -54,7 +54,7 @@ function isKbHealth(value: unknown): value is BackendHealth['subsystems']['kb'] 
   if (!isRecord(value)) {
     return false;
   }
-  if (value.kind !== 'ok' && value.kind !== 'unavailable') {
+  if (value.kind !== 'ok' && value.kind !== 'initializing' && value.kind !== 'unavailable') {
     return false;
   }
   if (value.reason !== undefined && typeof value.reason !== 'string') {

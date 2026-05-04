@@ -33,6 +33,7 @@ export type LifecycleWiringState = {
 export interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'running' | 'draining' | 'stopped'): void;
   getKbStatus():
+    | { kind: 'initializing' }
     | { kind: 'ok'; subsystem: { curateScheduler: { stop?: () => Promise<void> }; kb: KbRuntime } }
     | { kind: 'unavailable'; reason: string };
 }

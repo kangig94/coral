@@ -530,7 +530,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         // omitted when healthy so the green path stays compact and operators
         // can grep for these keys to find blocked writers / stuck consumers.
         const kbHealth: {
-          kind: 'ok' | 'unavailable';
+          kind: 'ok' | 'initializing' | 'unavailable';
           reason?: string;
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;

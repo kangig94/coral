@@ -211,7 +211,7 @@ describe('ConsumerDriver corpus registrations', () => {
     }
   });
 
-  it('rejects stored corpus interest mismatches for corpus consumers', () => {
+  it('auto-updates stored corpus interest on fresh registration when a previous version persisted a different value', () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     db.prepare(
@@ -230,7 +230,7 @@ describe('ConsumerDriver corpus registrations', () => {
           registered_at
         ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?)
       `,
-    ).run('corpus-proj', 'corpus', 'metadata', 'metadata', '2026-04-19T00:00:00.000Z');
+    ).run('corpus-proj', 'corpus', 'content', 'content', '2026-04-19T00:00:00.000Z');
 
     try {
       expect(() =>
@@ -239,17 +239,45 @@ describe('ConsumerDriver corpus registrations', () => {
           authority: 'corpus',
           kind: 'apply',
           registrationKind: 'expansion',
-          corpusInterest: 'content',
+          corpusInterest: 'both',
           async apply() {},
         }),
-      ).toThrow(CoralSetupError);
+      ).not.toThrow();
+
+      const row = db
+        .prepare<[string], { corpus_interest: string; lane: string | null }>(
+          'SELECT corpus_interest, lane FROM consumer_cursors WHERE consumer_id = ?',
+        )
+        .get('corpus-proj');
+      // `lane` for 'both' interest is null (laneHintFromInterest returns null
+      // when no single lane uniquely fits).
+      expect(row).toEqual({ corpus_interest: 'both', lane: null });
+    } finally {
+      void driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('rejects mid-process re-registration with mismatched corpus interest', () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+
+    try {
+      driver.register({
+        id: 'corpus-proj',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
+        corpusInterest: 'content',
+        async apply() {},
+      });
       expect(() =>
         driver.register({
           id: 'corpus-proj',
           authority: 'corpus',
           kind: 'apply',
           registrationKind: 'expansion',
-          corpusInterest: 'content',
+          corpusInterest: 'metadata',
           async apply() {},
         }),
       ).toThrow(/interest mismatch/i);
