@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import ts from 'typescript';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const COORDINATOR_ROOT_PATH = join(REPO_ROOT, 'src/coordinator/index.ts');
 const CONTRACTS_PATH = join(REPO_ROOT, 'src/coordinator/contracts.ts');
+const PACKAGE_JSON_PATH = join(REPO_ROOT, 'package.json');
 const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
   'createCoordinatorCore',
   'listInstantiatedExecutionServices',
@@ -115,5 +116,20 @@ describe('coordinator api export scope invariant', () => {
     const forbidden = exportedNames.filter((name) => FORBIDDEN_COORDINATOR_ROOT_EXPORTS.has(name));
 
     expect(forbidden, 'src/coordinator/index.ts must not re-export composition helpers or types').toEqual([]);
+  });
+});
+
+describe('package export scope invariant', () => {
+  it('keeps package exports backed by source entrypoints', () => {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8')) as {
+      exports?: Record<string, string>;
+    };
+    const packageExports = pkg.exports ?? {};
+    const missing = Object.entries(packageExports).flatMap(([exportName, target]) => {
+      const sourcePath = target.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts');
+      return existsSync(join(REPO_ROOT, sourcePath)) ? [] : [`${exportName} -> ${target} (missing ${sourcePath})`];
+    });
+
+    expect(missing).toEqual([]);
   });
 });

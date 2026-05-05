@@ -86,7 +86,7 @@ async function main() {
   const debugBundleOptions = {
     bundle: true,
     platform: 'node',
-    target: 'node18',
+    target: 'node22',
     format: 'esm',
     external: ['node:*', 'better-sqlite3'],
     loader: { '.sql': 'text' },

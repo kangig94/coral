@@ -3,8 +3,8 @@
   "version": "0.7.1",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
-  "exports": {
-    "./infra": "./dist/infra/index.js"
+  "engines": {
+    "node": ">=22"
   },
   "imports": {
     "#src/*.js": "./src/*.ts",
