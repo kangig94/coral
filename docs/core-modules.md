@@ -77,7 +77,19 @@ Projection freshness is not authority. A Corpus commit remains durable even if a
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, expansion lifecycle, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
+The coordinator layer owns process lifecycle, the three-era boot sequence (Kernel → Recovery → Subsystems), ConsumerDriver freshness, expansion lifecycle, provider-host coordination, job-backed KB source import/reindex, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
+
+## Subsystems
+
+`coordinator/subsystems/` is a small registry layer that turns long-init coordinator services into independently retried, self-healing units without leaking their boot ordering into the kernel path:
+
+- `contract.ts` — `Subsystem<R>` (init / dispose / resource), `SubsystemStatus` (5-state phase: `pending → initializing → online | degraded | offline`), `DegradedReason` (discriminated union, currently only `{ kind: 'curate-publish'; consecutiveFailures; lastError }`), branded `SubsystemId`, and `SubsystemUnavailableError`.
+- `registry.ts` — `createSubsystemRegistry()` exposing `register / initAll / disposeAll / run / runAsync / list / status`. `run(id, fn)` resolves the subsystem's `R` and runs `fn(R)` only when `phase === 'online'`; otherwise it returns a `SubsystemErrorEnvelope = { ok: false, code, message, remediation? }`.
+- `kb.ts` — the only registered subsystem in 0.7.1. `createKbSubsystem(deps)` runs the KB boot pipeline (Corpus replay + CorpusConsumer registration + Orama freshness wait) inside a retry loop (3 attempts at 1s/4s/16s). `buildKbRuntime` and `initializeCapabilityCatalog` are hoisted outside the loop so retries do not duplicate work.
+
+A `SubsystemErrorEnvelope` lifts to HTTP 503 (`kb_initializing` while the lane is still attempting init; `kb_offline` once retries are exhausted) and to the CLI through the standard error envelope with the `remediation` field. New long-init coordinator services should be added as `Subsystem<R>` implementations rather than as bespoke startup branches.
+
+Five invariants enforce the contract: `subsystem-contract-singleton`, `subsystem-error-envelope`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`.
 
 Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Runtime job ids, step indexes, display labels, and atom keys are derived from the plan plus child job projections.
 
@@ -122,12 +134,10 @@ coordinator API
   -> live launch / host management
   -> provider host manager
 
-coordinator startup
-  -> Journal open
-  -> Journal consumer-driver freshness drain
-  -> domain reconcile surfaces (in sequence)
-  -> KB Corpus edit absorption
-  -> CorpusConsumer registration + freshness drain
+coordinator startup (three eras)
+  Era I  Kernel:     Journal open, freshness drain, transport listeners bound (lifecycle = kernel-ready)
+  Era II Recovery:   jobs / discuss / workflow startup reconcile (lifecycle = running)
+  Era III Subsystems: subsystems.initAll() — fire-and-forget; KB subsystem retries on its own
 
 discuss shell
   -> discuss pure core
@@ -147,6 +157,8 @@ infra / runtime / causality
 These are the load-bearing boundaries that must not leak:
 
 - The Runtime interface is the only channel for I/O inside the backend.
+- The boot eras are ordered — Era I blocks until kernel-ready, Era II blocks until running, Era III runs fire-and-forget. CLI fail-fast deadlines watch only Eras I and II (`KERNEL_BIND_DEADLINE_MS = 5s`, `KERNEL_READY_DEADLINE_MS = 15s`); subsystems must never extend the kernel path.
+- `AbortSignal` is the cancellation primitive throughout startup. Aborting the startup signal with no string reason preserves the `AbortError` discriminator; calling `abort('shutdown')` strips that discriminator and breaks downstream `name === 'AbortError'` checks. Enforced by the `abort-signal-threading` invariant.
 - Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.

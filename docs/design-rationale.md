@@ -254,7 +254,38 @@ When a directory owns a pipeline, name files for the stage they sit at so the di
 
 When a file *does* drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it, not to invent a new mechanical naming rule. Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.
 
-## 10. Cross-References
+## 10. Boot Eras and Subsystem Lifecycle
+
+0.7.1 split backend boot into three sequential eras and extracted KB into a first-class `Subsystem<R>`. The shape is load-bearing — a flat boot would push KB's variable init time onto the CLI's critical path, and a one-shot KB init would leave the daemon dead on transient KB failures (orama interest mismatch, embedding provider hiccups, etc.).
+
+### 10.1 Why three eras
+
+Era I (Kernel) and Era II (Recovery) are sequenced because their outputs are prerequisites for everything that follows: the IPC socket must be bound and the Journal must be at-head before the CLI can do anything useful, and recovery must finish before live work can be admitted without colliding with in-flight reconcile decisions. Era III (Subsystems) is parallel/fire-and-forget because subsystems are *consumers* of kernel/recovery state, not contributors to it — making them block the kernel was a 0.7.0 mistake that turned a transient KB failure into a multi-minute CLI hang.
+
+### 10.2 Why Subsystem as a contract, not a bespoke branch
+
+Before 0.7.1, KB boot lived inline in `coordinator/index.ts` with ad-hoc retry counters and a custom `KbStatus` accessor. Each new long-init service would have repeated the pattern with subtle drift. `Subsystem<R>` makes the contract explicit:
+
+- A 5-state phase machine (`pending → initializing → online | degraded | offline`) replaces ad-hoc booleans.
+- A registry owns retry, status, error envelopes, and `/health` projection — the subsystem itself only writes init/dispose/resource.
+- `SubsystemErrorEnvelope` carries `remediation`, so transient failures (`kb_initializing`) and terminal failures (`kb_offline`) carry actionable hints to the CLI without per-callsite glue.
+- Enforced by 5 invariants (`subsystem-contract-singleton`, `subsystem-error-envelope`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`) so future subsystems cannot diverge.
+
+### 10.3 Why CLI fail-fast deadlines on Eras I and II only
+
+The CLI's deadline contract is "tell me whether the kernel is alive within 5s and whether the daemon is ready within 15s." Stretching either deadline to accommodate a slow KB init would conflate "daemon won't start" with "subsystem retry in progress" — two failures with different remediation. Subsystems instead surface their own state through `/health` and `503 kb_initializing | kb_offline` for callers that actually need KB, while the CLI's status / non-KB paths return immediately.
+
+### 10.4 Why AbortSignal as the cancellation primitive
+
+`assertStartupStillActive` + `StartupInterruptedError` (the 0.6.x model) was a manual cooperative-cancellation discipline that every author had to remember. `AbortSignal` is platform-standard, threaded through Node APIs (timers, fetch, child_process), and integrates with `await` chains via `signal.throwIfAborted()`.
+
+A subtle gotcha drove a memo: `state.startupAbort?.abort('shutdown')` (string reason) loses the `name: 'AbortError'` discriminator on the thrown reason — Node throws the bare string. Always call `abort()` with no arguments so a real `DOMException` with `name === 'AbortError'` propagates. Enforced by `abort-signal-threading`.
+
+### 10.5 Discuss is not a Subsystem (deliberately)
+
+Discuss has one-shot recovery on boot (`workflowRecover.resumeAll`), no retry, no self-heal. Forcing it into the 5-state machine would create dead states (`degraded` and `offline` that mean nothing). Discuss recovery stays in Era II as a one-shot; only services with a meaningful retry/self-heal lifecycle should register as subsystems.
+
+## 11. Cross-References
 
 - Current shape and ownership matrix: [`docs/architecture.md`](architecture.md)
 - Module map: [`docs/core-modules.md`](core-modules.md)
