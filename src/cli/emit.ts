@@ -30,7 +30,11 @@ export function getOutputFormat(command: Command): CliOutputFormat {
 }
 
 export function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
-  return argv[0]?.match(/node(\.exe)?$/) ? `node "${argv[1]}"` : (argv[0] ?? 'coral-cli');
+  const executable = argv[0];
+  if (executable?.match(/node(\.exe)?$/)) {
+    return `node "${argv[1]}"`;
+  }
+  return executable ?? 'coral-cli';
 }
 
 export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?: (data: T) => string): void {

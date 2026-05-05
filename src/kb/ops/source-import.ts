@@ -70,7 +70,7 @@ function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
   const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin');
   return {
     ...env,
-    PATH: [localBinDir, env.PATH ?? ''].filter(Boolean).join(delimiter),
+    PATH: [localBinDir, env.PATH ?? ''].filter((entry) => entry !== undefined && entry.length > 0).join(delimiter),
   };
 }
 
@@ -91,7 +91,7 @@ async function resolveCommandPath(command: string, ctx: SourceImportContext): Pr
     return stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .find(Boolean);
+      .find((line) => line.length > 0);
   } catch {
     return undefined;
   }
@@ -117,7 +117,9 @@ async function runCommand(
     return;
   }
 
-  const output = [result.stderr.trim(), result.stdout.trim(), result.error?.message].filter(Boolean).join('\n');
+  const output = [result.stderr.trim(), result.stdout.trim(), result.error?.message]
+    .filter((line): line is string => line !== undefined && line.length > 0)
+    .join('\n');
   const code = result.status === null ? 'unknown' : String(result.status);
   throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`);
 }

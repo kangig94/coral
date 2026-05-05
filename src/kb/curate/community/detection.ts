@@ -289,12 +289,7 @@ function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEval
     resolution,
   });
   const maxLeafSize = maxLeafCommunitySize(graph, details);
-  const targetPenalty =
-    maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX
-      ? maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MAX
-      : maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN
-        ? COMMUNITY_RESOLUTION_TARGET_MIN - maxLeafSize
-        : 0;
+  const targetPenalty = communitySizePenalty(maxLeafSize);
 
   return {
     resolution,
@@ -303,6 +298,18 @@ function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEval
     targetPenalty,
     midpointPenalty: Math.abs(maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MIDPOINT),
   };
+}
+
+function communitySizePenalty(maxLeafSize: number): number {
+  if (maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX) {
+    return maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MAX;
+  }
+
+  if (maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN) {
+    return COMMUNITY_RESOLUTION_TARGET_MIN - maxLeafSize;
+  }
+
+  return 0;
 }
 
 function isBetterResolutionCandidate(

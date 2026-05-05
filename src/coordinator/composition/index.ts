@@ -349,7 +349,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
             if (error instanceof ZodError) {
               const first = error.issues[0];
               const path = first?.path.join('.') ?? '';
-              const message = first ? (path.length > 0 ? `${path}: ${first.message}` : first.message) : error.message;
+              let message = error.message;
+              if (first !== undefined) {
+                message = path.length > 0 ? `${path}: ${first.message}` : first.message;
+              }
               return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
             }
             return { kind: 'invalid_request' as const, message: error.message };

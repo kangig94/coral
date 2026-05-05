@@ -22,7 +22,7 @@ const PARSE_FAILURE_SENTINEL: ParsedClaudeStreamOutput = {
 };
 
 export function parseClaudeStreamJson(output: string): ParsedClaudeStreamOutput {
-  const lines = output.split('\n').filter(Boolean);
+  const lines = output.split('\n').filter((line) => line.length > 0);
   if (lines.length === 0) return PARSE_FAILURE_SENTINEL;
   if (lines.length > 1) return parseNdjson(lines);
 
@@ -130,7 +130,7 @@ function extractSingleResultResponse(parsed: ClaudeJsonOutput): string {
     if (Array.isArray(parsed.result.content)) {
       const textParts = parsed.result.content
         .map((item: unknown) => (isRecord(item) && typeof item.text === 'string' ? item.text : ''))
-        .filter(Boolean);
+        .filter((text) => text.length > 0);
       if (textParts.length > 0) return textParts.join('\n');
     }
   }

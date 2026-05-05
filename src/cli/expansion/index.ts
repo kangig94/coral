@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import type { EngineManifest } from '../../expansion/contract.js';
+import type { EngineManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -66,6 +66,18 @@ function requiresLocalInstall(entry: EngineManifest): boolean {
   return entry.tier === 'installed' && entry.installer !== undefined;
 }
 
+function localCatalogStatus(entry: EngineManifest, local: LocalExpansionInstallState): CatalogEntry['status'] {
+  if (!requiresLocalInstall(entry)) {
+    return 'inactive';
+  }
+
+  if (local.installLocked) {
+    return 'installing';
+  }
+
+  return local.installed ? 'inactive' : 'not_equipped';
+}
+
 function resolveManifestSlot(catalog: readonly EngineManifest[], name: string): string | undefined {
   return resolveCatalogManifest(catalog, name)?.fills?.[0];
 }
@@ -92,15 +104,7 @@ function toCatalogEntry(
 ): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
   const provides = passive?.provides ?? entry.provides;
-  const status =
-    passive?.status ??
-    (requiresLocalInstall(entry)
-      ? local.installLocked
-        ? 'installing'
-        : local.installed
-          ? 'inactive'
-          : 'not_equipped'
-      : 'inactive');
+  const status = passive?.status ?? localCatalogStatus(entry, local);
   return catalogEntrySchema.parse({
     id: entry.id,
     name: entry.id,

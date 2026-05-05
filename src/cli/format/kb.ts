@@ -283,10 +283,6 @@ export function formatKbWikiList(data: KbWikiListResult): string {
   return formatTable(['SLUG', 'TITLE', 'UPDATED AT', 'TAGS'], rows);
 }
 
-export function formatKbWikiRead(data: KbReadResult): string {
-  return formatKbRead(data);
-}
-
 export function formatKbWakeUp(data: KbWakeUpResponse): string {
   const entryCount = (data.content.match(/^## /gmu) ?? []).length;
   const tokenEstimate = Math.ceil(Buffer.byteLength(data.content, 'utf8') / 4);

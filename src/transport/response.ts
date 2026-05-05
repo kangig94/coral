@@ -80,21 +80,15 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
       statusCode = 500;
       break;
   }
+  const body = {
+    code: result.code,
+    message: result.message,
+    ...(result.remediation === undefined ? {} : { remediation: result.remediation }),
+    ...(result.detail === undefined ? {} : { detail: result.detail }),
+  };
 
   return {
     statusCode,
-    body:
-      result.detail === undefined
-        ? {
-            code: result.code,
-            message: result.message,
-            ...(result.remediation === undefined ? {} : { remediation: result.remediation }),
-          }
-        : {
-            code: result.code,
-            message: result.message,
-            ...(result.remediation === undefined ? {} : { remediation: result.remediation }),
-            detail: result.detail,
-          },
+    body,
   };
 }

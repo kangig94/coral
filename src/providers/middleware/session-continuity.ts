@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
-  Provider,
   ProviderContinuityEventBody,
   ProviderContinuityUpdate,
   ProviderMiddleware,
@@ -82,7 +81,7 @@ export function sessionContinuity<TState>(
       };
 
       try {
-        for await (const event of runWithBridge(next, request, wrappedRuntime)) {
+        for await (const event of next(request, wrappedRuntime)) {
           yield* drainContinuity(queue.pending);
 
           if (event.kind !== 'terminal') {
@@ -184,10 +183,6 @@ function createContinuityBridge<TState>(
   };
 }
 
-function runWithBridge(next: Provider, request: ProviderRequest, runtime: ProviderRuntime): ReturnType<Provider> {
-  return next(request, runtime);
-}
-
 type AbortSignalListener = Parameters<AbortSignal['addEventListener']>[1];
 type AbortSignalListenerOptions = Parameters<AbortSignal['addEventListener']>[2];
 
@@ -195,11 +190,7 @@ function createAbortAwareSignal(signal: AbortSignal): AbortSignal {
   return new Proxy(signal, {
     get(target, prop, receiver) {
       if (prop === 'addEventListener') {
-        return (
-          type: 'abort',
-          listener: AbortSignalListener,
-          options?: AbortSignalListenerOptions,
-        ): void => {
+        return (type: 'abort', listener: AbortSignalListener, options?: AbortSignalListenerOptions): void => {
           if (type === 'abort' && target.aborted) {
             notifyAbortListener(target, listener);
             return;

@@ -88,6 +88,13 @@ function retentionDiscardKindForType(type: string): RetentionDiscardKind | null 
   }
 }
 
+function retentionDiscardAttemptState(
+  state: Map<string, RetentionDiscardAttemptState>,
+  key: string,
+): RetentionDiscardAttemptState {
+  return state.get(key) ?? { requested: false, terminal: null };
+}
+
 function parseRetentionDiscardInput(input: CoralEventInput): ParsedRetentionDiscardInput | null {
   switch (input.type) {
     case 'session.retention.discard.requested': {
@@ -222,7 +229,7 @@ function readExistingRetentionDiscardState(
     }
 
     const key = retentionDiscardKey(sessionId, row.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (kind === 'requested') {
       current.requested = true;
     } else {
@@ -248,7 +255,7 @@ export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx,
       continue;
     }
     const key = retentionDiscardKey(event.sessionId, event.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (current.requested) {
       throw duplicateRetentionDiscardAttempt(event);
     }
@@ -260,7 +267,7 @@ export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx,
       continue;
     }
     const key = retentionDiscardKey(event.sessionId, event.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (!current.requested) {
       throw missingRetentionDiscardRequest(event);
     }

@@ -40,45 +40,44 @@ export type DiscoveryRuntime = {
 
 const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
 
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function optionalNonEmptyString(value: unknown): string | null | undefined {
+  return value === undefined ? undefined : nonEmptyString(value);
+}
+
+function positiveNumber(value: unknown): number | null {
+  return Number.isFinite(value) && (value as number) > 0 ? (value as number) : null;
+}
+
+function positiveInteger(value: unknown): number | null {
+  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : null;
+}
+
+function optionalPositiveInteger(value: unknown): number | null | undefined {
+  return value === undefined ? undefined : positiveInteger(value);
+}
+
 function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
   const record = value as Record<string, unknown>;
-  const pid = Number.isInteger(record.pid) && (record.pid as number) > 0 ? (record.pid as number) : null;
-  const port = Number.isInteger(record.port) && (record.port as number) > 0 ? (record.port as number) : null;
-  const socketPath = typeof record.socketPath === 'string' && record.socketPath.length > 0 ? record.socketPath : null;
-  const bundleHash = typeof record.bundleHash === 'string' && record.bundleHash.length > 0 ? record.bundleHash : null;
+  const pid = positiveInteger(record.pid);
+  const port = positiveInteger(record.port);
+  const socketPath = nonEmptyString(record.socketPath);
+  const bundleHash = nonEmptyString(record.bundleHash);
   const flavor = record.flavor === 'prod' || record.flavor === 'dev' ? record.flavor : null;
-  const namespace = typeof record.namespace === 'string' && record.namespace.length > 0 ? record.namespace : null;
-  const startedAt =
-    Number.isFinite(record.startedAt) && (record.startedAt as number) > 0 ? (record.startedAt as number) : null;
-  const token = typeof record.token === 'string' && record.token.length > 0 ? record.token : null;
-  const host =
-    record.host === undefined
-      ? undefined
-      : typeof record.host === 'string' && record.host.length > 0
-        ? record.host
-        : null;
-  const version =
-    record.version === undefined
-      ? undefined
-      : typeof record.version === 'string' && record.version.length > 0
-        ? record.version
-        : null;
-  const instanceId =
-    record.instanceId === undefined
-      ? undefined
-      : typeof record.instanceId === 'string' && record.instanceId.length > 0
-        ? record.instanceId
-        : null;
-  const processStartedAt =
-    record.processStartedAt === undefined
-      ? undefined
-      : Number.isInteger(record.processStartedAt) && (record.processStartedAt as number) > 0
-        ? (record.processStartedAt as number)
-        : null;
+  const namespace = nonEmptyString(record.namespace);
+  const startedAt = positiveNumber(record.startedAt);
+  const token = nonEmptyString(record.token);
+  const host = optionalNonEmptyString(record.host);
+  const version = optionalNonEmptyString(record.version);
+  const instanceId = optionalNonEmptyString(record.instanceId);
+  const processStartedAt = optionalPositiveInteger(record.processStartedAt);
 
   if (
     pid === null ||

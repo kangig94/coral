@@ -110,9 +110,16 @@ function buildCommunityContextMap(
 }
 
 function evidenceFrom(hit: ResolvedKbSearchEntry | ResolvedKbSearchHit | HybridKbSearchHit): RetrievalEvidence[] {
-  return 'evidence' in hit
-    ? hit.evidence.map((item) => (item.match === undefined ? { ...item } : { ...item, match: [...item.match] }))
-    : [];
+  if (!('evidence' in hit)) {
+    return [];
+  }
+
+  return hit.evidence.map((item) => {
+    if (item.match === undefined) {
+      return { ...item };
+    }
+    return { ...item, match: [...item.match] };
+  });
 }
 
 function toResult(hit: ResolvedKbSearchHit, query: QueryContext, evidence: RetrievalEvidence[] = []): KbResult {

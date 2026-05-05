@@ -73,7 +73,7 @@ async function confirmDownload(
   step: Extract<OnboardingStep, { kind: 'confirm-download' }>,
   ctx: OnboardingContext,
 ): Promise<void> {
-  const confirmed = await (ctx.prompt.confirm?.(step.message) ?? Promise.resolve(true));
+  const confirmed = await (ctx.prompt.confirm?.(step.message) ?? true);
   if (!confirmed) {
     throw documentedCoralSetupError('user_cancelled', { during: `${engine.id}-onboarding` });
   }

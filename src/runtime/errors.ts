@@ -359,7 +359,10 @@ function normalizeDocumentedSetupErrorInit(init: DocumentedCoralSetupErrorObject
   readonly effectiveOverrides: Partial<Pick<CoralSetupErrorInit, 'userMessage' | 'remediation'>>;
 } {
   const { code, context, userMessage, remediation, ...contextFields } = init;
-  const effectiveContext = context ?? (Object.keys(contextFields).length === 0 ? undefined : contextFields);
+  let effectiveContext = context;
+  if (effectiveContext === undefined && Object.keys(contextFields).length > 0) {
+    effectiveContext = contextFields;
+  }
   return {
     code,
     effectiveContext,

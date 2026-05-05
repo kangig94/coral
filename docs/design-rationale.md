@@ -285,7 +285,113 @@ A subtle gotcha drove a memo: `state.startupAbort?.abort('shutdown')` (string re
 
 Discuss has one-shot recovery on boot (`workflowRecover.resumeAll`), no retry, no self-heal. Forcing it into the 5-state machine would create dead states (`degraded` and `offline` that mean nothing). Discuss recovery stays in Era II as a one-shot; only services with a meaningful retry/self-heal lifecycle should register as subsystems.
 
-## 11. Cross-References
+## 11. Value Semantics and Local Abstraction
+
+The naming policy says every concept has one canonical home. The same rule applies inside values: every state must have one canonical representation, and every mutation intent must be explicit at the boundary where it matters.
+
+The elegant shape is not "no optional fields anywhere". Ingress formats, persistence rows, and third-party adapters naturally carry optional fields. The rule is stricter and more useful: **optional raw shape stops at ingress; domain code receives canonical meaning**.
+
+### 11.1 Boundary normalization
+
+Transport, CLI, provider, and persistence adapters may receive loose shapes such as `string | undefined | null`. They are responsible for normalizing those shapes before crossing into domain logic:
+
+- `undefined` means the field was absent from the incoming shape.
+- `null` means the caller intentionally supplied "none" when the contract allows it.
+- Empty strings for identifiers, references, paths, tokens, and continuity handles are not silently meaningful. Reject them at ingress or convert them to an explicit domain variant.
+- Domain code should prefer non-empty identifier/ref types, explicit `null`, or discriminated update variants over truthy string checks.
+
+This keeps `if (conversationRef)` out of core logic. A reader should see the domain meaning directly: "set this ref", "clear this ref", "preserve the current ref", or "no ref exists".
+
+### 11.2 Patch is not state
+
+State records describe the durable fact. Patch/update records describe caller intent. Do not use one object shape for both.
+
+For state, absence is just absence:
+
+```ts
+type SessionEntry = {
+  activeJobId?: JobId;
+};
+```
+
+For mutation, preserve/set/clear are different verbs and should be modeled as different variants:
+
+```ts
+type ConversationRefPatch =
+  | { kind: 'preserve' }
+  | { kind: 'set'; conversationRef: ConversationRef }
+  | { kind: 'clear' };
+```
+
+Avoid encoding those three meanings with `conversationRef?: string | null` inside domain code. That shape is acceptable at an API boundary, but the boundary should immediately parse it into the canonical patch vocabulary.
+
+The practical test: if code needs to ask whether `undefined` means "leave unchanged", "field was absent", "clear this value", or "unknown", the shape is doing too many jobs.
+
+### 11.3 Truthiness is not domain semantics
+
+Truthiness is acceptable for booleans and process-local flags. It is not acceptable as the semantic test for domain identifiers, references, paths, tokens, or provider continuity fields.
+
+Prefer explicit tests:
+
+- `value !== undefined` for "caller supplied a field".
+- `value !== null` for "the nullable domain value exists".
+- `value.length > 0` only at validation/normalization boundaries.
+- A parsed/branded domain type when non-empty identity is required repeatedly.
+
+This prevents accidental behavior differences between empty strings, absent fields, and explicit clears. It also makes simplification safer: removing a `Boolean(x ?? y)` expression is only mechanical when the normalized types already say what empty values mean.
+
+### 11.4 Local helpers are allowed when they name repeated meaning
+
+The "no manufactured abstractions" rule is about avoiding orphan surfaces and shared dumping grounds. It is not a ban on same-file structure.
+
+Within one file, an unexported helper or constant is appropriate when all of these hold:
+
+1. The repeated code is the same invariant, fallback state, transition, or boundary rule.
+2. The helper name says the domain concept, not the implementation trick.
+3. The helper stays local and unexported.
+4. The helper removes cognitive load without creating a second canonical home.
+
+Examples of acceptable local abstraction:
+
+- A repeated initial state literal becomes `retentionDiscardAttemptState(...)`.
+- A repeated comparison rule becomes `waiterTargetReached(...)`.
+- A repeated async cleanup boundary becomes a local `runWith...` only when the boundary itself is the concept.
+
+Examples to reject:
+
+- Extracting a one-line property access just to shorten a caller.
+- Moving local repetition into `helpers.ts`, `utils.ts`, or a cross-domain convenience module.
+- Exporting a helper before another file actually owns the same concept.
+
+Single-use helpers are rare but allowed when the name exposes a domain concept that the inline code hides. They are not allowed merely to make the code look flatter.
+
+### 11.5 `return await` marks an async boundary
+
+`return await` is not a formatting preference. It changes where rejection is observed and when `finally` runs relative to the returned promise. Use it only when that boundary is load-bearing:
+
+- A surrounding `catch` translates or wraps the rejection.
+- A surrounding `finally` must run after the returned promise settles, such as lock release, lifecycle finalization, or recorder cleanup.
+- The function deliberately owns the async boundary for ordering or cleanup.
+
+Otherwise return the promise directly. If a function's contract requires a fulfilled `Promise<void>` for an immediate path, `Promise.resolve()` is acceptable; if the code needs microtask deferral or to capture synchronous throws into a promise chain, make that intent visible in the surrounding structure.
+
+The review test: deleting `await` must not change catch/finally behavior, lock lifetime, error shape, or caller-observable settlement ordering. If it would, keep it.
+
+### 11.6 The broader rule: ingress is noisy, core is canonical
+
+Coral has several authority boundaries: Journal events, Corpus files, provider streams, CLI input, IPC/HTTP transport, and runtime ports. Each boundary may be noisy because it talks to users, files, processes, or external tools. The core should not inherit that noise.
+
+The pattern is:
+
+1. Accept loose external shape at the edge.
+2. Normalize once, close to the edge.
+3. Pass canonical domain values inward.
+4. Express mutation intent as variants, not overloaded optionals.
+5. Keep local helpers near the concept they name.
+
+This mirrors the larger architecture: authorities stay distinct, canonical homes stay singular, and composition happens at explicit seams instead of through convenient ambiguity.
+
+## 12. Cross-References
 
 - Current shape and ownership matrix: [`docs/architecture.md`](architecture.md)
 - Module map: [`docs/core-modules.md`](core-modules.md)

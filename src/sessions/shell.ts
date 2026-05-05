@@ -13,7 +13,6 @@ import type { Runtime, IdPort } from '../runtime/ports.js';
 import { composeReducers } from '../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import {
-  DEFAULT_SESSION_CONTROLLER,
   type ProviderArtifactHandle,
   sessionControllerFromProfile,
   sessionEntrySchema,
@@ -92,7 +91,7 @@ function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventIn
     bodyVersion: 1,
     body: {
       entry,
-      controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
+      controller: sessionControllerFromProfile(entry.controllerProfile),
       provider: entry.provider,
       scope_key: scopeKey,
     },

@@ -28,6 +28,9 @@ import {
 import { defineProvider } from './define.js';
 import { ProviderRegistry } from './registry.js';
 
+type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0];
+type ParsedClaudeArtifactOutput = ReturnType<typeof parseClaudeStreamJson>;
+
 function buildProviderRecovery(
   lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'> &
     Partial<Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'extractProgress'>>,
@@ -48,7 +51,7 @@ function buildProviderRecovery(
 }
 
 async function finalizeClaudeFromArtifacts(
-  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+  options: ArtifactRecoveryOptions,
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
@@ -70,18 +73,7 @@ async function finalizeClaudeFromArtifacts(
         })
       : undefined;
 
-  const outcome: ProviderTerminalOutcome =
-    options.signal !== null
-      ? { kind: 'aborted', reason: 'signal_abort' as const }
-      : adapterUnparseable !== undefined
-        ? { kind: 'failed' as const }
-        : parsed.isError
-          ? {
-              kind: 'provider_exit' as const,
-              code: options.exitCode ?? 1,
-              ...(parsed.response ? { note: parsed.response } : { note: 'Claude request failed.' }),
-            }
-          : { kind: 'completed' as const };
+  const outcome = claudeArtifactOutcome(options, parsed, adapterUnparseable);
 
   return {
     terminal: {
@@ -97,37 +89,62 @@ async function finalizeClaudeFromArtifacts(
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
       ...(adapterUnparseable === undefined ? {} : { failureCause: adapterUnparseable }),
     },
-    continuity:
-      parsed.sessionId !== null
-        ? {
-            conversationRef: parsed.sessionId,
-            resumable: true,
-          }
-        : options.fallbackConversationRef
-          ? undefined
-        : {
-            conversationRef: null,
-            resumable: false,
-          },
+    continuity: claudeArtifactContinuity(options, parsed),
     artifactHandles: locateClaudeArtifactsForRecovery(options, parsed.sessionId),
   };
 }
 
+function claudeArtifactOutcome(
+  options: ArtifactRecoveryOptions,
+  parsed: ParsedClaudeArtifactOutput,
+  adapterUnparseable: ReturnType<typeof adapterOutputUnparseable> | undefined,
+): ProviderTerminalOutcome {
+  if (options.signal !== null) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+
+  if (adapterUnparseable !== undefined) {
+    return { kind: 'failed' };
+  }
+
+  if (parsed.isError) {
+    return {
+      kind: 'provider_exit',
+      code: options.exitCode ?? 1,
+      ...(parsed.response ? { note: parsed.response } : { note: 'Claude request failed.' }),
+    };
+  }
+
+  return { kind: 'completed' };
+}
+
+function claudeArtifactContinuity(
+  options: ArtifactRecoveryOptions,
+  parsed: ParsedClaudeArtifactOutput,
+): Awaited<ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']>>['continuity'] {
+  if (parsed.sessionId !== null) {
+    return {
+      conversationRef: parsed.sessionId,
+      resumable: true,
+    };
+  }
+
+  if (options.fallbackConversationRef) {
+    return undefined;
+  }
+
+  return {
+    conversationRef: null,
+    resumable: false,
+  };
+}
+
 async function finalizeCodexFromArtifacts(
-  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+  options: ArtifactRecoveryOptions,
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
-  const outcome: ProviderTerminalOutcome =
-    options.signal !== null
-      ? { kind: 'aborted', reason: 'signal_abort' as const }
-      : options.exitCode === null || options.exitCode === 0
-        ? { kind: 'completed' as const }
-        : {
-            kind: 'provider_exit' as const,
-            code: options.exitCode,
-            note: `Codex exited with code ${options.exitCode} before recovery completed.`,
-          };
+  const outcome = codexArtifactOutcome(options);
   return {
     terminal: {
       kind: 'terminal',
@@ -145,6 +162,22 @@ async function finalizeCodexFromArtifacts(
           resumable: false,
         },
     artifactHandles: locateCodexArtifactsForRecovery(options),
+  };
+}
+
+function codexArtifactOutcome(options: ArtifactRecoveryOptions): ProviderTerminalOutcome {
+  if (options.signal !== null) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+
+  if (options.exitCode === null || options.exitCode === 0) {
+    return { kind: 'completed' };
+  }
+
+  return {
+    kind: 'provider_exit',
+    code: options.exitCode,
+    note: `Codex exited with code ${options.exitCode} before recovery completed.`,
   };
 }
 
@@ -191,9 +224,10 @@ function locateCodexArtifactsForRecovery(
   return artifactHandlesFromLocator(result);
 }
 
-function artifactHandlesFromLocator(
-  result: { readonly kind: string; readonly artifact?: ProviderArtifactHandleInput },
-): readonly ProviderArtifactHandleInput[] | undefined {
+function artifactHandlesFromLocator(result: {
+  readonly kind: string;
+  readonly artifact?: ProviderArtifactHandleInput;
+}): readonly ProviderArtifactHandleInput[] | undefined {
   return result.kind === 'match' && result.artifact ? [result.artifact] : undefined;
 }
 

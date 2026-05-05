@@ -1,7 +1,7 @@
 import { backendLog } from '../infra/backend-log.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
-import type { ArtifactCleanupRuntime, DiscardOutcome } from '../providers/contract.js';
+import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/define.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
@@ -44,10 +44,6 @@ function relevantSessionId(event: AppendedEvent): string | null {
   }
 
   return null;
-}
-
-function completedOutcomeFromProviderOutcome(outcome: DiscardOutcome): RetentionDiscardCompletedOutcome {
-  return outcome.kind;
 }
 
 export class LifecycleReactor {
@@ -126,11 +122,11 @@ export class LifecycleReactor {
         handles: recordedHandles,
       });
       if (requested.kind === 'duplicate') {
-        this.attemptFloorBySession.set(sessionId, Math.max(attemptFloor, attempt));
+        this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
         return;
       }
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(attemptFloor, attempt));
+      this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
       this.log(
         `Retention discard request append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
@@ -153,7 +149,7 @@ export class LifecycleReactor {
 
     try {
       const outcome = await provider.artifacts.discardArtifacts(recordedHandles, this.options.runtime);
-      this.appendCompleted(sessionId, attempt, recordedHandles, completedOutcomeFromProviderOutcome(outcome));
+      this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
     } catch (error: unknown) {
       this.appendFailed(
         sessionId,
@@ -320,7 +316,7 @@ export class LifecycleReactor {
         outcome,
       });
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(this.attemptFloorBySession.get(sessionId) ?? 0, attempt));
+      this.raiseAttemptFloor(sessionId, attempt);
       this.log(
         `Retention discard completion append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
@@ -343,11 +339,19 @@ export class LifecycleReactor {
         ...(causeRef === undefined ? {} : { causeRef }),
       });
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(this.attemptFloorBySession.get(sessionId) ?? 0, attempt));
+      this.raiseAttemptFloor(sessionId, attempt);
       this.log(
         `Retention discard failure append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
     }
+  }
+
+  private raiseAttemptFloor(
+    sessionId: string,
+    attempt: number,
+    floor = this.attemptFloorBySession.get(sessionId) ?? 0,
+  ): void {
+    this.attemptFloorBySession.set(sessionId, Math.max(floor, attempt));
   }
 
   private log(message: string): void {

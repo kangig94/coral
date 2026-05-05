@@ -110,20 +110,22 @@ export function readWorkflowView(db: Database, workflowId: string, ctx: StoreRea
 
     lastSeq = Math.max(lastSeq, child.last_seq);
     const terminal = child.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(child.terminal));
+    const causeRef = terminal?.outcome.kind === 'failed' ? terminal.outcome.causeRef : null;
     slotOutcomes[slot.slotId] = {
       jobId: child.job_id,
       phase: child.phase,
-      causeRef: terminal?.outcome.kind === 'failed' ? terminal.outcome.causeRef : null,
+      causeRef,
       lastSeq: child.last_seq,
     };
   }
+  const causeRef = completion?.outcome === 'failed' ? completion.causeRef : null;
 
   return {
     workflowId,
     plan: projection.plan,
     slotOutcomes,
     outcome: completion?.outcome ?? 'running',
-    causeRef: completion?.outcome === 'failed' ? completion.causeRef : null,
+    causeRef,
     lastSeq,
   };
 }

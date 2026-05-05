@@ -447,7 +447,7 @@ export async function runPlainTurn(
     purpose: params.purpose,
     jobId: attempt.jobId,
     attempt: attempt.attempt,
-    outcome: !(attempt.continuity?.resumable ?? true) ? 'non_resumable' : 'completed',
+    outcome: attempt.continuity?.resumable === false ? 'non_resumable' : 'completed',
   });
 
   return {

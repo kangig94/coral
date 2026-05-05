@@ -638,12 +638,12 @@ function tryExclusiveWriteSyncNode(
 ): boolean {
   mkdirSync(dirname(path), { recursive: true });
   const mode = options?.mode ?? 0o600;
+  const writeOptions: { encoding?: BufferEncoding; mode: number; flag: 'wx' } = { mode, flag: 'wx' };
+  if (options?.encoding !== undefined) {
+    writeOptions.encoding = options.encoding;
+  }
   try {
-    writeFileSync(
-      path,
-      normalizeStorageData(data),
-      options?.encoding === undefined ? { mode, flag: 'wx' } : { encoding: options.encoding, mode, flag: 'wx' },
-    );
+    writeFileSync(path, normalizeStorageData(data), writeOptions);
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       return false;
@@ -665,20 +665,9 @@ function writeAtomicSyncNode(
   data: StorageData,
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
-  const mode = options?.mode;
   const tempPath = `${path}.tmp`;
   try {
-    writeFileSync(
-      tempPath,
-      normalizeStorageData(data),
-      mode === undefined
-        ? options?.encoding === undefined
-          ? undefined
-          : { encoding: options.encoding }
-        : options?.encoding === undefined
-          ? { mode }
-          : { encoding: options.encoding, mode },
-    );
+    writeFileSync(tempPath, normalizeStorageData(data), writeFileSyncOptions(options));
     renameSync(tempPath, path);
     return true;
   } catch (error: unknown) {
@@ -687,6 +676,21 @@ function writeAtomicSyncNode(
     }
     throw error;
   }
+}
+
+function writeFileSyncOptions(options?: {
+  encoding?: BufferEncoding;
+  mode?: number;
+}): { encoding?: BufferEncoding; mode?: number } | undefined {
+  if (options === undefined || (options.encoding === undefined && options.mode === undefined)) {
+    return undefined;
+  }
+
+  const { encoding, mode } = options;
+  return {
+    ...(encoding === undefined ? {} : { encoding }),
+    ...(mode === undefined ? {} : { mode }),
+  };
 }
 
 function writeAtomicDurableSyncNode(

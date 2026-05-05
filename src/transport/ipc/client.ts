@@ -158,7 +158,7 @@ export async function requestIpcMethod<TResult>(
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
 
-  return await new Promise<TResult>((resolve, reject) => {
+  return new Promise<TResult>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<TimePort['setTimeout']> | null = null;
     const framer = createLineFramer();
@@ -455,7 +455,7 @@ export async function subscribeIpcMethod<TResult>(
         return { done: true, value: undefined as TResult };
       }
 
-      return await new Promise<IteratorResult<TResult>>((resolve, reject) => {
+      return new Promise<IteratorResult<TResult>>((resolve, reject) => {
         waiters.push({ resolve, reject });
       });
     },

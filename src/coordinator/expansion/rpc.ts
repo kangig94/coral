@@ -6,7 +6,6 @@
  * tests import directly from there. This file holds only the bindings
  * that wrap `ExpansionLifecycleService`.
  */
-import { documentedCoralSetupError } from '../../runtime/errors.js';
 import {
   type EquipExpansionRequest,
   type EquipExpansionResult,
@@ -65,21 +64,5 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
     }),
     readBinding: async (request: ReadBindingRequest): Promise<ReadBindingResult> =>
       lifecycleService.readBinding(request.binding),
-  };
-}
-
-export function createUnavailableExpansionRpc(): ExpansionRequestPort {
-  return {
-    equipExpansion: async (request: EquipExpansionRequest): Promise<EquipExpansionResult> => {
-      throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
-    },
-    unequipExpansion: async (_request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => ({
-      status: 'not_equipped',
-    }),
-    removeExpansionCatalog: async (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> => {
-      throw documentedCoralSetupError('expansion_runtime_unavailable', { name: request.name });
-    },
-    listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({ expansions: [] }),
-    readBinding: async (_request: ReadBindingRequest): Promise<ReadBindingResult> => ({ bound: false }),
   };
 }

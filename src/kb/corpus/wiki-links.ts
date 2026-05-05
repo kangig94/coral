@@ -1,12 +1,5 @@
 import { vaultLinkToEntryId, type KbEntryId } from '../entry-types.js';
 
-/**
- * Canonical Knowledge section wikilink extractor — restrictive prefix-anchored
- * pattern. Only matches `[[notes/...]]`, `[[sources/...]]`,
- * `[[communities/...]]`, and `[[wiki/...]]` shapes.
- */
-export const KNOWLEDGE_WIKILINK_PATTERN = /\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\]/g;
-
 /** Top-level Knowledge entry line: `- [[link]]` at column 0. */
 const KNOWLEDGE_TOP_LEVEL_LINE = /^-\s+(\[\[(?:notes|sources|communities|wiki)\/[^[\]/]+\]\])\s*$/;
 

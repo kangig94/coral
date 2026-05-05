@@ -5,7 +5,6 @@ import { CoralSetupError } from '../runtime/errors.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
-  DEFAULT_SESSION_CONTROLLER,
   type RetentionDiscardAttempt,
   sessionControllerFromProfile,
   sessionEntrySchema,
@@ -151,10 +150,7 @@ function upsertProjectionSession(
   }
   const next = {
     controller:
-      patch.controller ??
-      previous?.controller ??
-      sessionControllerFromProfile(entry.controllerProfile) ??
-      DEFAULT_SESSION_CONTROLLER,
+      patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
     provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)

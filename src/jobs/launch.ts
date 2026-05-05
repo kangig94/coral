@@ -137,7 +137,5 @@ export const jobLaunchRequestBodySchema = z.union([
 ]);
 
 export type ProviderJobLaunchRequestBody = z.infer<typeof providerJobLaunchRequestBodySchema>;
-export type KbSourceImportJobLaunchRequestBody = z.infer<typeof kbSourceImportJobLaunchRequestBodySchema>;
-export type KbReindexJobLaunchRequestBody = z.infer<typeof kbReindexJobLaunchRequestBodySchema>;
 export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
 export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;

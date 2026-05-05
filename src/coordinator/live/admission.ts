@@ -117,13 +117,17 @@ export class LaunchCoordinator {
     this.signalLaunchPermits.set(signal, { jobId, pool });
   }
 
+  private rejectedPermitPromise(error: unknown): Promise<never> {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+
   spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
     const pool = options.pool ?? 'default';
     let internalPermitJobId: string | null;
     try {
       internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, 'spawncli');
     } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      return this.rejectedPermitPromise(error);
     }
 
     return spawnCliTransport({
@@ -150,7 +154,7 @@ export class LaunchCoordinator {
     try {
       internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, 'spawndurable');
     } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      return this.rejectedPermitPromise(error);
     }
 
     return spawnDurableJobTransport({
@@ -209,11 +213,8 @@ export class LaunchCoordinator {
     prefix: string,
   ): string | null {
     const usingReservedPermit =
-      options.permitGranted === true
-        ? true
-        : options.signal
-          ? this.consumeSignalPermit(options.signal, options.provider)
-          : false;
+      options.permitGranted === true ||
+      (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
     if (usingReservedPermit) {
       return null;
     }

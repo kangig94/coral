@@ -25,6 +25,10 @@
    - **Never re-export a foreign module's exports as your own.** `import { X } from 'A'; export { X };` makes the importing module a *second* canonical home for `X`. Future callers then choose between two paths with no rule to disambiguate, and both paths stay alive forever. A module exports only what it owns. Exception: a directory's `index.ts` may publish that directory's own internal members as the public surface — never another module's. Real example from the audit: `runtime/ports.ts` accumulated a re-export block aliasing nine port primitives from `infra/port-types.ts` — fix is to delete the block; primitives import from `infra/port-types.ts` directly. Rationale and the look-for pattern in [`docs/design-rationale.md`](../../docs/design-rationale.md) §9.5.
    - When you find a content-blank file, redistribute its contents to per-domain modules and add an invariant asserting the file does not return (see `tests/invariants/architecture-boundary.test.ts` for the `infra/paths.ts` precedent).
 
+8. **Canonical Values at Boundaries**: Raw optional or truthy wire fields stop at ingress. Transport, CLI, provider, and persistence adapters may receive `string | undefined | null`, but domain cores should see canonical values: non-empty identifiers/refs, explicit `null`, or explicit patch variants (`preserve | set | clear`). Do not use truthiness to decide the meaning of domain IDs, refs, paths, tokens, or continuity fields. Full rationale and examples live in [`docs/design-rationale.md`](../../docs/design-rationale.md) §11.
+
+9. **Local Abstraction Only When It Names a Real Concept**: Same-file repetition of the same invariant, fallback state, or transition may become an unexported local helper or constant. Do not promote it to a shared helper file, do not export it for convenience, and do not extract a helper merely to hide one line. A single-use helper is acceptable only when its name exposes a domain concept or async boundary that the inline code obscures. Details in [`docs/design-rationale.md`](../../docs/design-rationale.md) §11.
+
 ## Source Tree Policy
 
 | Area | Responsibility | Modification Rule |
@@ -51,6 +55,8 @@ Key rules:
 3. Cross-domain dependencies must be explicit contracts or coordinator composition, not convenience imports.
 4. Domain event schemas, reducers, append validators, and describers are owned by the domain that emits the event.
 5. Tests and simulation helpers live under `tests/` or `tools/testing/`, never under production `src/`.
+6. Domain state is semantic state, not patch syntax. If callers must distinguish preserve, set, and clear, model that as a command/update variant instead of overloading `undefined`.
+7. `return await` is reserved for meaningful async boundaries: `catch` error translation, `finally` cleanup/lock release, or deliberate promise settlement ordering. Otherwise return the promise directly.
 
 ## Module Structure
 

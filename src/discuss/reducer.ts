@@ -14,7 +14,7 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
-import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
+import type { AgentState, DiscussState, TranscriptEntry, TranscriptResolveType } from './session-types.js';
 import { appendEntry, resetBids } from './state-transitions.js';
 
 function parseDisplayName(persona: string, agentName: string): string {
@@ -172,6 +172,10 @@ function applyAgentMutations(
 function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): TranscriptEntry {
   const { outcome } = event.payload;
   const thoughts = Object.keys(event.payload.thoughts).length > 0 ? { thoughts: { ...event.payload.thoughts } } : {};
+  let resolveType: TranscriptResolveType = 'no_winner';
+  if ('winner' in outcome) {
+    resolveType = outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type;
+  }
 
   return {
     type: 'bids',
@@ -182,8 +186,7 @@ function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): Transcr
     effective_bids: { ...event.payload.effectiveBids },
     ...thoughts,
     winner: 'winner' in outcome ? outcome.winner : null,
-    resolve_type:
-      'winner' in outcome ? (outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type) : 'no_winner',
+    resolve_type: resolveType,
   };
 }
 

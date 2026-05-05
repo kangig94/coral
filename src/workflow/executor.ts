@@ -147,7 +147,7 @@ async function awaitLaunchedStepResults(
       throw error;
     }
 
-    throw createWorkflowExecutionError(errorMessage(error), Boolean(options.signal?.aborted), [
+    throw createWorkflowExecutionError(errorMessage(error), options.signal?.aborted === true, [
       ...options.completedStepDetails,
     ]);
   }

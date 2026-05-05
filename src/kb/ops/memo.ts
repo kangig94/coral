@@ -141,7 +141,8 @@ export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter
 
         const mtimeMs = storage.statSync(path).mtimeMs;
         const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
-        const sortKey = memo?.sortKey ?? (memo === null ? mtimeMs : Date.parse(createdAt) || 0);
+        let sortKey = memo?.sortKey;
+        sortKey ??= memo === null ? mtimeMs : Date.parse(createdAt) || 0;
 
         return [{ filename, summary: extractSummary(raw), createdAt, sortKey, owner }];
       } catch {

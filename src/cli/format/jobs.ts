@@ -2,7 +2,7 @@ import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
-import type { JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
+import type { JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from './text.js';
 
@@ -81,10 +81,6 @@ function formatRelativeAge(updatedAt: string, now = Date.now()): string {
   return `${days}d ago`;
 }
 
-function readJobCwd(status: JobStatus): string {
-  return status.projectRoot;
-}
-
 function describeJobsMatch(filters: JobsListDisplayFilters): string {
   const parts = ['current project'];
 
@@ -119,7 +115,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     jobId,
     phase: status.phase,
     provider: status.provider ?? status.jobKind,
-    cwd: readJobCwd(status),
+    cwd: status.projectRoot,
     age: formatRelativeAge(status.updatedAt, now),
   }));
 }

@@ -40,10 +40,6 @@ type FollowOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
-function emitLaunch(decision: AcceptedLaunchResponse): void {
-  process.stdout.write(formatLaunch(decision) + '\n');
-}
-
 function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
@@ -185,7 +181,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         );
   };
 
-  emitLaunch(options.launchResult);
+  process.stdout.write(formatLaunch(options.launchResult) + '\n');
   process.on('SIGINT', onSigint);
 
   try {

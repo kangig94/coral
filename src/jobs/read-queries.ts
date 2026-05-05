@@ -390,17 +390,21 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
   const parsed = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
   if (parsed.transport === 'app-server') {
     const providerMeta = parsed.providerMeta;
+    const provider = typeof providerMeta?.provider === 'string' ? providerMeta.provider : '';
+    const leaseState = providerMeta?.leaseState === 'acquired' ? 'acquired' : 'waiting';
+    const serverGeneration =
+      typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined;
+    const providerContinuity = providerMeta?.providerContinuity;
     return {
       transport: 'app-server',
       startTime: parsed.startedAt,
       providerMeta: {
-        provider: typeof providerMeta?.provider === 'string' ? providerMeta.provider : '',
-        leaseState: providerMeta?.leaseState === 'acquired' ? 'acquired' : 'waiting',
-        serverGeneration:
-          typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined,
+        provider,
+        leaseState,
+        serverGeneration,
         providerContinuity:
-          providerMeta?.providerContinuity && typeof providerMeta.providerContinuity === 'object'
-            ? (providerMeta.providerContinuity as Record<string, unknown>)
+          providerContinuity && typeof providerContinuity === 'object'
+            ? (providerContinuity as Record<string, unknown>)
             : undefined,
       },
     };

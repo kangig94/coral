@@ -14,7 +14,10 @@ export function describeTerminalFailure(result: JobTerminal, options: { exitCode
       if (content.length > 0) {
         return content;
       }
-      const exitCode = options.exitCode ?? (result.outcome.kind === 'provider_exit' ? result.outcome.code : undefined);
+      let exitCode = options.exitCode;
+      if (exitCode === undefined && result.outcome.kind === 'provider_exit') {
+        exitCode = result.outcome.code;
+      }
       return exitCode === undefined || exitCode === null ? 'unknown error' : `exited with code ${exitCode}`;
     }
     default:

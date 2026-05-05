@@ -289,14 +289,13 @@ export const reduceJobProgress: Reducer<JobProgressBody> = (db, event) => {
     return;
   }
 
+  const previousDiagnostics = previous?.diagnostics;
   const diagnostics: JobDiagnostics = {
-    progressFaults: [...(previous?.diagnostics.progressFaults ?? []), event.body as JobProgressFault],
-    ...(previous?.diagnostics.warnings === undefined ? {} : { warnings: [...previous.diagnostics.warnings] }),
-    ...(previous?.diagnostics.usage === undefined ? {} : { usage: { ...previous.diagnostics.usage } }),
-    ...(previous?.diagnostics.processExit === undefined
-      ? {}
-      : { processExit: { ...previous.diagnostics.processExit } }),
-    ...(previous?.diagnostics.byteCounts === undefined ? {} : { byteCounts: { ...previous.diagnostics.byteCounts } }),
+    progressFaults: [...(previousDiagnostics?.progressFaults ?? []), event.body as JobProgressFault],
+    ...(previousDiagnostics?.warnings === undefined ? {} : { warnings: [...previousDiagnostics.warnings] }),
+    ...(previousDiagnostics?.usage === undefined ? {} : { usage: { ...previousDiagnostics.usage } }),
+    ...(previousDiagnostics?.processExit === undefined ? {} : { processExit: { ...previousDiagnostics.processExit } }),
+    ...(previousDiagnostics?.byteCounts === undefined ? {} : { byteCounts: { ...previousDiagnostics.byteCounts } }),
   };
 
   upsertProjectionJob(db, event, { diagnostics });

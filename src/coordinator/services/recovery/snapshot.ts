@@ -37,11 +37,12 @@ export function buildRecoverySnapshot(
   for (const sessionRef of sessionLookup.listSessionRefs()) {
     try {
       const entry = sessionLookup.readSessionEntry(sessionRef.sessionId);
+      let sessionFacts: RecoverySessionFacts | null = null;
+      if (entry !== null) {
+        sessionFacts = entry.activeJobId ? { activeJobId: entry.activeJobId } : {};
+      }
       sessionRefs.push({ sessionId: sessionRef.sessionId, provider: sessionRef.provider });
-      sessionsById.set(
-        sessionRef.sessionId,
-        entry ? (entry.activeJobId ? { activeJobId: entry.activeJobId } : {}) : null,
-      );
+      sessionsById.set(sessionRef.sessionId, sessionFacts);
     } catch (error: unknown) {
       log(`Failed to check session ${sessionRef.sessionId}: ${formatError(error)}\n`);
     }

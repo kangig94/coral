@@ -29,6 +29,14 @@ export interface ExpansionLifecycleView {
 
 export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
 
+function expansionStatus(failed: unknown | undefined, isActive: boolean): ExpansionLifecycleView['status'] {
+  if (failed !== undefined) {
+    return 'installed-not-active';
+  }
+
+  return isActive ? 'active' : 'inactive';
+}
+
 export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
   readonly state: ExpansionStateStore;
@@ -346,7 +354,7 @@ export class ExpansionLifecycleService {
         id: name,
         version: manifest?.version ?? row?.version ?? 'unknown',
         tier,
-        status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
+        status: expansionStatus(failed, isActive),
         ...(failed === undefined ? {} : { lastError: failed.message }),
         ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
         ...this.capabilityStatusFor(manifest),
@@ -357,7 +365,7 @@ export class ExpansionLifecycleService {
       id: name,
       version: row?.version ?? manifest?.version ?? 'unknown',
       tier,
-      status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
+      status: expansionStatus(failed, isActive),
       ...(failed === undefined ? {} : { lastError: failed.message }),
       ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
       ...this.capabilityStatusFor(manifest),

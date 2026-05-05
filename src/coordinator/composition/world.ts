@@ -48,7 +48,8 @@ export function createCoordinatorWorld(
   const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
   const resolveProjectSource =
     options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
-  const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
+  const bundledVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
+  const version = bootSnapshot.version ?? bundledVersion;
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(pluginRoot);
   backendLog.init({ version, bundleHash });
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);

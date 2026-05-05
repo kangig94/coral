@@ -109,10 +109,6 @@ export function buildWorkflowPlan(
   return { slots };
 }
 
-export function defaultJobIdForSlot(slot: PlanSlot): string {
-  return slot.slotId;
-}
-
 export function compileWorkflowPlan(
   plan: WorkflowPlan,
   options: {
@@ -133,7 +129,7 @@ export function compileWorkflowPlan(
 
     return {
       ...slot,
-      jobId: options.jobIds?.get(slot.slotId) ?? defaultJobIdForSlot(slot),
+      jobId: options.jobIds?.get(slot.slotId) ?? slot.slotId,
       stepIndex,
       tagName,
       atomKey: `${stepIndex}:${atomIndex}`,

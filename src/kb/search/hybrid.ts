@@ -8,8 +8,6 @@ import type {
   RoleExecutionResult,
 } from './contract.js';
 
-export const HYBRID_RRF_K = 60;
-
 function rrfContribution(rank: number, weight: number, profile: FusionProfile): number {
   return weight / (profile.rrfK + rank);
 }

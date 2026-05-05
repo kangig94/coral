@@ -44,14 +44,6 @@ const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> =
   transportClosed: () => missingContinuityMiddleware('transportClosed'),
 };
 
-function runProviderExecution(
-  provider: ProviderSpec,
-  request: ProviderRequest,
-  runtime: ProviderRuntime,
-): AsyncIterable<ProviderEventBody> {
-  return provider.run(request, runtime);
-}
-
 function mergeProviderMeta(
   runtimeMeta: Record<string, unknown> | undefined,
   recoveryMeta: Record<string, unknown> | undefined,
@@ -543,7 +535,7 @@ export class LaunchOrchestrator {
       providerName: provider.name,
       sessionId,
       initialVersion,
-      stream: runProviderExecution(provider, request, runtime),
+      stream: provider.run(request, runtime),
       sessionApi: {
         checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
           if (this.quiescedAppServerJobs.has(jobId)) {

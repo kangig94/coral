@@ -80,7 +80,7 @@ function normalizedOffset(text: string): number {
 
 function findPhraseAnchor(content: string, rawQuery: string, normalizedQuery: string): SnippetAnchor | null {
   const normalizedContent = content.toLowerCase();
-  const candidates = [...new Set([rawQuery.trim(), normalizedQuery].filter(Boolean))];
+  const candidates = [...new Set([rawQuery.trim(), normalizedQuery].filter((query) => query.length > 0))];
   let bestAnchor: SnippetAnchor | null = null;
 
   for (const candidate of candidates) {

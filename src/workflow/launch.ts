@@ -38,6 +38,10 @@ function isPromptSlot(slot: CompiledPlanSlot): boolean {
   return slot.kind === 'prompt';
 }
 
+function joinPromptParts(parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
+}
+
 export async function readLaunchFailure(
   jobId: string,
   executionSvc: WorkflowExecutionPort,
@@ -86,10 +90,10 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     if (slot.stepIndex === 0) {
       atomPrompt = sharedContext ? `${sharedContext}\n\n${slot.instruction}` : slot.instruction;
     } else {
-      atomPrompt = [sharedContext, slot.instruction, stepPrompt].filter(Boolean).join('\n\n');
+      atomPrompt = joinPromptParts([sharedContext, slot.instruction, stepPrompt]);
     }
   } else {
-    atomPrompt = [sharedContext, stepPrompt].filter(Boolean).join('\n\n');
+    atomPrompt = joinPromptParts([sharedContext, stepPrompt]);
   }
 
   if (signal?.aborted) {

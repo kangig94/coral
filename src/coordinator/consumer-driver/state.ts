@@ -70,8 +70,6 @@ export type StatelessConsumerState = ConsumerStateCommon & {
 
 export type ConsumerState = JournalConsumerState | CorpusConsumerState | StatelessConsumerState;
 
-export type FreshnessConsumerState = JournalConsumerState | CorpusConsumerState;
-
 export function createConsumerState(
   reg: ConsumerRegistration,
   registrationKind: ConsumerRegistrationKind,

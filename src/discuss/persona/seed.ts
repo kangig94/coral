@@ -64,7 +64,19 @@ function createOriginPool(entries: OriginWeight[]): OriginPool {
 }
 
 function sortOriginWeights(entries: OriginWeight[]): OriginWeight[] {
-  return [...entries].sort((lhs, rhs) => rhs[1] - lhs[1] || (lhs[0] < rhs[0] ? -1 : lhs[0] > rhs[0] ? 1 : 0));
+  return [...entries].sort(compareOriginWeights);
+}
+
+function compareOriginWeights(lhs: OriginWeight, rhs: OriginWeight): number {
+  const weightDelta = rhs[1] - lhs[1];
+  if (weightDelta !== 0) {
+    return weightDelta;
+  }
+
+  if (lhs[0] < rhs[0]) {
+    return -1;
+  }
+  return lhs[0] > rhs[0] ? 1 : 0;
 }
 
 function allFinitePositiveEntries(originWeights: Record<string, number>): OriginWeight[] {

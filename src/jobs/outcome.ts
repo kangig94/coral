@@ -19,7 +19,6 @@ export const externalErrorSchema = z
     stack: z.string().optional(),
   })
   .strict();
-export type ExternalError = z.infer<typeof externalErrorSchema>;
 
 export const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ghost_launch') }).strict(),
@@ -53,7 +52,6 @@ export const jobDomainProgressSchema = z
     detail: z.unknown().optional(),
   })
   .strict();
-export type JobDomainProgress = z.infer<typeof jobDomainProgressSchema>;
 
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
@@ -115,10 +113,6 @@ export function describeJobProgressFault(fault: JobProgressFault): string {
  * trace without needing a separate raw-event query. */
 function appendCauseStack(base: string, stack: string | undefined): string {
   return stack ? `${base}\n${stack}` : base;
-}
-
-export function describeJobDomainProgress(progress: JobDomainProgress): string {
-  return progress.message;
 }
 
 export function describeTerminalOutcome(

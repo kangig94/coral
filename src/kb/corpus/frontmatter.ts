@@ -363,7 +363,7 @@ export function parseMembersFromBody(body: string): string[] {
   return membersMatch[1]
     .split('\n')
     .map((line) => line.replace(/^-\s*#?/, '').trim())
-    .filter(Boolean)
+    .filter((member) => member.length > 0)
     .sort(compareLocale);
 }
 

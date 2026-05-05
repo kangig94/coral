@@ -25,6 +25,7 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
+import type { JobRuntimeStartedBody } from './event-bodies.js';
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
 
 export type JobStoreOptions = {
@@ -70,6 +71,34 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
     content: exit.content,
     outcome: exit.outcome,
     durationMs: exit.durationMs,
+  };
+}
+
+function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
+  if (runtime.transport === 'internal') {
+    return {
+      transport: 'internal',
+      operation: runtime.operation,
+      startedAt: runtime.startTime,
+    };
+  }
+
+  if (runtime.transport === 'app-server') {
+    return {
+      transport: 'app-server',
+      startedAt: runtime.startTime,
+      providerMeta: runtime.providerMeta,
+    };
+  }
+
+  return {
+    transport: runtime.transport,
+    pid: runtime.pid,
+    stdoutPath: runtime.stdoutPath,
+    stderrPath: runtime.stderrPath,
+    startedAt: runtime.startTime,
+    providerMeta: runtime.providerMeta,
+    tailWatermark: runtime.tailWatermark,
   };
 }
 
@@ -479,28 +508,7 @@ export class JobStore implements JobProgressStore {
           ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
         },
         bodyVersion: 1,
-        body:
-          runtime.transport === 'internal'
-            ? {
-                transport: 'internal',
-                operation: runtime.operation,
-                startedAt: runtime.startTime,
-              }
-            : runtime.transport === 'app-server'
-              ? {
-                  transport: 'app-server',
-                  startedAt: runtime.startTime,
-                  providerMeta: runtime.providerMeta,
-                }
-              : {
-                  transport: runtime.transport,
-                  pid: runtime.pid,
-                  stdoutPath: runtime.stdoutPath,
-                  stderrPath: runtime.stderrPath,
-                  startedAt: runtime.startTime,
-                  providerMeta: runtime.providerMeta,
-                  tailWatermark: runtime.tailWatermark,
-                },
+        body: jobRuntimeStartedBody(runtime),
       });
       return undefined;
     });
@@ -516,8 +524,12 @@ export class JobStore implements JobProgressStore {
       return null;
     }
     const processExit = exit.diagnostics.processExit;
+    let exitCode = processExit?.exitCode ?? null;
+    if (exitCode === null && exit.outcome.kind === 'provider_exit') {
+      exitCode = exit.outcome.code;
+    }
     return {
-      exitCode: processExit?.exitCode ?? (exit.outcome.kind === 'provider_exit' ? exit.outcome.code : null),
+      exitCode,
       signal: processExit?.signal ?? null,
       endTime: exit.endTime,
     };

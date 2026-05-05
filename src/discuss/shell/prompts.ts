@@ -16,7 +16,9 @@ function getAgent(selfName: string, agents: Record<string, AgentState>): AgentSt
 }
 
 function joinSections(sections: Array<string | null | undefined>): string {
-  return sections.filter((section): section is string => Boolean(section && section.trim())).join('\n\n');
+  return sections
+    .filter((section): section is string => section !== null && section !== undefined && section.trim().length > 0)
+    .join('\n\n');
 }
 
 function firstPersonaLine(persona: string): string {

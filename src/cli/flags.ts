@@ -31,7 +31,7 @@ export function parseJobIds(raw: string): string[] {
   const jobIds = raw
     .split(',')
     .map((entry) => entry.trim())
-    .filter(Boolean);
+    .filter((entry) => entry.length > 0);
   if (jobIds.length === 0) {
     throw new UsageError('--jobs must include at least one job ID');
   }

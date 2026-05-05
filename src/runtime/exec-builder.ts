@@ -17,12 +17,14 @@ export interface BuildExecPromiseOptions {
   clearTimeout: (handle: TimerHandle | null) => void;
 }
 
+type ExecKillReason = 'timeout' | 'maxBuffer';
+
 function appendOutput(
   current: string,
   chunk: string | Buffer,
   encoding: 'utf-8',
   maxBuffer: number,
-  wrapperKilled: 'timeout' | 'maxBuffer' | null,
+  wrapperKilled: ExecKillReason | null,
 ): { next: string; overflowed: boolean } {
   if (wrapperKilled !== null) {
     return { next: current, overflowed: false };
@@ -61,7 +63,7 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     let resolved = false;
     let timeoutHandle: TimerHandle | null = null;
     let killTimer: TimerHandle | null = null;
-    let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
+    let wrapperKilled: ExecKillReason | null = null;
 
     const child = spawn({
       command,
@@ -127,12 +129,12 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     }
 
     child.on('close', (status) => {
-      const error =
-        wrapperKilled === 'timeout'
-          ? new Error(`timeout: ${command}`)
-          : wrapperKilled === 'maxBuffer'
-            ? new Error(`maxBuffer exceeded: ${command}`)
-            : undefined;
+      let error: Error | undefined;
+      if (wrapperKilled === 'timeout') {
+        error = new Error(`timeout: ${command}`);
+      } else if (wrapperKilled === 'maxBuffer') {
+        error = new Error(`maxBuffer exceeded: ${command}`);
+      }
       finish({
         stdout,
         stderr,

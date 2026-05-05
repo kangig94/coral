@@ -471,7 +471,7 @@ function applyNotificationCore(
         scheduleInferredCompletion(state);
         return;
       }
-      emitProgress(emit, `Turn ${turn?.status === 'completed' ? 'completed' : (turn?.status ?? 'finished')}.`);
+      emitProgress(emit, `Turn ${turn?.status ?? 'finished'}.`);
       emitCodexRolloutArtifactHandleOnce(state, emit);
       completeTurn(state, turn);
       return;
@@ -745,14 +745,22 @@ function buildCompletedTerminal(state: CodexTurnState, turn: Turn): Extract<Prov
       content: state.lastAgentMessage,
       model: state.model,
       durationMs: state.time.now() - state.startedAt,
-      outcome: turnAborted
-        ? { kind: 'aborted', reason: 'signal_abort' }
-        : turnFailed
-          ? { kind: 'provider_exit', code: CODEX_RPC_FAILURE_EXIT_CODE, note: failureNote ?? '' }
-          : { kind: 'completed' },
+      outcome: codexTurnOutcome(turnAborted, turnFailed, failureNote),
     }),
     diagnostics: buildJobDiagnostics({}),
   };
+}
+
+function codexTurnOutcome(turnAborted: boolean, turnFailed: boolean, failureNote: string | undefined) {
+  if (turnAborted) {
+    return { kind: 'aborted', reason: 'signal_abort' } as const;
+  }
+
+  if (turnFailed) {
+    return { kind: 'provider_exit', code: CODEX_RPC_FAILURE_EXIT_CODE, note: failureNote ?? '' } as const;
+  }
+
+  return { kind: 'completed' } as const;
 }
 
 function finalizeTerminal(
