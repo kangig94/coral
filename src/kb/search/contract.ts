@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { EntityGraph, KbEntryId, KbIndex, KbMatchSurface, KbResult, KbSearchScope } from '../entry-types.js';
 import type { Disposable } from '../../runtime/ports.js';
 import { kbCapabilityNameSchema, type KbCapabilityName } from '../capability/contract.js';
+import type { CorpusStructuralKey } from '../corpus/structural-key.js';
 
 export type RetrievalScope = KbSearchScope;
 export type RetrievalKind = KbResult['kind'];
@@ -105,6 +106,8 @@ export interface RoleQueryContext {
   embedding(): Promise<Float32Array>;
   /** Lazy memoized KB index accessor. */
   index(): KbIndex;
+  /** Lazy memoized corpus structural key for graph/community projections. */
+  corpusStructuralKey(): CorpusStructuralKey | null;
   /** Lazy memoized raw entity graph accessor for graph-backed roles. */
   graphContext(): EntityGraph | null;
 }

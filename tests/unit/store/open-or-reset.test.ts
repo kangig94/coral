@@ -8,7 +8,11 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
-import { ensureBundledEnginesLoaded, createDefaultKbQueryRuntime } from '#src/read-model/kb-query-runtime.js';
+import {
+  ensureBundledEnginesLoaded,
+  createDefaultKbQueryRuntime,
+  KbQueryRegistry,
+} from '#src/read-model/kb-query-runtime.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -493,5 +497,23 @@ describe('openWritableStoreDbNoReset', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(readFileSync(dbPath, 'utf-8')).toBe(before);
+  });
+});
+
+describe('KbQueryRegistry', () => {
+  it('reuses runtime-owned read-only DB handles until the registry is closed', () => {
+    const runtime = createRuntime();
+    const writable = openWritableStoreDbNoReset(runtime);
+    writable.close();
+
+    const registry = new KbQueryRegistry();
+    try {
+      const first = registry.getRuntimeDb(runtime);
+      const second = registry.getRuntimeDb(runtime);
+
+      expect(second).toBe(first);
+    } finally {
+      registry.close();
+    }
   });
 });

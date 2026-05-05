@@ -8,6 +8,8 @@ import { previewPendingMutationState, type KbIndexStateSnapshot } from './lanes.
 import { captureEntityGraphManifestDelta, type ManifestAuthority } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockContext } from './mutation-lock.js';
+import { computeCommunityDocsHashFromSurfaceHashes } from './structural-key.js';
+import { computeMetadataSurfaceHash } from './snapshot.js';
 
 export type KbRuntimeMutationLockContext = KbMutationLockContext<
   KbIndex,
@@ -89,6 +91,12 @@ export class CorpusMutationFinalizer {
       const nextIndex = cloneKbIndex(currentIndex);
       nextIndex.entityMeta = normalized.entityMeta;
       nextIndex.relationships = normalized.relationships;
+      nextIndex.structuralKey = {
+        entityGraphHash: computeMetadataSurfaceHash({ rawBytes: raw }),
+        communityDocsHash: computeCommunityDocsHashFromSurfaceHashes(
+          this.options.manifestAuthority.getCurrentSurfaceHashes('metadata'),
+        ),
+      };
       this.options.indexStore.writeIndex(nextIndex);
     }
   }

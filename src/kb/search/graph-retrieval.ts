@@ -1,4 +1,5 @@
 import { normalizeWhitespace } from '../text-normalization.js';
+import type { CorpusStructuralKey } from '../corpus/structural-key.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult, RetrievalDiagnostic, RetrievalRole } from './contract.js';
 import {
@@ -80,76 +81,22 @@ function addLookupValue(lookup: Map<string, Set<string>>, key: string, value: st
   existing.add(value);
 }
 
-function sortedUniqueStrings(values: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    unique.push(value);
-  }
-  return unique.sort((left, right) => left.localeCompare(right));
+export function isGraphSearchFresh(index: KbIndex, structuralKey: CorpusStructuralKey | null): boolean {
+  return structuralKey !== null && Object.keys(index.entityMeta).length > 0;
 }
 
-function stableEntityGraph(graph: EntityGraph): EntityGraph {
-  const entityMetaEntries = Object.entries(graph.entityMeta).sort(([left], [right]) => left.localeCompare(right));
-  const entityMeta: EntityGraph['entityMeta'] = {};
-  for (const [entityName, meta] of entityMetaEntries) {
-    entityMeta[entityName] = {
-      type: meta.type,
-      description: meta.description,
-      ...(meta.aliases === undefined ? {} : { aliases: sortedUniqueStrings(meta.aliases) }),
-    };
-  }
-
-  const relationships: EntityGraph['relationships'] = [];
-  for (const relationship of graph.relationships) {
-    relationships.push({
-      source: relationship.source,
-      target: relationship.target,
-      type: relationship.type,
-      description: relationship.description,
-      evidence: sortedUniqueStrings(relationship.evidence),
-    });
-  }
-  relationships.sort(
-    (left, right) =>
-      left.source.localeCompare(right.source) ||
-      left.target.localeCompare(right.target) ||
-      left.type.localeCompare(right.type) ||
-      left.description.localeCompare(right.description),
-  );
-
-  return {
-    entityMeta,
-    relationships,
-  };
-}
-
-function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): boolean {
-  const loadedGraph = stableEntityGraph({
-    entityMeta: index.entityMeta,
-    relationships: index.relationships,
-  });
-
-  return JSON.stringify(loadedGraph) === JSON.stringify(stableEntityGraph(currentGraph));
-}
-
-export function isGraphSearchFresh(index: KbIndex, currentGraph: EntityGraph | null): currentGraph is EntityGraph {
-  return (
-    currentGraph !== null &&
-    Object.keys(currentGraph.entityMeta).length > 0 &&
-    graphStateMatchesIndex(index, currentGraph)
-  );
-}
-
-export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGraph | null): GraphSearchContext | null {
-  if (!isGraphSearchFresh(index, currentGraph)) {
+export function buildGraphSearchContext(
+  index: KbIndex,
+  structuralKey: CorpusStructuralKey | null,
+): GraphSearchContext | null {
+  if (!isGraphSearchFresh(index, structuralKey)) {
     return null;
   }
 
+  const indexedGraph: EntityGraph = {
+    entityMeta: index.entityMeta,
+    relationships: index.relationships,
+  };
   const adjacencyBuilders = new Map<
     string,
     Map<string, { weight: number; relationshipTypes: Set<RelationshipType> }>
@@ -168,7 +115,7 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
     return next;
   };
 
-  for (const [entityName, meta] of Object.entries(currentGraph.entityMeta)) {
+  for (const [entityName, meta] of Object.entries(indexedGraph.entityMeta)) {
     addLookupValue(phraseLookup, normalizeGraphPhrase(entityName), entityName);
 
     for (const alias of meta.aliases ?? []) {
@@ -177,10 +124,10 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
     }
   }
 
-  for (const relationship of currentGraph.relationships) {
+  for (const relationship of indexedGraph.relationships) {
     if (
-      currentGraph.entityMeta[relationship.source] === undefined ||
-      currentGraph.entityMeta[relationship.target] === undefined ||
+      indexedGraph.entityMeta[relationship.source] === undefined ||
+      indexedGraph.entityMeta[relationship.target] === undefined ||
       relationship.source === relationship.target
     ) {
       continue;
@@ -209,7 +156,7 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
   }
 
   const adjacency = new Map<string, GraphNeighbor[]>();
-  for (const entityName of Object.keys(currentGraph.entityMeta)) {
+  for (const entityName of Object.keys(indexedGraph.entityMeta)) {
     const neighbors: GraphNeighbor[] = [];
     for (const [neighbor, attributes] of adjacencyBuilders.get(entityName)?.entries() ?? []) {
       neighbors.push({
@@ -228,7 +175,7 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
   }
 
   return {
-    entityMeta: currentGraph.entityMeta,
+    entityMeta: indexedGraph.entityMeta,
     adjacency,
     aliasLookup,
     phraseLookup,
@@ -406,12 +353,29 @@ function graphStaleDiagnostic(): RetrievalDiagnostic {
 }
 
 export function createBuiltinGraphRole(): RetrievalRole {
+  let cachedGraphContext: { entityGraphHash: string; graphContext: GraphSearchContext } | null = null;
+
   return {
     id: BUILTIN_GRAPH_ROLE_DESCRIPTOR.id,
     descriptor: BUILTIN_GRAPH_ROLE_DESCRIPTOR,
     async search(ctx) {
       const index = ctx.index();
-      const graphContext = buildGraphSearchContext(index, ctx.graphContext());
+      const structuralKey = ctx.corpusStructuralKey();
+      let graphContext: GraphSearchContext | null = null;
+      if (structuralKey !== null) {
+        if (cachedGraphContext?.entityGraphHash === structuralKey.entityGraphHash) {
+          graphContext = cachedGraphContext.graphContext;
+        } else {
+          graphContext = buildGraphSearchContext(index, structuralKey);
+          if (graphContext !== null) {
+            cachedGraphContext = {
+              entityGraphHash: structuralKey.entityGraphHash,
+              graphContext,
+            };
+          }
+        }
+      }
+
       if (graphContext === null) {
         return {
           hits: [],

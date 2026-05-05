@@ -26,6 +26,7 @@ import {
 } from '../entry-types.js';
 import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
 import { writeFileAtomic, type FileAtomicHost } from './file-atomic.js';
+import type { CorpusStructuralKey } from './structural-key.js';
 import {
   assertCommunitySlug,
   assertNonEmptyText,
@@ -176,6 +177,20 @@ function parseEntryIdArray(value: unknown): KbEntryId[] {
   return entryIds;
 }
 
+function parseCorpusStructuralKey(value: unknown): CorpusStructuralKey | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error('Invalid KB index');
+  }
+
+  return {
+    entityGraphHash: assertNonEmptyText(value.entityGraphHash, 'structuralKey.entityGraphHash'),
+    communityDocsHash: assertNonEmptyText(value.communityDocsHash, 'structuralKey.communityDocsHash'),
+  };
+}
+
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
   const slug = assertNoteSlug(value.slug, 'KB index entry slug');
   if (entryId !== noteEntryId(slug)) {
@@ -313,6 +328,7 @@ export function parseIndex(value: unknown): KbIndex {
     principles,
     entityMeta: parseEntityMetaMap(value.entityMeta, 'Invalid KB index'),
     relationships: parseEntityRelationships(value.relationships, 'Invalid KB index'),
+    ...(value.structuralKey === undefined ? {} : { structuralKey: parseCorpusStructuralKey(value.structuralKey) }),
   };
 }
 

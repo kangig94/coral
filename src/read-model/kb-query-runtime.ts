@@ -55,6 +55,7 @@ export type KbQueryContext = {
 export class KbQueryRegistry {
   private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
   private cachedDb: { flavor: BuildFlavor; db: ReadonlyDatabase } | undefined;
+  private readonly cachedRuntimeDbs = new Map<KbQueryRuntime, ReadonlyDatabase>();
   private bundledLoaded = new WeakSet<KbRuntime>();
 
   getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
@@ -70,6 +71,27 @@ export class KbQueryRegistry {
       this.cachedDb = { flavor, db: openReadOnlyStoreDatabase(this.getRuntime(flavor)) };
     }
     return this.cachedDb.db;
+  }
+
+  getRuntimeDb(runtime: KbQueryRuntime): ReadonlyDatabase {
+    const cached = this.cachedRuntimeDbs.get(runtime);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const db = openReadOnlyStoreDatabase(runtime);
+    this.cachedRuntimeDbs.set(runtime, db);
+    return db;
+  }
+
+  close(): void {
+    this.cachedDb?.db.close();
+    this.cachedDb = undefined;
+    for (const db of this.cachedRuntimeDbs.values()) {
+      db.close();
+    }
+    this.cachedRuntimeDbs.clear();
+    this.bundledLoaded = new WeakSet<KbRuntime>();
   }
 
   hasLoadedBundled(kb: KbRuntime): boolean {
@@ -115,7 +137,7 @@ export function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
     return context.readDb;
   }
   if (context.runtime !== undefined) {
-    return openReadOnlyStoreDatabase(context.runtime);
+    return defaultRegistry.getRuntimeDb(context.runtime);
   }
   return defaultRegistry.getDb(resolveQueryFlavor(context));
 }

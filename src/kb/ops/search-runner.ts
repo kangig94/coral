@@ -3,8 +3,8 @@ import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbRuntime } from '../contract.js';
 import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
 import type { EntityGraph, KbIndex, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
+import type { CorpusStructuralKey } from '../corpus/structural-key.js';
 import { normalizeWhitespace } from '../text-normalization.js';
-import { isGraphSearchFresh } from '../search/graph-retrieval.js';
 import { createHybridFusion } from '../search/hybrid.js';
 import {
   createQueryPlanner,
@@ -63,7 +63,7 @@ type SearchExecutionContext = SearchRuntime & {
   roleQueryContext: RoleQueryContext;
   getQueryContext(): QueryContext;
   getCommunitiesFresh(): boolean;
-  getGraphFresh(): boolean;
+  getCorpusStructuralKey(): CorpusStructuralKey | null;
 };
 
 type StageExecution = {
@@ -162,7 +162,7 @@ function createSearchExecutionContext(
   let communitiesFresh: boolean | undefined;
   let currentGraphLoaded = false;
   let currentGraph: EntityGraph | null = null;
-  let graphFresh: boolean | undefined;
+  let corpusStructuralKey: CorpusStructuralKey | null | undefined;
   let embeddingPromise: Promise<Float32Array> | undefined;
 
   const getNormalizedQuery = (): string => {
@@ -211,9 +211,15 @@ function createSearchExecutionContext(
     return currentGraph;
   };
 
-  const getGraphFresh = (): boolean => {
-    graphFresh ??= isGraphSearchFresh(index, getCurrentGraph());
-    return graphFresh;
+  const getCorpusStructuralKey = (): CorpusStructuralKey | null => {
+    if (corpusStructuralKey !== undefined) {
+      return corpusStructuralKey;
+    }
+
+    corpusStructuralKey = currentGraphLoaded
+      ? rt.readCorpusStructuralKey(index, currentGraph)
+      : rt.readCorpusStructuralKey(index);
+    return corpusStructuralKey;
   };
 
   const roleQueryContext: RoleQueryContext = {
@@ -240,6 +246,7 @@ function createSearchExecutionContext(
     index() {
       return index;
     },
+    corpusStructuralKey: getCorpusStructuralKey,
     graphContext: getCurrentGraph,
   };
 
@@ -250,7 +257,7 @@ function createSearchExecutionContext(
     roleQueryContext,
     getQueryContext,
     getCommunitiesFresh,
-    getGraphFresh,
+    getCorpusStructuralKey,
   };
 }
 
@@ -502,7 +509,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
       ctx.request.topK,
       ctx.index,
       ctx.getCommunitiesFresh(),
-      ctx.getGraphFresh(),
+      ctx.getCorpusStructuralKey(),
       retrieval.responseWarnings,
       retrieval.diagnostics,
     );
@@ -513,7 +520,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
     ctx.request.topK,
     ctx.index,
     ctx.getCommunitiesFresh(),
-    ctx.getGraphFresh(),
+    ctx.getCorpusStructuralKey(),
     retrieval.responseWarnings,
     retrieval.diagnostics,
   );

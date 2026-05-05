@@ -270,6 +270,12 @@ export async function commitMetadataTargetsLocked(
   if (graphChanged) {
     try {
       mutation.writeEntityGraph(desiredGraph);
+      const graphSyncedIndex = kb.readIndex();
+      if (graphSyncedIndex?.structuralKey !== undefined) {
+        nextIndex.structuralKey = { ...graphSyncedIndex.structuralKey };
+      } else {
+        delete nextIndex.structuralKey;
+      }
     } catch (error: unknown) {
       failure ??= error;
     }

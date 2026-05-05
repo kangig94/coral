@@ -53,6 +53,7 @@ import {
 import { KbIndexStore, writeJsonAtomic } from './corpus/index-store.js';
 import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile } from './corpus/entity-graph-store.js';
+import { resolveCorpusStructuralKey, type CorpusStructuralKey } from './corpus/structural-key.js';
 import { CorpusPublicationQueue } from './corpus/publication.js';
 import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
 import { type EntityGraph, type KbIndex } from './entry-types.js';
@@ -360,6 +361,15 @@ class KbRuntimeImpl implements KbRuntime {
 
   readEntityGraph(): EntityGraph | null {
     return readEntityGraphFile(this.storagePort, this.entityGraphPath());
+  }
+
+  readCorpusStructuralKey(index: KbIndex, currentGraph?: EntityGraph | null): CorpusStructuralKey | null {
+    return resolveCorpusStructuralKey({
+      index,
+      manifestAuthority: this.manifestAuthority,
+      ...(currentGraph === undefined ? {} : { currentGraph }),
+      readCurrentGraph: () => this.readEntityGraph(),
+    });
   }
 
   async writeEntityGraph(graph: EntityGraph): Promise<void> {

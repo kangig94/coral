@@ -327,7 +327,7 @@ describe('kb search mode branching', () => {
     expect(resultNotes(response.results)).toEqual(['hybrid-rendering']);
   });
 
-  it('reuses the request-local entity graph between graph retrieval and response freshness', async () => {
+  it('uses the corpus structural key without rereading the entity graph for fresh indexed graph search', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -348,6 +348,7 @@ describe('kb search mode branching', () => {
     } satisfies EntityGraph);
     await reindex(kb);
     await applyOramaProjection(kb);
+    expect(kb.readIndexOrEmpty().structuralKey).toBeDefined();
 
     const readEntityGraphSpy = vi.spyOn(kb, 'readEntityGraph');
     const response = await searchKb(kb, 'vram', 5, 'all', 'auto');
@@ -355,6 +356,6 @@ describe('kb search mode branching', () => {
     expect(response.mode).toBe('text');
     expectMigratedShape(response);
     expect(resultNotes(response.results)).toEqual(['memory-entry']);
-    expect(readEntityGraphSpy).toHaveBeenCalledTimes(1);
+    expect(readEntityGraphSpy).not.toHaveBeenCalled();
   });
 });

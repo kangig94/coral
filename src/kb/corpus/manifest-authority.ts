@@ -143,8 +143,14 @@ export function wikiMetadataManifestId(slug: string): string {
   return `wiki-meta:${slug}`;
 }
 
+const COMMUNITY_METADATA_MANIFEST_ID_PREFIX = 'community:';
+
 export function communityMetadataManifestId(slug: string): string {
-  return `community:${slug}`;
+  return `${COMMUNITY_METADATA_MANIFEST_ID_PREFIX}${slug}`;
+}
+
+export function isCommunityMetadataManifestId(manifestId: string): boolean {
+  return manifestId.startsWith(COMMUNITY_METADATA_MANIFEST_ID_PREFIX);
 }
 
 export function principleMetadataManifestId(slug: string): string {

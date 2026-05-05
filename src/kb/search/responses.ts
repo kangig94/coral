@@ -7,6 +7,7 @@ import {
   type KbResult,
   type KbSearchResponse,
 } from '../entry-types.js';
+import { corpusStructuralCacheKey, type CorpusStructuralKey } from '../corpus/structural-key.js';
 import type { RetrievalDiagnostic, RetrievalEvidence } from './contract.js';
 import { extractSnippet, hasTokenOverlap, type QueryContext } from './snippets.js';
 import {
@@ -19,6 +20,18 @@ import {
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
 const GRAPH_CONTEXT_MAX_COMMUNITIES = 3;
 const GRAPH_COMMUNITY_RESULT_SPAN_MIN = 2;
+const COMMUNITY_CONTEXT_INDEX_CACHE_LIMIT = 8;
+
+type CommunityContextIndexEntry = {
+  readonly community: CommunityEntry;
+  readonly memberSet: ReadonlySet<string>;
+};
+
+type CommunityContextIndex = {
+  readonly communities: readonly CommunityContextIndexEntry[];
+};
+
+const communityContextIndexCache = new Map<string, CommunityContextIndex>();
 
 function sortedMatchedBy(matchedBy: Set<KbMatchSurface>): KbMatchSurface[] {
   const sorted: KbMatchSurface[] = [];
@@ -41,13 +54,47 @@ function withCommunityContext(result: KbResult, communityContext: string[] | und
   };
 }
 
+function buildCommunityContextIndex(index: KbIndex): CommunityContextIndex {
+  const communities: CommunityContextIndexEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (!isCommunityEntry(entry) || typeof entry.summary !== 'string' || entry.summary.trim() === '') {
+      continue;
+    }
+    communities.push({
+      community: entry,
+      memberSet: new Set(entry.members),
+    });
+  }
+  return { communities };
+}
+
+function readCommunityContextIndex(index: KbIndex, structuralKey: CorpusStructuralKey): CommunityContextIndex {
+  const cacheKey = corpusStructuralCacheKey(structuralKey);
+  const cached = communityContextIndexCache.get(cacheKey);
+  if (cached !== undefined) {
+    communityContextIndexCache.delete(cacheKey);
+    communityContextIndexCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const nextIndex = buildCommunityContextIndex(index);
+  communityContextIndexCache.set(cacheKey, nextIndex);
+  if (communityContextIndexCache.size > COMMUNITY_CONTEXT_INDEX_CACHE_LIMIT) {
+    const oldestKey = communityContextIndexCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      communityContextIndexCache.delete(oldestKey);
+    }
+  }
+  return nextIndex;
+}
+
 function buildCommunityContextMap(
   hits: Array<Pick<ResolvedKbSearchEntry, 'entryId' | 'kind' | 'tags'>>,
   index: KbIndex,
   communitiesFresh: boolean,
-  graphFresh: boolean,
+  structuralKey: CorpusStructuralKey | null,
 ): Map<KbEntryId, string[]> {
-  if (!communitiesFresh || !graphFresh) {
+  if (!communitiesFresh || structuralKey === null) {
     return new Map();
   }
 
@@ -80,12 +127,8 @@ function buildCommunityContextMap(
     matchingEntryIds: Set<KbEntryId>;
   }> = [];
 
-  for (const entry of Object.values(index.entries)) {
-    if (!isCommunityEntry(entry) || typeof entry.summary !== 'string' || entry.summary.trim() === '') {
-      continue;
-    }
-
-    const memberSet = new Set(entry.members);
+  const communityContextIndex = readCommunityContextIndex(index, structuralKey);
+  for (const { community, memberSet } of communityContextIndex.communities) {
     const overlapMembers = new Set<string>();
     const matchingEntryIds = new Set<KbEntryId>();
     for (const member of memberSet) {
@@ -101,7 +144,7 @@ function buildCommunityContextMap(
 
     if (matchingEntryIds.size >= GRAPH_COMMUNITY_RESULT_SPAN_MIN) {
       relevantCommunities.push({
-        community: entry,
+        community,
         overlapMembers,
         matchingEntryIds,
       });
@@ -227,12 +270,12 @@ export function buildTextResponse(
   topK: number,
   index: KbIndex,
   communitiesFresh: boolean,
-  graphFresh: boolean,
+  structuralKey: CorpusStructuralKey | null,
   responseWarnings: SearchResponseWarnings = {},
   retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
-  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, structuralKey);
   const results: KbResult[] = [];
   for (const hit of finalHits) {
     results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));
@@ -253,12 +296,12 @@ export function buildHybridResponse(
   topK: number,
   index: KbIndex,
   communitiesFresh: boolean,
-  graphFresh: boolean,
+  structuralKey: CorpusStructuralKey | null,
   responseWarnings: SearchResponseWarnings = {},
   retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
-  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, structuralKey);
   const results: KbResult[] = [];
   for (const hit of finalHits) {
     results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));

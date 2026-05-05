@@ -38,6 +38,7 @@ import { identitySequenceDetector } from './incidents/identity.js';
 import { referenceIntegrityDetector } from './incidents/references.js';
 import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident, Detector } from './incidents/catalog.js';
+import { createCorpusStructuralKeyFromRawSurfaces } from '../structural-key.js';
 
 const ALL_DETECTORS: readonly Detector[] = [
   fileSyntaxDetector,
@@ -249,6 +250,12 @@ export function buildKbIndex(
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
   const entityGraph = scan.entityGraph?.graph ?? null;
+  const structuralKey = createCorpusStructuralKeyFromRawSurfaces({
+    entityGraphRaw: scan.entityGraph?.graph === null ? null : (scan.entityGraph?.content ?? null),
+    communityDocuments: scan.markdownFiles
+      .filter((file) => file.kind === 'community')
+      .map((file) => ({ slug: file.slug, raw: file.content })),
+  });
 
   for (const note of notes) {
     entries[noteEntryId(note.note)] = buildNoteIndexEntry({
@@ -312,6 +319,7 @@ export function buildKbIndex(
     principles: principleIndex,
     entityMeta: entityGraph?.entityMeta ?? {},
     relationships: entityGraph?.relationships ?? [],
+    ...(structuralKey === undefined ? {} : { structuralKey }),
   };
 }
 

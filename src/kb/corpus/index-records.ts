@@ -98,6 +98,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
     principles: { ...index.principles },
     entityMeta: cloneEntityMetaRecord(index.entityMeta),
     relationships,
+    ...(index.structuralKey === undefined ? {} : { structuralKey: { ...index.structuralKey } }),
   };
 }
 
