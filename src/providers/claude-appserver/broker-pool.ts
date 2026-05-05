@@ -64,7 +64,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     const createdEntry = entry === undefined;
 
     if (!entry) {
-      if (params.brokerSessionKey && !params.conversationRef) {
+      if (params.brokerSessionKey !== undefined && params.conversationRef === undefined) {
         throw new ClaudeBrokerRpcError(
           CLAUDE_BROKER_STATE_RPC_CODE,
           'Claude broker session is missing and cannot be recovered without a conversation reference.',

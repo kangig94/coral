@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
-import type { ProviderContinuityBlob } from './continuity.js';
+import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
 
@@ -102,15 +102,15 @@ export interface SessionEntry {
 
 export const sessionEntrySchema = z
   .object({
-    sessionId: z.string(),
-    provider: z.string(),
-    name: z.string(),
+    sessionId: z.string().min(1),
+    provider: z.string().min(1),
+    name: z.string().min(1),
     state: sessionStateSchema,
     retention: retentionPolicySchema.default('retain'),
     artifactHandles: z.array(providerArtifactHandleSchema).default([]).readonly(),
     retentionDiscard: retentionDiscardStateSchema.default({ attempts: [] }),
-    activeJobId: z.string().optional(),
-    conversationRef: z.string().optional(),
+    activeJobId: z.string().min(1).optional(),
+    conversationRef: continuityRefSchema.optional(),
     providerContinuity: z.record(z.unknown()).nullable(),
     model: z.string().optional(),
     cwd: z.string(),

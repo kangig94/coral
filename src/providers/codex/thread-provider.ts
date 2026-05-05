@@ -1,6 +1,7 @@
 import { appServerSession } from '../middleware/app-server-session.js';
 import { sessionContinuity, type SessionContinuityContract } from '../middleware/session-continuity.js';
 import { compose, type ProviderRequest } from '../contract.js';
+import { readString } from '../../infra/json.js';
 import type { AppServerContract } from '../app-server.js';
 import {
   applyCodexContinuityUpdate,
@@ -19,13 +20,14 @@ function readOpeningContinuity(
   request: ProviderRequest,
 ): CodexPersistedContinuity {
   const continuity = readCodexPersistedContinuity(persistedContinuity);
-  if (continuity.threadId || request.action !== 'resume' || !request.conversationRef) {
+  const requestConversationRef = readString(request.conversationRef);
+  if (continuity.threadId !== undefined || request.action !== 'resume' || requestConversationRef === undefined) {
     return continuity;
   }
 
   return withCodexContinuity(continuity, {
     cwd: continuity.cwd ?? request.cwd,
-    threadId: request.conversationRef,
+    threadId: requestConversationRef,
   });
 }
 

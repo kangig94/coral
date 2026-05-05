@@ -68,7 +68,7 @@ const claudeInterruptBindings = new WeakMap<ProviderServerLease, ClaudeTurnState
 
 export async function mapClaudeInterrupt(lease: ProviderServerLease): Promise<void> {
   const state = claudeInterruptBindings.get(lease);
-  if (!state?.turnRequested || !state.brokerSessionKey) {
+  if (state === undefined || !state.turnRequested || state.brokerSessionKey === undefined) {
     return;
   }
 
@@ -94,7 +94,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       state.brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? state.brokerSessionKey;
       state.bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
       state.conversationRef = readTurnConversationRef(ensureResult) ?? state.conversationRef;
-      if (!state.brokerSessionKey) {
+      if (state.brokerSessionKey === undefined) {
         throw new Error('Claude broker session key missing from session/ensure response.');
       }
       checkpointBrokerContinuity(runtime, state);
@@ -182,7 +182,7 @@ function bindInterruptState(lease: ProviderServerLease, state: ClaudeTurnState):
 }
 
 function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnState): void {
-  if (!state.bootstrapSignature) {
+  if (state.bootstrapSignature === undefined) {
     return;
   }
 
@@ -190,11 +190,11 @@ function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnS
     conversationRef: state.conversationRef ?? null,
     resumable: true,
     providerContinuity: buildClaudeContinuity({
-      ...(state.brokerSessionKey ? { brokerSessionKey: state.brokerSessionKey } : {}),
+      ...(state.brokerSessionKey !== undefined ? { brokerSessionKey: state.brokerSessionKey } : {}),
       bootstrapSignature: state.bootstrapSignature,
-      ...(state.envHash ? { envHash: state.envHash } : {}),
-      ...(state.conversationRef ? { conversationRef: state.conversationRef } : {}),
-      ...(state.brokerTurnId ? { brokerTurnId: state.brokerTurnId } : {}),
+      ...(state.envHash !== undefined ? { envHash: state.envHash } : {}),
+      ...(state.conversationRef !== undefined ? { conversationRef: state.conversationRef } : {}),
+      ...(state.brokerTurnId !== undefined ? { brokerTurnId: state.brokerTurnId } : {}),
     }),
   });
 }
@@ -204,7 +204,7 @@ function emitClaudeArtifactHandleOnce(
   runtime: ProviderRuntime,
   emit: (event: ProviderEventBody) => void,
 ): void {
-  if (state.artifactHandleEmissionAttempted || !state.conversationRef) {
+  if (state.artifactHandleEmissionAttempted || state.conversationRef === undefined) {
     return;
   }
   state.artifactHandleEmissionAttempted = true;
@@ -244,12 +244,13 @@ function applyNotification(
   }
 
   const { sessionUpdated, turnProgress, turnCompleted, turnFailed, hostStats } = brokerNotificationMethods;
-  if (!state.brokerSessionKey && message.method !== hostStats) {
+  if (state.brokerSessionKey === undefined && message.method !== hostStats) {
     return;
   }
 
   const params = isRecord(message.params) ? message.params : {};
-  if (readString(params.brokerSessionKey) && params.brokerSessionKey !== state.brokerSessionKey) {
+  const messageBrokerSessionKey = readString(params.brokerSessionKey);
+  if (messageBrokerSessionKey !== undefined && messageBrokerSessionKey !== state.brokerSessionKey) {
     return;
   }
 
@@ -257,7 +258,7 @@ function applyNotification(
     message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
   if (
     isTurnEvent &&
-    state.brokerTurnId &&
+    state.brokerTurnId !== undefined &&
     typeof params.brokerTurnId === 'string' &&
     params.brokerTurnId !== state.brokerTurnId
   ) {
@@ -265,7 +266,7 @@ function applyNotification(
   }
 
   const updatedConversationRef = readTurnConversationRef(params);
-  if (updatedConversationRef) {
+  if (updatedConversationRef !== undefined) {
     state.conversationRef = updatedConversationRef;
     emitClaudeArtifactHandleOnce(state, runtime, emit);
   }

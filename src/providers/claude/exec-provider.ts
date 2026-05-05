@@ -44,7 +44,7 @@ export const claudeBrokerContinuity = createClaudeContinuityContract(
   inferBrokerResumable,
   isClaudeBrokerSessionUnavailable,
   (state) => {
-    if (!state.brokerTurnId) {
+    if (state.brokerTurnId === undefined) {
       return state;
     }
 
@@ -80,7 +80,7 @@ export const claude: Provider = (request, runtime) => {
   if (request.action === 'fork') {
     assertValidForkContinuity(persistedContinuity, runtime);
 
-    if (persistedContinuity.brokerSessionKey || persistedContinuity.bootstrapSignature) {
+    if (persistedContinuity.brokerSessionKey !== undefined || persistedContinuity.bootstrapSignature !== undefined) {
       return streamProviderTerminal(
         buildDispatchRejectedTerminal(
           prepared.model,
@@ -182,11 +182,15 @@ function applyConversationRefOverride(
 }
 
 function inferExecResumable(continuity: ClaudePersistedContinuity): boolean {
-  return Boolean(continuity.bootstrapSignature ?? continuity.conversationRef);
+  return continuity.bootstrapSignature !== undefined || continuity.conversationRef !== undefined;
 }
 
 function inferBrokerResumable(continuity: ClaudePersistedContinuity): boolean {
-  return Boolean(continuity.bootstrapSignature ?? continuity.brokerSessionKey ?? continuity.conversationRef);
+  return (
+    continuity.bootstrapSignature !== undefined ||
+    continuity.brokerSessionKey !== undefined ||
+    continuity.conversationRef !== undefined
+  );
 }
 
 function isClaudeBrokerSessionUnavailable(error: unknown): boolean {
@@ -210,10 +214,14 @@ function buildDispatchRejectedTerminal(model: string | undefined, reason: string
 }
 
 function assertValidForkContinuity(continuity: ClaudePersistedContinuity, runtime: ProviderRuntime): void {
-  if (continuity.brokerSessionKey || continuity.bootstrapSignature) {
+  if (continuity.brokerSessionKey !== undefined || continuity.bootstrapSignature !== undefined) {
     return;
   }
-  if (!continuity.envHash && !continuity.conversationRef && !continuity.brokerTurnId) {
+  if (
+    continuity.envHash === undefined &&
+    continuity.conversationRef === undefined &&
+    continuity.brokerTurnId === undefined
+  ) {
     return;
   }
   if (runtime.env?.get('CORAL_DEV_ASSERTIONS') !== '1') {

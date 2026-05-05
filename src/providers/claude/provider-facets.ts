@@ -13,6 +13,7 @@ import type {
 } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { readString } from '../../infra/json.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeContinuity,
@@ -149,7 +150,7 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
   },
   async interrupt(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
-    if (!persistedContinuity.brokerSessionKey) {
+    if (persistedContinuity.brokerSessionKey === undefined) {
       throw new Error('Claude broker session key missing from continuity.');
     }
 
@@ -163,11 +164,12 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
 
 export const claudeRecoveryLifecycle = {
   buildRecoveryMeta(request: ProviderRequest) {
-    return request.conversationRef ? { conversationRef: request.conversationRef } : {};
+    const conversationRef = readString(request.conversationRef);
+    return conversationRef !== undefined ? { conversationRef } : {};
   },
   async probe(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
-    if (!persistedContinuity.brokerSessionKey) {
+    if (persistedContinuity.brokerSessionKey === undefined) {
       throw new Error('Claude broker session key missing from continuity.');
     }
 
@@ -181,7 +183,8 @@ export const claudeRecoveryLifecycle = {
 
     const updatedConversationRef = readTurnConversationRef(result) ?? persistedContinuity.conversationRef;
     const resumable =
-      result.status === 'available' || (result.status === 'missing' && Boolean(persistedContinuity.conversationRef));
+      result.status === 'available' ||
+      (result.status === 'missing' && persistedContinuity.conversationRef !== undefined);
 
     return {
       resumable,
@@ -197,16 +200,20 @@ export const claudeRecoveryLifecycle = {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
     const providerContinuity = persistedContinuity.bootstrapSignature
       ? buildClaudeContinuity({
-          ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
+          ...(persistedContinuity.brokerSessionKey !== undefined
+            ? { brokerSessionKey: persistedContinuity.brokerSessionKey }
+            : {}),
           bootstrapSignature: persistedContinuity.bootstrapSignature,
-          ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
-          ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
+          ...(persistedContinuity.envHash !== undefined ? { envHash: persistedContinuity.envHash } : {}),
+          ...(persistedContinuity.conversationRef !== undefined
+            ? { conversationRef: persistedContinuity.conversationRef }
+            : {}),
         })
       : undefined;
     const effectiveConversationRef = persistedContinuity.conversationRef ?? context.preservedConversationRef;
 
     if (probeResult.resumable) {
-      if (effectiveConversationRef) {
+      if (effectiveConversationRef !== undefined) {
         return {
           kind: 'set_resumable',
           conversationRef: effectiveConversationRef,

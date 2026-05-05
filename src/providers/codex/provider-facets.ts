@@ -12,6 +12,7 @@ import type {
 } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { readString } from '../../infra/json.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
   buildCodexProviderServerSpec,
@@ -233,7 +234,7 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
   },
   async interrupt(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
-    if (!parsed.threadId || !parsed.turnId) {
+    if (parsed.threadId === undefined || parsed.turnId === undefined) {
       return;
     }
     await interruptTurn(lease, parsed.threadId, parsed.turnId);
@@ -242,12 +243,13 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
 
 export const codexRecoveryLifecycle = {
   buildRecoveryMeta(request: ProviderRequest) {
-    return request.conversationRef ? { threadId: request.conversationRef } : {};
+    const conversationRef = readString(request.conversationRef);
+    return conversationRef !== undefined ? { threadId: conversationRef } : {};
   },
   async probe(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
     const updatedContinuity = clearCodexTurnContinuity(continuity);
-    if (!parsed.threadId || !parsed.cwd) {
+    if (parsed.threadId === undefined || parsed.cwd === undefined) {
       return { resumable: false, updatedContinuity };
     }
 
@@ -276,7 +278,7 @@ export const codexRecoveryLifecycle = {
     const nextContinuity = probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity);
     const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
-    if (probeResult.resumable && effectiveConversationRef) {
+    if (probeResult.resumable && effectiveConversationRef !== undefined) {
       return {
         kind: 'set_resumable',
         conversationRef: effectiveConversationRef,

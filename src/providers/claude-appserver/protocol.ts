@@ -211,66 +211,81 @@ export function parseJsonRpcInboundLine(line: string): JsonRpcInboundMessage<unk
 export function requireSessionEnsureParams(params: unknown): SessionEnsureParams {
   if (
     !isRecord(params) ||
-    typeof params.cwd !== 'string' ||
-    typeof params.systemPromptHash !== 'string' ||
-    typeof params.permissionMode !== 'string'
+    !isNonEmptyString(params.cwd) ||
+    !isNonEmptyString(params.systemPromptHash) ||
+    !isNonEmptyString(params.permissionMode)
   ) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
   }
 
+  const brokerSessionKey = readOptionalNonEmptyString(params.brokerSessionKey);
+  const conversationRef = readOptionalNonEmptyString(params.conversationRef);
+  const systemPrompt = typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined;
   return {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
     permissionMode: params.permissionMode as PermissionMode,
-    brokerSessionKey: typeof params.brokerSessionKey === 'string' ? params.brokerSessionKey : undefined,
-    conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
+    ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
+    ...(conversationRef !== undefined ? { conversationRef } : {}),
     controllerEnv: readControllerEnv(params.controllerEnv),
-    systemPrompt: typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined,
+    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
   };
 }
 
 export function requireSessionProbeParams(params: unknown): SessionProbeParams {
-  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
+  if (!isRecord(params) || !isNonEmptyString(params.brokerSessionKey)) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/probe.');
   }
 
+  const conversationRef = readOptionalNonEmptyString(params.conversationRef);
   return {
     brokerSessionKey: params.brokerSessionKey,
-    conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
+    ...(conversationRef !== undefined ? { conversationRef } : {}),
   };
 }
 
 export function requireTurnStartParams(params: unknown): TurnStartParams {
   if (
     !isRecord(params) ||
-    typeof params.brokerSessionKey !== 'string' ||
-    typeof params.brokerTurnId !== 'string' ||
+    !isNonEmptyString(params.brokerSessionKey) ||
+    !isNonEmptyString(params.brokerTurnId) ||
     typeof params.prompt !== 'string'
   ) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/start.');
   }
 
+  const model = typeof params.model === 'string' ? params.model : undefined;
+  const maxThinkingTokens =
+    typeof params.maxThinkingTokens === 'number' || params.maxThinkingTokens === null
+      ? params.maxThinkingTokens
+      : undefined;
   return {
     brokerSessionKey: params.brokerSessionKey,
     brokerTurnId: params.brokerTurnId,
     prompt: params.prompt,
-    model: typeof params.model === 'string' ? params.model : undefined,
-    maxThinkingTokens:
-      typeof params.maxThinkingTokens === 'number' || params.maxThinkingTokens === null
-        ? params.maxThinkingTokens
-        : undefined,
+    ...(model !== undefined ? { model } : {}),
+    ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
   };
 }
 
 export function requireTurnInterruptParams(params: unknown): TurnInterruptParams {
-  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
+  if (!isRecord(params) || !isNonEmptyString(params.brokerSessionKey)) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/interrupt.');
   }
 
+  const brokerTurnId = readOptionalNonEmptyString(params.brokerTurnId);
   return {
     brokerSessionKey: params.brokerSessionKey,
-    brokerTurnId: typeof params.brokerTurnId === 'string' ? params.brokerTurnId : undefined,
+    ...(brokerTurnId !== undefined ? { brokerTurnId } : {}),
   };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function readOptionalNonEmptyString(value: unknown): string | undefined {
+  return isNonEmptyString(value) ? value : undefined;
 }
 
 export function readControllerEnv(value: unknown): Record<string, string> | undefined {

@@ -3,10 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
+  applyCodexContinuityUpdate,
+  buildCodexContinuity,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
+  readCodexPersistedContinuity,
   resolveCodexServiceTier,
+  snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
 
@@ -135,6 +139,43 @@ describe('mapTurnStartParams effort mapping', () => {
     expect(() =>
       mapTurnStartParams(makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }), 'thread-1'),
     ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
+  });
+});
+
+describe('Codex continuity refs', () => {
+  it('drops empty persisted ids and never treats them as resumable', () => {
+    const continuity = readCodexPersistedContinuity({
+      cwd: '',
+      threadId: '',
+      turnId: '',
+    });
+
+    expect(continuity).toEqual({
+      cwd: undefined,
+      threadId: undefined,
+      turnId: undefined,
+    });
+    expect(snapshotCodexPersistedContinuity(continuity)).toEqual({
+      conversationRef: null,
+      resumable: false,
+      providerContinuity: null,
+    });
+  });
+
+  it('uses explicit non-empty refs for updates while ignoring empty conversationRef', () => {
+    const persisted = buildCodexContinuity({
+      cwd: '/workspace',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    });
+
+    expect(applyCodexContinuityUpdate(persisted, { conversationRef: '' })).toEqual(persisted);
+    expect(applyCodexContinuityUpdate(persisted, { conversationRef: 'thread-2' })).toEqual({
+      cwd: '/workspace',
+      threadId: 'thread-2',
+      turnId: 'turn-1',
+    });
+    expect(applyCodexContinuityUpdate(persisted, { conversationRef: null })).toEqual({});
   });
 });
 

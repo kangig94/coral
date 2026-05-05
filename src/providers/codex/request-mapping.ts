@@ -79,10 +79,13 @@ export function buildCodexContinuity(update: {
   threadId?: string;
   turnId?: string;
 }): CodexPersistedContinuity {
+  const cwd = readString(update.cwd);
+  const threadId = readString(update.threadId);
+  const turnId = readString(update.turnId);
   return {
-    ...(update.cwd ? { cwd: update.cwd } : {}),
-    ...(update.threadId ? { threadId: update.threadId } : {}),
-    ...(update.turnId ? { turnId: update.turnId } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(threadId !== undefined ? { threadId } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
   };
 }
 
@@ -117,7 +120,7 @@ export function clearCodexTurnContinuity(
 }
 
 function hasCodexContinuity(continuity: CodexPersistedContinuity): boolean {
-  return Boolean(continuity.cwd ?? continuity.threadId ?? continuity.turnId);
+  return continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined;
 }
 
 export function snapshotCodexPersistedContinuity(persistedContinuity: ProviderContinuityBlob | undefined): {
@@ -145,8 +148,9 @@ export function applyCodexContinuityUpdate(
     return {};
   }
 
-  if (typeof update.conversationRef === 'string' && update.conversationRef.length > 0) {
-    return withCodexContinuity(persistedContinuity, { threadId: update.conversationRef });
+  const conversationRef = readString(update.conversationRef);
+  if (conversationRef !== undefined) {
+    return withCodexContinuity(persistedContinuity, { threadId: conversationRef });
   }
 
   return readCodexPersistedContinuity(persistedContinuity);

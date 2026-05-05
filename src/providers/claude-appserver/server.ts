@@ -233,7 +233,7 @@ export function createNodeClaudeChildFactory(
 
 export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[] {
   const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json'];
-  if (options.conversationRef) {
+  if (options.conversationRef !== undefined) {
     args.push('--resume', options.conversationRef);
   }
   if (options.systemPrompt) {

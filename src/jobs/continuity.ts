@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { providerContinuityBlobSchema, type ProviderContinuityBlob } from '../sessions/continuity.js';
+import {
+  continuityRefSchema,
+  providerContinuityBlobSchema,
+  type ProviderContinuityBlob,
+} from '../sessions/continuity.js';
 
 export interface JobContinuitySnapshot {
   conversationRef: string | null;
@@ -10,7 +14,7 @@ export interface JobContinuitySnapshot {
 
 export const jobContinuitySnapshotSchema = z
   .object({
-    conversationRef: z.string().nullable(),
+    conversationRef: continuityRefSchema.nullable(),
     resumable: z.boolean(),
     providerContinuity: providerContinuityBlobSchema.optional(),
   })

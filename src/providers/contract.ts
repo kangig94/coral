@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
@@ -233,7 +234,7 @@ export const providerTerminalDiagnosticsSchema = z
 export const providerContinuityEventBodySchema = z
   .object({
     kind: z.literal('continuity'),
-    conversationRef: z.string().nullable(),
+    conversationRef: nonEmptyStringSchema.nullable(),
     resumable: z.boolean(),
     providerContinuity: z.record(z.string(), z.unknown()).nullable(),
   })
