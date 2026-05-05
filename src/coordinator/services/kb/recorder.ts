@@ -4,6 +4,7 @@ import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registr
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../../jobs/launch.js';
 import type { AbortReason, TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
+import { buildJobEventRefs } from '../../../jobs/refs.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../../jobs/terminal/recording.js';
 import type { Runtime } from '../../../runtime/ports.js';
 
@@ -121,7 +122,7 @@ export class KbJobRecorder {
         stream: { kind: 'job', id: jobId },
         namespace: this.deps.backendNamespace,
         project: projectRoot,
-        refs: { jobId },
+        refs: buildJobEventRefs({ jobId }),
         bodyVersion: 1,
         body: {
           kind: 'message',
@@ -146,7 +147,7 @@ export class KbJobRecorder {
       stream: { kind: 'job', id: params.jobId },
       namespace: this.deps.backendNamespace,
       project: params.projectRoot,
-      refs: { jobId: params.jobId },
+      refs: buildJobEventRefs({ jobId: params.jobId }),
       bodyVersion: 1,
       body: {
         kind: 'domain',
@@ -189,10 +190,7 @@ export class KbJobRecorder {
         stream: { kind: 'job', id: params.jobId },
         namespace: params.namespace,
         project: params.projectRoot,
-        refs: {
-          jobId: params.jobId,
-          sessionId: params.sessionId,
-        },
+        refs: buildJobEventRefs({ jobId: params.jobId, sessionId: params.sessionId }),
         bodyVersion: 1,
         body: {
           kind: 'domain',

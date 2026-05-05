@@ -3,6 +3,7 @@ import type { CommitContext } from '../../store/append.js';
 import type { ResolvableCoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { TerminalOutcomeInput } from '../outcome.js';
+import { buildJobEventRefs } from '../refs.js';
 import { normalizeJobTerminal, type JobTerminalRecordedInputBody } from './result.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
@@ -39,13 +40,13 @@ export function jobTerminalRecordedEvent<Scope = never>(
     namespace: options.namespace,
     project: options.project,
     correlationId: options.correlationId,
-    refs: {
+    refs: buildJobEventRefs({
       jobId: options.jobId,
-      ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
-      ...(options.parentJobId === undefined ? {} : { parentJobId: options.parentJobId }),
-      ...(options.workflowId === undefined ? {} : { workflowId: options.workflowId }),
-      ...(options.workflowSlotId === undefined ? {} : { workflowSlotId: options.workflowSlotId }),
-    },
+      sessionId: options.sessionId,
+      parentJobId: options.parentJobId,
+      workflowId: options.workflowId,
+      workflowSlotId: options.workflowSlotId,
+    }),
   };
 }
 

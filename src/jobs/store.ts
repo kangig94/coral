@@ -27,6 +27,7 @@ import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
 import type { JobRuntimeStartedBody } from './event-bodies.js';
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
+import { buildJobEventRefs } from './refs.js';
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
@@ -365,7 +366,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
           bodyVersion: 1,
           body: {
             queuePosition: 0,
@@ -384,7 +385,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
           bodyVersion: 1,
           body: {
             startedAt: createdAt,
@@ -430,14 +431,14 @@ export class JobStore implements JobProgressStore {
     // `refs.workflowId = jobId`. Workflow children carry
     // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
     // `refs.workflowSlotId`. Non-workflow jobs omit the field.
-    const workflowId = launch.jobKind === 'workflow' ? jobId : (launch.parentWorkflowJobId ?? null);
-    const refs = {
+    const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
+    const refs = buildJobEventRefs({
       jobId,
-      ...(launch.sessionId !== null && launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
-      ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
-      ...(workflowId !== null ? { workflowId } : {}),
-      ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
-    };
+      sessionId: launch.sessionId,
+      parentJobId: launch.parentWorkflowJobId,
+      workflowId,
+      workflowSlotId: launch.workflowSlotId,
+    });
     const body =
       launch.jobKind === 'kb'
         ? {
@@ -503,10 +504,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: {
-          jobId,
-          ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
-        },
+        refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
         bodyVersion: 1,
         body: jobRuntimeStartedBody(runtime),
       });
@@ -589,10 +587,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: {
-          jobId,
-          ...(sessionId === null ? {} : { sessionId }),
-        },
+        refs: buildJobEventRefs({ jobId, sessionId }),
         bodyVersion: 1,
         body: {
           kind: 'message',
