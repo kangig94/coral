@@ -78,8 +78,8 @@ type ActiveNeedleLease = {
   release(): Promise<void>;
 };
 
-type StagedVectorEntry = {
-  entryId: KbEntryId;
+type StagedVectorInput = {
+  entryCount: number;
   chunks: ChunkSeed[];
 };
 
@@ -409,19 +409,18 @@ export class NeedleBackend implements NeedleBackendContract {
     );
   }
 
-  private collectVectorEntries(input: KbProjectionInput): StagedVectorEntry[] {
-    const entries: StagedVectorEntry[] = [];
+  private collectVectorInput(input: KbProjectionInput): StagedVectorInput {
+    let entryCount = 0;
+    const chunks: ChunkSeed[] = [];
     for (const record of input.records) {
       if (record.kind !== 'note' && record.kind !== 'source') {
         continue;
       }
 
-      entries.push({
-        entryId: `${record.kind}:${record.entry.slug}` as KbEntryId,
-        chunks: chunkEntry(record.entry, record.body),
-      });
+      entryCount += 1;
+      chunks.push(...chunkEntry(record.entry, record.body));
     }
-    return entries;
+    return { entryCount, chunks };
   }
 
   private async stageSnapshot(
@@ -456,13 +455,8 @@ export class NeedleBackend implements NeedleBackendContract {
         });
       }
 
-      const vectorEntries = this.collectVectorEntries(input);
-      const chunks: ChunkSeed[] = [];
-      for (const entry of vectorEntries) {
-        for (const chunk of entry.chunks) {
-          chunks.push(chunk);
-        }
-      }
+      const vectorInput = this.collectVectorInput(input);
+      const { chunks } = vectorInput;
       if (chunks.length > 0) {
         const texts: string[] = [];
         for (const chunk of chunks) {
@@ -502,7 +496,7 @@ export class NeedleBackend implements NeedleBackendContract {
           projectionIdentityHash: embedder.projectionIdentityHash,
         },
         specId: desiredSpec.specId,
-        entryCount: vectorEntries.length,
+        entryCount: vectorInput.entryCount,
         chunkCount: chunks.length,
       });
     } catch (error: unknown) {

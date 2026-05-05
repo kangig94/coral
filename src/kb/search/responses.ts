@@ -62,9 +62,20 @@ function buildCommunityContextMap(
   }
 
   const contextMap = new Map<KbEntryId, string[]>();
+  const hitEntryIdsByTag = new Map<string, Set<KbEntryId>>();
+  for (const hit of noteSourceHits) {
+    for (const tag of hit.tags) {
+      const existing = hitEntryIdsByTag.get(tag);
+      if (existing !== undefined) {
+        existing.add(hit.entryId);
+        continue;
+      }
+      hitEntryIdsByTag.set(tag, new Set([hit.entryId]));
+    }
+  }
+
   const relevantCommunities: Array<{
     community: CommunityEntry;
-    memberSet: Set<string>;
     overlapMembers: Set<string>;
     matchingEntryIds: Set<KbEntryId>;
   }> = [];
@@ -77,26 +88,20 @@ function buildCommunityContextMap(
     const memberSet = new Set(entry.members);
     const overlapMembers = new Set<string>();
     const matchingEntryIds = new Set<KbEntryId>();
-
-    for (const hit of noteSourceHits) {
-      let matched = false;
-      for (const tag of hit.tags) {
-        if (!memberSet.has(tag)) {
-          continue;
-        }
-        matched = true;
-        overlapMembers.add(tag);
+    for (const member of memberSet) {
+      const entryIds = hitEntryIdsByTag.get(member);
+      if (entryIds === undefined) {
+        continue;
       }
-
-      if (matched) {
-        matchingEntryIds.add(hit.entryId);
+      overlapMembers.add(member);
+      for (const entryId of entryIds) {
+        matchingEntryIds.add(entryId);
       }
     }
 
     if (matchingEntryIds.size >= GRAPH_COMMUNITY_RESULT_SPAN_MIN) {
       relevantCommunities.push({
         community: entry,
-        memberSet,
         overlapMembers,
         matchingEntryIds,
       });
@@ -114,29 +119,18 @@ function buildCommunityContextMap(
     relevantCommunities.length = GRAPH_CONTEXT_MAX_COMMUNITIES;
   }
 
-  for (const { community, memberSet } of relevantCommunities) {
+  for (const { community, matchingEntryIds } of relevantCommunities) {
     const summary = community.summary?.trim();
     if (!summary) {
       continue;
     }
     const summaryText = `${community.title}: ${summary}`;
-    for (const hit of noteSourceHits) {
-      let hasCommunityTag = false;
-      for (const tag of hit.tags) {
-        if (memberSet.has(tag)) {
-          hasCommunityTag = true;
-          break;
-        }
-      }
-      if (!hasCommunityTag) {
-        continue;
-      }
-
-      const existing = contextMap.get(hit.entryId) ?? [];
+    for (const entryId of matchingEntryIds) {
+      const existing = contextMap.get(entryId) ?? [];
       if (!existing.includes(summaryText)) {
         existing.push(summaryText);
       }
-      contextMap.set(hit.entryId, existing);
+      contextMap.set(entryId, existing);
     }
   }
 

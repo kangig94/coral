@@ -405,21 +405,13 @@ function graphStaleDiagnostic(): RetrievalDiagnostic {
   };
 }
 
-export function createBuiltinGraphRole(currentGraph: () => EntityGraph | null): RetrievalRole {
+export function createBuiltinGraphRole(): RetrievalRole {
   return {
     id: BUILTIN_GRAPH_ROLE_DESCRIPTOR.id,
     descriptor: BUILTIN_GRAPH_ROLE_DESCRIPTOR,
     async search(ctx) {
       const index = ctx.index();
-      const graph = currentGraph();
-      if (!isGraphSearchFresh(index, graph)) {
-        return {
-          hits: [],
-          diagnostic: graphStaleDiagnostic(),
-        };
-      }
-
-      const graphContext = buildGraphSearchContext(index, graph);
+      const graphContext = buildGraphSearchContext(index, ctx.graphContext());
       if (graphContext === null) {
         return {
           hits: [],

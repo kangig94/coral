@@ -312,7 +312,7 @@ class KbRuntimeImpl implements KbRuntime {
 
     roleRegistry.registerBuiltin(createBuiltinTextRole(this), { criticality: 'core' });
     roleRegistry.registerBuiltin(createBuiltinVectorRole(this), { criticality: 'core' });
-    roleRegistry.registerBuiltin(createBuiltinGraphRole(() => this.readEntityGraph()));
+    roleRegistry.registerBuiltin(createBuiltinGraphRole());
 
     storage.mkdirSync(this.runtimeDir, { recursive: true });
     if (corpusPublishCallbacks !== undefined) {

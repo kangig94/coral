@@ -22,6 +22,7 @@ type DetectCommunitiesOptions = {
 
 type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug' | 'parent' | 'children'> & {
   freshSlug: string;
+  membershipFingerprint: string;
   key?: string;
   parentKey?: string;
   childKeys?: string[];
@@ -32,6 +33,7 @@ type PartitionGroup = {
   id: number;
   nodeIndices: number[];
   members: string[];
+  membershipFingerprint: string;
 };
 
 type HierarchySeed = DetectedCommunitySeed & {
@@ -214,16 +216,16 @@ function partitionGroupsForLevel(nodes: string[], partition: number[]): Partitio
 
   const groups: PartitionGroup[] = [];
   for (const [id, group] of membersByCommunity.entries()) {
+    const members = uniqueSorted(group.members);
     groups.push({
       id,
       nodeIndices: [...group.nodeIndices],
-      members: uniqueSorted(group.members),
+      members,
+      membershipFingerprint: computeCommunityMembershipFingerprint(members),
     });
   }
   return groups.sort((left, right) => {
-    const leftFingerprint = computeCommunityMembershipFingerprint(left.members);
-    const rightFingerprint = computeCommunityMembershipFingerprint(right.members);
-    const fingerprintCompare = compareLocale(leftFingerprint, rightFingerprint);
+    const fingerprintCompare = compareLocale(left.membershipFingerprint, right.membershipFingerprint);
     if (fingerprintCompare !== 0) {
       return fingerprintCompare;
     }
@@ -262,10 +264,9 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
         title: deriveCommunityTitle(rankedMembers),
         level,
         members: group.members,
+        membershipFingerprint: group.membershipFingerprint,
         ...(parentGroup === undefined ? {} : { parentKey: `${level + 1}:${parentGroup.id}` }),
-        ...(parentGroup === undefined
-          ? {}
-          : { parentMembershipFingerprint: computeCommunityMembershipFingerprint(parentGroup.members) }),
+        ...(parentGroup === undefined ? {} : { parentMembershipFingerprint: parentGroup.membershipFingerprint }),
         childKeys: [],
       });
     }
@@ -287,10 +288,7 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
       return left.level - right.level;
     }
 
-    const fingerprintCompare = compareLocale(
-      computeCommunityMembershipFingerprint(left.members),
-      computeCommunityMembershipFingerprint(right.members),
-    );
+    const fingerprintCompare = compareLocale(left.membershipFingerprint, right.membershipFingerprint);
     if (fingerprintCompare !== 0) {
       return fingerprintCompare;
     }
@@ -402,11 +400,13 @@ function chooseBestResolution(graph: TagGraph): LouvainDetails {
 }
 
 function buildCarryOverSignature(
-  community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'>,
+  community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'> & {
+    membershipFingerprint?: string;
+  },
 ): string {
   return [
     String(community.level),
-    computeCommunityMembershipFingerprint(community.members),
+    community.membershipFingerprint ?? computeCommunityMembershipFingerprint(community.members),
     community.parentMembershipFingerprint ?? '',
   ].join('\u0000');
 }
@@ -470,7 +470,7 @@ function assignCommunitySlugs(
   });
 
   for (const community of sortedCommunities) {
-    const key = community.key ?? `${community.level}:${computeCommunityMembershipFingerprint(community.members)}`;
+    const key = community.key ?? `${community.level}:${community.membershipFingerprint}`;
     const reusable = reusablePriorSlugs.get(buildCarryOverSignature(community));
     const carriedSlug = reusable?.shift();
 

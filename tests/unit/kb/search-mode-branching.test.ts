@@ -326,4 +326,35 @@ describe('kb search mode branching', () => {
     expectMigratedShape(response);
     expect(resultNotes(response.results)).toEqual(['hybrid-rendering']);
   });
+
+  it('reuses the request-local entity graph between graph retrieval and response freshness', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'memory-entry', {
+      title: 'Opaque Memory Entry',
+      tags: ['gpu-device-memory'],
+      body: 'Archive only.',
+    });
+    await kb.writeEntityGraph({
+      entityMeta: {
+        'gpu-device-memory': {
+          type: 'component',
+          description: 'GPU device memory.',
+          aliases: ['vram'],
+        },
+      },
+      relationships: [],
+    } satisfies EntityGraph);
+    await reindex(kb);
+    await applyOramaProjection(kb);
+
+    const readEntityGraphSpy = vi.spyOn(kb, 'readEntityGraph');
+    const response = await searchKb(kb, 'vram', 5, 'all', 'auto');
+
+    expect(response.mode).toBe('text');
+    expectMigratedShape(response);
+    expect(resultNotes(response.results)).toEqual(['memory-entry']);
+    expect(readEntityGraphSpy).toHaveBeenCalledTimes(1);
+  });
 });

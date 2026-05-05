@@ -105,7 +105,7 @@ export interface RoleQueryContext {
   embedding(): Promise<Float32Array>;
   /** Lazy memoized KB index accessor. */
   index(): KbIndex;
-  /** Lazy memoized graph context accessor. */
+  /** Lazy memoized raw entity graph accessor for graph-backed roles. */
   graphContext(): EntityGraph | null;
 }
 

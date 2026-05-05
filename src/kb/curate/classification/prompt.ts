@@ -46,6 +46,23 @@ export type ClassificationPromptVocabularyInput = readonly string[] | readonly C
 
 export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
+type ClassificationContext = {
+  liveTags: Set<string>;
+  tokenSet: Set<string>;
+};
+
+type ClassificationVocabularyCandidate = {
+  name: string;
+  type: EntityType;
+  description: string;
+  support: number;
+  relatedEntities: readonly string[];
+};
+
+type ClassificationVocabularyFacts = {
+  candidates: readonly ClassificationVocabularyCandidate[];
+};
+
 function buildFlatList(values: string[]): string {
   const lines: string[] = [];
   for (const value of values) {
@@ -92,89 +109,126 @@ function buildEntitySupportMap(index: KbIndex): Map<string, number> {
   return support;
 }
 
-function buildClassificationContext(
-  entries: CurateClaimedEntry[],
-  index: KbIndex,
-): {
-  liveTags: Set<string>;
-  tokenSet: Set<string>;
-} {
-  const liveTags = new Set<string>();
-  const tokenSet = new Set<string>();
-
-  const addTokens = (value: string) => {
-    for (const token of tokenizeLowercaseText(value)) {
-      tokenSet.add(token);
-    }
-  };
-
-  for (const entry of entries) {
-    const liveEntry = getEntry(index, entry.entryId);
-    if (liveEntry !== undefined && 'tags' in liveEntry) {
-      for (const tag of liveEntry.tags) {
-        liveTags.add(tag);
-        addTokens(tag);
-      }
-    }
-
-    addTokens(entry.title);
-    addTokens(entry.body.slice(0, 4_000));
-
-    if (entry.kind === 'note') {
-      const identity = deriveNoteIdentity(entry.slug);
-      addTokens(identity.domain);
-      addTokens(identity.topic);
-    }
-  }
-
+function createClassificationContext(): ClassificationContext {
   return {
-    liveTags,
-    tokenSet,
+    liveTags: new Set<string>(),
+    tokenSet: new Set<string>(),
   };
 }
 
-function buildClassificationPromptVocabulary(
-  entries: CurateClaimedEntry[],
+function cloneClassificationContext(context: ClassificationContext): ClassificationContext {
+  return {
+    liveTags: new Set(context.liveTags),
+    tokenSet: new Set(context.tokenSet),
+  };
+}
+
+function addClassificationContextEntry(
+  context: ClassificationContext,
+  entry: CurateClaimedEntry,
   index: KbIndex,
-): ClassificationPromptVocabularyEntry[] {
-  const entityMeta = index.entityMeta;
-  const entityNames = Object.keys(entityMeta);
-  if (entityNames.length === 0) {
-    return [];
+): void {
+  const addTokens = (value: string) => {
+    for (const token of tokenizeLowercaseText(value)) {
+      context.tokenSet.add(token);
+    }
+  };
+
+  const liveEntry = getEntry(index, entry.entryId);
+  if (liveEntry !== undefined && 'tags' in liveEntry) {
+    for (const tag of liveEntry.tags) {
+      context.liveTags.add(tag);
+      addTokens(tag);
+    }
+  }
+
+  addTokens(entry.title);
+  addTokens(entry.body.slice(0, 4_000));
+
+  if (entry.kind === 'note') {
+    const identity = deriveNoteIdentity(entry.slug);
+    addTokens(identity.domain);
+    addTokens(identity.topic);
+  }
+}
+
+function buildRelationshipNeighborMap(index: KbIndex): Map<string, Set<string>> {
+  const relationshipNeighbors = new Map<string, Set<string>>();
+  const addNeighbor = (entityName: string, relatedEntityName: string) => {
+    const existing = relationshipNeighbors.get(entityName);
+    if (existing !== undefined) {
+      existing.add(relatedEntityName);
+      return;
+    }
+
+    relationshipNeighbors.set(entityName, new Set([relatedEntityName]));
+  };
+
+  for (const relationship of index.relationships) {
+    addNeighbor(relationship.source, relationship.target);
+    addNeighbor(relationship.target, relationship.source);
+  }
+
+  return relationshipNeighbors;
+}
+
+function buildClassificationVocabularyFacts(index: KbIndex): ClassificationVocabularyFacts {
+  const entityMetaEntries = Object.entries(index.entityMeta);
+  if (entityMetaEntries.length === 0) {
+    return { candidates: [] };
   }
 
   const support = buildEntitySupportMap(index);
-  const { liveTags, tokenSet } = buildClassificationContext(entries, index);
-  const relationships = index.relationships;
-
-  const ranked: ClassificationPromptVocabularyEntry[] = [];
-  for (const name of entityNames) {
-    const meta = entityMeta[name];
-    let relevantByRelationship = false;
-    for (const relationship of relationships) {
-      if (
-        (relationship.source === name && liveTags.has(relationship.target)) ||
-        (relationship.target === name && liveTags.has(relationship.source))
-      ) {
-        relevantByRelationship = true;
-        break;
-      }
-    }
-
-    let relevantByToken = false;
-    for (const segment of classificationEntityNameSegments(name)) {
-      if (tokenSet.has(segment)) {
-        relevantByToken = true;
-        break;
-      }
-    }
-
-    ranked.push({
+  const relationshipNeighbors = buildRelationshipNeighborMap(index);
+  const candidates: ClassificationVocabularyCandidate[] = [];
+  for (const [name, meta] of entityMetaEntries) {
+    candidates.push({
       name,
       type: meta.type,
       description: meta.description,
-      relevant: liveTags.has(name) || relevantByRelationship || relevantByToken,
       support: support.get(name) ?? 0,
+      relatedEntities: [...(relationshipNeighbors.get(name) ?? [])],
+    });
+  }
+
+  return { candidates };
+}
+
+function isClassificationVocabularyCandidateRelevant(
+  candidate: ClassificationVocabularyCandidate,
+  context: ClassificationContext,
+): boolean {
+  if (context.liveTags.has(candidate.name)) {
+    return true;
+  }
+
+  for (const relatedEntity of candidate.relatedEntities) {
+    if (context.liveTags.has(relatedEntity)) {
+      return true;
+    }
+  }
+
+  for (const segment of classificationEntityNameSegments(candidate.name)) {
+    if (context.tokenSet.has(segment)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function buildClassificationPromptVocabularyForContext(
+  context: ClassificationContext,
+  facts: ClassificationVocabularyFacts,
+): ClassificationPromptVocabularyEntry[] {
+  const ranked: ClassificationPromptVocabularyEntry[] = [];
+  for (const candidate of facts.candidates) {
+    ranked.push({
+      name: candidate.name,
+      type: candidate.type,
+      description: candidate.description,
+      relevant: isClassificationVocabularyCandidateRelevant(candidate, context),
+      support: candidate.support,
     });
   }
   ranked.sort(
@@ -554,21 +608,37 @@ export function takeClassificationBatchWithIndex(
 
   let batch: CurateClaimedEntry[] = [];
   let vocabulary: ClassificationPromptVocabularyEntry[] = [];
+  let batchContext = createClassificationContext();
+  let batchEntryTokenTotal = 0;
+  let batchShape: ClassificationBatchShape | null = null;
+  const vocabularyFacts = buildClassificationVocabularyFacts(index);
+  const promptLimit = classificationPromptTokenLimit();
   let indexCursor = 0;
 
   while (indexCursor < entries.length) {
     const entry = entries[indexCursor];
     const candidateBatch = [...batch, entry];
-    const candidateVocabulary = buildClassificationPromptVocabulary(candidateBatch, index);
-    assertClassificationScaffoldFits(classificationBatchShape(candidateBatch), candidateVocabulary, principleNames);
+    const candidateContext = cloneClassificationContext(batchContext);
+    addClassificationContextEntry(candidateContext, entry, index);
+    const candidateVocabulary = buildClassificationPromptVocabularyForContext(candidateContext, vocabularyFacts);
+    const candidateShape = classificationBatchShapeWithEntry(batchShape, entry);
+    const candidateEntryTokenTotal = batchEntryTokenTotal + estimateClassificationEntryTokens(entry);
+    assertClassificationScaffoldFits(candidateShape, candidateVocabulary, principleNames);
 
     if (
       batch.length < maxEntries &&
-      estimateClassificationBatchTokens(candidateBatch, candidateVocabulary, principleNames) <=
-        classificationPromptTokenLimit()
+      estimateClassificationBatchTokensForTotals(
+        candidateShape,
+        candidateEntryTokenTotal,
+        candidateVocabulary,
+        principleNames,
+      ) <= promptLimit
     ) {
       batch = candidateBatch;
       vocabulary = candidateVocabulary;
+      batchContext = candidateContext;
+      batchEntryTokenTotal = candidateEntryTokenTotal;
+      batchShape = candidateShape;
       indexCursor += 1;
       continue;
     }
@@ -582,9 +652,11 @@ export function takeClassificationBatchWithIndex(
     }
 
     const fittedEntry = fitSourceEntryToPromptBudget(entry, candidateVocabulary, principleNames);
+    const fittedContext = createClassificationContext();
+    addClassificationContextEntry(fittedContext, fittedEntry, index);
     batch = [fittedEntry];
-    vocabulary = buildClassificationPromptVocabulary(batch, index);
-    assertClassificationScaffoldFits(classificationBatchShape(batch), vocabulary, principleNames);
+    vocabulary = buildClassificationPromptVocabularyForContext(fittedContext, vocabularyFacts);
+    assertClassificationScaffoldFits('source-only', vocabulary, principleNames);
     break;
   }
 
