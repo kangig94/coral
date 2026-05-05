@@ -2,7 +2,6 @@
 
 ## Simplification Candidates Requiring Logic Decisions
 
-- `src/providers/codex/thread-kernel.ts:177`, `src/providers/codex/thread-kernel.ts:213` through `src/providers/codex/thread-kernel.ts:228`, and the later `threadId`/`turnId` guards in `src/providers/codex/thread-kernel.ts` use truthiness for streamed thread continuity. Replacing these with explicit canonical refs needs a Codex continuity migration that defines how empty streamed IDs are handled.
 - `src/jobs/store.ts:436` through `src/jobs/store.ts:439` and `src/jobs/shell/launch.ts:164` through `src/jobs/shell/launch.ts:208` build Journal refs with mixed truthiness and explicit null checks. Simplifying them needs a canonical refs builder after job/session/workflow IDs are all normalized as non-empty values.
 - `src/jobs/read-queries.ts:408` merges terminal diagnostics for job detail/exit without carrying `byteCounts`, while `src/jobs/projections.ts` preserves `byteCounts` in projection diagnostics. Propagating it likely improves detail output, but changes the wire shape callers currently observe.
 - `src/discuss/reducer.ts:270` and `src/discuss/state-machine.ts:487` duplicate end-reason fallback precedence. Consolidating the rule requires deciding the canonical owner for forced-end reason resolution between the reducer and state-machine path.

@@ -1,4 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
+import { readString } from '../../infra/json.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { resolveModelTier } from '../request-policy.js';
 import type {
@@ -97,11 +98,13 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
   });
   const persistedContinuity = readCodexPersistedContinuity(runtime.persistedContinuity);
   const mailboxThreadCandidates = new Set<string>();
-  if (persistedContinuity.threadId) {
-    mailboxThreadCandidates.add(persistedContinuity.threadId);
+  const persistedThreadId = persistedContinuity.threadId ?? null;
+  const requestConversationRef = readString(request.conversationRef);
+  if (persistedThreadId !== null) {
+    mailboxThreadCandidates.add(persistedThreadId);
   }
-  if (request.conversationRef) {
-    mailboxThreadCandidates.add(request.conversationRef);
+  if (requestConversationRef !== undefined) {
+    mailboxThreadCandidates.add(requestConversationRef);
   }
 
   const state = {
@@ -110,7 +113,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     model: resolveModelTier(request.model),
     serviceTier: resolveCodexServiceTier(request, runtime),
     sessionId: request.sessionId,
-    persistedThreadId: persistedContinuity.threadId ?? null,
+    persistedThreadId,
     mailboxThreadCandidates,
     threadId: null,
     threadIds: new Set(),
@@ -156,10 +159,11 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
 }
 
 function requireResumeConversationRef(request: ProviderRequest): string {
-  if (!request.conversationRef) {
+  const conversationRef = readString(request.conversationRef);
+  if (conversationRef === undefined) {
     throw new Error('resume requires conversationRef');
   }
-  return request.conversationRef;
+  return conversationRef;
 }
 
 function emitProgress(emit: (event: ProviderEventBody) => void, message: string | null | undefined): void {
@@ -174,7 +178,7 @@ function emitProgress(emit: (event: ProviderEventBody) => void, message: string 
 }
 
 function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event: ProviderEventBody) => void): void {
-  if (state.artifactHandleEmissionAttempted || !state.threadId) {
+  if (state.artifactHandleEmissionAttempted || state.threadId === null) {
     return;
   }
   state.artifactHandleEmissionAttempted = true;
@@ -195,29 +199,32 @@ function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event:
 }
 
 function extractThreadId(message: AppServerNotificationMessage): string | null {
-  return (message as { params?: { threadId?: string } }).params?.threadId ?? null;
+  return readString((message as { params?: { threadId?: unknown } }).params?.threadId) ?? null;
 }
 
 function extractTurnId(message: AppServerNotificationMessage): string | null {
-  const params = (message as { params?: { turnId?: string; turn?: { id?: string } } }).params;
-  if (params?.turnId) {
-    return params.turnId;
-  }
-  if (params?.turn?.id) {
-    return params.turn.id;
-  }
-  return null;
+  const params = (message as { params?: { turnId?: unknown; turn?: { id?: unknown } } }).params;
+  return readString(params?.turnId) ?? readString(params?.turn?.id) ?? null;
+}
+
+function readTurnId(turn: { id?: unknown } | null | undefined): string | null {
+  return readString(turn?.id) ?? null;
+}
+
+function canonicalTurn(turn: Turn, fallbackId: string | null): Turn {
+  const turnId = readTurnId(turn) ?? fallbackId ?? 'inferred-turn';
+  return turn.id === turnId ? turn : { ...turn, id: turnId };
 }
 
 function registerThread(state: CodexTurnState, threadId: string | null): void {
-  if (!threadId) {
+  if (threadId === null) {
     return;
   }
   state.threadIds.add(threadId);
 }
 
 function registerMailboxThreadCandidate(state: CodexTurnState, threadId: string | null): void {
-  if (!threadId) {
+  if (threadId === null) {
     return;
   }
   state.mailboxThreadCandidates.add(threadId);
@@ -225,7 +232,7 @@ function registerMailboxThreadCandidate(state: CodexTurnState, threadId: string 
 
 function canAdmitNotification(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
   const threadId = extractThreadId(message);
-  if (!threadId) {
+  if (threadId === null) {
     return true;
   }
   return threadId === state.threadId || state.mailboxThreadCandidates.has(threadId);
@@ -258,8 +265,11 @@ function completeTurn(state: CodexTurnState, turn: Turn | null = null): void {
   clearCompletionTimer(state);
   state.completed = true;
   if (turn) {
-    state.finalTurn = turn;
-    state.turnId ??= turn.id;
+    const turnId = readTurnId(turn);
+    state.finalTurn = canonicalTurn(turn, state.turnId);
+    if (turnId !== null && state.turnId === null) {
+      state.turnId = turnId;
+    }
   } else {
     state.finalTurn ??= {
       id: state.turnId ?? 'inferred-turn',
@@ -293,7 +303,7 @@ function scheduleInferredCompletion(state: CodexTurnState): void {
 
 function belongsToTurn(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
   const messageThreadId = extractThreadId(message);
-  if (!messageThreadId || !state.threadIds.has(messageThreadId)) {
+  if (messageThreadId === null || !state.threadIds.has(messageThreadId)) {
     return false;
   }
   const trackedTurnId = state.threadTurnIds.get(messageThreadId) ?? null;
@@ -382,9 +392,7 @@ function recordItem(
     }
     if (Array.isArray(item.receiverThreadIds)) {
       for (const receiverThreadId of item.receiverThreadIds) {
-        if (typeof receiverThreadId === 'string') {
-          registerThread(state, receiverThreadId);
-        }
+        registerThread(state, readString(receiverThreadId) ?? null);
       }
     }
     return;
@@ -410,12 +418,12 @@ function handleItemNotification(
   describe: (item: Record<string, unknown>) => string | null,
   emit: (event: ProviderEventBody) => void,
 ): void {
-  const params = notification.params as { item?: Record<string, unknown>; threadId?: string } | undefined;
+  const params = notification.params as { item?: Record<string, unknown>; threadId?: unknown } | undefined;
   if (!params?.item) {
     return;
   }
 
-  recordItem(state, params.item, lifecycle, params.threadId ?? null);
+  recordItem(state, params.item, lifecycle, readString(params.threadId) ?? null);
   emitProgress(emit, describe(params.item));
 }
 
@@ -428,8 +436,8 @@ function applyNotificationCore(
 
   switch (notification.method) {
     case 'thread/started': {
-      const thread = notification.params?.thread as { id?: string } | undefined;
-      registerThread(state, thread?.id ?? null);
+      const thread = notification.params?.thread as { id?: unknown } | undefined;
+      registerThread(state, readString(thread?.id) ?? null);
       return;
     }
     case 'thread/name/updated':
@@ -439,13 +447,13 @@ function applyNotificationCore(
       const threadId = extractThreadId(message);
       const turnId = extractTurnId(message);
       registerThread(state, threadId);
-      if (threadId && turnId) {
+      if (threadId !== null && turnId !== null) {
         state.threadTurnIds.set(threadId, turnId);
       }
-      if (threadId === state.threadId && turnId && !state.turnId) {
+      if (threadId === state.threadId && turnId !== null && state.turnId === null) {
         state.turnId = turnId;
       }
-      if (threadId && threadId !== state.threadId) {
+      if (threadId !== null && threadId !== state.threadId) {
         state.activeSubagentTurns.add(threadId);
       }
       emitProgress(emit, `Turn started (${turnId ?? 'unknown'}).`);
@@ -466,7 +474,7 @@ function applyNotificationCore(
     case 'turn/completed': {
       const threadId = extractThreadId(message);
       const turn = (notification.params as { turn?: Turn } | undefined)?.turn ?? null;
-      if (threadId && threadId !== state.threadId) {
+      if (threadId !== null && threadId !== state.threadId) {
         state.activeSubagentTurns.delete(threadId);
         scheduleInferredCompletion(state);
         return;
@@ -484,7 +492,7 @@ function applyNotificationCore(
 function maybeDiscoverTurnId(state: CodexTurnState, message: AppServerNotificationMessage): void {
   const threadId = extractThreadId(message);
   const turnId = extractTurnId(message);
-  if (!threadId || !turnId || !state.threadId || threadId !== state.threadId) {
+  if (threadId === null || turnId === null || state.threadId === null || threadId !== state.threadId) {
     return;
   }
   state.turnId = turnId;
@@ -507,7 +515,7 @@ function deliverNotification(
 }
 
 function flushBufferedNotifications(state: CodexTurnState, emit: (event: ProviderEventBody) => void): void {
-  if (!state.turnId || state.bufferedNotifications.length === 0) {
+  if (state.turnId === null || state.bufferedNotifications.length === 0) {
     return;
   }
   const buffered = state.bufferedNotifications.splice(0, state.bufferedNotifications.length);
@@ -542,7 +550,7 @@ async function interruptTurn(lease: ProviderServerLease, threadId: string, turnI
 
 export async function mapCodexInterrupt(lease: ProviderServerLease): Promise<void> {
   const state = codexInterruptBindings.get(lease);
-  if (!state?.threadId || !state.turnId) {
+  if (!state || state.threadId === null || state.turnId === null) {
     return;
   }
 
@@ -567,7 +575,7 @@ async function initializeThread(
         'thread/resume',
         mapThreadResumeParams(request, conversationRef, state.serviceTier),
       );
-      threadId = response.thread.id;
+      threadId = requireRpcThreadId(response, 'thread/resume');
     } catch (error) {
       if (isCodexSessionUnavailable(error)) {
         throw new Error(
@@ -579,7 +587,7 @@ async function initializeThread(
     }
   } else {
     const response = await rpc(lease, 'thread/start', mapThreadStartParams(request, state.serviceTier));
-    threadId = response.thread.id;
+    threadId = requireRpcThreadId(response, 'thread/start');
   }
 
   state.threadId = threadId;
@@ -587,6 +595,14 @@ async function initializeThread(
   registerThread(state, threadId);
   checkpoint(runtime, state, threadId);
   emitProgress(emit, `Thread ready (${threadId}).`);
+}
+
+function requireRpcThreadId(response: { thread?: { id?: unknown } }, method: 'thread/resume' | 'thread/start'): string {
+  const threadId = readString(response.thread?.id);
+  if (threadId === undefined) {
+    throw new Error(`Codex ${method} response did not include a non-empty thread id.`);
+  }
+  return threadId;
 }
 
 async function startTurn(
@@ -597,16 +613,16 @@ async function startTurn(
   emit: (event: ProviderEventBody) => void,
 ): Promise<CodexKernelResult | null> {
   state.turnStartRequested = true;
-  if (runtime.signal.aborted && !state.turnId) {
+  if (runtime.signal.aborted && state.turnId === null) {
     return { kind: 'aborted', reason: 'signal_abort' };
   }
-  if (!state.threadId) {
+  if (state.threadId === null) {
     throw new Error('Codex thread id missing before turn/start.');
   }
 
   const response = await rpc(lease, 'turn/start', mapTurnStartParams(request, state.threadId, state.serviceTier));
-  state.turnId = response.turn?.id ?? null;
-  if (state.turnId) {
+  state.turnId = readTurnId(response.turn);
+  if (state.turnId !== null) {
     state.threadTurnIds.set(state.threadId, state.turnId);
     state.checkpointedTurnId = state.turnId;
     checkpoint(runtime, state, state.threadId, state.turnId);
@@ -614,15 +630,16 @@ async function startTurn(
 
   flushBufferedNotifications(state, emit);
 
-  if (!state.turnId && runtime.signal.aborted) {
+  if (state.turnId === null && runtime.signal.aborted) {
     return { kind: 'aborted', reason: 'signal_abort' };
   }
 
   if (response.turn?.status && response.turn.status !== 'inProgress') {
-    state.finalTurn = response.turn;
+    const turn = canonicalTurn(response.turn, state.turnId);
+    state.finalTurn = turn;
     return {
       kind: 'completed',
-      turn: response.turn,
+      turn,
     };
   }
 
@@ -634,10 +651,10 @@ function applyNotification(
   message: AppServerNotificationMessage,
   emit: (event: ProviderEventBody) => void,
 ): void {
-  if (!state.turnId) {
+  if (state.turnId === null) {
     if (admitBufferedNotification(state, message)) {
       maybeDiscoverTurnId(state, message);
-      if (state.turnStartRequested && state.turnId) {
+      if (state.turnStartRequested && state.turnId !== null) {
         flushBufferedNotifications(state, emit);
       }
     }
@@ -648,7 +665,7 @@ function applyNotification(
 
 async function awaitKernelResult(runtime: ProviderRuntime, state: CodexTurnState): Promise<CodexKernelResult> {
   await state.completion;
-  if (state.threadId && state.turnId && state.turnId !== state.checkpointedTurnId) {
+  if (state.threadId !== null && state.turnId !== null && state.turnId !== state.checkpointedTurnId) {
     checkpoint(runtime, state, state.threadId, state.turnId);
     state.checkpointedTurnId = state.turnId;
   }
@@ -769,20 +786,20 @@ function finalizeTerminal(
   result: CodexKernelResult,
 ): Extract<ProviderEventBody, { kind: 'terminal' }> {
   if (result.kind === 'completed') {
-    if (state.threadId) {
+    if (state.threadId !== null) {
       checkpoint(runtime, state, state.threadId);
     }
     return buildCompletedTerminal(state, result.turn);
   }
 
   if (result.kind === 'aborted') {
-    if (state.threadId) {
+    if (state.threadId !== null) {
       checkpoint(runtime, state, state.threadId);
     }
     return buildAbortedTerminal(state);
   }
 
-  if (!result.preserveRecoverySnapshot && state.threadId) {
+  if (!result.preserveRecoverySnapshot && state.threadId !== null) {
     checkpoint(runtime, state, state.threadId);
   }
   return buildFailedTerminal(state, result.message);

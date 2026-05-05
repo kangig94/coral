@@ -205,6 +205,58 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(events).toEqual([]);
   });
 
+  it('normalizes empty streamed continuity ids before tracking turn state', () => {
+    const state = createCodexTurnStateForTest(
+      makeRequest({
+        conversationRef: 'thread-1',
+      }),
+      makeRuntime({
+        cwd: '/workspace/persisted',
+        threadId: 'thread-1',
+      }),
+    );
+    state.threadId = 'thread-1';
+    state.threadIds.add('thread-1');
+    state.turnId = 'turn-1';
+    const events: ProviderEventBody[] = [];
+    const emit = (event: ProviderEventBody) => {
+      events.push(event);
+    };
+
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'thread/started',
+        params: {
+          thread: {
+            id: '',
+          },
+        },
+      },
+      emit,
+    );
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/started',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: '',
+          },
+        },
+      },
+      emit,
+    );
+
+    expect(state.threadIds.has('')).toBe(false);
+    expect(state.turnId).toBe('turn-1');
+    expect(state.threadTurnIds.has('thread-1')).toBe(false);
+
+    const progressMessages = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
+    expect(progressMessages).toContain('Turn started (unknown).');
+  });
+
   it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', () => {
     const root = '/home/user/.codex/sessions';
     const day = `${root}/2026/05/04`;
