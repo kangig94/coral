@@ -14,6 +14,7 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
+import { resolveSessionEndReasonContent } from './end-reasons.js';
 import type { AgentState, DiscussState, TranscriptEntry, TranscriptResolveType } from './session-types.js';
 import { appendEntry, resetBids } from './state-transitions.js';
 
@@ -273,12 +274,12 @@ function reduceSessionEnded(snapshot: PersistedDiscussSnapshot, event: SessionEn
     };
   }
 
-  const endReasonContent =
-    event.payload.endReasonContent !== undefined
-      ? event.payload.endReasonContent
-      : event.payload.force
-        ? (event.payload.reason ?? state.end_reason_content)
-        : state.end_reason_content;
+  const endReasonContent = resolveSessionEndReasonContent({
+    currentContent: state.end_reason_content,
+    explicitContent: event.payload.endReasonContent,
+    force: event.payload.force,
+    reason: event.payload.reason,
+  });
 
   let nextState: DiscussState = {
     ...state,

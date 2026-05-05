@@ -1,13 +1,5 @@
 # TODO
 
-## Simplification Candidates Requiring Logic Decisions
-
-- `src/jobs/read-queries.ts:408` merges terminal diagnostics for job detail/exit without carrying `byteCounts`, while `src/jobs/projections.ts` preserves `byteCounts` in projection diagnostics. Propagating it likely improves detail output, but changes the wire shape callers currently observe.
-- `src/discuss/reducer.ts:270` and `src/discuss/state-machine.ts:487` duplicate end-reason fallback precedence. Consolidating the rule requires deciding the canonical owner for forced-end reason resolution between the reducer and state-machine path.
-- `src/causality/render.ts:135` propagates nested cycle diagnostics from recursive cause-ref rendering but not nested missing-link diagnostics. Changing this likely improves `describeDetailed`, but it needs a decision on whether callers expect `missing` only for the root causeRef or for any missing link in the chain.
-- `src/expansion/host.ts:194` decorates consumer/artifact scope cleanup, while `disposeExpansionScope` also explicitly stops/unregisters the same handles before calling `scope[Symbol.dispose]()`. Removing the duplicate-looking cleanup needs a lifecycle decision on whether these paths must remain independently idempotent for direct scope disposal.
-- `src/kb/tool-handlers.ts:182` through `src/kb/tool-handlers.ts:388` duplicate the typed KB read logic that also exists in `src/kb/read.ts`. Collapsing these handlers onto `readEntry` needs a compatibility decision for current per-handler validation, `not_found` error codes, and `invalid_request` fallbacks.
-
 ## Optimization Candidates Requiring Logic Decisions
 
 - `src/kb/search/graph-retrieval.ts` rebuilds and JSON-stringifies stable entity graphs during freshness checks. Caching a graph fingerprint or normalized graph needs an invalidation contract tied to index/entity-graph writes so stale structural retrieval cannot be served.
@@ -19,5 +11,4 @@
 - `src/kb/search/responses.ts` rebuilds community member sets for contextual search responses. Persisting or caching those sets needs invalidation on community document and entity graph updates.
 - `src/discuss/persona/dpp.ts` uses dense matrix construction for DPP selection. Replacing it with a sparse or library-backed solver needs numerical tolerances and deterministic tie-breaking rules.
 - `src/read-model/kb-query-runtime.ts:110` opens a fresh read-only DB whenever a caller provides `context.runtime` without `context.readDb`. Caching this per `KbQueryHost` would avoid repeated opens, but it needs an explicit close/lifetime contract for host-owned handles.
-- `src/workflow/launch.ts:147` resolves `slotsForStep(plan, stepIndex)` by recompiling the whole workflow plan for every step. Precomputing compiled slots by step would reduce recovery/execution overhead, but it needs a contract decision that preserves current concurrent launch error precedence and recovery job-id remapping.
 - `src/providers/claude/provider-facets.ts:80` and `src/providers/codex/provider-facets.ts:90` rescan provider artifact directories when emitting recovered handles. Caching locator results would reduce filesystem walks, but it needs invalidation tied to provider artifact creation, retention, and discard.

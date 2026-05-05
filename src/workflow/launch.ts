@@ -174,9 +174,24 @@ export async function launchStepAtoms(
     completedStepDetails: StepDetail[];
   },
 ): Promise<StepLaunchResult> {
+  return launchCompiledStepAtoms(slotsForStep(plan, stepIndex), stepPrompt, executionSvc, ctx, options);
+}
+
+export async function launchCompiledStepAtoms(
+  stepSlots: readonly CompiledPlanSlot[],
+  stepPrompt: string,
+  executionSvc: WorkflowExecutionPort,
+  ctx: InvocationContext,
+  options: {
+    context?: string;
+    workDir?: string;
+    signal?: AbortSignal;
+    workflowJobId?: string;
+    completedStepDetails: StepDetail[];
+  },
+): Promise<StepLaunchResult> {
   const launchedAtoms: LaunchedAtom[] = [];
   let launchError: unknown = null;
-  const stepSlots = slotsForStep(plan, stepIndex);
 
   await Promise.all(
     stepSlots.map(async (slot, atomIndex) => {

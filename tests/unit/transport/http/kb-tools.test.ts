@@ -464,6 +464,29 @@ Memo body.
     });
   });
 
+  it('keeps per-kind memo reads scoped to memo files even for non-timestamp slugs', () => {
+    setMockFile(
+      `${memoDir(testContext.projectRoot)}/scratch.md`,
+      `---
+source: kangig94/coral
+---
+Scratch body.
+`,
+    );
+
+    expect(handleKbMemoRead('scratch', testContext, testRuntime)).toEqual({
+      ok: true,
+      data: {
+        kind: 'memo',
+        note: 'scratch',
+        title: 'scratch',
+        content: 'Scratch body.',
+        tags: [],
+        principles: [],
+      },
+    });
+  });
+
   it('returns not_found for a missing memo read', () => {
     expectNotFound(handleKbMemoRead('20260323-010203-missing', testContext, testRuntime));
   });

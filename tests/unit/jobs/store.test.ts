@@ -281,6 +281,23 @@ describe('JobStore', () => {
     );
   });
 
+  it('preserves terminal byte counts in projection details', () => {
+    const { store } = createStore();
+    const jobId = 'job-byte-counts';
+    const sessionId = 'session-byte-counts';
+    initProviderJob(store, jobId, sessionId);
+
+    commitJobTerminal(
+      store,
+      jobId,
+      sessionId,
+      { content: 'done', outcome: { kind: 'completed' } },
+      { diagnostics: { byteCounts: { stdout: 123, stderr: 45 } } },
+    );
+
+    expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
+  });
+
   it('rejects progress after a terminal event has been recorded', () => {
     const { store } = createStore();
     const jobId = 'job-late-progress';

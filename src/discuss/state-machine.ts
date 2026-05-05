@@ -4,6 +4,7 @@ import {
   type BidRoundClosedStateMutations,
   type SessionCreatedAgentExecutionConfig,
 } from './events.js';
+import { endContent, resolveSessionEndReasonContent } from './end-reasons.js';
 import type {
   AgentState,
   DiscussCreateInput,
@@ -17,18 +18,6 @@ import type {
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
-
-const END_REASON_CONTENT: Record<EndReason, string> = {
-  all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
-  max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
-  all_blocked:
-    'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
-  no_participants: 'No eligible agents remaining. Ending discussion.',
-};
-
-export function endContent(reason: EndReason): string {
-  return END_REASON_CONTENT[reason];
-}
 
 export function resolveAgentName(agents: Record<string, AgentState>, name: string): string | null {
   if (agents[name]) return name;
@@ -500,12 +489,12 @@ export function decideEnd(
     };
   }
 
-  const endReasonContent =
-    endReason !== undefined
-      ? endContent(endReason)
-      : force
-        ? (reason ?? state.end_reason_content)
-        : state.end_reason_content;
+  const endReasonContent = resolveSessionEndReasonContent({
+    currentContent: state.end_reason_content,
+    explicitContent: endReason === undefined ? undefined : endContent(endReason),
+    force,
+    reason,
+  });
 
   return {
     ok: true,

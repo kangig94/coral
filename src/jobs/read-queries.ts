@@ -444,11 +444,13 @@ function mergeDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): 
   const warnings = patch.warnings ?? base.warnings;
   const usage = patch.usage ?? base.usage;
   const processExit = patch.processExit ?? base.processExit;
+  const byteCounts = patch.byteCounts ?? base.byteCounts;
   return {
     progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
     ...(warnings === undefined ? {} : { warnings: [...warnings] }),
     ...(usage === undefined ? {} : { usage: { ...usage } }),
     ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
+    ...(byteCounts === undefined ? {} : { byteCounts: { ...byteCounts } }),
   };
 }
 

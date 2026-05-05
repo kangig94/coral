@@ -235,8 +235,10 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
  * stop/unregister so that stale descriptors cannot target consumers whose
  * handles have already been disposed (§16 #19 lifecycle ordering).
  *
- * Then `scope[Symbol.dispose]()` runs the remaining decorated callbacks
- * (LIFO via `decorateDispose`).
+ * `registerConsumer` and `registerArtifactPort` also decorate the raw scope
+ * so direct scope disposal remains self-contained. This ordered lifecycle path
+ * intentionally repeats those idempotent unregister calls before running the
+ * decorated callbacks (LIFO via `decorateDispose`).
  */
 export async function disposeExpansionScope(scope: Disposable): Promise<void> {
   for (const registration of registeredArtifactPorts(scope)) {
