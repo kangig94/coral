@@ -1,5 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { slotsForStep, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
+import type { CompiledPlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,
   createWorkflowExecutionError,
@@ -158,23 +158,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     atomIndex,
     atomKey: slot.atomKey,
   };
-}
-
-export async function launchStepAtoms(
-  plan: WorkflowPlan,
-  stepIndex: number,
-  stepPrompt: string,
-  executionSvc: WorkflowExecutionPort,
-  ctx: InvocationContext,
-  options: {
-    context?: string;
-    workDir?: string;
-    signal?: AbortSignal;
-    workflowJobId?: string;
-    completedStepDetails: StepDetail[];
-  },
-): Promise<StepLaunchResult> {
-  return launchCompiledStepAtoms(slotsForStep(plan, stepIndex), stepPrompt, executionSvc, ctx, options);
 }
 
 export async function launchCompiledStepAtoms(

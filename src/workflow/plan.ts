@@ -139,16 +139,6 @@ export function compileWorkflowPlan(
   });
 }
 
-export function slotsForStep(
-  plan: WorkflowPlan,
-  stepIndex: number,
-  options: {
-    jobIds?: ReadonlyMap<string, string>;
-  } = {},
-): CompiledPlanSlot[] {
-  return compileWorkflowPlan(plan, options).filter((slot) => slot.stepIndex === stepIndex);
-}
-
 export function maxStepIndex(plan: WorkflowPlan): number {
   const stepIndexes = computeStepIndexes(plan);
   let max = -1;
