@@ -379,7 +379,9 @@ function buildCanonicalEntities(
   }
 
   const replacementMap: EntityReplacementMap = {};
-  for (const [source, target] of [...replacementEntries.entries()].sort(([left], [right]) => compareLocale(left, right))) {
+  for (const [source, target] of [...replacementEntries.entries()].sort(([left], [right]) =>
+    compareLocale(left, right),
+  )) {
     replacementMap[source] = target;
   }
 

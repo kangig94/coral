@@ -90,10 +90,7 @@ async function runKbAction(action: () => Promise<unknown> | unknown): Promise<Kb
   }
 }
 
-function runKbMutationAction(
-  kbSubsystem: KnowledgeBaseRuntime,
-  action: () => Promise<unknown>,
-): Promise<KbToolResult> {
+function runKbMutationAction(kbSubsystem: KnowledgeBaseRuntime, action: () => Promise<unknown>): Promise<KbToolResult> {
   return runKbAction(async () => {
     const result = await action();
     kbSubsystem.curateScheduler.scheduleDeferredCommit();

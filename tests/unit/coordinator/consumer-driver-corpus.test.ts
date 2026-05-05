@@ -245,9 +245,10 @@ describe('ConsumerDriver corpus registrations', () => {
       ).not.toThrow();
 
       const row = db
-        .prepare<[string], { corpus_interest: string; lane: string | null }>(
-          'SELECT corpus_interest, lane FROM consumer_cursors WHERE consumer_id = ?',
-        )
+        .prepare<
+          [string],
+          { corpus_interest: string; lane: string | null }
+        >('SELECT corpus_interest, lane FROM consumer_cursors WHERE consumer_id = ?')
         .get('corpus-proj');
       // `lane` for 'both' interest is null (laneHintFromInterest returns null
       // when no single lane uniquely fits).

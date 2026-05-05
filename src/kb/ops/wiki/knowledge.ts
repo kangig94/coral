@@ -1,9 +1,4 @@
-import {
-  entryIdToVaultLink,
-  parseKbEntryId,
-  vaultLinkToEntryId,
-  type KbEntryId,
-} from '../../entry-types.js';
+import { entryIdToVaultLink, parseKbEntryId, vaultLinkToEntryId, type KbEntryId } from '../../entry-types.js';
 import { assertNonEmptyText } from '../../validation.js';
 
 export function normalizeRef(value: string, field: string): KbEntryId {

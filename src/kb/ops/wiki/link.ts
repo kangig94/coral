@@ -1,8 +1,4 @@
-import {
-  parseKnowledgeBlocks,
-  serializeKnowledgeBlocks,
-  type KnowledgeBlock,
-} from '../../corpus/frontmatter.js';
+import { parseKnowledgeBlocks, serializeKnowledgeBlocks, type KnowledgeBlock } from '../../corpus/frontmatter.js';
 import type { KbWikiLinkInput, KbWikiMutationResponse } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';

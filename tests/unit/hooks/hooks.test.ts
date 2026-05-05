@@ -173,7 +173,9 @@ describe('session-start.mjs', () => {
       );
 
       const output = expectHookOutput(result);
-      expect(output.hookSpecificOutput.additionalContext).toContain(`## project wiki: ${PROJECT_SLUG} (2026-05-04T01:00:00.000Z)`);
+      expect(output.hookSpecificOutput.additionalContext).toContain(
+        `## project wiki: ${PROJECT_SLUG} (2026-05-04T01:00:00.000Z)`,
+      );
       expect(output.hookSpecificOutput.additionalContext).toContain('In-scope understanding.');
       expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: other-repo');
       expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');

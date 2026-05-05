@@ -17,11 +17,7 @@ export type RetentionDiscardTerminalAppendResult = {
   readonly appended: readonly AppendedEvent[];
 };
 
-export function readNextRetentionDiscardAttempt(
-  db: ReadonlyDatabase,
-  sessionId: string,
-  minimumExclusive = 0,
-): number {
+export function readNextRetentionDiscardAttempt(db: ReadonlyDatabase, sessionId: string, minimumExclusive = 0): number {
   const row = db
     .prepare(
       `SELECT COALESCE(MAX(json_extract(CAST(body AS TEXT), '$.attempt')), 0) AS max_attempt

@@ -645,10 +645,7 @@ describe('execution backend server', () => {
   }
 
   function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
-    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>(
-      'kb' as never,
-      (kb) => kb,
-    );
+    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>('kb' as never, (kb) => kb);
     return result instanceof Object && 'ok' in result && (result as { ok: false }).ok === false ? null : result;
   }
 
@@ -666,25 +663,23 @@ describe('execution backend server', () => {
       register: vi.fn(),
       initAll: vi.fn(),
       disposeAll: vi.fn(async () => {}),
-      run: vi.fn(<T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
+      run: vi.fn(<T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
         if (kbSubsystem === null) {
           return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
         }
         return fn(kbSubsystem);
       }),
-      runAsync: vi.fn(async <T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
+      runAsync: vi.fn(async <T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
         if (kbSubsystem === null) {
           return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
         }
         return await fn(kbSubsystem);
       }),
-      list: vi.fn(() =>
-        kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }],
-      ),
+      list: vi.fn(() => (kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }])),
       status: vi.fn(() =>
         kbSubsystem === null
-          ? ({ id: 'kb' as never, phase: 'initializing' as const, attempt: 0 })
-          : ({ id: 'kb' as never, phase: 'online' as const }),
+          ? { id: 'kb' as never, phase: 'initializing' as const, attempt: 0 }
+          : { id: 'kb' as never, phase: 'online' as const },
       ),
     };
 

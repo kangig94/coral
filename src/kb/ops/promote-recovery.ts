@@ -6,21 +6,10 @@ import { errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contract.js';
-import {
-  captureNoteManifestDeltas,
-  captureWikiManifestDeltas,
-} from '../corpus/manifest-authority.js';
-import {
-  commitIndexUpdate,
-  recordContentAndMetadataMutation,
-} from '../corpus/index-mutations.js';
+import { captureNoteManifestDeltas, captureWikiManifestDeltas } from '../corpus/manifest-authority.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import { buildNoteIndexEntry, buildWikiIndexEntry } from '../corpus/index-records.js';
-import {
-  extractBody,
-  extractTitle,
-  parseWikiBody,
-  parseWikiFrontmatter,
-} from '../corpus/frontmatter.js';
+import { extractBody, extractTitle, parseWikiBody, parseWikiFrontmatter } from '../corpus/frontmatter.js';
 import { setEntry } from '../entry-types.js';
 import { extractKnowledgeLinks } from '../corpus/wiki-links.js';
 import {
@@ -69,9 +58,7 @@ export async function runPromoteRecovery(rt: PromoteRecoveryHost): Promise<void>
     try {
       await recoverOne(rt, marker);
     } catch (error: unknown) {
-      backendLog.warn(
-        `promote-recovery: failed to recover ${marker.promoteId}: ${errorMessage(error)}`,
-      );
+      backendLog.warn(`promote-recovery: failed to recover ${marker.promoteId}: ${errorMessage(error)}`);
     }
   }
 }
@@ -168,10 +155,7 @@ function rollbackWiki(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker): v
   rt.storagePort.writeAtomicDurableSync(marker.wikiPath, backup, { encoding: 'utf-8' });
 }
 
-function filesMatchExpectedHashes(
-  rt: PromoteRecoveryHost,
-  marker: PromoteRecoveryMarker,
-): boolean {
+function filesMatchExpectedHashes(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker): boolean {
   const note = readFileOrNull(rt, marker.notePath);
   const wiki = readFileOrNull(rt, marker.wikiPath);
   if (note === null || wiki === null) {
@@ -180,10 +164,7 @@ function filesMatchExpectedHashes(
   return sha256(note) === marker.newNoteHash && sha256(wiki) === marker.newWikiHash;
 }
 
-async function completeForward(
-  rt: PromoteRecoveryHost,
-  marker: PromoteRecoveryMarker,
-): Promise<void> {
+async function completeForward(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker): Promise<void> {
   await rt.withMutationLock(
     async (mutation) => {
       const noteRaw = rt.storagePort.readFileSync(marker.notePath, 'utf-8');
@@ -265,11 +246,7 @@ function readFileOrNull(rt: PromoteRecoveryHost, path: string): string | null {
   }
 }
 
-function advanceMarker(
-  rt: PromoteRecoveryHost,
-  marker: PromoteRecoveryMarker,
-  next: PromoteRecoveryPhase,
-): void {
+function advanceMarker(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker, next: PromoteRecoveryPhase): void {
   const updatedAt = nowIsoString(rt.time);
   const updated: PromoteRecoveryMarker = { ...marker, phase: next, updatedAt };
   marker.phase = next;

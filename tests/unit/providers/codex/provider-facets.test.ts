@@ -109,10 +109,7 @@ describe('locateCodexRolloutArtifact', () => {
       [root]: [dirent('2026', 'dir')],
       [`${root}/2026`]: [dirent('05', 'dir')],
       [`${root}/2026/05`]: [dirent('04', 'dir')],
-      [day]: [
-        dirent('rollout-a-thread-1.jsonl', 'file'),
-        dirent('rollout-b-thread-1.jsonl', 'file'),
-      ],
+      [day]: [dirent('rollout-a-thread-1.jsonl', 'file'), dirent('rollout-b-thread-1.jsonl', 'file')],
     });
 
     expect(locateCodexRolloutArtifact({ threadId: 'thread-1', sessionsRoot: root, storage })).toMatchObject({

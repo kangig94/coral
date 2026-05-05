@@ -150,8 +150,7 @@ function upsertProjectionSession(
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   const next = {
-    controller:
-      patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
+    controller: patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
     provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)

@@ -105,7 +105,14 @@ interface MarkerSpec {
 function setupPromoteFixture(
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
   spec: MarkerSpec,
-): { promoteId: string; marker: PromoteRecoveryMarker; markerPath: string; notePath: string; wikiPath: string; memoPath: string } {
+): {
+  promoteId: string;
+  marker: PromoteRecoveryMarker;
+  markerPath: string;
+  notePath: string;
+  wikiPath: string;
+  memoPath: string;
+} {
   const projectRoot = join(mockState.tmpHome, 'project');
   const memoDir = paths.memoDir(projectRoot);
   mkdirSync(memoDir, { recursive: true });

@@ -118,7 +118,7 @@ export function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: num
   const output: Array<T & { rank: number }> = [];
   for (let index = 0; index < ranked.length; index += 1) {
     output.push({
-      ...ranked[index]!,
+      ...ranked[index],
       rank: index + 1,
     });
   }

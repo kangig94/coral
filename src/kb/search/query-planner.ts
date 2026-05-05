@@ -60,10 +60,7 @@ function buildInvocations(
       continue;
     }
     invocations.push(
-      invocation(
-        registeredRole,
-        primaryTags === null ? false : isRequiredCoreContributor(registeredRole, primaryTags),
-      ),
+      invocation(registeredRole, primaryTags === null ? false : isRequiredCoreContributor(registeredRole, primaryTags)),
     );
   }
   return invocations;

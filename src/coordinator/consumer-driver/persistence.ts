@@ -199,11 +199,7 @@ export class ConsumerCursorRepository {
           if (!allowMetadataUpdate) {
             throw consumerInterestMismatchError(reg.id);
           }
-          this.updateCorpusInterestStmt.run(
-            reg.corpusInterest,
-            laneHintFromInterest(reg.corpusInterest),
-            reg.id,
-          );
+          this.updateCorpusInterestStmt.run(reg.corpusInterest, laneHintFromInterest(reg.corpusInterest), reg.id);
         }
       }
 

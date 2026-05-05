@@ -120,8 +120,7 @@ type StoreSchemaClassification =
   | { kind: 'current'; userVersion: number; storedVersion: number }
   | { kind: 'mismatch'; userVersion: number; storedVersion: number };
 
-const USER_TABLE_EXISTS_SQL =
-  "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
+const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
 const CORAL_LEGACY_TABLES = [
   'events',
@@ -173,9 +172,8 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
 function hasCoralLegacyTable(db: Database): boolean {
   const quotedNames = CORAL_LEGACY_TABLES.map((name) => `'${name}'`).join(', ');
   return (
-    db
-      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`)
-      .get() !== undefined
+    db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`).get() !==
+    undefined
   );
 }
 

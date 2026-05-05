@@ -183,7 +183,12 @@ async function recordArtifact(harness: Harness, sessionId: string, jobId: string
   ).resolves.toMatchObject({ ok: true });
 }
 
-function initRunningJob(harness: Harness, jobId: string, sessionId: string, jobKind: 'provider' | 'workflow' = 'provider') {
+function initRunningJob(
+  harness: Harness,
+  jobId: string,
+  sessionId: string,
+  jobKind: 'provider' | 'workflow' = 'provider',
+) {
   harness.progressStore.initJob({
     jobId,
     sessionId,

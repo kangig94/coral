@@ -71,7 +71,11 @@ describe('generateWakeUpPacket', () => {
   it('returns an empty string when projectSlug is undefined', async () => {
     const { kb, db } = createRuntime();
     try {
-      seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'Alpha understanding.' });
+      seedWiki(kb, {
+        slug: 'kangig94-coral',
+        updatedAt: '2026-05-04T01:00:00.000Z',
+        understanding: 'Alpha understanding.',
+      });
 
       expect(await generateWakeUpPacket(kb, undefined)).toBe('');
     } finally {
@@ -82,8 +86,16 @@ describe('generateWakeUpPacket', () => {
   it('looks up the project wiki by slug and emits its Understanding section', async () => {
     const { kb, db } = createRuntime();
     try {
-      seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'In-scope understanding.' });
-      seedWiki(kb, { slug: 'other-subject', updatedAt: '2026-05-04T02:00:00.000Z', understanding: 'Subject understanding.' });
+      seedWiki(kb, {
+        slug: 'kangig94-coral',
+        updatedAt: '2026-05-04T01:00:00.000Z',
+        understanding: 'In-scope understanding.',
+      });
+      seedWiki(kb, {
+        slug: 'other-subject',
+        updatedAt: '2026-05-04T02:00:00.000Z',
+        understanding: 'Subject understanding.',
+      });
 
       const packet = await generateWakeUpPacket(kb, 'kangig94-coral');
 
@@ -128,8 +140,16 @@ describe('hook ↔ backend wake-up parity', () => {
   it('readProjectScopedWakeUp matches generateWakeUpPacket byte-for-byte when the project wiki exists', async () => {
     const { kb, db, vault } = createRuntime();
     try {
-      seedWiki(kb, { slug: 'kangig94-coral', updatedAt: '2026-05-04T01:00:00.000Z', understanding: 'Project understanding.' });
-      seedWiki(kb, { slug: 'other-subject', updatedAt: '2026-05-04T03:00:00.000Z', understanding: 'Subject understanding.' });
+      seedWiki(kb, {
+        slug: 'kangig94-coral',
+        updatedAt: '2026-05-04T01:00:00.000Z',
+        understanding: 'Project understanding.',
+      });
+      seedWiki(kb, {
+        slug: 'other-subject',
+        updatedAt: '2026-05-04T03:00:00.000Z',
+        understanding: 'Subject understanding.',
+      });
 
       const backendOutput = await generateWakeUpPacket(kb, 'kangig94-coral');
       const hookPayload = readProjectScopedWakeUp(vault, 'kangig94-coral');

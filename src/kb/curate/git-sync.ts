@@ -139,7 +139,15 @@ export function createGitSyncController({
 
   function kbGitPaths(): string[] {
     const paths: string[] = [];
-    for (const entry of ['notes/', 'sources/', 'principles/', 'communities/', 'wiki/', '.entity-graph.json', '.gitignore']) {
+    for (const entry of [
+      'notes/',
+      'sources/',
+      'principles/',
+      'communities/',
+      'wiki/',
+      '.entity-graph.json',
+      '.gitignore',
+    ]) {
       if (storagePort.existsSync(join(root, entry.replace(/\/$/, '')))) {
         paths.push(entry);
       }

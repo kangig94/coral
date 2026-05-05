@@ -63,10 +63,7 @@ function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   };
 }
 
-function artifactStorage(
-  tree: Record<string, DirentLike[]>,
-  operations: string[] = [],
-): ProviderRuntime['storage'] {
+function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[] = []): ProviderRuntime['storage'] {
   return {
     existsSync: (path) => {
       operations.push(`exists:${path}`);
@@ -77,7 +74,12 @@ function artifactStorage(
       return tree[path] ?? [];
     }) as unknown as StoragePort['readdirSync'],
     readFileSync: () => '',
-    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+    statSync: (() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })) as unknown as StoragePort['statSync'],
   };
 }
 

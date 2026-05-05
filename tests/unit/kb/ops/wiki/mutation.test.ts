@@ -16,15 +16,28 @@ vi.mock('node:os', async () => {
 
 async function loadModules() {
   vi.resetModules();
-  const [{ rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge }, { createWiki }, { linkWikiKnowledge }, paths, frontmatter] =
-    await Promise.all([
-      import('#src/kb/ops/wiki/mutation.js'),
-      import('#src/kb/ops/wiki/create.js'),
-      import('#src/kb/ops/wiki/link.js'),
-      import('#src/kb/paths.js'),
-      import('#src/kb/corpus/frontmatter.js'),
-    ]);
-  return { rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge, createWiki, linkWikiKnowledge, paths, frontmatter };
+  const [
+    { rewriteWiki, rewriteWikiInMutation, bubbleUpWikiKnowledge },
+    { createWiki },
+    { linkWikiKnowledge },
+    paths,
+    frontmatter,
+  ] = await Promise.all([
+    import('#src/kb/ops/wiki/mutation.js'),
+    import('#src/kb/ops/wiki/create.js'),
+    import('#src/kb/ops/wiki/link.js'),
+    import('#src/kb/paths.js'),
+    import('#src/kb/corpus/frontmatter.js'),
+  ]);
+  return {
+    rewriteWiki,
+    rewriteWikiInMutation,
+    bubbleUpWikiKnowledge,
+    createWiki,
+    linkWikiKnowledge,
+    paths,
+    frontmatter,
+  };
 }
 
 function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
@@ -124,9 +137,9 @@ describe('rewriteWiki kernel', () => {
     const { rewriteWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
 
-    await expect(
-      rewriteWiki(kb, 'no-such-wiki', () => ({ sections: { understanding: 'x' } })),
-    ).rejects.toThrow('KB wiki not found');
+    await expect(rewriteWiki(kb, 'no-such-wiki', () => ({ sections: { understanding: 'x' } }))).rejects.toThrow(
+      'KB wiki not found',
+    );
   });
 
   it('updates the index Knowledge derived field even when only the body changes', async () => {

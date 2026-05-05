@@ -166,7 +166,7 @@ export class ExpansionLifecycleService {
     if (scopes && scopes.length > 0) {
       // LIFO disposal of chained scopes for this engine.
       for (let index = scopes.length - 1; index >= 0; index -= 1) {
-        await disposeExpansionScope(scopes[index]!);
+        await disposeExpansionScope(scopes[index]);
       }
       this.scopes.delete(name);
     }
@@ -197,7 +197,7 @@ export class ExpansionLifecycleService {
     const scopes = this.scopes.get(name);
     if (scopes !== undefined && scopes.length > 0) {
       for (let index = scopes.length - 1; index >= 0; index -= 1) {
-        await disposeExpansionScope(scopes[index]!);
+        await disposeExpansionScope(scopes[index]);
       }
       this.scopes.delete(name);
     }
@@ -254,7 +254,7 @@ export class ExpansionLifecycleService {
     const manifestOrder = new Map<string, number>();
     const manifestById = new Map<string, EngineManifest>();
     for (let index = 0; index < manifest.length; index += 1) {
-      const entry = manifest[index]!;
+      const entry = manifest[index];
       manifestOrder.set(entry.id, index);
       manifestById.set(entry.id, entry);
     }
@@ -387,7 +387,7 @@ export class ExpansionLifecycleService {
     const manifestOrder = new Map<string, number>();
     const ids = new Set<string>();
     for (let index = 0; index < manifest.length; index += 1) {
-      const entry = manifest[index]!;
+      const entry = manifest[index];
       manifestOrder.set(entry.id, index);
       ids.add(entry.id);
     }
@@ -397,8 +397,7 @@ export class ExpansionLifecycleService {
 
     const orderedIds = [...ids].sort(
       (left, right) =>
-        (manifestOrder.get(left) ?? Number.POSITIVE_INFINITY) -
-        (manifestOrder.get(right) ?? Number.POSITIVE_INFINITY),
+        (manifestOrder.get(left) ?? Number.POSITIVE_INFINITY) - (manifestOrder.get(right) ?? Number.POSITIVE_INFINITY),
     );
     const views: ExpansionLifecycleView[] = [];
     for (const id of orderedIds) {
@@ -464,7 +463,7 @@ export class ExpansionLifecycleService {
         this.scopes.delete(id);
         // LIFO disposal of chained scopes for this engine.
         for (let index = scopes.length - 1; index >= 0; index -= 1) {
-          await disposeExpansionScope(scopes[index]!);
+          await disposeExpansionScope(scopes[index]);
         }
       });
     }

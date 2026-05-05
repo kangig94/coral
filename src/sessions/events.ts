@@ -135,11 +135,7 @@ function assertRetentionDiscardStream(input: CoralEventInput, sessionId: string)
   });
 }
 
-function retentionDiscardViolation(
-  code: string,
-  message: string,
-  context: Record<string, unknown>,
-): CoralSetupError {
+function retentionDiscardViolation(code: string, message: string, context: Record<string, unknown>): CoralSetupError {
   return new CoralSetupError({
     code,
     userMessage: message,

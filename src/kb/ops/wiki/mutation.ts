@@ -14,12 +14,7 @@ import {
 } from '../../corpus/frontmatter.js';
 import { buildWikiIndexEntry } from '../../corpus/index-records.js';
 import { extractKnowledgeLinks } from '../../corpus/wiki-links.js';
-import {
-  setEntry,
-  wikiEntryId,
-  type KbEntryId,
-  type KbWikiFrontmatter,
-} from '../../entry-types.js';
+import { setEntry, wikiEntryId, type KbEntryId, type KbWikiFrontmatter } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbIndexMutationLane, KbMutationEffects, KbRuntime } from '../../contract.js';
 import { blockHeaderFor } from './knowledge.js';

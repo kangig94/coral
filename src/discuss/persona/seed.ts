@@ -94,7 +94,7 @@ function pickSlots(outlierCount: number, total: number, rng: () => number): Set<
   shuffleInPlace(slots, rng);
   const picked = new Set<number>();
   for (let index = 0; index < outlierCount; index += 1) {
-    picked.add(slots[index]!);
+    picked.add(slots[index]);
   }
   return picked;
 }
@@ -219,7 +219,7 @@ function rankReuseSlots(selectedPoolIndexes: number[], pool: string[][]): number
 
   const scores: Array<{ slotIndex: number; score: number }> = [];
   for (let slotIndex = 0; slotIndex < selectedPoolIndexes.length; slotIndex += 1) {
-    const poolIndex = selectedPoolIndexes[slotIndex]!;
+    const poolIndex = selectedPoolIndexes[slotIndex];
     let score = 0;
     for (const otherPoolIndex of selectedPoolIndexes) {
       if (otherPoolIndex === poolIndex) continue;

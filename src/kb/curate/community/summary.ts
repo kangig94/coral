@@ -1,5 +1,5 @@
 import type { KbRuntime } from '../../contract.js';
-import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from '../../entry-types.js';
+import { isNoteEntry, isSourceEntry, type KbIndex } from '../../entry-types.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { compareLocale, stripMarkdownCodeFences } from '../../validation.js';
 import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './identity.js';
@@ -271,11 +271,11 @@ function buildLeafCommunitySummaryPrompt(
   for (const document of documents) {
     excerptBlocks.push(
       [
-      `## ${document.kind}:${document.slug}`,
-      `Title: ${document.title}`,
-      `Overlap entities: ${document.overlapTags.join(', ')}`,
-      'Excerpt:',
-      document.excerpt,
+        `## ${document.kind}:${document.slug}`,
+        `Title: ${document.title}`,
+        `Overlap entities: ${document.overlapTags.join(', ')}`,
+        'Excerpt:',
+        document.excerpt,
       ].join('\n'),
     );
   }
@@ -302,11 +302,11 @@ function buildParentCommunitySummaryPrompt(
   for (const child of childCommunities) {
     childBlocks.push(
       [
-      `## ${child.slug}`,
-      `Title: ${child.title}`,
-      `Members: ${child.members.join(', ')}`,
-      'Summary:',
-      child.summary,
+        `## ${child.slug}`,
+        `Title: ${child.title}`,
+        `Members: ${child.members.join(', ')}`,
+        'Summary:',
+        child.summary,
       ].join('\n'),
     );
   }

@@ -53,12 +53,8 @@ export function createExecutionServices({
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
-        (
-          getProgressStore()
-            .getDb()
-            .prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
-            .get() as { seq: number }
-        ).seq,
+        (getProgressStore().getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number })
+          .seq,
     });
     services.set(key, created);
     return created;

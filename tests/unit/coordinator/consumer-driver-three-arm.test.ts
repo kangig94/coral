@@ -10,7 +10,6 @@
 //   on stateless does not always produce a useful TS error in caller
 //   switch/narrow contexts.
 
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';

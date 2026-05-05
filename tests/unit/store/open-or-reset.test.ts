@@ -1,13 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -81,9 +73,7 @@ function readUserVersion(dbPath: string): number {
 function tableExists(dbPath: string, name: string): boolean {
   const db = new DatabaseSync(dbPath);
   try {
-    return (
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(name) !== undefined
-    );
+    return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(name) !== undefined;
   } finally {
     db.close();
   }
@@ -136,11 +126,15 @@ function createCorruptStore(dbPath: string): void {
 }
 
 function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthority {
-  return createBackendStoreResetAuthority(runtime, { acquiredViaHandoff: true }, {
-    path: dbPath,
-    bundleHash: BUNDLE_HASH,
-    namespace: NAMESPACE,
-  });
+  return createBackendStoreResetAuthority(
+    runtime,
+    { acquiredViaHandoff: true },
+    {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+    },
+  );
 }
 
 function openReset(runtime: Runtime, dbPath: string) {
@@ -343,11 +337,15 @@ describe('openOrResetBackendStoreDb', () => {
 
     // Build an authority with a wrong bundleHash — represents a stale
     // authority captured before a runtime/bundle change.
-    const staleAuthority = createBackendStoreResetAuthority(runtime, { acquiredViaHandoff: true }, {
-      path: dbPath,
-      bundleHash: 'stale-bundle-hash',
-      namespace: NAMESPACE,
-    });
+    const staleAuthority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: true },
+      {
+        path: dbPath,
+        bundleHash: 'stale-bundle-hash',
+        namespace: NAMESPACE,
+      },
+    );
 
     const error = captureError(() =>
       openOrResetBackendStoreDb(runtime, staleAuthority, {
@@ -412,16 +410,17 @@ describe('read-only store access', () => {
     it('ensureBundledEnginesLoaded', async () => {
       const { runtime } = makeMismatchHome();
       expectSetupCode(
-        await captureAsyncError(() =>
-          ensureBundledEnginesLoaded({} as KbRuntime, { pluginRoot: REPO_ROOT, runtime }),
-        ),
+        await captureAsyncError(() => ensureBundledEnginesLoaded({} as KbRuntime, { pluginRoot: REPO_ROOT, runtime })),
         'store_schema_outdated',
       );
     });
 
     it('readExpansionCatalog', () => {
       const { runtime } = makeMismatchHome();
-      expectSetupCode(captureError(() => readExpansionCatalog(runtime)), 'store_schema_outdated');
+      expectSetupCode(
+        captureError(() => readExpansionCatalog(runtime)),
+        'store_schema_outdated',
+      );
     });
 
     it('readDefaultExpansionCatalog', () => {
@@ -471,8 +470,14 @@ describe('openWritableStoreDbNoReset', () => {
     createLegacyStore(legacyPath);
     createMismatchStore(mismatchPath);
 
-    expectSetupCode(captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })), 'store_schema_outdated');
-    expectSetupCode(captureError(() => openWritableStoreDbNoReset(runtime, { path: mismatchPath })), 'store_schema_outdated');
+    expectSetupCode(
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })),
+      'store_schema_outdated',
+    );
+    expectSetupCode(
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: mismatchPath })),
+      'store_schema_outdated',
+    );
 
     expect(legacySchemaVersionRow(legacyPath)).toBe('1');
     expect(tableExists(mismatchPath, 'sentinel_before_reset')).toBe(true);

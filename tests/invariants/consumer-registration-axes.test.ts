@@ -14,7 +14,6 @@
 // This file holds the *runtime* half: `ConsumerDriver.register()` must accept
 // every type-valid two-axis combination.
 
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';

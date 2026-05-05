@@ -175,7 +175,7 @@ async function prepareCommunityPayload(
     capturedBaselineState.communitySummaryInputFingerprints,
     activeCommunities,
   );
-  let summaryInputFingerprints = {
+  const summaryInputFingerprints = {
     ...(capturedBaselineSummaryFingerprints ?? {}),
   };
 
@@ -229,7 +229,9 @@ async function prepareCommunityPayload(
   }
 
   const generatedCommunityDocs: CommunityDocument[] = [];
-  const orderedCommunities = [...communitiesBySlug.values()].sort((left, right) => compareLocale(left.slug, right.slug));
+  const orderedCommunities = [...communitiesBySlug.values()].sort((left, right) =>
+    compareLocale(left.slug, right.slug),
+  );
   for (const community of orderedCommunities) {
     generatedCommunityDocs.push(renderExistingCommunityDocument(community));
   }

@@ -29,7 +29,12 @@ function recoveryStorage(options: {
     readFileSync: (path) => files[path] ?? '',
     existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
     readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
-    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+    statSync: (() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })) as unknown as StoragePort['statSync'],
   };
 }
 
@@ -126,10 +131,7 @@ describe('registerBuiltInProviders', () => {
 
   it.each(codexRecoveryCases)(
     'finalizeCodexFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
-    async ({
-      tree,
-      expected,
-    }) => {
+    async ({ tree, expected }) => {
       const codex = createBuiltInProviderRegistry().get('codex');
 
       const result = await codex?.recovery?.finalizeFromArtifacts({
@@ -177,10 +179,7 @@ describe('registerBuiltInProviders', () => {
 
   it.each(claudeRecoveryCases)(
     'finalizeClaudeFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
-    async ({
-      tree,
-      expected,
-    }) => {
+    async ({ tree, expected }) => {
       const claude = createBuiltInProviderRegistry().get('claude');
 
       const result = await claude?.recovery?.finalizeFromArtifacts({

@@ -121,7 +121,12 @@ function artifactStorage(tree: Record<string, DirentLike[]>): ProviderRuntime['s
     existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
     readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
     readFileSync: () => '',
-    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+    statSync: (() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })) as unknown as StoragePort['statSync'],
   };
 }
 
