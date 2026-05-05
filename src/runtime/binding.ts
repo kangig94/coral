@@ -23,13 +23,17 @@ export function createRuntimeBinding<T>(name: string): RuntimeBinding<T> {
       return bound as T;
     },
     bind(value, scope, holder) {
-      if (heldBy !== undefined) throw documentedCoralSetupError('binding_occupied', { binding: name, heldBy });
+      if (heldBy !== undefined) {
+        throw documentedCoralSetupError('binding_occupied', { binding: name, heldBy });
+      }
       bound = value;
       heldBy = holder;
       const dispose = scope[Symbol.dispose].bind(scope);
       let disposed = false;
       scope[Symbol.dispose] = () => {
-        if (disposed) return;
+        if (disposed) {
+          return;
+        }
         disposed = true;
         bound = undefined;
         heldBy = undefined;

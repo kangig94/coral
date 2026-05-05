@@ -220,7 +220,15 @@ function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
     return false;
   }
 
-  return reasons.length >= 1 && reasons.every((reason) => reason === 'quoted-decimal' || reason === 'leading-zeros');
+  if (reasons.length < 1) {
+    return false;
+  }
+  for (const reason of reasons) {
+    if (reason !== 'quoted-decimal' && reason !== 'leading-zeros') {
+      return false;
+    }
+  }
+  return true;
 }
 
 function applyAutoFixLocked(

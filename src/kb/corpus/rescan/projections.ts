@@ -203,7 +203,13 @@ export function extractWikiKnowledgeLinks(knowledge: string): KbEntryId[] {
 }
 
 function filesOfKind(scan: CorpusScanView, kind: CorpusMarkdownFileScan['kind']): CorpusMarkdownFileScan[] {
-  return scan.markdownFiles.filter((file) => file.kind === kind);
+  const files: CorpusMarkdownFileScan[] = [];
+  for (const file of scan.markdownFiles) {
+    if (file.kind === kind) {
+      files.push(file);
+    }
+  }
+  return files;
 }
 
 function asError(value: unknown, fallback: string): Error {
@@ -296,9 +302,14 @@ export function buildKbIndex(
     });
   }
 
+  const principleIndex: KbIndex['principles'] = {};
+  for (const [name, statement] of principles) {
+    principleIndex[name] = statement;
+  }
+
   return {
     entries,
-    principles: Object.fromEntries(principles),
+    principles: principleIndex,
     entityMeta: entityGraph?.entityMeta ?? {},
     relationships: entityGraph?.relationships ?? [],
   };

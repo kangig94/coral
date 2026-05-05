@@ -46,8 +46,10 @@ export function getCurateRepairFrontier(db: ReadHandle): CurateRepairFrontier {
   }
 
   const sorted = [...queue].sort(comparePendingRepair);
-  if (sorted.some((entry) => entry.entrySeq === null)) {
-    return { kind: 'unknown' };
+  for (const entry of sorted) {
+    if (entry.entrySeq === null) {
+      return { kind: 'unknown' };
+    }
   }
 
   const first = sorted[0];
@@ -186,7 +188,11 @@ function readCommunitySummaryInputFingerprints(db: ReadHandle): Record<string, s
     return undefined;
   }
 
-  return Object.fromEntries(rows.map(({ community_slug, fingerprint }) => [community_slug, fingerprint]));
+  const fingerprints: Record<string, string> = {};
+  for (const { community_slug, fingerprint } of rows) {
+    fingerprints[community_slug] = fingerprint;
+  }
+  return fingerprints;
 }
 
 function writeCommunitySummaryInputFingerprints(db: Database, fingerprints: Record<string, string> | undefined): void {
@@ -203,9 +209,8 @@ function writeCommunitySummaryInputFingerprints(db: Database, fingerprints: Reco
     }
   }
 
-  for (const [communitySlug, fingerprint] of Object.entries(next).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
+  const nextEntries = Object.entries(next).sort(([left], [right]) => left.localeCompare(right));
+  for (const [communitySlug, fingerprint] of nextEntries) {
     if (!(communitySlug in existing)) {
       prepareCached<[string, string]>(
         db,

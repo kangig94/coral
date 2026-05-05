@@ -22,7 +22,12 @@ const PARSE_FAILURE_SENTINEL: ParsedClaudeStreamOutput = {
 };
 
 export function parseClaudeStreamJson(output: string): ParsedClaudeStreamOutput {
-  const lines = output.split('\n').filter((line) => line.length > 0);
+  const lines: string[] = [];
+  for (const line of output.split('\n')) {
+    if (line.length > 0) {
+      lines.push(line);
+    }
+  }
   if (lines.length === 0) return PARSE_FAILURE_SENTINEL;
   if (lines.length > 1) return parseNdjson(lines);
 
@@ -74,13 +79,13 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
     if (event.type === 'assistant' && isRecord(event.message)) {
       if (typeof event.message.model === 'string' && !model) model = event.message.model;
       const content = Array.isArray(event.message.content) ? event.message.content : [];
-      const parts: string[] = [];
+      let text = '';
       for (const block of content) {
         if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
-          parts.push(block.text);
+          text += block.text;
         }
       }
-      if (parts.length > 0) assistantMessages.push(parts.join(''));
+      if (text.length > 0) assistantMessages.push(text);
     }
   }
 
@@ -128,9 +133,12 @@ function extractSingleResultResponse(parsed: ClaudeJsonOutput): string {
     if (typeof parsed.result.response === 'string') return parsed.result.response;
     if (typeof parsed.result.output_text === 'string') return parsed.result.output_text;
     if (Array.isArray(parsed.result.content)) {
-      const textParts = parsed.result.content
-        .map((item: unknown) => (isRecord(item) && typeof item.text === 'string' ? item.text : ''))
-        .filter((text) => text.length > 0);
+      const textParts: string[] = [];
+      for (const item of parsed.result.content) {
+        if (isRecord(item) && typeof item.text === 'string' && item.text.length > 0) {
+          textParts.push(item.text);
+        }
+      }
       if (textParts.length > 0) return textParts.join('\n');
     }
   }

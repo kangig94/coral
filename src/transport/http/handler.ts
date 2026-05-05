@@ -24,7 +24,7 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Length', Buffer.byteLength(payload));
-  if (statusCode >= 500 || statusCode === 503) {
+  if (statusCode >= 500) {
     res.setHeader('Connection', 'close');
   }
   res.end(payload);

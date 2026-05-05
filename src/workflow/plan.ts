@@ -159,7 +159,10 @@ export function maxStepIndex(plan: WorkflowPlan): number {
 }
 
 function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
-  const slotsById = new Map(plan.slots.map((slot) => [slot.slotId, slot]));
+  const slotsById = new Map<string, WorkflowPlan['slots'][number]>();
+  for (const slot of plan.slots) {
+    slotsById.set(slot.slotId, slot);
+  }
   const memo = new Map<string, number>();
   const visiting = new Set<string>();
 
@@ -178,8 +181,10 @@ function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
     }
 
     visiting.add(slotId);
-    const stepIndex =
-      slot.dependencies.length === 0 ? 0 : Math.max(...slot.dependencies.map((dependency) => depth(dependency))) + 1;
+    let stepIndex = 0;
+    for (const dependency of slot.dependencies) {
+      stepIndex = Math.max(stepIndex, depth(dependency) + 1);
+    }
     visiting.delete(slotId);
     memo.set(slotId, stepIndex);
     return stepIndex;

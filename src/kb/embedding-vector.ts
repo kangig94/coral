@@ -15,8 +15,13 @@ export function computeEmbeddingSpecId(
 
 export function normalizeEmbeddingVector(rawValues: unknown, dims: number): Float32Array {
   const values = readEmbeddingValues(rawValues);
-  if (values === null || values.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+  if (values === null) {
     throw new Error('Embedding response did not contain a numeric vector.');
+  }
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error('Embedding response did not contain a numeric vector.');
+    }
   }
   if (values.length !== dims) {
     throw new Error(`Embedding response returned ${values.length} dimensions, expected ${dims}.`);

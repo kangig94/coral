@@ -39,7 +39,13 @@ function isPromptSlot(slot: CompiledPlanSlot): boolean {
 }
 
 function joinPromptParts(parts: Array<string | undefined>): string {
-  return parts.filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
+  const joined: string[] = [];
+  for (const part of parts) {
+    if (part !== undefined && part.length > 0) {
+      joined.push(part);
+    }
+  }
+  return joined.join('\n\n');
 }
 
 export async function readLaunchFailure(

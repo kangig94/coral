@@ -125,12 +125,13 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     }
 
     const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    const pendingEntries = filterCandidatesBeforeRepairFrontier(
-      collectClaimCandidates(index).filter(
-        (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
-      ),
-      repairFrontier,
-    );
+    const unprocessedCandidates: ClaimCandidate[] = [];
+    for (const candidate of collectClaimCandidates(index)) {
+      if (compareOptionalCursor(state.processedThrough, candidate.cursor) < 0) {
+        unprocessedCandidates.push(candidate);
+      }
+    }
+    const pendingEntries = filterCandidatesBeforeRepairFrontier(unprocessedCandidates, repairFrontier);
     if (pendingEntries.length === 0) {
       return null;
     }
@@ -216,7 +217,10 @@ export async function runClassificationBatches(
 
     const prompt = buildClassificationPrompt(batch, vocabulary, principleNames);
     const raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
-    const entryMap = new Map<string, true>(batch.map((entry) => [entry.entryId, true] as const));
+    const entryMap = new Map<string, true>();
+    for (const entry of batch) {
+      entryMap.set(entry.entryId, true);
+    }
     const parsed = parseClassificationResponseResult(raw, entryMap);
     if (parsed.parseFailed) {
       throw new CurateJsonParseError('classification');
@@ -239,8 +243,11 @@ export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: Curat
     }
 
     const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
-      (candidate) => compareCursor(candidate.cursor, cursor) > 0,
-    );
+    for (const candidate of filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier)) {
+      if (compareCursor(candidate.cursor, cursor) > 0) {
+        return true;
+      }
+    }
+    return false;
   });
 }

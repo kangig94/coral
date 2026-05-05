@@ -109,9 +109,12 @@ export class LifecycleReactor {
       return;
     }
 
-    const recordedHandles = entry.artifactHandles
-      .filter((artifact) => artifact.sourceJobId === undefined || artifact.sourceJobId === jobId)
-      .map((artifact) => artifact.handle);
+    const recordedHandles: string[] = [];
+    for (const artifact of entry.artifactHandles) {
+      if (artifact.sourceJobId === undefined || artifact.sourceJobId === jobId) {
+        recordedHandles.push(artifact.handle);
+      }
+    }
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
     const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
 

@@ -107,7 +107,13 @@ export function createRoleRegistry(): RoleRegistry {
   });
 
   const catalogView: RoleCatalogView = Object.freeze({
-    listDescriptors: () => Object.freeze([...records.values()].map((record) => record.descriptor)),
+    listDescriptors: () => {
+      const descriptors: RetrievalRoleDescriptor[] = [];
+      for (const record of records.values()) {
+        descriptors.push(record.descriptor);
+      }
+      return Object.freeze(descriptors);
+    },
   });
 
   return {

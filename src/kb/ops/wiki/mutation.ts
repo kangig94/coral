@@ -109,11 +109,22 @@ function prependKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]
   }
 
   const blocks = parseKnowledgeBlocks(knowledge);
-  const remaining = blocks.filter((block) => !seen.has(block.entryId));
-  const front: KnowledgeBlock[] = ordered.map((entryId) => {
-    const existing = blocks.find((block) => block.entryId === entryId);
-    return existing ?? { entryId, header: blockHeaderFor(entryId), evidence: [] };
-  });
+  const existingByEntryId = new Map<KbEntryId, KnowledgeBlock>();
+  const remaining: KnowledgeBlock[] = [];
+  for (const block of blocks) {
+    if (seen.has(block.entryId)) {
+      if (!existingByEntryId.has(block.entryId)) {
+        existingByEntryId.set(block.entryId, block);
+      }
+      continue;
+    }
+    remaining.push(block);
+  }
+
+  const front: KnowledgeBlock[] = [];
+  for (const entryId of ordered) {
+    front.push(existingByEntryId.get(entryId) ?? { entryId, header: blockHeaderFor(entryId), evidence: [] });
+  }
 
   return serializeKnowledgeBlocks([...front, ...remaining]);
 }

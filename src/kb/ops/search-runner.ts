@@ -382,9 +382,11 @@ async function executeStage(
   ctx: SearchExecutionContext,
   invocations: readonly RoleInvocation[],
 ): Promise<StageExecution> {
-  const settled = await Promise.allSettled(
-    invocations.map((invocation) => invocation.registeredRole.role.search(ctx.roleQueryContext)),
-  );
+  const searches: Array<Promise<RoleSearchResult>> = [];
+  for (const invocation of invocations) {
+    searches.push(invocation.registeredRole.role.search(ctx.roleQueryContext));
+  }
+  const settled = await Promise.allSettled(searches);
   const execution: StageExecution = { results: [], diagnostics: [], fallbackRequired: false };
 
   for (let index = 0; index < settled.length; index += 1) {
@@ -414,11 +416,25 @@ function topKEvidenceHasTag(
   topK: number,
   tag: string,
 ): boolean {
-  return hits.slice(0, topK).some((hit) => hit.evidence.some((evidence) => roleHasTag(results, evidence.roleId, tag)));
+  const hitCount = Math.min(topK, hits.length);
+  for (let index = 0; index < hitCount; index += 1) {
+    const hit = hits[index];
+    for (const evidence of hit.evidence) {
+      if (roleHasTag(results, evidence.roleId, tag)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function hasSuccessfulSemanticContributor(results: readonly RoleExecutionResult[]): boolean {
-  return results.some((result) => 'hits' in result && result.registeredRole.descriptor.tags.includes('semantic'));
+  for (const result of results) {
+    if ('hits' in result && result.registeredRole.descriptor.tags.includes('semantic')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function deriveResponseMode(

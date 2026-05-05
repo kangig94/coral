@@ -160,25 +160,32 @@ export class OramaSearchPort implements FtsRetrieval {
       limit,
     });
 
-    const filtered = response.hits
-      .map((hit, index) => ({
-        document: hit.document as KbOramaDocument,
-        score: response.hits[index]?.score ?? 0,
-      }))
-      .filter(({ document }) => scopeAllowsKind(scope, document.kind))
-      .sort((left, right) =>
-        compareScoreAndEntryId(
-          { score: left.score, entryId: left.document.entryId },
-          { score: right.score, entryId: right.document.entryId },
-        ),
-      );
+    const filtered: Array<{ document: KbOramaDocument; score: number }> = [];
+    for (const hit of response.hits) {
+      const document = hit.document as KbOramaDocument;
+      if (scopeAllowsKind(scope, document.kind)) {
+        filtered.push({ document, score: hit.score });
+      }
+    }
+    filtered.sort((left, right) =>
+      compareScoreAndEntryId(
+        { score: left.score, entryId: left.document.entryId },
+        { score: right.score, entryId: right.document.entryId },
+      ),
+    );
 
     const exhausted = response.hits.length < limit;
-    const hits: FtsHit[] = filtered.slice(0, safeTopK).map(({ document, score }) => ({
-      documentId: document.entryId,
-      score,
-      fields: toRetrievedDocument(document),
-    }));
+    const hits: FtsHit[] = [];
+    for (let index = 0; index < filtered.length && index < safeTopK; index += 1) {
+      const hit = filtered[index];
+      if (hit !== undefined) {
+        hits.push({
+          documentId: hit.document.entryId,
+          score: hit.score,
+          fields: toRetrievedDocument(hit.document),
+        });
+      }
+    }
 
     return { hits, exhausted };
   }

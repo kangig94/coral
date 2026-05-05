@@ -16,7 +16,11 @@ import type { KbRuntime } from '../../contract.js';
 const EMPTY_BODY = '## Understanding\n\n\n\n## Knowledge\n\n';
 
 function normalizeTags(values: readonly string[] | undefined): string[] {
-  return (values ?? []).map((value) => assertNonEmptyText(value, 'tags'));
+  const tags: string[] = [];
+  for (const value of values ?? []) {
+    tags.push(assertNonEmptyText(value, 'tags'));
+  }
+  return tags;
 }
 
 export async function createWiki(rt: KbRuntime, input: KbWikiCreateInput): Promise<KbWikiCreateResponse> {

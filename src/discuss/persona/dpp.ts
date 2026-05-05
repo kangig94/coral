@@ -113,7 +113,10 @@ export function eigendecompose(matrix: number[][]): { eigenvalues: number[]; eig
 
   const rawEigenvalues = Array.from({ length: n }, (_, i) => a[i][i]);
   const order = Array.from({ length: n }, (_, i) => i).sort((lhs, rhs) => rawEigenvalues[rhs] - rawEigenvalues[lhs]);
-  const eigenvalues = order.map((i) => Math.max(0, rawEigenvalues[i]));
+  const eigenvalues: number[] = [];
+  for (const index of order) {
+    eigenvalues.push(Math.max(0, rawEigenvalues[index]));
+  }
   const eigenvectors = Array.from({ length: n }, () => Array<number>(n).fill(0));
 
   for (let row = 0; row < n; row += 1) {
@@ -139,7 +142,11 @@ function computeEsp(eigenvalues: number[], k: number): number[][] {
 }
 
 function getColumn(matrix: number[][], col: number): number[] {
-  return matrix.map((row) => row[col]);
+  const column: number[] = [];
+  for (const row of matrix) {
+    column.push(row[col]);
+  }
+  return column;
 }
 
 function dot(a: number[], b: number[]): number {
@@ -206,7 +213,10 @@ export function sampleKDpp(eigenvalues: number[], eigenvectors: number[][], k: n
   }
   if (remaining !== 0) throw new Error('k-DPP eigenvector selection failed');
 
-  let basis = selectedEigenvectorIndexes.map((col) => getColumn(eigenvectors, col));
+  let basis: number[][] = [];
+  for (const col of selectedEigenvectorIndexes) {
+    basis.push(getColumn(eigenvectors, col));
+  }
   const selectedItems: number[] = [];
   const selectedItemSet = new Set<number>();
 

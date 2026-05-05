@@ -25,7 +25,7 @@ import {
   needleStagingDir,
 } from './paths.js';
 import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
-import { createNeedleStore, type NeedleStore } from './store.js';
+import { createNeedleStore, type ChunkRecord, type NeedleStore } from './store.js';
 import { resolveBoundNeedleEmbedder, type ResolvedNeedleEmbedder } from './projection-identity.js';
 import {
   NEEDLE_CONSUMER_ID,
@@ -139,7 +139,11 @@ function toUnitVector(embedding: readonly number[]): Float32Array | null {
   const vector = new Float32Array(embedding.length);
   let normSquared = 0;
 
-  for (const [index, value] of embedding.entries()) {
+  for (let index = 0; index < embedding.length; index += 1) {
+    const value = embedding[index];
+    if (value === undefined) {
+      return null;
+    }
     if (!Number.isFinite(value)) {
       return null;
     }
@@ -361,19 +365,22 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   async close(): Promise<void> {
-    const handles = [this.activeHandle, ...this.retiredHandles].filter(
-      (handle): handle is ActiveNeedleHandle => handle !== null,
-    );
+    const activeHandle = this.activeHandle;
+    const retiredHandles = [...this.retiredHandles];
 
     this.activeHandle = null;
     this.retiredHandles.clear();
 
-    for (const handle of handles) {
-      if (handle.closed) {
-        continue;
+    if (activeHandle !== null && !activeHandle.closed) {
+      activeHandle.closed = true;
+      await activeHandle.close().catch(() => {});
+    }
+
+    for (const handle of retiredHandles) {
+      if (!handle.closed) {
+        handle.closed = true;
+        await handle.close().catch(() => {});
       }
-      handle.closed = true;
-      await handle.close().catch(() => {});
     }
   }
 
@@ -457,19 +464,29 @@ export class NeedleBackend implements NeedleBackendContract {
         }
       }
       if (chunks.length > 0) {
-        const vectors = await embedder.service.embedDocuments(chunks.map((chunk) => chunk.text));
-        const upserts = chunks.map((chunk, indexPosition) => {
+        const texts: string[] = [];
+        for (const chunk of chunks) {
+          texts.push(chunk.text);
+        }
+
+        const vectors = await embedder.service.embedDocuments(texts);
+        const upserts: ChunkRecord[] = [];
+        for (let indexPosition = 0; indexPosition < chunks.length; indexPosition += 1) {
+          const chunk = chunks[indexPosition];
+          if (chunk === undefined) {
+            continue;
+          }
           const vector = vectors[indexPosition];
           if (vector === undefined) {
             throw new Error(`Embedding provider returned too few vectors for ${chunk.entryId}.`);
           }
 
-          return {
+          upserts.push({
             ...chunk,
             specId: desiredSpec.specId,
             vector,
-          };
-        });
+          });
+        }
 
         await stagedStore.store.upsertChunks(upserts);
       }

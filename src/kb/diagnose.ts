@@ -10,8 +10,9 @@ function parseDiagnoseSignals(entry: PendingRepair): unknown {
 }
 
 export function buildKbDiagnoseResult(entries: ReadonlyArray<PendingRepair>): KbDiagnoseResult {
-  return {
-    incidents: entries.map((entry) => ({
+  const incidents: KbDiagnoseResult['incidents'] = [];
+  for (const entry of entries) {
+    incidents.push({
       entry_id: entry.entryId,
       locus: entry.locus ?? null,
       canonical_incident: entry.canonicalIncident ?? null,
@@ -19,6 +20,10 @@ export function buildKbDiagnoseResult(entries: ReadonlyArray<PendingRepair>): Kb
       signals: parseDiagnoseSignals(entry),
       retry_count: entry.retryCount ?? 0,
       retry_not_before: entry.retryNotBefore ?? entry.detectedAt,
-    })),
+    });
+  }
+
+  return {
+    incidents,
   };
 }

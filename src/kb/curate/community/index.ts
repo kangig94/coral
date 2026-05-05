@@ -44,25 +44,28 @@ function communitySummaryChildren(
     return undefined;
   }
 
-  return [...community.children]
-    .sort((left, right) => compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)))
-    .map((reference) => {
-      const slug = communitySlugFromReference(reference);
-      const child = communitiesBySlug.get(slug);
-      if (child === undefined) {
-        throw new Error(`Missing child community ${reference} while generating community summaries.`);
-      }
-      if (child.summary === undefined) {
-        throw new Error(`Missing child summary for ${reference} while generating parent community summaries.`);
-      }
+  const childReferences = [...community.children].sort((left, right) =>
+    compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)),
+  );
+  const children: Array<{ slug: string; title: string; members: string[]; summary: string }> = [];
+  for (const reference of childReferences) {
+    const slug = communitySlugFromReference(reference);
+    const child = communitiesBySlug.get(slug);
+    if (child === undefined) {
+      throw new Error(`Missing child community ${reference} while generating community summaries.`);
+    }
+    if (child.summary === undefined) {
+      throw new Error(`Missing child summary for ${reference} while generating parent community summaries.`);
+    }
 
-      return {
-        slug: child.slug,
-        title: child.title,
-        members: child.members,
-        summary: child.summary,
-      };
+    children.push({
+      slug: child.slug,
+      title: child.title,
+      members: child.members,
+      summary: child.summary,
     });
+  }
+  return children;
 }
 
 function toExistingGeneratedCommunity(document: {
@@ -148,16 +151,26 @@ async function prepareCommunityPayload(
     priorCommunities: priorGeneratedCommunities,
     reservedSlugs,
   });
-  const initialCommunityDocs =
-    capturedBaselineState.communityTopologyHash !== topologyHash
-      ? buildCommunityDocuments(detectedCommunities, {
-          priorGeneratedCommunities,
-          today,
-        })
-      : priorGeneratedCommunities.map(renderExistingCommunityDocument);
+  let initialCommunityDocs: CommunityDocument[];
+  if (capturedBaselineState.communityTopologyHash !== topologyHash) {
+    initialCommunityDocs = buildCommunityDocuments(detectedCommunities, {
+      priorGeneratedCommunities,
+      today,
+    });
+  } else {
+    initialCommunityDocs = [];
+    for (const community of priorGeneratedCommunities) {
+      initialCommunityDocs.push(renderExistingCommunityDocument(community));
+    }
+  }
 
-  const activeCommunities = initialCommunityDocs.map(toExistingGeneratedCommunity);
-  const communitiesBySlug = new Map(activeCommunities.map((community) => [community.slug, community] as const));
+  const activeCommunities: ExistingGeneratedCommunity[] = [];
+  const communitiesBySlug = new Map<string, ExistingGeneratedCommunity>();
+  for (const document of initialCommunityDocs) {
+    const community = toExistingGeneratedCommunity(document);
+    activeCommunities.push(community);
+    communitiesBySlug.set(community.slug, community);
+  }
   const capturedBaselineSummaryFingerprints = normalizedCommunitySummaryFingerprints(
     capturedBaselineState.communitySummaryInputFingerprints,
     activeCommunities,
@@ -212,15 +225,14 @@ async function prepareCommunityPayload(
       });
     }
 
-    summaryInputFingerprints = {
-      ...summaryInputFingerprints,
-      [community.slug]: summaryInputFingerprint,
-    };
+    summaryInputFingerprints[community.slug] = summaryInputFingerprint;
   }
 
-  const generatedCommunityDocs = [...communitiesBySlug.values()]
-    .sort((left, right) => compareLocale(left.slug, right.slug))
-    .map(renderExistingCommunityDocument);
+  const generatedCommunityDocs: CommunityDocument[] = [];
+  const orderedCommunities = [...communitiesBySlug.values()].sort((left, right) => compareLocale(left.slug, right.slug));
+  for (const community of orderedCommunities) {
+    generatedCommunityDocs.push(renderExistingCommunityDocument(community));
+  }
 
   return {
     capturedBaselineSnapshot,

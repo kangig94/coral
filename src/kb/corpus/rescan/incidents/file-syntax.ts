@@ -36,19 +36,18 @@ export const fileSyntaxDetector: Detector = {
 };
 
 function detectConflictMarkers(entry: CorpusMarkdownFileScan): DetectedIncident | null {
-  const matches = splitLines(entry.content)
-    .map((line, index) => {
-      if (!CONFLICT_MARKER_PATTERN.test(line)) {
-        return null;
-      }
-
-      return {
+  const matches: Array<{ line: number; marker: string; text: string }> = [];
+  const lines = splitLines(entry.content);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (CONFLICT_MARKER_PATTERN.test(line)) {
+      matches.push({
         line: index + 1,
         marker: line.slice(0, 7),
         text: line,
-      };
-    })
-    .filter((match): match is { line: number; marker: string; text: string } => match !== null);
+      });
+    }
+  }
 
   if (matches.length === 0) {
     return null;

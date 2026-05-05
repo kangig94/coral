@@ -181,7 +181,10 @@ function selectChildRowsBySlot(
   plan: WorkflowPlan,
   rows: readonly WorkflowChildJobRow[],
 ): Map<string, WorkflowChildJobRow> {
-  const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
+  const slotIds = new Set<string>();
+  for (const slot of plan.slots) {
+    slotIds.add(slot.slotId);
+  }
   const selected = new Map<string, WorkflowChildJobRow>();
 
   for (const row of rows) {

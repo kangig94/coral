@@ -429,12 +429,14 @@ export function computeFullCollectorManifestHash(target: ManifestAuthorityTarget
 }
 
 export function computeManifestHashFromSurfaceHashes(hashes: ReadonlyMap<string, string>): string {
-  return computeManifestHash(
-    [...hashes.entries()].map(([manifestId, surfaceHash]) => ({
+  const entries: Array<{ manifestId: string; surfaceHash: string }> = [];
+  for (const [manifestId, surfaceHash] of hashes) {
+    entries.push({
       manifestId,
       surfaceHash,
-    })),
-  );
+    });
+  }
+  return computeManifestHash(entries);
 }
 
 function applyDeltasToSurfaceHashes(
@@ -453,8 +455,13 @@ function applyDeltasToSurfaceHashes(
 }
 
 function surfaceHashMapsEqual(left: ReadonlyMap<string, string>, right: ReadonlyMap<string, string>): boolean {
-  return (
-    left.size === right.size &&
-    [...left.entries()].every(([manifestId, surfaceHash]) => right.get(manifestId) === surfaceHash)
-  );
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const [manifestId, surfaceHash] of left) {
+    if (right.get(manifestId) !== surfaceHash) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -44,11 +44,18 @@ function toTerminalWaitEvent(
   resultPath: string,
   continuity: JobContinuitySnapshot | null,
 ): WaitStreamEvent {
+  const remainingJobIds: string[] = [];
+  for (const id of pending) {
+    if (id !== event.jobId) {
+      remainingJobIds.push(id);
+    }
+  }
+
   return {
     type: 'terminal',
     jobId: event.jobId,
     seq: event.seq,
-    remainingJobIds: [...pending].filter((id) => id !== event.jobId),
+    remainingJobIds,
     resultPath,
     result: event.result,
     continuity: event.continuity ?? continuity,

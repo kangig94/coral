@@ -52,16 +52,15 @@ export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaseli
       `,
     )
     .all();
-  return new Map(
-    rows.map((row) => [
-      row.entry_id,
-      {
-        entryId: row.entry_id,
-        contentHash: row.content_hash,
-        metadataHash: row.metadata_hash,
-      },
-    ]),
-  );
+  const baseline: CorpusAuthorityBaselineMap = new Map();
+  for (const row of rows) {
+    baseline.set(row.entry_id, {
+      entryId: row.entry_id,
+      contentHash: row.content_hash,
+      metadataHash: row.metadata_hash,
+    });
+  }
+  return baseline;
 }
 
 export function replaceCorpusAuthorityBaseline(db: Database, records: readonly CorpusAuthorityBaselineRecord[]): void {
@@ -185,7 +184,11 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
 export function rebuildCorpusAuthorityBaseline(db: Database, scan: CorpusScanView): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
   replaceCorpusAuthorityBaseline(db, records);
-  return new Map(records.map((record) => [record.entryId, record]));
+  const baseline: CorpusAuthorityBaselineMap = new Map();
+  for (const record of records) {
+    baseline.set(record.entryId, record);
+  }
+  return baseline;
 }
 
 export function ensureCorpusAuthorityBaseline(

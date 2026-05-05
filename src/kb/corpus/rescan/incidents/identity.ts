@@ -37,6 +37,10 @@ export const identitySequenceDetector: Detector = {
 
     const collisions = groupCollisions(observations);
     for (const collision of collisions) {
+      const colliders: string[] = [];
+      for (const entry of collision.claimants) {
+        colliders.push(entry.activeEntryId);
+      }
       for (const claimant of collision.claimants) {
         incidents.push({
           locus: 'identity-sequence',
@@ -44,7 +48,7 @@ export const identitySequenceDetector: Detector = {
           entryId: claimant.entryId,
           signals: {
             entrySeq: collision.entrySeq,
-            colliders: collision.claimants.map((entry) => entry.activeEntryId),
+            colliders,
           },
         });
       }
@@ -192,11 +196,17 @@ function groupCollisions(observations: readonly EntrySeqObservation[]): Array<{
     current.push(observation);
   }
 
-  return [...grouped.entries()]
-    .filter(([, claimants]) => claimants.length > 1)
-    .sort(([left], [right]) => left - right)
-    .map(([entrySeq, claimants]) => ({
-      entrySeq,
-      claimants: [...claimants].sort((left, right) => left.activeEntryId.localeCompare(right.activeEntryId)),
-    }));
+  const collisions: Array<{
+    entrySeq: number;
+    claimants: EntrySeqObservation[];
+  }> = [];
+  for (const [entrySeq, claimants] of grouped) {
+    if (claimants.length > 1) {
+      collisions.push({
+        entrySeq,
+        claimants: [...claimants].sort((left, right) => left.activeEntryId.localeCompare(right.activeEntryId)),
+      });
+    }
+  }
+  return collisions.sort((left, right) => left.entrySeq - right.entrySeq);
 }

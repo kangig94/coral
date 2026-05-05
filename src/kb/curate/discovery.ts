@@ -106,13 +106,17 @@ function collectDiscoveryCandidates(index: KbIndex): NoteClaimCandidate[] {
 }
 
 export function sameDiscoverySelection(left: NoteClaimCandidate[], right: NoteClaimCandidate[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((candidate, index) => {
-      const other = right[index];
-      return other !== undefined && compareCursor(candidate.cursor, other.cursor) === 0;
-    })
-  );
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const other = right[index];
+    if (other === undefined || compareCursor(left[index].cursor, other.cursor) !== 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function shouldRunDiscoveryBatch(
@@ -144,11 +148,19 @@ export function prepareDiscoveryBatch(
       : currentProcessedThrough;
 
   const repairFrontier = getCurateRepairFrontier(db);
-  const allClassified = filterCandidatesBeforeRepairFrontier(
-    collectDiscoveryCandidates(index).filter((candidate) => compareCursor(candidate.cursor, processedThrough) <= 0),
-    repairFrontier,
-  );
-  const newNotes = allClassified.filter((candidate) => candidate.cursor.entrySeq > normalizedState.discoveryHighSeq);
+  const processedCandidates: NoteClaimCandidate[] = [];
+  for (const candidate of collectDiscoveryCandidates(index)) {
+    if (compareCursor(candidate.cursor, processedThrough) <= 0) {
+      processedCandidates.push(candidate);
+    }
+  }
+  const allClassified = filterCandidatesBeforeRepairFrontier(processedCandidates, repairFrontier);
+  const newNotes: NoteClaimCandidate[] = [];
+  for (const candidate of allClassified) {
+    if (candidate.cursor.entrySeq > normalizedState.discoveryHighSeq) {
+      newNotes.push(candidate);
+    }
+  }
   if (!shouldRunDiscoveryBatch(newNotes, normalizedState, processedThrough)) {
     return null;
   }
@@ -165,9 +177,20 @@ export function selectDiscoveryBatch(
   highSeq: number,
   offset: number,
 ): DiscoveryBatch {
-  const newNotes = allClassified.filter((candidate) => candidate.cursor.entrySeq > highSeq);
-  const oldNotes = allClassified.filter((candidate) => candidate.cursor.entrySeq <= highSeq);
-  const selected = newNotes.slice(0, DISCOVERY_BATCH_SIZE);
+  const newNotes: NoteClaimCandidate[] = [];
+  const oldNotes: NoteClaimCandidate[] = [];
+  for (const candidate of allClassified) {
+    if (candidate.cursor.entrySeq > highSeq) {
+      newNotes.push(candidate);
+    } else {
+      oldNotes.push(candidate);
+    }
+  }
+  const selected: NoteClaimCandidate[] = [];
+  const newSelectionCount = Math.min(DISCOVERY_BATCH_SIZE, newNotes.length);
+  for (let index = 0; index < newSelectionCount; index += 1) {
+    selected.push(newNotes[index]);
+  }
 
   let nextOffset = offset;
   if (selected.length < DISCOVERY_BATCH_SIZE && oldNotes.length > 0) {
@@ -179,7 +202,10 @@ export function selectDiscoveryBatch(
     nextOffset = (start + fill) % oldNotes.length;
   }
 
-  const nextHighSeq = selected.reduce((max, candidate) => Math.max(max, candidate.cursor.entrySeq), highSeq);
+  let nextHighSeq = highSeq;
+  for (const candidate of selected) {
+    nextHighSeq = Math.max(nextHighSeq, candidate.cursor.entrySeq);
+  }
   return { selected, nextHighSeq, nextOffset };
 }
 
@@ -188,13 +214,18 @@ export function buildDiscoveryPrompt(
   notes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryPromptResult {
-  const noteBlocks = notes.map((note) => `## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
+  const noteBlocks: string[] = [];
+  for (const note of notes) {
+    noteBlocks.push(`## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
+  }
   const corpusPath = join(kb.envPort.tmpdir(), `coral-discovery-${kb.ids.uuid()}.md`);
   writeFileAtomic(kb, corpusPath, noteBlocks.join('\n\n'));
 
-  const principleEntries = Object.entries(existingPrinciples)
-    .sort(([left], [right]) => compareLocale(left, right))
-    .map(([name, statement]) => `- ${name}: ${statement}`);
+  const sortedPrinciples = Object.entries(existingPrinciples).sort(([left], [right]) => compareLocale(left, right));
+  const principleEntries: string[] = [];
+  for (const [name, statement] of sortedPrinciples) {
+    principleEntries.push(`- ${name}: ${statement}`);
+  }
 
   const prompt = [
     'Return raw JSON only. Do not include any preamble, explanation, or code fences.',
@@ -240,7 +271,10 @@ export function validateDiscoveryProposals(
   eligibleNotes: DiscoveryCurateClaimedEntry[],
   existingPrinciples: Record<string, string>,
 ): DiscoveryProposal[] {
-  const eligibleSet = new Set(eligibleNotes.map((note) => note.slug));
+  const eligibleSet = new Set<string>();
+  for (const note of eligibleNotes) {
+    eligibleSet.add(note.slug);
+  }
   const seenSlugs = new Set<string>();
   const seenAbsorbedSlugs = new Set<string>();
   const validated: DiscoveryProposal[] = [];
@@ -258,7 +292,13 @@ export function validateDiscoveryProposals(
       continue;
     }
 
-    const notes = uniqueTrimmedList(proposal.notes.filter((note) => eligibleSet.has(note)));
+    const eligibleProposalNotes: string[] = [];
+    for (const note of proposal.notes) {
+      if (eligibleSet.has(note)) {
+        eligibleProposalNotes.push(note);
+      }
+    }
+    const notes = uniqueTrimmedList(eligibleProposalNotes);
     if (notes.length < 3) {
       continue;
     }

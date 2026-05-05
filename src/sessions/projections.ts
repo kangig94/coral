@@ -12,6 +12,7 @@ import {
 } from './entry.js';
 import type {
   SessionArtifactHandleRecordedBody,
+  SessionClaimReleasedBody,
   SessionClaimedBody,
   SessionContinuityCheckpointedBody,
   SessionRetentionDiscardCompletedBody,
@@ -207,7 +208,7 @@ export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => 
   });
 };
 
-export const reduceSessionClaimReleased: Reducer<SessionClaimedBody> = (db, event) => {
+export const reduceSessionClaimReleased: Reducer<SessionClaimReleasedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
   });

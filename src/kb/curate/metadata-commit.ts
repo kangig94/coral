@@ -64,9 +64,14 @@ function snapshotEntityGraph(currentIndex: {
   entityMeta: Record<string, EntityMeta>;
   relationships: EntityRelationship[];
 }): EntityGraph {
+  const relationships: EntityRelationship[] = [];
+  for (const relationship of currentIndex.relationships) {
+    relationships.push(cloneEntityRelationship(relationship));
+  }
+
   return {
     entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta),
-    relationships: currentIndex.relationships.map(cloneEntityRelationship),
+    relationships,
   };
 }
 
@@ -93,7 +98,13 @@ export function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateC
     return candidates;
   }
 
-  return candidates.filter((candidate) => isCursorBeforeRepairFrontier(candidate.cursor, frontier));
+  const filtered: T[] = [];
+  for (const candidate of candidates) {
+    if (isCursorBeforeRepairFrontier(candidate.cursor, frontier)) {
+      filtered.push(candidate);
+    }
+  }
+  return filtered;
 }
 
 export function cursorFromTarget(target: MetadataTarget): CurateCursor {
@@ -131,12 +142,24 @@ function buildLiveNoteMetadataDecision(
   const desiredTags = target.desiredTags === undefined ? undefined : uniqueTrimmedList(target.desiredTags);
 
   const removeTagSet = new Set(removeTags);
-  const nextTags = desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
+  let nextTags = desiredTags;
+  if (nextTags === undefined) {
+    const keptTags: string[] = [];
+    for (const tag of uniqueTrimmedList([...liveTags, ...addTags])) {
+      if (!removeTagSet.has(tag)) {
+        keptTags.push(tag);
+      }
+    }
+    nextTags = keptTags;
+  }
 
   const removePrincipleSet = new Set(removePrinciples);
-  const nextPrinciples = uniqueTrimmedList([...livePrinciples, ...addPrinciples]).filter(
-    (principle) => !removePrincipleSet.has(principle),
-  );
+  const nextPrinciples: string[] = [];
+  for (const principle of uniqueTrimmedList([...livePrinciples, ...addPrinciples])) {
+    if (!removePrincipleSet.has(principle)) {
+      nextPrinciples.push(principle);
+    }
+  }
 
   return {
     shouldWrite: !sameStringList(nextTags, liveTags) || !sameStringList(nextPrinciples, livePrinciples),
@@ -154,7 +177,17 @@ function buildLiveSourceMetadataDecision(
   const desiredTags = target.desiredTags === undefined ? undefined : uniqueTrimmedList(target.desiredTags);
   const removeTagSet = new Set(removeTags);
 
-  return desiredTags ?? uniqueTrimmedList([...liveTags, ...addTags]).filter((tag) => !removeTagSet.has(tag));
+  if (desiredTags !== undefined) {
+    return desiredTags;
+  }
+
+  const nextTags: string[] = [];
+  for (const tag of uniqueTrimmedList([...liveTags, ...addTags])) {
+    if (!removeTagSet.has(tag)) {
+      nextTags.push(tag);
+    }
+  }
+  return nextTags;
 }
 
 function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[]): string[] {
@@ -164,7 +197,12 @@ function buildLiveRelatedMetadata(target: MetadataTarget, liveRelated: string[])
   }
 
   const existing = new Set(liveRelated);
-  const additions = addRelated.filter((relatedEntryId) => !existing.has(relatedEntryId));
+  const additions: string[] = [];
+  for (const relatedEntryId of addRelated) {
+    if (!existing.has(relatedEntryId)) {
+      additions.push(relatedEntryId);
+    }
+  }
   if (additions.length === 0) {
     return [...liveRelated];
   }
@@ -180,7 +218,11 @@ function applyEntityReplacementMap(
     return undefined;
   }
 
-  return uniqueTrimmedList(tags.map((tag) => resolveCanonicalEntityId(tag, replacementMap)));
+  const resolvedTags: string[] = [];
+  for (const tag of tags) {
+    resolvedTags.push(resolveCanonicalEntityId(tag, replacementMap));
+  }
+  return uniqueTrimmedList(resolvedTags);
 }
 
 function rewriteMetadataTargetEntities(target: MetadataTarget, replacementMap: EntityReplacementMap): MetadataTarget {
@@ -209,12 +251,17 @@ export async function commitMetadataTargetsLocked(
   const consolidationResult: ConsolidationResult = consolidateEntityGraph(currentGraph, plan.graphDelta);
   const desiredGraph = consolidationResult.canonicalGraph;
   const graphChanged = !entityGraphsEqual(currentGraph, desiredGraph);
-  const sortedTargets = [...targets]
-    .map((target) => rewriteMetadataTargetEntities(target, consolidationResult.replacementMap))
-    .sort(compareMetadataTarget);
+  const sortedTargets: MetadataTarget[] = [];
+  for (const target of targets) {
+    sortedTargets.push(rewriteMetadataTargetEntities(target, consolidationResult.replacementMap));
+  }
+  sortedTargets.sort(compareMetadataTarget);
 
   nextIndex.entityMeta = cloneEntityMetaRecord(desiredGraph.entityMeta);
-  nextIndex.relationships = desiredGraph.relationships.map(cloneEntityRelationship);
+  nextIndex.relationships = [];
+  for (const relationship of desiredGraph.relationships) {
+    nextIndex.relationships.push(cloneEntityRelationship(relationship));
+  }
   let processedThrough = normalizedState.processedThrough;
   let cursorCanAdvance = true;
   let wroteMarkdown = false;

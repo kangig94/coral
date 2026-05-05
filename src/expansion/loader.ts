@@ -30,8 +30,11 @@ export async function loadExpansions(
       scopes.push(scope);
     } catch (error) {
       disposeQuietly(scope);
-      for (const loadedScope of [...scopes].reverse()) {
-        disposeQuietly(loadedScope);
+      for (let index = scopes.length - 1; index >= 0; index -= 1) {
+        const loadedScope = scopes[index];
+        if (loadedScope !== undefined) {
+          disposeQuietly(loadedScope);
+        }
       }
       throw error;
     }

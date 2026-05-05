@@ -28,10 +28,13 @@ export function parseIntegerFlag(flagName: string, value: string): number {
 }
 
 export function parseJobIds(raw: string): string[] {
-  const jobIds = raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+  const jobIds: string[] = [];
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) {
+      jobIds.push(trimmed);
+    }
+  }
   if (jobIds.length === 0) {
     throw new UsageError('--jobs must include at least one job ID');
   }

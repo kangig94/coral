@@ -89,18 +89,20 @@ export function createDiscussRuntime({
         return readDiscussEventLog(getProgressStore().getDb(), sessionId, readCtx);
       },
       listSnapshots(source) {
-        return listProjectionDiscussSnapshots(getProgressStore().getDb())
-          .map((row) => row.state)
-          .filter((snapshot) => snapshotBelongsToSource(snapshot, source));
+        const snapshots: ReturnType<DiscussSessionJournal['listSnapshots']> = [];
+        for (const row of listProjectionDiscussSnapshots(getProgressStore().getDb())) {
+          if (snapshotBelongsToSource(row.state, source)) {
+            snapshots.push(row.state);
+          }
+        }
+        return snapshots;
       },
       listSources() {
-        return [
-          ...new Set(
-            listProjectionDiscussSnapshots(getProgressStore().getDb()).map((row) =>
-              world.resolveProjectSource(row.state.projectRoot),
-            ),
-          ),
-        ].sort();
+        const sources = new Set<string>();
+        for (const row of listProjectionDiscussSnapshots(getProgressStore().getDb())) {
+          sources.add(world.resolveProjectSource(row.state.projectRoot));
+        }
+        return [...sources].sort();
       },
     };
   }

@@ -59,11 +59,13 @@ export function createCorpusStorage(infraStorage: StoragePort): CorpusStorage {
 
 function sortedMarkdownEntries(storage: StoragePort, dirPath: string): string[] {
   try {
-    return storage
-      .readdirSync(dirPath, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-      .map((entry) => entry.name)
-      .sort(compareLocale);
+    const entries: string[] = [];
+    for (const entry of storage.readdirSync(dirPath, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        entries.push(entry.name);
+      }
+    }
+    return entries.sort(compareLocale);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return [];

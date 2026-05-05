@@ -15,7 +15,10 @@ export async function linkWikiKnowledge(rt: KbRuntime, input: KbWikiLinkInput): 
 
   return rewriteWiki(rt, slug, (current) => {
     const blocks = parseKnowledgeBlocks(current.sections.knowledge);
-    const present = new Set(blocks.map((block) => block.entryId));
+    const present = new Set<string>();
+    for (const block of blocks) {
+      present.add(block.entryId);
+    }
     const additions: KnowledgeBlock[] = [];
     for (const entryId of refs) {
       if (!present.has(entryId)) {

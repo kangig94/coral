@@ -190,13 +190,14 @@ export const runStartup: DiscussRunStartup = async (deps) => {
 
   for (const source of deps.knownDiscussSources()) {
     try {
-      recoveredDiscussResumes.push(
-        ...(await recoverPersistedSessionsFromStore(
-          deps.getDiscussStoreForSource(source),
-          (snapshot) => deps.getDiscussContext(deps.createInvocationContext(snapshot.projectRoot)),
-          (snapshot) => deps.createInvocationContext(snapshot.projectRoot),
-        )),
+      const recovered = await recoverPersistedSessionsFromStore(
+        deps.getDiscussStoreForSource(source),
+        (snapshot) => deps.getDiscussContext(deps.createInvocationContext(snapshot.projectRoot)),
+        (snapshot) => deps.createInvocationContext(snapshot.projectRoot),
       );
+      for (const resume of recovered) {
+        recoveredDiscussResumes.push(resume);
+      }
     } catch (error: unknown) {
       backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(error)}`);
     }

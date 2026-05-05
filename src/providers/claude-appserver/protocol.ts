@@ -281,12 +281,20 @@ export function readControllerEnv(value: unknown): Record<string, string> | unde
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
   }
 
-  const entries = Object.entries(value);
-  if (entries.some(([, entryValue]) => typeof entryValue !== 'string')) {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
+  const result: Record<string, string> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (typeof entryValue !== 'string') {
+      throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
+    }
+    Object.defineProperty(result, key, {
+      value: entryValue,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
 
-  return Object.fromEntries(entries) as Record<string, string>;
+  return result;
 }
 
 export function toBootstrapSignature(params: Omit<SessionEnsureParams, 'brokerSessionKey'>): ClaudeBootstrapSignature {

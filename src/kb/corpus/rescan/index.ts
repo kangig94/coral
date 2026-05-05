@@ -117,7 +117,10 @@ export async function performRescan(
  * the current incident set means the underlying file has been repaired since enqueue.
  */
 function syncRetryQueueAgainstIncidents(kb: KbRuntime, incidents: readonly DetectedIncident[]): void {
-  const stillDetected = new Set(incidents.map((incident) => incident.entryId));
+  const stillDetected = new Set<string>();
+  for (const incident of incidents) {
+    stillDetected.add(incident.entryId);
+  }
   for (const queued of readCurateRetryQueue(curateDb(kb))) {
     if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
       deleteCurateRetryEntry(curateDb(kb), queued.entryId);

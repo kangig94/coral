@@ -282,26 +282,29 @@ const claudeProviderSpec = defineProvider({
 const BUILT_IN_PROVIDERS = [codexProviderSpec, claudeProviderSpec] as const;
 
 export function registerBuiltInProviders(registry: ProviderRegistry): void {
-  const providers = [...BUILT_IN_PROVIDERS];
-  const existingProviders = providers.map((provider) => ({
-    provider,
-    existing: registry.get(provider.name),
-  }));
+  let allRegistered = true;
+  const conflicts: string[] = [];
+  for (const provider of BUILT_IN_PROVIDERS) {
+    const existing = registry.get(provider.name);
+    if (existing !== provider) {
+      allRegistered = false;
+    }
+    if (existing !== undefined) {
+      conflicts.push(provider.name);
+    }
+  }
 
-  if (existingProviders.every(({ provider, existing }) => existing === provider)) {
+  if (allRegistered) {
     return;
   }
 
-  const conflicts = existingProviders
-    .filter(({ existing }) => existing !== undefined)
-    .map(({ provider }) => provider.name);
   if (conflicts.length > 0) {
     throw new Error(
       `Built-in provider${conflicts.length === 1 ? '' : 's'} already registered: ${conflicts.join(', ')}`,
     );
   }
 
-  for (const { provider } of existingProviders) {
+  for (const provider of BUILT_IN_PROVIDERS) {
     registry.register(provider);
   }
 }

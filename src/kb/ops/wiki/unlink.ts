@@ -1,4 +1,4 @@
-import { parseKnowledgeBlocks, serializeKnowledgeBlocks } from '../../corpus/frontmatter.js';
+import { parseKnowledgeBlocks, serializeKnowledgeBlocks, type KnowledgeBlock } from '../../corpus/frontmatter.js';
 import type { KbWikiMutationResponse, KbWikiUnlinkInput } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
@@ -12,7 +12,12 @@ export async function unlinkWikiKnowledge(rt: KbRuntime, input: KbWikiUnlinkInpu
 
   return rewriteWiki(rt, slug, (current) => {
     const blocks = parseKnowledgeBlocks(current.sections.knowledge);
-    const filtered = blocks.filter((block) => !removals.has(block.entryId));
+    const filtered: KnowledgeBlock[] = [];
+    for (const block of blocks) {
+      if (!removals.has(block.entryId)) {
+        filtered.push(block);
+      }
+    }
     if (filtered.length === blocks.length) {
       return undefined;
     }

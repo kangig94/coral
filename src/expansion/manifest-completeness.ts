@@ -8,9 +8,22 @@ export function validateManifestCompleteness(
   roleRegistry: RoleRegistry,
   _capabilityRegistry?: KbCapabilityRegistry,
 ): void {
-  const declared = new Set((manifest.provides?.retrievalRoles ?? []).map((descriptor) => descriptor.id));
-  const registered = new Set(roleRegistry.list().map((record) => record.descriptor.id));
-  const missing = [...declared].filter((id) => !registered.has(id));
+  const registered = new Set<string>();
+  for (const record of roleRegistry.list()) {
+    registered.add(record.descriptor.id);
+  }
+
+  const declared = new Set<string>();
+  const missing: string[] = [];
+  for (const descriptor of manifest.provides?.retrievalRoles ?? []) {
+    if (declared.has(descriptor.id)) {
+      continue;
+    }
+    declared.add(descriptor.id);
+    if (!registered.has(descriptor.id)) {
+      missing.push(descriptor.id);
+    }
+  }
 
   if (missing.length > 0) {
     throw documentedCoralSetupError('role_descriptor_unregistered', {

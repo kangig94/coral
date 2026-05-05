@@ -276,7 +276,9 @@ export function commit(
     };
 
     cb(c);
-    if (collectedInputs.length === 0) return [];
+    if (collectedInputs.length === 0) {
+      return [];
+    }
 
     const baseSeq = readCurrentMaxSeq(db);
     const reservedSeqs = collectedInputs.map((_, slot) => baseSeq + slot + 1);

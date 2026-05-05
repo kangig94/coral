@@ -81,10 +81,14 @@ export function listProjectionDiscussSnapshots(db: Database): ProjectionDiscussR
     )
     .all() as Array<{ state: string; last_seq: number }>;
 
-  return rows.map((row) => ({
-    state: parsePersistedSnapshot(row.state),
-    lastSeq: row.last_seq,
-  }));
+  const snapshots: ProjectionDiscussRow[] = [];
+  for (const row of rows) {
+    snapshots.push({
+      state: parsePersistedSnapshot(row.state),
+      lastSeq: row.last_seq,
+    });
+  }
+  return snapshots;
 }
 
 function topicForEvent(event: CoralEvent<DiscussProjectionBody>, previous: PersistedDiscussSnapshot | null): string {
@@ -171,15 +175,23 @@ function redactTranscriptEntry(entry: TranscriptEntry): DiscussControlTranscript
 }
 
 export function buildControlView(snapshot: PersistedDiscussSnapshot): DiscussControlView {
+  const transcript: DiscussControlTranscriptEntryDto[] = [];
+  for (const entry of snapshot.state.transcript) {
+    transcript.push(redactTranscriptEntry(entry));
+  }
   return {
-    transcript: snapshot.state.transcript.map(redactTranscriptEntry),
+    transcript,
     lastSeq: snapshot.lastAppliedSeq,
   };
 }
 
 export function buildAuditView(snapshot: PersistedDiscussSnapshot): DiscussAuditView {
+  const transcript: TranscriptEntry[] = [];
+  for (const entry of snapshot.state.transcript) {
+    transcript.push(cloneTranscriptEntry(entry));
+  }
   return {
-    transcript: snapshot.state.transcript.map(cloneTranscriptEntry),
+    transcript,
     lastSeq: snapshot.lastAppliedSeq,
   };
 }

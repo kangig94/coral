@@ -156,28 +156,42 @@ export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter
 
   memos.sort((left, right) => right.sortKey - left.sortKey || compareLocale(left.filename, right.filename));
 
+  const listedMemos: KbMemoListResult['memos'] = [];
+  for (const { filename, summary, createdAt, owner } of memos) {
+    listedMemos.push({ filename, summary, createdAt, owner });
+  }
+
   return {
-    memos: memos.map(({ filename, summary, createdAt, owner }) => ({ filename, summary, createdAt, owner })),
+    memos: listedMemos,
   };
 }
 
 export function deleteMemos(storage: MemoStorage, projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
   const dir = memoDir(projectRoot);
   const matcher = globToRegex(input.pattern);
-  const deleted = readMemoDir(storage, projectRoot)
-    .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => matcher.test(filename))
-    .filter((filename) => {
-      if (input.owner === undefined) return true;
+  const deleted: string[] = [];
+
+  for (const filename of readMemoDir(storage, projectRoot)) {
+    if (!filename.endsWith('.md') || !matcher.test(filename)) {
+      continue;
+    }
+
+    if (input.owner !== undefined) {
       try {
         const raw = storage.readFileSync(join(dir, filename), 'utf-8');
         const parsed = parseMemoFrontmatter(raw);
-        return parsed.owner === input.owner;
+        if (parsed.owner !== input.owner) {
+          continue;
+        }
       } catch {
-        return false;
+        continue;
       }
-    })
-    .sort(compareLocale);
+    }
+
+    deleted.push(filename);
+  }
+
+  deleted.sort(compareLocale);
 
   for (const filename of deleted) {
     unlinkIfExists(join(dir, filename), storage);

@@ -97,7 +97,7 @@ export class NeedleArtifactPort implements EngineArtifactPort {
     }
 
     const snapshotDir = needleSnapshotDir(this.runtime.runtimeDir, snapshotId);
-    const manifestPath = needleSnapshotManifestPath(needleSnapshotDir(this.runtime.runtimeDir, snapshotId));
+    const manifestPath = needleSnapshotManifestPath(snapshotDir);
     const storePath = needleSnapshotDbPath(this.runtime.runtimeDir, snapshotId);
     const artifactPaths = [activePointerPath, manifestPath, storePath];
     if (

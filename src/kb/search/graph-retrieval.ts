@@ -94,36 +94,37 @@ function sortedUniqueStrings(values: readonly string[]): string[] {
 }
 
 function stableEntityGraph(graph: EntityGraph): EntityGraph {
+  const entityMetaEntries = Object.entries(graph.entityMeta).sort(([left], [right]) => left.localeCompare(right));
+  const entityMeta: EntityGraph['entityMeta'] = {};
+  for (const [entityName, meta] of entityMetaEntries) {
+    entityMeta[entityName] = {
+      type: meta.type,
+      description: meta.description,
+      ...(meta.aliases === undefined ? {} : { aliases: sortedUniqueStrings(meta.aliases) }),
+    };
+  }
+
+  const relationships: EntityGraph['relationships'] = [];
+  for (const relationship of graph.relationships) {
+    relationships.push({
+      source: relationship.source,
+      target: relationship.target,
+      type: relationship.type,
+      description: relationship.description,
+      evidence: sortedUniqueStrings(relationship.evidence),
+    });
+  }
+  relationships.sort(
+    (left, right) =>
+      left.source.localeCompare(right.source) ||
+      left.target.localeCompare(right.target) ||
+      left.type.localeCompare(right.type) ||
+      left.description.localeCompare(right.description),
+  );
+
   return {
-    entityMeta: Object.fromEntries(
-      Object.entries(graph.entityMeta)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([entityName, meta]) => [
-          entityName,
-          {
-            type: meta.type,
-            description: meta.description,
-            ...(meta.aliases === undefined
-              ? {}
-              : { aliases: sortedUniqueStrings(meta.aliases) }),
-          },
-        ]),
-    ),
-    relationships: [...graph.relationships]
-      .map((relationship) => ({
-        source: relationship.source,
-        target: relationship.target,
-        type: relationship.type,
-        description: relationship.description,
-        evidence: sortedUniqueStrings(relationship.evidence),
-      }))
-      .sort(
-        (left, right) =>
-          left.source.localeCompare(right.source) ||
-          left.target.localeCompare(right.target) ||
-          left.type.localeCompare(right.type) ||
-          left.description.localeCompare(right.description),
-      ),
+    entityMeta,
+    relationships,
   };
 }
 
@@ -209,18 +210,20 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
 
   const adjacency = new Map<string, GraphNeighbor[]>();
   for (const entityName of Object.keys(currentGraph.entityMeta)) {
-    const neighbors = [...(adjacencyBuilders.get(entityName)?.entries() ?? [])]
-      .map(([neighbor, attributes]) => ({
+    const neighbors: GraphNeighbor[] = [];
+    for (const [neighbor, attributes] of adjacencyBuilders.get(entityName)?.entries() ?? []) {
+      neighbors.push({
         entity: neighbor,
         weight: attributes.weight,
         relationshipTypes: [...attributes.relationshipTypes].sort((left, right) => left.localeCompare(right)),
-      }))
-      .sort(
-        (left, right) =>
-          right.weight - left.weight ||
-          left.entity.localeCompare(right.entity) ||
-          left.relationshipTypes.join('\u0000').localeCompare(right.relationshipTypes.join('\u0000')),
-      );
+      });
+    }
+    neighbors.sort(
+      (left, right) =>
+        right.weight - left.weight ||
+        left.entity.localeCompare(right.entity) ||
+        left.relationshipTypes.join('\u0000').localeCompare(right.relationshipTypes.join('\u0000')),
+    );
     adjacency.set(entityName, neighbors);
   }
 

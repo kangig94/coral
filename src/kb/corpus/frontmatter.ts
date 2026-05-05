@@ -72,7 +72,11 @@ function normalizeStringList(value: unknown, field: string): string[] {
     throw new Error(`${field} must be a string array`);
   }
 
-  return value.map((entry) => assertNonEmptyText(entry, field));
+  const normalized: string[] = [];
+  for (const entry of value) {
+    normalized.push(assertNonEmptyText(entry, field));
+  }
+  return normalized;
 }
 
 function normalizeOptionalEntrySeq(value: unknown): number | undefined {
@@ -105,14 +109,16 @@ export function normalizeCommunityChildren(value: unknown): string[] | undefined
     return undefined;
   }
 
-  return normalizeStringList(value, 'children').map((entry) => {
+  const children: string[] = [];
+  for (const entry of normalizeStringList(value, 'children')) {
     const normalized = parseKbEntryId(entry);
     if (normalized === null || !normalized.startsWith('community:')) {
       throw new Error('children must contain community entry IDs');
     }
 
-    return normalized;
-  });
+    children.push(normalized);
+  }
+  return children;
 }
 
 export function normalizePrincipleReference(value: string): string {
@@ -126,7 +132,11 @@ export function normalizePrincipleReference(value: string): string {
 }
 
 function normalizePrincipleReferenceList(value: unknown, field: string): string[] {
-  return normalizeStringList(value, field).map(normalizePrincipleReference);
+  const principles: string[] = [];
+  for (const entry of normalizeStringList(value, field)) {
+    principles.push(normalizePrincipleReference(entry));
+  }
+  return principles;
 }
 
 function normalizePrincipleList(value: unknown): string[] {
@@ -134,13 +144,15 @@ function normalizePrincipleList(value: unknown): string[] {
 }
 
 function normalizeEntryIdList(value: unknown, field: string): KbEntryId[] {
-  return normalizeStringList(value, field).map((entry) => {
+  const normalizedEntries: KbEntryId[] = [];
+  for (const entry of normalizeStringList(value, field)) {
     const normalized = parseKbEntryId(entry);
     if (normalized === null) {
       throw new Error(`${field} must contain KB entry IDs`);
     }
-    return normalized;
-  });
+    normalizedEntries.push(normalized);
+  }
+  return normalizedEntries;
 }
 
 function normalizeRelatedList(value: unknown): KbEntryId[] {
@@ -148,13 +160,15 @@ function normalizeRelatedList(value: unknown): KbEntryId[] {
     return [];
   }
 
-  return normalizeStringList(value, 'related').map((entry) => {
+  const related: KbEntryId[] = [];
+  for (const entry of normalizeStringList(value, 'related')) {
     const normalized = vaultLinkToEntryId(entry);
     if (normalized === null) {
       throw new Error('related must contain vault-relative wikilinks');
     }
-    return normalized;
-  });
+    related.push(normalized);
+  }
+  return related;
 }
 
 function serializeFrontmatterRecord(record: Record<string, unknown>): string {
@@ -238,7 +252,10 @@ export function parseMemoFrontmatter(content: string): { source: string[]; owner
   if (typeof source === 'string') {
     parsedSource = [assertNonEmptyText(source, 'source')];
   } else if (isStringArray(source) && source.length > 0) {
-    parsedSource = source.map((entry) => assertNonEmptyText(entry, 'source'));
+    parsedSource = [];
+    for (const entry of source) {
+      parsedSource.push(assertNonEmptyText(entry, 'source'));
+    }
   } else {
     throw new Error('Memo frontmatter must include source as a string or non-empty string array');
   }
@@ -274,6 +291,10 @@ export function serializeMemoFrontmatter(fields: { source: string; owner: string
 export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
   const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
   const related = normalizeEntryIdList(meta.related ?? [], 'related');
+  const relatedLinks: string[] = [];
+  for (const entry of related) {
+    relatedLinks.push(entryIdToVaultLink(entry));
+  }
   return serializeFrontmatterRecord({
     tags: normalizeStringList(meta.tags, 'tags'),
     principles: normalizePrincipleList(meta.principles),
@@ -281,7 +302,7 @@ export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
     ...(entrySeq === undefined ? {} : { entrySeq }),
-    ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+    ...(relatedLinks.length === 0 ? {} : { related: relatedLinks }),
   });
 }
 
@@ -289,6 +310,10 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
   const url = normalizeOptionalNonEmptyText(meta.url, 'url');
   const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
   const related = normalizeEntryIdList(meta.related ?? [], 'related');
+  const relatedLinks: string[] = [];
+  for (const entry of related) {
+    relatedLinks.push(entryIdToVaultLink(entry));
+  }
   return serializeFrontmatterRecord({
     title: assertNonEmptyText(meta.title, 'title'),
     type: assertNonEmptyText(meta.type, 'type'),
@@ -296,7 +321,7 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
     ...(url === undefined ? {} : { url }),
     importedAt: assertNonEmptyText(meta.importedAt, 'importedAt'),
     ...(entrySeq === undefined ? {} : { entrySeq }),
-    ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+    ...(relatedLinks.length === 0 ? {} : { related: relatedLinks }),
   });
 }
 
@@ -360,11 +385,14 @@ export function deriveNoteIdentity(pathOrName: string): KbNoteIdentity {
 export function parseMembersFromBody(body: string): string[] {
   const membersMatch = body.match(/## Members\s*\n([\s\S]*?)(?:\n##|\n*$)/);
   if (!membersMatch) return [];
-  return membersMatch[1]
-    .split('\n')
-    .map((line) => line.replace(/^-\s*#?/, '').trim())
-    .filter((member) => member.length > 0)
-    .sort(compareLocale);
+  const members: string[] = [];
+  for (const line of membersMatch[1].split('\n')) {
+    const member = line.replace(/^-\s*#?/, '').trim();
+    if (member.length > 0) {
+      members.push(member);
+    }
+  }
+  return members.sort(compareLocale);
 }
 
 export function parseSummaryFromBody(body: string): string | undefined {
@@ -400,9 +428,15 @@ export function parseWikiBody(body: string): WikiBodySections {
     }
   }
 
-  const ordered = WIKI_BODY_HEADERS.map((header) => byHeader.get(header) as RegExpMatchArray);
-  if (!ordered.every((match, index) => (match.index ?? -1) === matches[index]?.index)) {
-    throw new Error('Wiki body headers must appear in Understanding, Knowledge order');
+  const ordered: RegExpMatchArray[] = [];
+  for (const header of WIKI_BODY_HEADERS) {
+    ordered.push(byHeader.get(header) as RegExpMatchArray);
+  }
+  for (let index = 0; index < ordered.length; index += 1) {
+    const match = ordered[index];
+    if ((match.index ?? -1) !== matches[index]?.index) {
+      throw new Error('Wiki body headers must appear in Understanding, Knowledge order');
+    }
   }
 
   const firstHeaderIndex = ordered[0].index ?? 0;
@@ -473,9 +507,11 @@ export function parseKnowledgeBlocks(knowledge: string): KnowledgeBlock[] {
 }
 
 export function serializeKnowledgeBlocks(blocks: readonly KnowledgeBlock[]): string {
-  return blocks
-    .map((block) => (block.evidence.length === 0 ? block.header : `${block.header}\n${block.evidence.join('\n')}`))
-    .join('\n');
+  const rendered: string[] = [];
+  for (const block of blocks) {
+    rendered.push(block.evidence.length === 0 ? block.header : `${block.header}\n${block.evidence.join('\n')}`);
+  }
+  return rendered.join('\n');
 }
 
 export function serializeNote(meta: KbNoteFrontmatter, title: string, body: string): string {

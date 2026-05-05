@@ -190,13 +190,16 @@ export function buildClaudeEnvHash(
     return envHashCache.hash;
   }
 
-  const childEnv = {
-    ...Object.fromEntries(
-      Object.entries(baseEnv).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
-    ),
-    ...normalizeControllerEnv(controllerEnv),
-    CORAL_CHILD: '1',
-  };
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (typeof value === 'string' && !key.startsWith('CORAL_')) {
+      childEnv[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(normalizeControllerEnv(controllerEnv))) {
+    childEnv[key] = value;
+  }
+  childEnv.CORAL_CHILD = '1';
   const hash = hashSortedEnv(childEnv);
   envHashCache = { controllerEnv, baseEnv, hash };
   return hash;

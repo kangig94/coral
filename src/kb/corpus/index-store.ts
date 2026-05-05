@@ -84,7 +84,11 @@ function parseNonEmptyStringArray(
     throw new Error(errorMessageText);
   }
 
-  return value.map((entry, index) => assertNonEmptyText(entry, `${field}[${index}]`));
+  const entries: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    entries.push(assertNonEmptyText(value[index], `${field}[${index}]`));
+  }
+  return entries;
 }
 
 export function parseEntityType(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityType {
@@ -111,25 +115,22 @@ export function parseEntityMetaMap(
     throw new Error(errorMessageText);
   }
 
-  return Object.fromEntries(
-    Object.entries(value).map(([entityName, rawMeta]) => {
-      if (!isRecord(rawMeta)) {
-        throw new Error(errorMessageText);
-      }
+  const entityMeta: Record<string, EntityMeta> = {};
+  for (const [entityName, rawMeta] of Object.entries(value)) {
+    if (!isRecord(rawMeta)) {
+      throw new Error(errorMessageText);
+    }
 
-      const aliases = rawMeta.aliases;
-      return [
-        assertNonEmptyText(entityName, 'entityMeta key'),
-        {
-          type: parseEntityType(rawMeta.type, errorMessageText),
-          description: assertNonEmptyText(rawMeta.description, 'entity description'),
-          ...(aliases === undefined
-            ? {}
-            : { aliases: parseNonEmptyStringArray(aliases, `entityMeta.${entityName}.aliases`, errorMessageText) }),
-        },
-      ];
-    }),
-  );
+    const aliases = rawMeta.aliases;
+    entityMeta[assertNonEmptyText(entityName, 'entityMeta key')] = {
+      type: parseEntityType(rawMeta.type, errorMessageText),
+      description: assertNonEmptyText(rawMeta.description, 'entity description'),
+      ...(aliases === undefined
+        ? {}
+        : { aliases: parseNonEmptyStringArray(aliases, `entityMeta.${entityName}.aliases`, errorMessageText) }),
+    };
+  }
+  return entityMeta;
 }
 
 export function parseEntityRelationships(
@@ -140,12 +141,14 @@ export function parseEntityRelationships(
     throw new Error(errorMessageText);
   }
 
-  return value.map((rawRelationship, index) => {
+  const relationships: EntityRelationship[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const rawRelationship = value[index];
     if (!isRecord(rawRelationship)) {
       throw new Error(errorMessageText);
     }
 
-    return {
+    relationships.push({
       source: assertNonEmptyText(rawRelationship.source, `relationships[${index}].source`),
       target: assertNonEmptyText(rawRelationship.target, `relationships[${index}].target`),
       type: parseRelationshipType(rawRelationship.type, errorMessageText),
@@ -155,19 +158,22 @@ export function parseEntityRelationships(
         `relationships[${index}].evidence`,
         errorMessageText,
       ),
-    };
-  });
+    });
+  }
+  return relationships;
 }
 
 function parseEntryIdArray(value: unknown): KbEntryId[] {
   const values = parseStringArray(value);
-  return values.map((entryId) => {
+  const entryIds: KbEntryId[] = [];
+  for (const entryId of values) {
     const normalized = parseKbEntryId(entryId);
     if (normalized === null) {
       throw new Error('Invalid KB index');
     }
-    return normalized;
-  });
+    entryIds.push(normalized);
+  }
+  return entryIds;
 }
 
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
@@ -316,8 +322,10 @@ export function parseIndexState(value: unknown): KbIndexState {
   }
 
   const allowedKeys = new Set(['contentSeq', 'metadataSeq', 'textStaleReason']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw new Error('Invalid KB index state');
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error('Invalid KB index state');
+    }
   }
 
   const { contentSeq, metadataSeq, textStaleReason } = value;

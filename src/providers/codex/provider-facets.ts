@@ -25,6 +25,7 @@ const CODEX_APP_SERVER_UPGRADE_MESSAGE =
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 const CODEX_ROLLOUT_SCAN_DEPTH = 4;
+const CODEX_AUTH_TOKEN_KEYS = ['access_token', 'refresh_token', 'id_token'] as const;
 
 type PreflightCacheEntry = {
   available: boolean;
@@ -218,7 +219,7 @@ function hasCodexAuthTokens(value: unknown): boolean {
     return false;
   }
 
-  return ['access_token', 'refresh_token', 'id_token'].some((key) => {
+  return CODEX_AUTH_TOKEN_KEYS.some((key) => {
     const token = (tokens as Record<string, unknown>)[key];
     return typeof token === 'string' && token.trim().length > 0;
   });

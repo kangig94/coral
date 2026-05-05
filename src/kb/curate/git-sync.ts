@@ -138,9 +138,13 @@ export function createGitSyncController({
   }
 
   function kbGitPaths(): string[] {
-    return ['notes/', 'sources/', 'principles/', 'communities/', 'wiki/', '.entity-graph.json', '.gitignore'].filter(
-      (entry) => storagePort.existsSync(join(root, entry.replace(/\/$/, ''))),
-    );
+    const paths: string[] = [];
+    for (const entry of ['notes/', 'sources/', 'principles/', 'communities/', 'wiki/', '.entity-graph.json', '.gitignore']) {
+      if (storagePort.existsSync(join(root, entry.replace(/\/$/, '')))) {
+        paths.push(entry);
+      }
+    }
+    return paths;
   }
 
   function readHead(): string | null {
@@ -154,10 +158,11 @@ export function createGitSyncController({
   function parseNameStatusDiff(raw: string): GitSyncPathChange[] | null {
     const changes: GitSyncPathChange[] = [];
 
-    for (const line of raw
-      .split('\n')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry !== '')) {
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (line === '') {
+        continue;
+      }
       const columns = line.split('\t');
       const status = columns[0] ?? '';
       if (status === 'A') {
@@ -240,7 +245,19 @@ export function createGitSyncController({
         /* no file */
       }
       const lines = existing.split('\n');
-      const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
+      const missing: string[] = [];
+      for (const entry of GITIGNORE_ENTRIES) {
+        let present = false;
+        for (const line of lines) {
+          if (line.trim() === entry) {
+            present = true;
+            break;
+          }
+        }
+        if (!present) {
+          missing.push(entry);
+        }
+      }
       if (missing.length === 0) {
         return;
       }

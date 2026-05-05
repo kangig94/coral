@@ -37,13 +37,13 @@ export function resolveAgentName(agents: Record<string, AgentState>, name: strin
 }
 
 function collectSubmittedBids(state: DiscussState): Record<string, number> {
-  const entries: Array<[string, number]> = [];
+  const bids: Record<string, number> = {};
   for (const [name, value] of Object.entries(state.current_bids)) {
     if (!state.agents[name]?.banned && typeof value === 'number') {
-      entries.push([name, value]);
+      bids[name] = value;
     }
   }
-  return Object.fromEntries(entries);
+  return bids;
 }
 
 export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
@@ -65,7 +65,11 @@ export function computeEffectiveBids(
 
   const imbalanceWeight = 100 / participantCount;
   const recencyWeight = 50 / participantCount;
-  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / participantCount;
+  let totalSpeaks = 0;
+  for (const name of names) {
+    totalSpeaks += agents[name].total_speaks;
+  }
+  const averageSpeaks = totalSpeaks / participantCount;
 
   const effective: Record<string, number> = {};
   for (const name of names) {
@@ -214,12 +218,19 @@ export function decideBidRoundClose(
     return { ok: false, error: 'invalid_status', detail: { current: state.status } };
   }
 
-  const requiredAgents = Object.entries(state.agents).filter(
-    ([, agent]) => !agent.banned && agent.participation === 'required',
-  );
-  const missing = requiredAgents
-    .map(([name]) => name)
-    .filter((name) => state.current_bids[name] === null || state.current_bids[name] === undefined);
+  const missing: string[] = [];
+  let allRequiredAgentsExhausted = true;
+  for (const [name, agent] of Object.entries(state.agents)) {
+    if (agent.banned || agent.participation !== 'required') {
+      continue;
+    }
+    if (state.current_bids[name] === null || state.current_bids[name] === undefined) {
+      missing.push(name);
+    }
+    if (agent.quota_remaining !== 0) {
+      allRequiredAgentsExhausted = false;
+    }
+  }
 
   if (missing.length > 0) {
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
@@ -282,7 +293,13 @@ export function decideBidRoundClose(
     };
   }
 
-  const allBelowThreshold = Object.values(allBids).every((score) => score < threshold);
+  let allBelowThreshold = true;
+  for (const score of Object.values(allBids)) {
+    if (score >= threshold) {
+      allBelowThreshold = false;
+      break;
+    }
+  }
   if (allBelowThreshold) {
     if (state.cold_start) {
       const picked = coldStartPick(state);
@@ -302,8 +319,7 @@ export function decideBidRoundClose(
     };
   }
 
-  const allExhausted = requiredAgents.every(([, agent]) => agent.quota_remaining === 0);
-  if (!allExhausted) {
+  if (!allRequiredAgentsExhausted) {
     return {
       ok: true,
       value: makeNoWinnerTerminalEvent('all_blocked'),

@@ -59,28 +59,34 @@ function renderBidRows(
   effectiveBids?: Record<string, number>,
 ): string {
   const hasEffectiveBids = effectiveBids !== null && effectiveBids !== undefined;
-  const rows = Object.entries(bids)
-    .sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
-      const lhs = effectiveBids?.[lhsName] ?? lhsRaw;
-      const rhs = effectiveBids?.[rhsName] ?? rhsRaw;
-      return rhs - lhs;
-    })
-    .map(([name, score]) => {
-      const displayName = agents[name]?.display_name ?? name;
-      const quota = agents[name]?.quota_remaining ?? '?';
-      if (!hasEffectiveBids) {
-        return `| ${displayName} (${name}) | ${score} | ${quota} |`;
-      }
-      const effective = effectiveBids?.[name] ?? score;
-      const effectiveText = Number.isInteger(effective) ? String(effective) : effective.toFixed(1);
-      return `| ${displayName} (${name}) | ${score} | ${effectiveText} | ${quota} |`;
-    });
+  const bidEntries = Object.entries(bids).sort(([lhsName, lhsRaw], [rhsName, rhsRaw]) => {
+    const lhs = effectiveBids?.[lhsName] ?? lhsRaw;
+    const rhs = effectiveBids?.[rhsName] ?? rhsRaw;
+    return rhs - lhs;
+  });
+
+  const rows: string[] = [];
+  for (const [name, score] of bidEntries) {
+    const displayName = agents[name]?.display_name ?? name;
+    const quota = agents[name]?.quota_remaining ?? '?';
+    if (!hasEffectiveBids) {
+      rows.push(`| ${displayName} (${name}) | ${score} | ${quota} |`);
+      continue;
+    }
+    const effective = effectiveBids?.[name] ?? score;
+    const effectiveText = Number.isInteger(effective) ? String(effective) : effective.toFixed(1);
+    rows.push(`| ${displayName} (${name}) | ${score} | ${effectiveText} | ${quota} |`);
+  }
 
   return rows.join('\n');
 }
 
 export function renderEntries(entries: TranscriptEntry[], agents: Record<string, AgentState>): string {
-  return entries.map((e) => renderEntry(e, agents)).join('');
+  let rendered = '';
+  for (const entry of entries) {
+    rendered += renderEntry(entry, agents);
+  }
+  return rendered;
 }
 
 export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {

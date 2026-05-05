@@ -76,18 +76,18 @@ export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph
     edgeWeights.set(key, (edgeWeights.get(key) ?? 0) + contribution);
   }
 
-  const edges = [...edgeWeights.entries()]
-    .map(([key, weight]) => {
-      const [left, right] = parseEdgeKey(key);
-      return { left, right, weight };
-    })
-    .sort((left, right) => {
-      const leftCompare = compareLocale(left.left, right.left);
-      if (leftCompare !== 0) {
-        return leftCompare;
-      }
-      return compareLocale(left.right, right.right);
-    });
+  const edges: TagGraph['edges'] = [];
+  for (const [key, weight] of edgeWeights.entries()) {
+    const [left, right] = parseEdgeKey(key);
+    edges.push({ left, right, weight });
+  }
+  edges.sort((left, right) => {
+    const leftCompare = compareLocale(left.left, right.left);
+    if (leftCompare !== 0) {
+      return leftCompare;
+    }
+    return compareLocale(left.right, right.right);
+  });
 
   const adjacency = new Map<string, Map<string, number>>();
   for (const tag of sortedTags) {
@@ -119,9 +119,13 @@ export function buildEntityRelationshipGraphFromIndex(index: KbIndex): TagGraph 
 }
 
 export function computeGraphFingerprint(graph: TagGraph): string {
-  const payload = [
-    ...graph.tags.map((tag) => `N\t${tag}`),
-    ...graph.edges.map((edge) => `${edge.left}\t${edge.right}\t${formatEdgeWeight(edge.weight)}`),
-  ].join('\n');
+  const lines: string[] = [];
+  for (const tag of graph.tags) {
+    lines.push(`N\t${tag}`);
+  }
+  for (const edge of graph.edges) {
+    lines.push(`${edge.left}\t${edge.right}\t${formatEdgeWeight(edge.weight)}`);
+  }
+  const payload = lines.join('\n');
   return createHash('sha256').update(payload).digest('hex');
 }

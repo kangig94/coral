@@ -114,31 +114,37 @@ export function compareRetrievalRoleHits(
 export function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: number }>(
   hits: readonly T[],
 ): Array<T & { rank: number }> {
-  return [...hits].sort(compareRetrievalRoleHits).map((hit, index) => ({
-    ...hit,
-    rank: index + 1,
-  }));
+  const ranked = [...hits].sort(compareRetrievalRoleHits);
+  const output: Array<T & { rank: number }> = [];
+  for (let index = 0; index < ranked.length; index += 1) {
+    output.push({
+      ...ranked[index]!,
+      rank: index + 1,
+    });
+  }
+  return output;
 }
 
 export function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
+  const filtered: T[] = [];
   if (scope === 'all') {
     // Communities are meta-documents: include them only when explicitly requested.
-    return hits.filter((hit) => hit.kind !== 'community');
+    for (const hit of hits) {
+      if (hit.kind !== 'community') {
+        filtered.push(hit);
+      }
+    }
+    return filtered;
   }
 
-  if (scope === 'notes') {
-    return hits.filter((hit) => hit.kind === 'note');
+  const targetKind =
+    scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : scope === 'communities' ? 'community' : 'wiki';
+  for (const hit of hits) {
+    if (hit.kind === targetKind) {
+      filtered.push(hit);
+    }
   }
-
-  if (scope === 'sources') {
-    return hits.filter((hit) => hit.kind === 'source');
-  }
-
-  if (scope === 'wiki') {
-    return hits.filter((hit) => hit.kind === 'wiki');
-  }
-
-  return hits.filter((hit) => hit.kind === 'community');
+  return filtered;
 }
 
 function isSearchableHit(hit: ResolvedKbSearchHit, communitiesFresh: boolean): boolean {
@@ -158,7 +164,13 @@ function isSearchableHit(hit: ResolvedKbSearchHit, communitiesFresh: boolean): b
 }
 
 export function filterSearchableHits(hits: ResolvedKbSearchHit[], communitiesFresh: boolean): ResolvedKbSearchHit[] {
-  return hits.filter((hit) => isSearchableHit(hit, communitiesFresh));
+  const searchableHits: ResolvedKbSearchHit[] = [];
+  for (const hit of hits) {
+    if (isSearchableHit(hit, communitiesFresh)) {
+      searchableHits.push(hit);
+    }
+  }
+  return searchableHits;
 }
 
 export function rerankHits<T extends { score: number; kind: KbResult['kind']; slug: string }>(hits: T[]): T[] {
@@ -233,8 +245,9 @@ function degradedTextRoleSearchResult(): RoleSearchResult {
 }
 
 function textRoleSearchResult(hits: readonly ResolvedKbSearchHit[]): RoleSearchResult {
-  return {
-    hits: rankRetrievalRoleHits(hits).map((hit) => ({
+  const rankedHits: RoleSearchResult['hits'] = [];
+  for (const hit of rankRetrievalRoleHits(hits)) {
+    rankedHits.push({
       entryId: hit.entryId,
       slug: hit.slug,
       kind: hit.kind,
@@ -244,7 +257,11 @@ function textRoleSearchResult(hits: readonly ResolvedKbSearchHit[]): RoleSearchR
       rank: hit.rank,
       score: hit.score,
       document: hit.document,
-    })),
+    });
+  }
+
+  return {
+    hits: rankedHits,
   };
 }
 
@@ -274,7 +291,9 @@ async function searchTextRoleHits(rt: KbRuntime, ctx: RoleQueryContext): Promise
   const resolvedHits: ResolvedKbSearchHit[] = [];
   let limit = ctx.topK;
   let result = await fts.search(normalizedQuery, limit, ctx.scope);
-  resolvedHits.push(...result.hits.map((hit) => resolveHit(hit, index)));
+  for (const hit of result.hits) {
+    resolvedHits.push(resolveHit(hit, index));
+  }
 
   while (shouldContinueWidening(result.hits, resolvedHits, communitiesFresh, ctx.scope, ctx.topK, result.exhausted)) {
     const prevCount = result.hits.length;

@@ -68,7 +68,12 @@ function markdownDirModifiedAfter(
     return true;
   }
 
-  return files.some((file) => fileModifiedAfter(storagePort, file.path, threshold));
+  for (const file of files) {
+    if (fileModifiedAfter(storagePort, file.path, threshold)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function fileModifiedAfter(storagePort: StoragePort, filePath: string, threshold: bigint): boolean {
@@ -413,15 +418,25 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
     const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
     const retryQueue = readCurateRetryQueue(curateDb(kb));
-    const pendingRepairIds = new Set(retryQueue.map((entry) => entry.entryId));
+    const pendingRepairIds = new Set<string>();
+    for (const entry of retryQueue) {
+      pendingRepairIds.add(entry.entryId);
+    }
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (currentIndex !== null) {
       externalMutation = mergeMutationLane(externalMutation, detectEntityGraphDrift(scan.entityGraph, currentIndex));
     }
 
-    const principleFiles = scan.markdownFiles.filter((file) => file.kind === 'principle');
-    const communityFiles = scan.markdownFiles.filter((file) => file.kind === 'community');
+    const principleFiles: CorpusMarkdownFileScan[] = [];
+    const communityFiles: CorpusMarkdownFileScan[] = [];
+    for (const file of scan.markdownFiles) {
+      if (file.kind === 'principle') {
+        principleFiles.push(file);
+      } else if (file.kind === 'community') {
+        communityFiles.push(file);
+      }
+    }
     if (
       markdownDirModifiedAfter(kb.storagePort, kb.principlesDir(), principleFiles, indexMtime) ||
       markdownDirModifiedAfter(kb.storagePort, kb.communitiesDir(), communityFiles, indexMtime)
@@ -483,9 +498,9 @@ function graphsEqual(left: EntityGraph, right: EntityGraph): boolean {
 }
 
 function canonicalEntityMeta(entityMeta: EntityGraph['entityMeta']): string {
-  const sortedEntries = Object.entries(entityMeta)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, meta]) => [
+  const sortedEntries: unknown[] = [];
+  for (const [name, meta] of Object.entries(entityMeta).sort(([left], [right]) => left.localeCompare(right))) {
+    sortedEntries.push([
       name,
       {
         type: meta.type,
@@ -493,19 +508,28 @@ function canonicalEntityMeta(entityMeta: EntityGraph['entityMeta']): string {
         ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases].sort((a, b) => a.localeCompare(b)) }),
       },
     ]);
+  }
   return JSON.stringify(sortedEntries);
 }
 
 function canonicalRelationships(relationships: readonly EntityRelationship[]): string {
   // Order is significant: relationships[0] vs [1] are distinct entries in the
   // index. Sorting would mask reorders that are real authority writes.
-  return JSON.stringify(
-    relationships.map((relationship) => ({
+  const serialized: Array<{
+    source: string;
+    target: string;
+    type: EntityRelationship['type'];
+    description: string;
+    evidence: string[];
+  }> = [];
+  for (const relationship of relationships) {
+    serialized.push({
       source: relationship.source,
       target: relationship.target,
       type: relationship.type,
       description: relationship.description,
       evidence: [...relationship.evidence],
-    })),
-  );
+    });
+  }
+  return JSON.stringify(serialized);
 }

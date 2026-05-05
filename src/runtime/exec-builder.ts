@@ -21,23 +21,24 @@ type ExecKillReason = 'timeout' | 'maxBuffer';
 
 function appendOutput(
   current: string,
+  currentBytes: number,
   chunk: string | Buffer,
   encoding: 'utf-8',
   maxBuffer: number,
   wrapperKilled: ExecKillReason | null,
-): { next: string; overflowed: boolean } {
+): { next: string; nextBytes: number; overflowed: boolean } {
   if (wrapperKilled !== null) {
-    return { next: current, overflowed: false };
+    return { next: current, nextBytes: currentBytes, overflowed: false };
   }
 
   const text = typeof chunk === 'string' ? chunk : chunk.toString(encoding);
-  const currentBytes = Buffer.byteLength(current, encoding);
   const chunkBytes = Buffer.byteLength(text, encoding);
   if (currentBytes + chunkBytes <= maxBuffer) {
-    return { next: current + text, overflowed: false };
+    return { next: current + text, nextBytes: currentBytes + chunkBytes, overflowed: false };
   }
 
   let next = current;
+  let nextBytes = currentBytes;
   let remainingBytes = maxBuffer - currentBytes;
   if (remainingBytes > 0) {
     for (const character of text) {
@@ -46,11 +47,12 @@ function appendOutput(
         break;
       }
       next += character;
+      nextBytes += characterBytes;
       remainingBytes -= characterBytes;
     }
   }
 
-  return { next, overflowed: true };
+  return { next, nextBytes, overflowed: true };
 }
 
 export function buildExecPromise(options: BuildExecPromiseOptions): Promise<ExecResult> {
@@ -60,6 +62,8 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
   return new Promise<ExecResult>((resolveResult) => {
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let resolved = false;
     let timeoutHandle: TimerHandle | null = null;
     let killTimer: TimerHandle | null = null;
@@ -109,8 +113,9 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     if (child.stdout) {
       child.stdout.setEncoding(encoding);
       child.stdout.on('data', (chunk) => {
-        const result = appendOutput(stdout, chunk, encoding, maxBuffer, wrapperKilled);
+        const result = appendOutput(stdout, stdoutBytes, chunk, encoding, maxBuffer, wrapperKilled);
         stdout = result.next;
+        stdoutBytes = result.nextBytes;
         if (result.overflowed) {
           scheduleKill('maxBuffer');
         }
@@ -120,8 +125,9 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     if (child.stderr) {
       child.stderr.setEncoding(encoding);
       child.stderr.on('data', (chunk) => {
-        const result = appendOutput(stderr, chunk, encoding, maxBuffer, wrapperKilled);
+        const result = appendOutput(stderr, stderrBytes, chunk, encoding, maxBuffer, wrapperKilled);
         stderr = result.next;
+        stderrBytes = result.nextBytes;
         if (result.overflowed) {
           scheduleKill('maxBuffer');
         }

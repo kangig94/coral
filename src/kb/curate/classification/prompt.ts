@@ -47,7 +47,19 @@ export type ClassificationPromptVocabularyInput = readonly string[] | readonly C
 export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
 function buildFlatList(values: string[]): string {
-  return values.map((value) => `- ${value}`).join('\n');
+  const lines: string[] = [];
+  for (const value of values) {
+    lines.push(`- ${value}`);
+  }
+  return lines.join('\n');
+}
+
+function buildGuidanceList(values: ReadonlyArray<readonly [string, string]>): string {
+  const lines: string[] = [];
+  for (const [type, description] of values) {
+    lines.push(`${type}: ${description}`);
+  }
+  return buildFlatList(lines);
 }
 
 function tokenizeLowercaseText(value: string): string[] {
@@ -135,33 +147,42 @@ function buildClassificationPromptVocabulary(
   const { liveTags, tokenSet } = buildClassificationContext(entries, index);
   const relationships = index.relationships;
 
-  const ranked = entityNames
-    .map((name) => {
-      const meta = entityMeta[name];
-      const relevantByRelationship = relationships.some(
-        (relationship) =>
-          (relationship.source === name && liveTags.has(relationship.target)) ||
-          (relationship.target === name && liveTags.has(relationship.source)),
-      );
-      const relevant =
-        liveTags.has(name) ||
-        relevantByRelationship ||
-        classificationEntityNameSegments(name).some((segment) => tokenSet.has(segment));
+  const ranked: ClassificationPromptVocabularyEntry[] = [];
+  for (const name of entityNames) {
+    const meta = entityMeta[name];
+    let relevantByRelationship = false;
+    for (const relationship of relationships) {
+      if (
+        (relationship.source === name && liveTags.has(relationship.target)) ||
+        (relationship.target === name && liveTags.has(relationship.source))
+      ) {
+        relevantByRelationship = true;
+        break;
+      }
+    }
 
-      return {
-        name,
-        type: meta.type,
-        description: meta.description,
-        relevant,
-        support: support.get(name) ?? 0,
-      };
-    })
-    .sort(
-      (left, right) =>
-        Number(right.relevant) - Number(left.relevant) ||
-        right.support - left.support ||
-        compareLocale(left.name, right.name),
-    );
+    let relevantByToken = false;
+    for (const segment of classificationEntityNameSegments(name)) {
+      if (tokenSet.has(segment)) {
+        relevantByToken = true;
+        break;
+      }
+    }
+
+    ranked.push({
+      name,
+      type: meta.type,
+      description: meta.description,
+      relevant: liveTags.has(name) || relevantByRelationship || relevantByToken,
+      support: support.get(name) ?? 0,
+    });
+  }
+  ranked.sort(
+    (left, right) =>
+      Number(right.relevant) - Number(left.relevant) ||
+      right.support - left.support ||
+      compareLocale(left.name, right.name),
+  );
 
   const selected: ClassificationPromptVocabularyEntry[] = [];
   let consumedTokens = 0;
@@ -234,13 +255,15 @@ function renderClassificationPromptVocabulary(vocabulary: ClassificationPromptVo
     return '- (none yet)';
   }
 
-  return normalized
-    .map((entry) =>
+  const lines: string[] = [];
+  for (const entry of normalized) {
+    lines.push(
       entry.relevant && entry.description
         ? `- ${entry.name}: ${entry.type} (${entry.description})`
         : `- ${entry.name}: ${entry.type}`,
-    )
-    .join('\n');
+    );
+  }
+  return lines.join('\n');
 }
 
 export function buildPrincipleNames(index: KbIndex): string[] {
@@ -253,17 +276,22 @@ export function buildClassificationPrompt(
   principleNames: string[],
 ): string {
   const shape = classificationBatchShape(entries);
-  const entryBlocks = entries.map(renderClassificationEntryBlock);
+  const sections = [buildClassificationPromptHeader(shape, tagVocab, principleNames)];
+  for (const entry of entries) {
+    sections.push(renderClassificationEntryBlock(entry));
+  }
+  sections.push(buildClassificationPromptFooter(shape));
 
-  return [
-    buildClassificationPromptHeader(shape, tagVocab, principleNames),
-    ...entryBlocks,
-    buildClassificationPromptFooter(shape),
-  ].join('\n\n');
+  return sections.join('\n\n');
 }
 
 function classificationBatchShape(entries: CurateClaimedEntry[]): ClassificationBatchShape {
-  return entries.some((entry) => entry.kind === 'note') ? 'note-or-mixed' : 'source-only';
+  for (const entry of entries) {
+    if (entry.kind === 'note') {
+      return 'note-or-mixed';
+    }
+  }
+  return 'source-only';
 }
 
 function renderClassificationEntryBlock(entry: CurateClaimedEntry): string {
@@ -283,9 +311,9 @@ function buildClassificationPromptHeader(
     'If you introduce a tag that is not already in the existing entity vocabulary, include it in newEntities with a valid type and a one-sentence description.',
     "Extract directed relationships observed in the document between tags assigned to the same entry. Only use relationship types from the relationship vocabulary. Relationship source and target must both appear in that entry's tags.",
     'Entity type vocabulary:',
-    buildFlatList(ENTITY_TYPE_PROMPT_GUIDANCE.map(([type, description]) => `${type}: ${description}`)),
+    buildGuidanceList(ENTITY_TYPE_PROMPT_GUIDANCE),
     'Relationship type vocabulary:',
-    buildFlatList(RELATIONSHIP_TYPE_PROMPT_GUIDANCE.map(([type, description]) => `${type}: ${description}`)),
+    buildGuidanceList(RELATIONSHIP_TYPE_PROMPT_GUIDANCE),
     'Existing entity vocabulary:',
     renderClassificationPromptVocabulary(normalizedVocabulary),
     normalizedVocabulary.length === 0
@@ -431,10 +459,17 @@ export function chunkEntriesByPromptBudget(
     return [];
   }
 
-  if (entries.some((entry) => entry.kind === 'source')) {
+  let hasSource = false;
+  let hasNote = false;
+  for (const entry of entries) {
+    hasSource ||= entry.kind === 'source';
+    hasNote ||= entry.kind === 'note';
+  }
+
+  if (hasSource) {
     assertClassificationScaffoldFits('source-only', tagVocab, principleNames);
   }
-  if (entries.some((entry) => entry.kind === 'note')) {
+  if (hasNote) {
     assertClassificationScaffoldFits('note-or-mixed', tagVocab, principleNames);
   }
 

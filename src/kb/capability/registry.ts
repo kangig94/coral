@@ -99,7 +99,13 @@ export function createCapabilityRegistry(): KbCapabilityRegistry {
   });
 
   const catalogView: KbCapabilityCatalogView = Object.freeze({
-    listDescriptors: () => Object.freeze([...records.values()].map((record) => record.descriptor)),
+    listDescriptors: () => {
+      const descriptors: KbCapabilityDescriptor[] = [];
+      for (const record of records.values()) {
+        descriptors.push(record.descriptor);
+      }
+      return Object.freeze(descriptors);
+    },
     hasDescriptor: (name: KbCapabilityName) => records.has(name),
   });
 

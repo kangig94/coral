@@ -97,6 +97,8 @@ export function composeReducers(...registries: DomainEventRegistry[]): ComposedR
  */
 export function applyReducer(db: Database, event: CoralEvent, reducers: ComposedReducers): void {
   const reducer = reducers.reducers.get(event.type);
-  if (!reducer) return;
+  if (!reducer) {
+    return;
+  }
   reducer(db, event);
 }

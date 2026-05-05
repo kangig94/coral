@@ -44,12 +44,22 @@ export function parseCauseRef(value: unknown): CauseRef | null {
 }
 
 export function extractCauseRef(body: unknown): CauseRef | null {
-  if (!isRecord(body)) return null;
+  if (!isRecord(body)) {
+    return null;
+  }
+
   const direct = parseCauseRef(body.causeRef);
-  if (direct) return direct;
+  if (direct) {
+    return direct;
+  }
+
   if (isRecord(body.reason) && body.reason.kind === 'failed') {
     return parseCauseRef(body.reason.causeRef);
   }
-  if (!isRecord(body.terminal) || !isRecord(body.terminal.outcome)) return null;
+
+  if (!isRecord(body.terminal) || !isRecord(body.terminal.outcome)) {
+    return null;
+  }
+
   return body.terminal.outcome.kind === 'failed' ? parseCauseRef(body.terminal.outcome.causeRef) : null;
 }

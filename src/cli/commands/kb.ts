@@ -63,17 +63,22 @@ function assertRefFormat(value: string, field: string): string {
 }
 
 function assertRefsFormat(values: readonly string[]): string[] {
-  return values.map((value) => assertRefFormat(value, 'ref'));
+  const refs: string[] = [];
+  for (const value of values) {
+    refs.push(assertRefFormat(value, 'ref'));
+  }
+  return refs;
 }
 
 function appendDelimitedOption(value: string, previous: string[] | undefined): string[] {
-  return [
-    ...(previous ?? []),
-    ...value
-      .split(',')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0),
-  ];
+  const items = previous === undefined ? [] : [...previous];
+  for (const item of value.split(',')) {
+    const trimmed = item.trim();
+    if (trimmed.length > 0) {
+      items.push(trimmed);
+    }
+  }
+  return items;
 }
 
 function registerKbSourceCommands(kb: Command): void {
@@ -400,7 +405,7 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
       try {
-        const selectedModes = [opts.vector, opts.hybrid].filter((selected) => selected === true).length;
+        const selectedModes = Number(opts.vector === true) + Number(opts.hybrid === true);
         if (selectedModes > 1) {
           throw new UsageError('Choose at most one of --vector or --hybrid');
         }

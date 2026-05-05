@@ -157,7 +157,9 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
     const row = db
       .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
       .get();
-    if (typeof row?.value !== 'string') return null;
+    if (typeof row?.value !== 'string') {
+      return null;
+    }
     const parsed = Number(row.value);
     return Number.isFinite(parsed) ? parsed : 0;
   } catch (error: unknown) {
@@ -369,11 +371,21 @@ function assertResetAuthority(
   };
 
   const mismatches: string[] = [];
-  if (authority.socketPath !== expected.socketPath) mismatches.push('socketPath');
-  if (authority.storeDbPath !== expected.storeDbPath) mismatches.push('storeDbPath');
-  if (authority.bundleHash !== expected.bundleHash) mismatches.push('bundleHash');
-  if (authority.flavor !== expected.flavor) mismatches.push('flavor');
-  if (authority.namespace !== expected.namespace) mismatches.push('namespace');
+  if (authority.socketPath !== expected.socketPath) {
+    mismatches.push('socketPath');
+  }
+  if (authority.storeDbPath !== expected.storeDbPath) {
+    mismatches.push('storeDbPath');
+  }
+  if (authority.bundleHash !== expected.bundleHash) {
+    mismatches.push('bundleHash');
+  }
+  if (authority.flavor !== expected.flavor) {
+    mismatches.push('flavor');
+  }
+  if (authority.namespace !== expected.namespace) {
+    mismatches.push('namespace');
+  }
 
   if (mismatches.length > 0) {
     throw documentedCoralSetupError({

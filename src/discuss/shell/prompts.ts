@@ -16,18 +16,23 @@ function getAgent(selfName: string, agents: Record<string, AgentState>): AgentSt
 }
 
 function joinSections(sections: Array<string | null | undefined>): string {
-  return sections
-    .filter((section): section is string => section !== null && section !== undefined && section.trim().length > 0)
-    .join('\n\n');
+  const joined: string[] = [];
+  for (const section of sections) {
+    if (section !== null && section !== undefined && section.trim().length > 0) {
+      joined.push(section);
+    }
+  }
+  return joined.join('\n\n');
 }
 
 function firstPersonaLine(persona: string): string {
-  return (
-    persona
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? ''
-  );
+  for (const line of persona.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return '';
 }
 
 /** Full self-persona block for this agent */
@@ -38,11 +43,14 @@ function selfPersonaBlock(agentName: string, agents: Record<string, AgentState>)
 
 /** Brief summary of other participants (name + position brief only) */
 function otherParticipantsBlock(selfName: string, agents: Record<string, AgentState>): string {
-  const others = Object.entries(agents)
-    .filter(([name]) => name !== selfName)
-    .map(([name, agent]) => `- ${agent.display_name} (${name}): ${firstPersonaLine(agent.persona)}`)
-    .join('\n');
-  return others ? `Other participants:\n${others}` : '';
+  const others: string[] = [];
+  for (const [name, agent] of Object.entries(agents)) {
+    if (name !== selfName) {
+      others.push(`- ${agent.display_name} (${name}): ${firstPersonaLine(agent.persona)}`);
+    }
+  }
+  const rendered = others.join('\n');
+  return rendered ? `Other participants:\n${rendered}` : '';
 }
 
 function priorSpeechBlock(ctx: PromptContext): string {

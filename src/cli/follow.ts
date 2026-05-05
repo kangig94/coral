@@ -145,6 +145,10 @@ function mapWaitSubscriptionError(error: unknown): unknown {
   return new BackendToolHttpError(error.cause.message, waitSubscriptionStatusCode(error.cause), error.cause);
 }
 
+function fallbackExitCode(): number {
+  return typeof process.exitCode === 'number' ? process.exitCode : 1;
+}
+
 export async function launchAndFollow(options: FollowOptions): Promise<number> {
   const renderContext: WaitRenderContext = {
     isTTY: options.isTTY,
@@ -199,7 +203,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         }
 
         options.emitError(error);
-        return typeof process.exitCode === 'number' ? process.exitCode : 1;
+        return fallbackExitCode();
       }
 
       if (localAbortRequested) {
@@ -268,7 +272,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         const handledError = mapWaitSubscriptionError(error);
         if (!isTransientStreamError(handledError) || retriesLeft === 0) {
           options.emitError(handledError);
-          return typeof process.exitCode === 'number' ? process.exitCode : 1;
+          return fallbackExitCode();
         }
 
         retriesLeft -= 1;

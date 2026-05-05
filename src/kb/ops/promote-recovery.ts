@@ -80,10 +80,13 @@ function listMarkerFiles(rt: PromoteRecoveryHost, dir: string): string[] {
   if (!rt.storagePort.existsSync(dir)) {
     return [];
   }
-  return rt.storagePort
-    .readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => join(dir, name));
+  const markerPaths: string[] = [];
+  for (const name of rt.storagePort.readdirSync(dir)) {
+    if (name.endsWith('.json')) {
+      markerPaths.push(join(dir, name));
+    }
+  }
+  return markerPaths;
 }
 
 function readMarker(rt: PromoteRecoveryHost, markerPath: string): PromoteRecoveryMarker | null {

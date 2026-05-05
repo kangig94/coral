@@ -80,13 +80,23 @@ function compareOriginWeights(lhs: OriginWeight, rhs: OriginWeight): number {
 }
 
 function allFinitePositiveEntries(originWeights: Record<string, number>): OriginWeight[] {
-  return Object.entries(originWeights).filter(([, weight]) => Number.isFinite(weight) && weight > 0);
+  const entries: OriginWeight[] = [];
+  for (const [origin, weight] of Object.entries(originWeights)) {
+    if (Number.isFinite(weight) && weight > 0) {
+      entries.push([origin, weight]);
+    }
+  }
+  return entries;
 }
 
 function pickSlots(outlierCount: number, total: number, rng: () => number): Set<number> {
   const slots = Array.from({ length: total }, (_, i) => i);
   shuffleInPlace(slots, rng);
-  return new Set(slots.slice(0, outlierCount));
+  const picked = new Set<number>();
+  for (let index = 0; index < outlierCount; index += 1) {
+    picked.add(slots[index]!);
+  }
+  return picked;
 }
 
 function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rng: () => number): string {
@@ -94,7 +104,14 @@ function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rn
 
   const MAX_SAMPLE_ATTEMPTS = 100;
   for (let attempt = 0; attempt < MAX_SAMPLE_ATTEMPTS; attempt++) {
-    if (pool.dedupEnabled && pool.entries.every(([origin]) => assignedOrigins.has(origin))) {
+    let everyOriginAssigned = true;
+    for (const [origin] of pool.entries) {
+      if (!assignedOrigins.has(origin)) {
+        everyOriginAssigned = false;
+        break;
+      }
+    }
+    if (pool.dedupEnabled && everyOriginAssigned) {
       pool.dedupEnabled = false;
       pool.weights = [...pool.originalWeights];
     }
@@ -116,7 +133,14 @@ function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rn
     }
 
     pool.weights[index] = 0;
-    if (pool.dedupEnabled && pool.weights.every((weight) => weight <= 0)) {
+    let hasPositiveWeight = false;
+    for (const weight of pool.weights) {
+      if (weight > 0) {
+        hasPositiveWeight = true;
+        break;
+      }
+    }
+    if (pool.dedupEnabled && !hasPositiveWeight) {
       pool.dedupEnabled = false;
       pool.weights = [...pool.originalWeights];
     }
@@ -139,7 +163,10 @@ export function assignOrigins(
   }
 
   const outlierCount = Math.floor(n * outlierRatio);
-  const totalWeight = validEntries.reduce((acc, [, weight]) => acc + weight, 0);
+  let totalWeight = 0;
+  for (const [, weight] of validEntries) {
+    totalWeight += weight;
+  }
   const targetWeight = (1 - outlierRatio) * totalWeight;
 
   let splitIndex = 0;
@@ -190,17 +217,23 @@ export function assignOrigins(
 function rankReuseSlots(selectedPoolIndexes: number[], pool: string[][]): number[] {
   if (selectedPoolIndexes.length <= 1) return [0];
 
-  const scores = selectedPoolIndexes.map((poolIndex, slotIndex) => {
+  const scores: Array<{ slotIndex: number; score: number }> = [];
+  for (let slotIndex = 0; slotIndex < selectedPoolIndexes.length; slotIndex += 1) {
+    const poolIndex = selectedPoolIndexes[slotIndex]!;
     let score = 0;
     for (const otherPoolIndex of selectedPoolIndexes) {
       if (otherPoolIndex === poolIndex) continue;
       score += hammingDistance(pool[poolIndex], pool[otherPoolIndex]);
     }
-    return { slotIndex, score };
-  });
+    scores.push({ slotIndex, score });
+  }
 
   scores.sort((lhs, rhs) => rhs.score - lhs.score || lhs.slotIndex - rhs.slotIndex);
-  return scores.map((entry) => entry.slotIndex);
+  const slots: number[] = [];
+  for (const entry of scores) {
+    slots.push(entry.slotIndex);
+  }
+  return slots;
 }
 
 export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput> {
@@ -208,7 +241,10 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
   const rng = createSeededRng(seedUsed);
   const requestedCount = input.n;
 
-  const estimatedPoolSize = input.controversy_axes.reduce((acc, a) => acc * a.positions.length, 1);
+  let estimatedPoolSize = 1;
+  for (const axis of input.controversy_axes) {
+    estimatedPoolSize *= axis.positions.length;
+  }
   if (estimatedPoolSize > 100_000) {
     return {
       ok: false,
@@ -253,7 +289,10 @@ export function seedPersonas(input: PersonaSeedInput): Result<PersonaSeedOutput>
       selectedPoolIndexes = [Math.floor(rng() * pool.length)];
       break;
     case pool.length:
-      selectedPoolIndexes = Array.from({ length: pool.length }, (_, i) => i);
+      selectedPoolIndexes = [];
+      for (let index = 0; index < pool.length; index += 1) {
+        selectedPoolIndexes.push(index);
+      }
       break;
     default: {
       const kernel = buildKernel(pool, sigma);

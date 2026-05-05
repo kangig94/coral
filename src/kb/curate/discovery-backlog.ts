@@ -84,7 +84,11 @@ export function readCurateDiscoveryBacklog(db: Database | ReadonlyDatabase): Pen
     notesByEntryId.set(parsed.backlog_entry_id, bucket);
   }
 
-  return rows.map((row) => rowToPendingDiscovery(row, notesByEntryId.get(row.entry_id) ?? []));
+  const entries: PendingDiscovery[] = [];
+  for (const row of rows) {
+    entries.push(rowToPendingDiscovery(row, notesByEntryId.get(row.entry_id) ?? []));
+  }
+  return entries;
 }
 
 export function addCurateDiscoveryBacklogEntry(db: Database, entry: PendingDiscovery): void {
@@ -157,12 +161,11 @@ function removeCurateDiscoveryBacklogNote(db: Database, backlogId: string, noteI
 }
 
 export function syncCurateDiscoveryBacklog(db: Database, entries: ReadonlyArray<PendingDiscovery>): void {
-  const existingById = new Map(
-    readCurateDiscoveryBacklog(db).map((entry) => {
-      const canonicalEntry = canonicalPendingDiscovery(entry);
-      return [backlogEntryId(canonicalEntry), canonicalEntry] as const;
-    }),
-  );
+  const existingById = new Map<string, PendingDiscovery>();
+  for (const entry of readCurateDiscoveryBacklog(db)) {
+    const canonicalEntry = canonicalPendingDiscovery(entry);
+    existingById.set(backlogEntryId(canonicalEntry), canonicalEntry);
+  }
   const nextById = new Map<string, PendingDiscovery>();
   for (const entry of entries) {
     const canonicalEntry = canonicalPendingDiscovery(entry);

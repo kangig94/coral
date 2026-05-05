@@ -21,7 +21,13 @@ const GRAPH_CONTEXT_MAX_COMMUNITIES = 3;
 const GRAPH_COMMUNITY_RESULT_SPAN_MIN = 2;
 
 function sortedMatchedBy(matchedBy: Set<KbMatchSurface>): KbMatchSurface[] {
-  return MATCH_SURFACE_ORDER.filter((surface) => matchedBy.has(surface));
+  const sorted: KbMatchSurface[] = [];
+  for (const surface of MATCH_SURFACE_ORDER) {
+    if (matchedBy.has(surface)) {
+      sorted.push(surface);
+    }
+  }
+  return sorted;
 }
 
 function withCommunityContext(result: KbResult, communityContext: string[] | undefined): KbResult {
@@ -45,7 +51,12 @@ function buildCommunityContextMap(
     return new Map();
   }
 
-  const noteSourceHits = hits.filter((hit) => hit.kind !== 'community');
+  const noteSourceHits: Array<Pick<ResolvedKbSearchEntry, 'entryId' | 'kind' | 'tags'>> = [];
+  for (const hit of hits) {
+    if (hit.kind !== 'community') {
+      noteSourceHits.push(hit);
+    }
+  }
   if (noteSourceHits.length < GRAPH_COMMUNITY_RESULT_SPAN_MIN) {
     return new Map();
   }
@@ -110,7 +121,14 @@ function buildCommunityContextMap(
     }
     const summaryText = `${community.title}: ${summary}`;
     for (const hit of noteSourceHits) {
-      if (!hit.tags.some((tag) => memberSet.has(tag))) {
+      let hasCommunityTag = false;
+      for (const tag of hit.tags) {
+        if (memberSet.has(tag)) {
+          hasCommunityTag = true;
+          break;
+        }
+      }
+      if (!hasCommunityTag) {
         continue;
       }
 
@@ -130,12 +148,15 @@ function evidenceFrom(hit: ResolvedKbSearchEntry | ResolvedKbSearchHit | HybridK
     return [];
   }
 
-  return hit.evidence.map((item) => {
+  const evidence: RetrievalEvidence[] = [];
+  for (const item of hit.evidence) {
     if (item.match === undefined) {
-      return { ...item };
+      evidence.push({ ...item });
+      continue;
     }
-    return { ...item, match: [...item.match] };
-  });
+    evidence.push({ ...item, match: [...item.match] });
+  }
+  return evidence;
 }
 
 function toResult(hit: ResolvedKbSearchHit, query: QueryContext, evidence: RetrievalEvidence[] = []): KbResult {
@@ -218,9 +239,13 @@ export function buildTextResponse(
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+  const results: KbResult[] = [];
+  for (const hit of finalHits) {
+    results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));
+  }
 
   return {
-    results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
+    results,
     mode: 'text',
     retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
@@ -240,9 +265,13 @@ export function buildHybridResponse(
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+  const results: KbResult[] = [];
+  for (const hit of finalHits) {
+    results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));
+  }
 
   return {
-    results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
+    results,
     mode: 'hybrid',
     retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
@@ -256,8 +285,13 @@ export function buildVectorResponse(
   responseWarnings: SearchResponseWarnings = {},
   retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
 ): KbSearchResponse {
+  const results: KbResult[] = [];
+  for (const hit of hits.slice(0, topK)) {
+    results.push(toVectorOnlyResult(hit, undefined, evidenceFrom(hit)));
+  }
+
   return {
-    results: hits.slice(0, topK).map((hit) => toVectorOnlyResult(hit, undefined, evidenceFrom(hit))),
+    results,
     mode: 'vector',
     retrievalDiagnostics: [...retrievalDiagnostics],
     ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),

@@ -153,9 +153,11 @@ function isTrustedCorpusCapability(record: RegisteredKbCapability): boolean {
 // and skip so 'all-equipped' is best-effort over what's currently equipped.
 export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
   const runtimeView = kb.capabilityRegistry.runtimeView();
-  const corpusBindings = runtimeView.list().filter(isTrustedCorpusCapability);
   const ids: string[] = [];
-  for (const record of corpusBindings) {
+  for (const record of runtimeView.list()) {
+    if (!isTrustedCorpusCapability(record)) {
+      continue;
+    }
     try {
       ids.push(runtimeView.read<Backed<FtsRetrieval | VectorRetrieval>>(record.descriptor.name).consumer.id);
     } catch {

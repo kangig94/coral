@@ -65,7 +65,7 @@ function splitByComma(text: string): string[] {
 
   scanQuoteAware(text, (char, _index, inQuote) => {
     if (inQuote === null && char === ',') {
-      parts.push(current);
+      parts.push(current.trim());
       current = '';
       return;
     }
@@ -73,8 +73,8 @@ function splitByComma(text: string): string[] {
     current += char;
   });
 
-  parts.push(current);
-  return parts.map((part) => part.trim());
+  parts.push(current.trim());
+  return parts;
 }
 
 function parsePromptLiteral(atomText: string): PromptAtom {

@@ -102,25 +102,23 @@ export function normalizeModel(model: string | undefined): string | undefined {
 }
 
 export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string, SessionCreatedAgentExecutionConfig> {
-  return Object.fromEntries(
-    agents.map((agent) => {
-      const isManualObserver =
-        (agent.participation ?? 'required') === 'observer' && agent.provider === undefined && agent.model === undefined;
+  const config: Record<string, SessionCreatedAgentExecutionConfig> = {};
+  for (const agent of agents) {
+    const isManualObserver =
+      (agent.participation ?? 'required') === 'observer' && agent.provider === undefined && agent.model === undefined;
 
-      if (isManualObserver) {
-        return [agent.name, { manual: true }];
-      }
+    if (isManualObserver) {
+      config[agent.name] = { manual: true };
+      continue;
+    }
 
-      return [
-        agent.name,
-        {
-          manual: false,
-          provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
-          model: agent.model ?? '',
-        },
-      ];
-    }),
-  ) as Record<string, SessionCreatedAgentExecutionConfig>;
+    config[agent.name] = {
+      manual: false,
+      provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
+      model: agent.model ?? '',
+    };
+  }
+  return config;
 }
 
 export function nextAttemptForPurpose(
@@ -161,16 +159,21 @@ export function isManualParticipant(snapshot: PersistedDiscussSnapshot, agentNam
 }
 
 export function hasPendingAutoBidders(snapshot: PersistedDiscussSnapshot): boolean {
-  return Object.entries(snapshot.state.current_bids).some(
-    ([agentName, score]) =>
-      score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName),
-  );
+  for (const [agentName, score] of Object.entries(snapshot.state.current_bids)) {
+    if (score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function hasActiveBidWork(snapshot: PersistedDiscussSnapshot): boolean {
-  return Object.values(snapshot.runtime.agentRuns).some(
-    (run) => run.currentJobId !== undefined && run.currentJobPurpose === PURPOSE_BID,
-  );
+  for (const run of Object.values(snapshot.runtime.agentRuns)) {
+    if (run.currentJobId !== undefined && run.currentJobPurpose === PURPOSE_BID) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function facilitatorRun(snapshot: PersistedDiscussSnapshot): FacilitatorRun | null {

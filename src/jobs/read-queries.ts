@@ -167,7 +167,11 @@ function emptyJobProjectionDetail(): JobProjectionDetail {
 }
 
 function sqlPlaceholders(count: number): string {
-  return Array.from({ length: count }, () => '?').join(', ');
+  const placeholders: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    placeholders.push('?');
+  }
+  return placeholders.join(', ');
 }
 
 function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
@@ -197,7 +201,11 @@ function readProjectionRows(db: Database, jobIds: string[]): Map<string, Project
       WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
   ).all(...jobIds);
 
-  return new Map(rows.map((row) => [row.job_id, row]));
+  const projectionsByJob = new Map<string, ProjectionRow>();
+  for (const row of rows) {
+    projectionsByJob.set(row.job_id, row);
+  }
+  return projectionsByJob;
 }
 
 function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
@@ -594,19 +602,21 @@ export function listJobProjections(
   filters?: JobsListFilters,
 ): Array<{ jobId: string; status: JobStatus }> {
   const projections = readOrderedProjectionRows(db, filters);
-  const statusEventsByJob = readLatestProjectionStatusEvents(
-    db,
-    projections.map(({ job_id: jobId }) => jobId),
-  );
+  const jobIds: string[] = [];
+  for (const projection of projections) {
+    jobIds.push(projection.job_id);
+  }
+  const statusEventsByJob = readLatestProjectionStatusEvents(db, jobIds);
+  const jobs: Array<{ jobId: string; status: JobStatus }> = [];
 
-  return projections.map((projection) => {
+  for (const projection of projections) {
     const statusEvents = statusEventsByJob.get(projection.job_id) ?? {
       rejected: null,
       runtime: null,
       terminal: null,
     };
 
-    return {
+    jobs.push({
       jobId: projection.job_id,
       status: projectionRowToStatus(
         projection.job_id,
@@ -617,8 +627,10 @@ export function listJobProjections(
         null,
         ctx,
       ),
-    };
-  });
+    });
+  }
+
+  return jobs;
 }
 
 export function listJobs(
@@ -684,23 +696,23 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
 
   const sessionId = readProjectionRow(db, jobId)?.session_id ?? null;
 
-  return rows.flatMap<JobEvent>((row) => {
+  const events: JobEvent[] = [];
+  for (const row of rows) {
     if (row.type === 'job.progress.emitted') {
       const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {
-        return [];
+        continue;
       }
 
-      return [
-        {
-          jobId,
-          sessionId,
-          seq: row.seq,
-          type: 'progress' as const,
-          ts: row.ts,
-          message: body.message,
-        },
-      ];
+      events.push({
+        jobId,
+        sessionId,
+        seq: row.seq,
+        type: 'progress',
+        ts: row.ts,
+        message: body.message,
+      });
+      continue;
     }
 
     const terminal = decodeTerminalRecord(
@@ -714,16 +726,16 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
       ctx,
     );
 
-    return [
-      {
-        jobId,
-        sessionId,
-        seq: row.seq,
-        type: 'terminal' as const,
-        ts: row.ts,
-        result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-        continuity: terminal?.continuity ?? null,
-      },
-    ];
-  });
+    events.push({
+      jobId,
+      sessionId,
+      seq: row.seq,
+      type: 'terminal',
+      ts: row.ts,
+      result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
+      continuity: terminal?.continuity ?? null,
+    });
+  }
+
+  return events;
 }

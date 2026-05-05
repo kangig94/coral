@@ -9,5 +9,11 @@ export function isKnownRelationshipType(value: string): value is RelationshipTyp
 }
 
 export function classificationEntityNameSegments(value: string): string[] {
-  return value.split('-').filter((segment) => segment.length > 0);
+  const segments: string[] = [];
+  for (const segment of value.split('-')) {
+    if (segment.length > 0) {
+      segments.push(segment);
+    }
+  }
+  return segments;
 }

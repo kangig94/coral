@@ -90,6 +90,17 @@ async function runKbAction(action: () => Promise<unknown> | unknown): Promise<Kb
   }
 }
 
+function runKbMutationAction(
+  kbSubsystem: KnowledgeBaseRuntime,
+  action: () => Promise<unknown>,
+): Promise<KbToolResult> {
+  return runKbAction(async () => {
+    const result = await action();
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
+}
+
 function runKbSyncAction(action: () => unknown): KbToolResult {
   try {
     return kbSuccess(action());
@@ -425,13 +436,11 @@ export async function handleKbPromote(
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+  return runKbMutationAction(kbSubsystem, () =>
+    kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -440,15 +449,13 @@ export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRun
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await kbUpdate(kbSubsystem.kb, {
+  return runKbMutationAction(kbSubsystem, () =>
+    kbUpdate(kbSubsystem.kb, {
       note: parsed.data.note,
       ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
       ...(parsed.data.content !== undefined ? { content: parsed.data.content } : {}),
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -457,11 +464,7 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteNote(kbSubsystem.kb, { note: parsed.data.note });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteNote(kbSubsystem.kb, { note: parsed.data.note }));
 }
 
 export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -470,11 +473,7 @@ export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await createWiki(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => createWiki(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -483,11 +482,7 @@ export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBa
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -496,11 +491,7 @@ export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseR
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await linkWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => linkWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -509,11 +500,7 @@ export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await unlinkWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => unlinkWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -522,11 +509,7 @@ export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseR
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await citeWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => citeWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiAdopt(
@@ -539,13 +522,11 @@ export async function handleKbWikiAdopt(
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+  return runKbMutationAction(kbSubsystem, () =>
+    adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -554,11 +535,7 @@ export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteWiki(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteWiki(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -607,11 +584,7 @@ export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeB
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteSource(kbSubsystem.kb, { slug: parsed.data.slug });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteSource(kbSubsystem.kb, { slug: parsed.data.slug }));
 }
 
 export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

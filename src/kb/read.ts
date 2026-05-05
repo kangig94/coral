@@ -207,13 +207,12 @@ function readCandidateEntry(
       return null;
     }
 
-    const raw = storage.readFileSync(notePath, 'utf-8');
-    const frontmatter = parseFrontmatter(raw);
+    const { frontmatter, title, body } = loadKbNote(storage, notePath);
     return {
       kind: 'note',
       note: candidate.slug,
-      title: extractTitle(raw),
-      content: extractBody(raw),
+      title,
+      content: body,
       tags: frontmatter.tags,
       principles: frontmatter.principles,
       updatedAt: frontmatter.updatedAt,

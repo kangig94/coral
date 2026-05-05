@@ -25,6 +25,7 @@ export const discussEventKinds = [
 ] as const;
 
 export type DiscussEventKind = (typeof discussEventKinds)[number];
+const discussEventKindSet = new Set<string>(discussEventKinds);
 
 export const discussAgentJobPurposes = ['bid', 'speech', 'epoch_evaluation', 'follow_up', 'synthesis'] as const;
 export type DiscussAgentJobPurpose = (typeof discussAgentJobPurposes)[number];
@@ -477,7 +478,7 @@ export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot):
 }
 
 export function isDiscussEventKind(value: string): value is DiscussEventKind {
-  return (discussEventKinds as readonly string[]).includes(value);
+  return discussEventKindSet.has(value);
 }
 
 export function discussEventType(kind: DiscussEventKind): string {

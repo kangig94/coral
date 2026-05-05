@@ -15,12 +15,26 @@ export function normalizedCommunitySummaryFingerprints(
     return undefined;
   }
 
-  const allowedSlugs = new Set(communities.map((community) => community.slug));
-  const entries = Object.entries(fingerprints)
-    .filter(([slug]) => allowedSlugs.has(slug))
-    .sort(([left], [right]) => left.localeCompare(right));
+  const allowedSlugs = new Set<string>();
+  for (const community of communities) {
+    allowedSlugs.add(community.slug);
+  }
+  const entries: Array<[string, string]> = [];
+  for (const [slug, fingerprint] of Object.entries(fingerprints)) {
+    if (allowedSlugs.has(slug)) {
+      entries.push([slug, fingerprint]);
+    }
+  }
+  entries.sort(([left], [right]) => left.localeCompare(right));
 
-  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const normalized: Record<string, string> = {};
+  for (const [slug, fingerprint] of entries) {
+    normalized[slug] = fingerprint;
+  }
+  return normalized;
 }
 
 /**

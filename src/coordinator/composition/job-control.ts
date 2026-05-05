@@ -37,7 +37,12 @@ export function createCoordinatorControl({
 
     const recoveryRegistry = getLifecycleController()?.getRecoveryRegistry();
     if (recoveryRegistry && recoveryRegistry.size > 0) {
-      const registryJobIds = [...pending].filter((id) => recoveryRegistry.has(id));
+      const registryJobIds: string[] = [];
+      for (const jobId of pending) {
+        if (recoveryRegistry.has(jobId)) {
+          registryJobIds.push(jobId);
+        }
+      }
       if (registryJobIds.length > 0) {
         const result = recoveryRegistry.abort(registryJobIds);
         for (const jobId of result.aborted) {

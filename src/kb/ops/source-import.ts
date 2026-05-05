@@ -68,9 +68,14 @@ function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
   const env = { ...runtime.env.fullSnapshot() };
   const homeDir = runtime.env.homedir();
   const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin');
+  const path = env.PATH ?? '';
+  let pathEnv = path;
+  if (localBinDir !== undefined && localBinDir.length > 0) {
+    pathEnv = path.length === 0 ? localBinDir : `${localBinDir}${delimiter}${path}`;
+  }
   return {
     ...env,
-    PATH: [localBinDir, env.PATH ?? ''].filter((entry) => entry !== undefined && entry.length > 0).join(delimiter),
+    PATH: pathEnv,
   };
 }
 
@@ -87,11 +92,13 @@ async function resolveCommandPath(command: string, ctx: SourceImportContext): Pr
     if (result.status !== 0) {
       return undefined;
     }
-    const { stdout } = result;
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
+    for (const rawLine of result.stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line.length > 0) {
+        return line;
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -117,9 +124,19 @@ async function runCommand(
     return;
   }
 
-  const output = [result.stderr.trim(), result.stdout.trim(), result.error?.message]
-    .filter((line): line is string => line !== undefined && line.length > 0)
-    .join('\n');
+  const outputLines: string[] = [];
+  const stderr = result.stderr.trim();
+  if (stderr.length > 0) {
+    outputLines.push(stderr);
+  }
+  const stdout = result.stdout.trim();
+  if (stdout.length > 0) {
+    outputLines.push(stdout);
+  }
+  if (result.error !== undefined && result.error.message.length > 0) {
+    outputLines.push(result.error.message);
+  }
+  const output = outputLines.join('\n');
   const code = result.status === null ? 'unknown' : String(result.status);
   throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`);
 }
@@ -271,14 +288,15 @@ function extractHtmlBody(html: string): string {
 }
 
 function missingPackages(packageNames: string[]): string[] {
-  return packageNames.filter((packageName) => {
+  const missing: string[] = [];
+  for (const packageName of packageNames) {
     try {
       require.resolve(packageName);
-      return false;
     } catch {
-      return true;
+      missing.push(packageName);
     }
-  });
+  }
+  return missing;
 }
 
 function assertPackagesInstalled(packageNames: string[], log?: (msg: string) => void): void {

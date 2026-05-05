@@ -24,7 +24,12 @@ function isValidCapabilityName(raw: string): boolean {
     return false;
   }
 
-  return segments.every((segment) => segment.length > 0 && segment.length <= CAPABILITY_SEGMENT_MAX_LENGTH);
+  for (const segment of segments) {
+    if (segment.length === 0 || segment.length > CAPABILITY_SEGMENT_MAX_LENGTH) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function canonicalizeCapabilityName<T extends string>(raw: T): T & KbCapabilityName {
