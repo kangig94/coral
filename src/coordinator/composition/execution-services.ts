@@ -4,6 +4,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
+import { prepareCached } from '../../store/db.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -53,8 +54,10 @@ export function createExecutionServices({
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
-        (getProgressStore().getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number })
-          .seq,
+        prepareCached<[], { seq: number }>(
+          getProgressStore().getDb(),
+          'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
+        ).get()?.seq ?? 0,
     });
     services.set(key, created);
     return created;

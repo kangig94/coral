@@ -162,4 +162,32 @@ describe('role registry runtime invariants', () => {
 
     expect(registry.list().map((record) => record.descriptor.id)).toEqual(['first', 'second', 'third']);
   });
+
+  it('keeps cached registry views fresh across mutations', () => {
+    const registry = createRoleRegistry();
+    const catalogView = registry.catalogView();
+
+    const firstHandle = registry.registerBuiltin(role('first'));
+    const firstList = registry.list();
+    const firstDescriptors = catalogView.listDescriptors();
+
+    expect(registry.list()).toBe(firstList);
+    expect(catalogView.listDescriptors()).toBe(firstDescriptors);
+
+    registry.registerBuiltin(role('second'));
+    const secondList = registry.list();
+    const secondDescriptors = catalogView.listDescriptors();
+
+    expect(secondList).not.toBe(firstList);
+    expect(secondList.map((record) => record.descriptor.id)).toEqual(['first', 'second']);
+    expect(secondDescriptors).not.toBe(firstDescriptors);
+    expect(secondDescriptors.map((descriptor) => descriptor.id)).toEqual(['first', 'second']);
+
+    firstHandle.dispose();
+
+    expect(registry.list()).not.toBe(secondList);
+    expect(registry.list().map((record) => record.descriptor.id)).toEqual(['second']);
+    expect(catalogView.listDescriptors()).not.toBe(secondDescriptors);
+    expect(catalogView.listDescriptors().map((descriptor) => descriptor.id)).toEqual(['second']);
+  });
 });

@@ -60,10 +60,26 @@ function decorateScopeDispose(scope: Disposable, onDispose: () => void): void {
 
 export function createRoleRegistry(): RoleRegistry {
   const records = new Map<string, RegisteredRetrievalRole>();
+  let listCache: readonly RegisteredRetrievalRole[] | null = null;
+  let descriptorListCache: readonly RetrievalRoleDescriptor[] | null = null;
 
-  const list = (): readonly RegisteredRetrievalRole[] => Object.freeze([...records.values()]);
+  const invalidateViews = (): void => {
+    listCache = null;
+    descriptorListCache = null;
+  };
 
-  const unregister = (id: string): boolean => records.delete(id);
+  const list = (): readonly RegisteredRetrievalRole[] => {
+    listCache ??= Object.freeze([...records.values()]);
+    return listCache;
+  };
+
+  const unregister = (id: string): boolean => {
+    const deleted = records.delete(id);
+    if (deleted) {
+      invalidateViews();
+    }
+    return deleted;
+  };
 
   const createHandle = (id: string): RoleHandle => {
     let disposed = false;
@@ -99,6 +115,7 @@ export function createRoleRegistry(): RoleRegistry {
     });
 
     records.set(role.id, record);
+    invalidateViews();
     return createHandle(role.id);
   };
 
@@ -108,11 +125,15 @@ export function createRoleRegistry(): RoleRegistry {
 
   const catalogView: RoleCatalogView = Object.freeze({
     listDescriptors: () => {
+      if (descriptorListCache !== null) {
+        return descriptorListCache;
+      }
       const descriptors: RetrievalRoleDescriptor[] = [];
       for (const record of records.values()) {
         descriptors.push(record.descriptor);
       }
-      return Object.freeze(descriptors);
+      descriptorListCache = Object.freeze(descriptors);
+      return descriptorListCache;
     },
   });
 

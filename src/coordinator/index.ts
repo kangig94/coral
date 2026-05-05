@@ -27,7 +27,7 @@ import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
-import type { Database } from '../store/db.js';
+import { prepareCached, type Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { readJobEvents, loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
@@ -434,7 +434,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
 
   const getCurrentJournalSeq = () =>
-    (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+    prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
   const getSessionLookup = () => createProjectionSessionLookup(getQueryDb());
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();

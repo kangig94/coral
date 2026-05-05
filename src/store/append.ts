@@ -1,4 +1,4 @@
-import { withImmediate, type Database } from './db.js';
+import { prepareCached, withImmediate, type Database } from './db.js';
 
 import { isRecord } from '../infra/json.js';
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
@@ -114,7 +114,7 @@ function causeRefTokenSlot(token: CauseRefToken<unknown> & RuntimeCauseRefToken)
 // truth that the explicit-INSERT path bypasses. BEGIN IMMEDIATE ensures only
 // one writer reserves at a time, so MAX(seq) is consistent for the closure.
 function readCurrentMaxSeq(db: Database): number {
-  return (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  return prepareCached<[], { seq: number }>(db, 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
 }
 
 function tokenPath(path: readonly string[]): string {
