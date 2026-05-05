@@ -685,6 +685,7 @@ describe('lifecycle recovery', () => {
       provider,
       progressStore,
       runtime,
+      sessionLookup: { readSessionEntry: () => null },
       log: () => {},
     });
 

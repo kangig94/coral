@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
+import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
 import { readProjectionSessionEntry } from '#src/sessions/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
@@ -61,6 +62,11 @@ describe('sessions reducer equivalence', () => {
           {
             provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
+            identity: { kind: 'codex-rollout', threadId: 'thread-artifact' },
+            identityKey: providerArtifactIdentityKey('codex', {
+              kind: 'codex-rollout',
+              threadId: 'thread-artifact',
+            }),
             sourceJobId: 'job-artifact',
             recordedAt: NOW.toISOString(),
           },

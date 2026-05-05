@@ -7,6 +7,7 @@
 import { z } from 'zod';
 
 import { causeRefSchema } from '../causality/cause-ref.js';
+import { providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
 import { continuitySnapshotSchema } from './continuity.js';
 import { retentionDiscardCompletedOutcomeSchema, sessionEntrySchema } from './entry.js';
 import {
@@ -36,6 +37,8 @@ export const sessionArtifactHandleRecordedBodySchema = z
     entry: sessionEntrySchema,
     provider: z.string().min(1),
     handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
+    identityKey: z.string().min(1).optional(),
     sourceJobId: z.string().min(1).optional(),
   })
   .strict();

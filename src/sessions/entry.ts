@@ -2,6 +2,11 @@ import { z } from 'zod';
 
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
+import {
+  legacyProviderArtifactIdentity,
+  providerArtifactIdentityKey,
+  providerArtifactIdentitySchema,
+} from '../providers/artifact-identity.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
@@ -20,10 +25,20 @@ export const providerArtifactHandleSchema = z
   .object({
     provider: z.string().min(1),
     handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
+    identityKey: z.string().min(1).optional(),
     sourceJobId: z.string().min(1).optional(),
     recordedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .transform((artifact) => {
+    const identity = artifact.identity ?? legacyProviderArtifactIdentity(artifact.handle);
+    return {
+      ...artifact,
+      identity,
+      identityKey: artifact.identityKey ?? providerArtifactIdentityKey(artifact.provider, identity),
+    };
+  });
 
 export type ProviderArtifactHandle = z.infer<typeof providerArtifactHandleSchema>;
 

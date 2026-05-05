@@ -72,6 +72,7 @@ type StartupRecoveryContext = {
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
+  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   signal: AbortSignal;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
@@ -145,6 +146,7 @@ export function createRecoveryCoordinator({
   async function runRecoveryAdoption({
     queuedJobs,
     runningJobs,
+    sessionLookup,
     signal,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
@@ -273,6 +275,7 @@ export function createRecoveryCoordinator({
             provider: recovery,
             progressStore,
             runtime,
+            sessionLookup,
             log,
           });
           retainedCleanup?.();
@@ -370,6 +373,7 @@ export function createRecoveryCoordinator({
         await runRecoveryAdoption({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
+          sessionLookup: ctx.sessionLookup,
           signal,
           interruptedAppServerReason,
         });

@@ -9,23 +9,11 @@ import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { adapterOutputUnparseable } from './fault.js';
 import { parseClaudeStreamJson } from './claude/output-parser.js';
 import { claudeProvider } from './claude/exec-provider.js';
-import {
-  claudeAppServerLifecycle,
-  claudeArtifactCapability,
-  claudePreflight,
-  claudeRecoveryLifecycle,
-  locateClaudeJsonlArtifact,
-  resolveClaudeProjectsRoot,
-} from './claude/provider-facets.js';
+import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './claude/provider-facets.js';
+import { claudeArtifactCapability, locateClaudeJsonlArtifact, resolveClaudeProjectsRoot } from './claude/artifacts.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
-import {
-  codexAppServerLifecycle,
-  codexArtifactCapability,
-  codexPreflight,
-  codexRecoveryLifecycle,
-  locateCodexRolloutArtifact,
-  resolveCodexSessionsRoot,
-} from './codex/provider-facets.js';
+import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
+import { codexArtifactCapability, locateCodexRolloutArtifact, resolveCodexSessionsRoot } from './codex/artifacts.js';
 import { defineProvider } from './define.js';
 import { ProviderRegistry } from './registry.js';
 
@@ -196,6 +184,9 @@ function locateClaudeArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
   parsedSessionId: string | null,
 ): readonly ProviderArtifactHandleInput[] | undefined {
+  if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
+    return options.knownArtifactHandles;
+  }
   const conversationRef =
     readString(parsedSessionId) ?? readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId');
   if (conversationRef === undefined) {
@@ -212,6 +203,9 @@ function locateClaudeArtifactsForRecovery(
 function locateCodexArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): readonly ProviderArtifactHandleInput[] | undefined {
+  if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
+    return options.knownArtifactHandles;
+  }
   const threadId =
     readProviderMetaString(options.providerMeta, 'threadId', 'conversationRef') ??
     readProviderContinuityString(options.providerMeta, 'threadId') ??

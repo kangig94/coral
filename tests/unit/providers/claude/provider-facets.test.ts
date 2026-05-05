@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import {
-  claudeArtifactCapability,
-  claudeRecoveryLifecycle,
-  locateClaudeJsonlArtifact,
-} from '#src/providers/claude/provider-facets.js';
+import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
+import { claudeArtifactCapability, locateClaudeJsonlArtifact } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -89,6 +86,7 @@ describe('locateClaudeJsonlArtifact', () => {
       kind: 'match',
       artifact: {
         handle: `${root}/-workspace-a/session-1.jsonl`,
+        identity: { kind: 'claude-jsonl', conversationRef: 'session-1' },
       },
     });
   });

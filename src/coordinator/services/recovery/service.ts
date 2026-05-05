@@ -349,6 +349,7 @@ export class RecoveryService {
         expectedVersion,
         provider: input.provider,
         handle: artifact.handle,
+        ...(artifact.identity === undefined ? {} : { identity: artifact.identity }),
         sourceJobId: artifact.sourceJobId ?? input.jobId,
       });
       if (!recorded.ok) {

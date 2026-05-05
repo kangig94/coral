@@ -26,7 +26,7 @@ import {
   readTurnConversationRef,
   type PreparedClaudeRequest,
 } from './request-prep.js';
-import { locateClaudeJsonlArtifactFromRuntime } from './provider-facets.js';
+import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 
 function buildClaudeSessionFailureCause(message: string) {
   return providerRequestFailed({
@@ -217,6 +217,7 @@ function emitClaudeArtifactHandleOnce(
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
+      ...(result.artifact.identity === undefined ? {} : { identity: result.artifact.identity }),
     });
     return;
   }

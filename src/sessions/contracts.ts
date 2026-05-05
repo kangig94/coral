@@ -1,6 +1,7 @@
 import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import type { ProviderInstruction } from '../providers/contract.js';
+import type { ProviderArtifactIdentity } from '../providers/artifact-identity.js';
 import type { RetentionPolicy, SessionControllerProfile, SessionEntry } from './entry.js';
 
 export type SessionAllocateOptions = {
@@ -26,6 +27,7 @@ export type SessionArtifactHandleRecordOptions = {
   expectedVersion: number;
   provider: string;
   handle: string;
+  identity?: ProviderArtifactIdentity;
   sourceJobId?: string;
 };
 

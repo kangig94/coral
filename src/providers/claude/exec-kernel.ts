@@ -10,7 +10,7 @@ import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
 import { buildPreparedClaudeRequest } from './request-prep.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './exec-types.js';
-import { locateClaudeJsonlArtifactFromRuntime } from './provider-facets.js';
+import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
@@ -119,6 +119,7 @@ function emitClaudeArtifactHandle(
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
+      ...(result.artifact.identity === undefined ? {} : { identity: result.artifact.identity }),
     });
     return;
   }

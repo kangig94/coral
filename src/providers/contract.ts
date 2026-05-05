@@ -11,6 +11,7 @@ import {
 } from './fault.js';
 import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
+import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from './artifact-identity.js';
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
@@ -142,6 +143,7 @@ export type ProviderTerminalEventBody = {
 export type ProviderArtifactHandleEventBody = {
   kind: 'artifact_handle';
   handle: string;
+  identity?: ProviderArtifactIdentity;
 };
 
 export type ProviderEventBody =
@@ -244,6 +246,7 @@ export const providerArtifactHandleEventBodySchema = z
   .object({
     kind: z.literal('artifact_handle'),
     handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
   })
   .strict();
 
@@ -336,6 +339,7 @@ export interface ProviderRecoveryContract {
     providerMeta?: Record<string, unknown>;
     env: Pick<Runtime['env'], 'homedir' | 'get' | 'fullSnapshot'>;
     fallbackConversationRef?: string;
+    knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
   }): Promise<{
     terminal: ProviderTerminalEventBody;
@@ -360,6 +364,7 @@ export type ProviderArtifactHandle = string;
 
 export type ProviderArtifactHandleInput = {
   readonly handle: ProviderArtifactHandle;
+  readonly identity?: ProviderArtifactIdentity;
   readonly sourceJobId?: string;
 };
 

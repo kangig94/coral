@@ -307,6 +307,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(events).toContainEqual({
       kind: 'artifact_handle',
       handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+      identity: { kind: 'codex-rollout', threadId: 'thread-1' },
     });
     expect(operations.indexOf(`exists:${root}`)).toBeGreaterThanOrEqual(0);
     expect(operations.indexOf(`exists:${root}`)).toBeLessThan(operations.indexOf('emit:artifact_handle'));
@@ -401,6 +402,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       {
         kind: 'artifact_handle',
         handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+        identity: { kind: 'codex-rollout', threadId: 'thread-1' },
       },
     ]);
   });

@@ -57,6 +57,7 @@ export async function consumeJobStream(options: {
         expectedVersion,
         provider: options.providerName,
         handle: event.handle,
+        ...(event.identity === undefined ? {} : { identity: event.identity }),
         sourceJobId: options.jobId,
       });
       if (!result.ok) {

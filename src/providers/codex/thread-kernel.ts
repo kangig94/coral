@@ -24,7 +24,7 @@ import {
   type CodexServiceTier,
 } from './request-mapping.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse, Turn } from './protocol.js';
-import { locateCodexRolloutArtifactFromRuntime } from './provider-facets.js';
+import { locateCodexRolloutArtifactFromRuntime } from './artifacts.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -191,6 +191,7 @@ function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event:
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
+      ...(result.artifact.identity === undefined ? {} : { identity: result.artifact.identity }),
     });
     return;
   }

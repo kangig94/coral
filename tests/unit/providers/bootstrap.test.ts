@@ -49,7 +49,7 @@ function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 
 type RecoveryLocatorCase = {
   readonly label: string;
   readonly tree: Record<string, DirentLike[]>;
-  readonly expected: readonly { readonly handle: string }[] | undefined;
+  readonly expected: readonly { readonly handle: string; readonly identity?: Record<string, string> }[] | undefined;
 };
 
 describe('registerBuiltInProviders', () => {
@@ -112,7 +112,12 @@ describe('registerBuiltInProviders', () => {
         '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
         '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-thread-from-meta.jsonl', 'file')],
       },
-      expected: [{ handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl' }],
+      expected: [
+        {
+          handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl',
+          identity: { kind: 'codex-rollout', threadId: 'thread-from-meta' },
+        },
+      ],
     },
     {
       label: 'ambiguous match',
@@ -174,7 +179,10 @@ describe('registerBuiltInProviders', () => {
     });
 
     expect(result?.artifactHandles).toEqual([
-      { handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-fallback-thread.jsonl' },
+      {
+        handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-fallback-thread.jsonl',
+        identity: { kind: 'codex-rollout', threadId: 'fallback-thread' },
+      },
     ]);
   });
 
@@ -193,7 +201,12 @@ describe('registerBuiltInProviders', () => {
         '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
         '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
       },
-      expected: [{ handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl' }],
+      expected: [
+        {
+          handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',
+          identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
+        },
+      ],
     },
     {
       label: 'ambiguous match',
@@ -257,7 +270,10 @@ describe('registerBuiltInProviders', () => {
 
     expect(result?.continuity).toBeUndefined();
     expect(result?.artifactHandles).toEqual([
-      { handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl' },
+      {
+        handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',
+        identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
+      },
     ]);
   });
 

@@ -338,6 +338,7 @@ describe('claude exec-provider dispatcher', () => {
     expect(events).toContainEqual({
       kind: 'artifact_handle',
       handle: `${projectsRoot}/-workspace/conversation-live.jsonl`,
+      identity: { kind: 'claude-jsonl', conversationRef: 'conversation-live' },
     });
     expect(getTerminal(events).terminal).toMatchObject({
       content: 'broker live result',

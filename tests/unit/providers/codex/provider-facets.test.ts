@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import {
-  codexArtifactCapability,
-  codexRecoveryLifecycle,
-  locateCodexRolloutArtifact,
-} from '#src/providers/codex/provider-facets.js';
+import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -100,6 +97,7 @@ describe('locateCodexRolloutArtifact', () => {
       kind: 'match',
       artifact: {
         handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+        identity: { kind: 'codex-rollout', threadId: 'thread-1' },
       },
     });
   });

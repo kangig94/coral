@@ -226,6 +226,7 @@ describe('claude exec-kernel', () => {
     expect(events).toContainEqual({
       kind: 'artifact_handle',
       handle: `${projectsRoot}/-workspace/fork-session-jsonl.jsonl`,
+      identity: { kind: 'claude-jsonl', conversationRef: 'fork-session-jsonl' },
     });
     expect(getTerminal(events).terminal).toMatchObject({
       content: 'fork output',
