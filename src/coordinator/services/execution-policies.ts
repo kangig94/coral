@@ -26,6 +26,10 @@ export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | '
   retention?: RetentionPolicy;
 };
 
+export type CanonicalCoralIntent = Omit<CoralIntent, 'sessionId'> & {
+  sessionId?: string;
+};
+
 export const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
 
 export type ResolvedAgentLaunchProfile = {
@@ -71,6 +75,17 @@ export function mapResolverError(err: unknown): LaunchDecision | null {
   if (err instanceof AgentNotFoundError) return rejectLaunch('agent_not_found', err.message);
   if (err instanceof AgentNamespaceNotFoundError) return rejectLaunch('agent_namespace_not_found', err.message);
   return null;
+}
+
+export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | LaunchDecision {
+  const { sessionId, ...rest } = input;
+  if (sessionId === undefined) {
+    return rest;
+  }
+  if (sessionId.length === 0) {
+    return rejectLaunch('invalid_request', 'Session ID is required when provided.');
+  }
+  return { ...rest, sessionId };
 }
 
 export function resolveAgentLaunchProfile(
@@ -127,7 +142,7 @@ export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, 
 
   if (fault.continuity === 'verified') {
     lines.push('Session is resumable. Use resume to continue.');
-    if (conversationRef) {
+    if (conversationRef !== undefined) {
       lines.push(`Conversation reference preserved: ${conversationRef}`);
     }
     return lines.join('\n');

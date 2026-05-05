@@ -1,4 +1,5 @@
 import type { StoragePort } from '../infra/port-types.js';
+import { readString } from '../infra/json.js';
 import {
   type ProviderArtifactHandleInput,
   type ProviderRecoveryContract,
@@ -122,14 +123,15 @@ function claudeArtifactContinuity(
   options: ArtifactRecoveryOptions,
   parsed: ParsedClaudeArtifactOutput,
 ): Awaited<ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']>>['continuity'] {
-  if (parsed.sessionId !== null) {
+  const sessionId = readString(parsed.sessionId);
+  if (sessionId !== undefined) {
     return {
-      conversationRef: parsed.sessionId,
+      conversationRef: sessionId,
       resumable: true,
     };
   }
 
-  if (options.fallbackConversationRef) {
+  if (readString(options.fallbackConversationRef) !== undefined) {
     return undefined;
   }
 
@@ -155,12 +157,13 @@ async function finalizeCodexFromArtifacts(
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
     },
-    continuity: options.fallbackConversationRef
-      ? undefined
-      : {
-          conversationRef: null,
-          resumable: false,
-        },
+    continuity:
+      readString(options.fallbackConversationRef) !== undefined
+        ? undefined
+        : {
+            conversationRef: null,
+            resumable: false,
+          },
     artifactHandles: locateCodexArtifactsForRecovery(options),
   };
 }
@@ -194,8 +197,8 @@ function locateClaudeArtifactsForRecovery(
   parsedSessionId: string | null,
 ): readonly ProviderArtifactHandleInput[] | undefined {
   const conversationRef =
-    parsedSessionId ?? readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId') ?? undefined;
-  if (!conversationRef) {
+    readString(parsedSessionId) ?? readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId');
+  if (conversationRef === undefined) {
     return undefined;
   }
   const result = locateClaudeJsonlArtifact({
@@ -212,8 +215,8 @@ function locateCodexArtifactsForRecovery(
   const threadId =
     readProviderMetaString(options.providerMeta, 'threadId', 'conversationRef') ??
     readProviderContinuityString(options.providerMeta, 'threadId') ??
-    options.fallbackConversationRef;
-  if (!threadId) {
+    readString(options.fallbackConversationRef);
+  if (threadId === undefined) {
     return undefined;
   }
   const result = locateCodexRolloutArtifact({
@@ -235,12 +238,12 @@ function readProviderMetaString(
   providerMeta: Record<string, unknown> | undefined,
   ...keys: readonly string[]
 ): string | undefined {
-  if (!providerMeta) {
+  if (providerMeta === undefined) {
     return undefined;
   }
   for (const key of keys) {
-    const value = providerMeta[key];
-    if (typeof value === 'string' && value.length > 0) {
+    const value = readString(providerMeta[key]);
+    if (value !== undefined) {
       return value;
     }
   }
@@ -256,7 +259,7 @@ function readProviderContinuityString(
     return undefined;
   }
   const value = (continuity as Record<string, unknown>)[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return readString(value);
 }
 
 const codexProviderSpec = defineProvider({

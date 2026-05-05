@@ -149,6 +149,35 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
+  it('normalizes empty Codex recovery refs before artifact lookup', async () => {
+    const codex = createBuiltInProviderRegistry().get('codex');
+
+    const result = await codex?.recovery?.finalizeFromArtifacts({
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: 0,
+      signal: null,
+      providerMeta: {
+        threadId: '',
+        providerContinuity: { threadId: '' },
+      },
+      fallbackConversationRef: 'fallback-thread',
+      env: recoveryEnv(),
+      storage: recoveryStorage({
+        tree: {
+          '/home/user/.codex/sessions': [dirent('2026', 'dir')],
+          '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
+          '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
+          '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-fallback-thread.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.artifactHandles).toEqual([
+      { handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-fallback-thread.jsonl' },
+    ]);
+  });
+
   const claudeRecoveryCases: RecoveryLocatorCase[] = [
     {
       label: 'no match',
@@ -202,6 +231,35 @@ describe('registerBuiltInProviders', () => {
       expect(result?.artifactHandles).toEqual(expected);
     },
   );
+
+  it('normalizes empty Claude result session ids before continuity and artifact lookup', async () => {
+    const claude = createBuiltInProviderRegistry().get('claude');
+
+    const result = await claude?.recovery?.finalizeFromArtifacts({
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: 0,
+      signal: null,
+      providerMeta: { conversationRef: 'conversation-from-meta' },
+      fallbackConversationRef: 'fallback-conversation',
+      env: recoveryEnv(),
+      storage: recoveryStorage({
+        files: {
+          '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok', session_id: '' }),
+          '/tmp/stderr': '',
+        },
+        tree: {
+          '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+          '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.continuity).toBeUndefined();
+    expect(result?.artifactHandles).toEqual([
+      { handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl' },
+    ]);
+  });
 
   it('is idempotent per registry instance', () => {
     const registry = new ProviderRegistry();

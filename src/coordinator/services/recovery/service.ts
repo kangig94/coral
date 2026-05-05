@@ -2,7 +2,7 @@ import type { ProviderServerLease, ProviderServerSpec } from '../../../providers
 import { readContinuityRef, type ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
-import { errorMessage } from '../../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../../infra/error-format.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
 import {
   isAppServerRuntime,
@@ -49,6 +49,22 @@ function requireProviderLaunchRecord(
 ): asserts launchRecord is ProviderLaunchRecord {
   if (launchRecord.jobKind === 'kb' || launchRecord.sessionId === null || launchRecord.provider === null) {
     throw new Error(`${operation} requires a provider launch record.`);
+  }
+}
+
+function interruptedContinuityState(
+  probeOutcome: InterruptedProbeOutcome,
+  mutation: SessionContinuityMutation,
+): SessionInterruptedFault['continuity'] {
+  switch (probeOutcome) {
+    case 'verified':
+    case 'missing':
+    case 'unavailable':
+      return probeOutcome;
+    case 'waiting':
+      return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
+    default:
+      return assertNever(probeOutcome);
   }
 }
 
@@ -247,16 +263,7 @@ export class RecoveryService {
 
     const fault: SessionInterruptedFault = {
       trigger: options.reason,
-      continuity:
-        probeOutcome === 'verified'
-          ? 'verified'
-          : probeOutcome === 'missing'
-            ? 'missing'
-            : probeOutcome === 'unavailable'
-              ? 'unavailable'
-              : mutation.kind === 'clear_non_resumable'
-                ? 'pre_checkpoint_empty'
-                : 'pre_checkpoint_preserved',
+      continuity: interruptedContinuityState(probeOutcome, mutation),
     };
 
     let reportConversationRef: string | undefined;
