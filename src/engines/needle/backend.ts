@@ -2,7 +2,6 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync }
 import { dirname, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { nowIsoString } from '../../infra/time.js';
 import type { Backed, EmbeddingService, KbEngineRuntime, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext } from '../../store/consumer-contract.js';
 import type { KbProjectionInput } from '../../kb/projection-input-contract.js';
@@ -24,8 +23,7 @@ import {
   needleSnapshotManifestPath,
   needleStagingDir,
 } from './paths.js';
-import { chunkEntry, type ChunkSeed } from '../../kb/chunking.js';
-import { createNeedleStore, type ChunkRecord, type NeedleStore } from './store.js';
+import { createNeedleStore, type NeedleStore } from './store.js';
 import { resolveBoundNeedleEmbedder, type ResolvedNeedleEmbedder } from './projection-identity.js';
 import {
   NEEDLE_CONSUMER_ID,
@@ -33,6 +31,7 @@ import {
   type NeedleBackendOptions,
 } from './contract.js';
 import { isNeedleSnapshotManifest, type NeedleSnapshotManifest } from './artifact-port.js';
+import { NeedleSnapshotWriter } from './snapshot-writer.js';
 import type {
   RetrievalKind,
   RetrievalScope,
@@ -78,11 +77,6 @@ type ActiveNeedleLease = {
   release(): Promise<void>;
 };
 
-type StagedVectorInput = {
-  entryCount: number;
-  chunks: ChunkSeed[];
-};
-
 const SHARED_NEEDLE_BACKENDS = new WeakMap<object, NeedleBackend>();
 let needleBackendStagingHookForTests: NeedleBackendStagingHook | null = null;
 
@@ -106,14 +100,6 @@ function readSnapshotManifest(runtimeDir: string, snapshotId: string): NeedleSna
   } catch {
     return null;
   }
-}
-
-function writeSnapshotManifest(
-  files: Pick<KbProjectionArtifactFilePort, 'writeTextAtomic'>,
-  snapshotDir: string,
-  manifest: NeedleSnapshotManifest,
-): void {
-  files.writeTextAtomic(needleSnapshotManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 function createHandleToken(runtime: KbEngineRuntime, prefix: string): string {
@@ -409,26 +395,11 @@ export class NeedleBackend implements NeedleBackendContract {
     );
   }
 
-  private collectVectorInput(input: KbProjectionInput): StagedVectorInput {
-    let entryCount = 0;
-    const chunks: ChunkSeed[] = [];
-    for (const record of input.records) {
-      if (record.kind !== 'note' && record.kind !== 'source') {
-        continue;
-      }
-
-      entryCount += 1;
-      chunks.push(...chunkEntry(record.entry, record.body));
-    }
-    return { entryCount, chunks };
-  }
-
   private async stageSnapshot(
     snapshot: NeedleApplyContext['snapshot'],
     embedder: ResolvedNeedleEmbedder,
     input: KbProjectionInput,
   ): Promise<string> {
-    const desiredSpec = embedder.spec;
     const stagingDir = join(needleStagingDir(this.runtime.runtimeDir), snapshot.snapshotId);
     rmSync(stagingDir, { recursive: true, force: true });
     mkdirSync(stagingDir, { recursive: true });
@@ -443,62 +414,14 @@ export class NeedleBackend implements NeedleBackendContract {
     }
 
     try {
-      const currentSpec = await stagedStore.store.getActiveSpec();
-      if (currentSpec?.specId !== desiredSpec.specId) {
-        await stagedStore.store.setActiveSpec({
-          specId: desiredSpec.specId,
-          provider: desiredSpec.provider,
-          model: desiredSpec.model,
-          dims: desiredSpec.dims,
-          normalization: desiredSpec.normalization,
-          createdAt: currentSpec?.createdAt ?? nowIsoString(this.runtime.time),
-        });
-      }
-
-      const vectorInput = this.collectVectorInput(input);
-      const { chunks } = vectorInput;
-      if (chunks.length > 0) {
-        const texts: string[] = [];
-        for (const chunk of chunks) {
-          texts.push(chunk.text);
-        }
-
-        const vectors = await embedder.service.embedDocuments(texts);
-        const upserts: ChunkRecord[] = [];
-        for (let indexPosition = 0; indexPosition < chunks.length; indexPosition += 1) {
-          const chunk = chunks[indexPosition];
-          if (chunk === undefined) {
-            continue;
-          }
-          const vector = vectors[indexPosition];
-          if (vector === undefined) {
-            throw new Error(`Embedding provider returned too few vectors for ${chunk.entryId}.`);
-          }
-
-          upserts.push({
-            ...chunk,
-            specId: desiredSpec.specId,
-            vector,
-          });
-        }
-
-        await stagedStore.store.upsertChunks(upserts);
-      }
-
-      await stagedStore.store.buildIndex();
-      writeSnapshotManifest(this.runtime.projectionArtifacts.files, stagingDir, {
-        snapshot: {
-          snapshotId: snapshot.snapshotId,
-          contentSeq: snapshot.contentSeq,
-          metadataSeq: snapshot.metadataSeq,
-          contentManifestHash: snapshot.contentManifestHash,
-          metadataManifestHash: snapshot.metadataManifestHash,
-          projectionIdentityHash: embedder.projectionIdentityHash,
-        },
-        specId: desiredSpec.specId,
-        entryCount: vectorInput.entryCount,
-        chunkCount: chunks.length,
-      });
+      await new NeedleSnapshotWriter({
+        runtime: this.runtime,
+        store: stagedStore.store,
+        snapshotDir: stagingDir,
+        snapshot,
+        input,
+        embedder,
+      }).write();
     } catch (error: unknown) {
       await stagedStore.close().catch(() => {});
       rmSync(stagingDir, { recursive: true, force: true });
