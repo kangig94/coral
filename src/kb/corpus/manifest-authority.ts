@@ -1,9 +1,4 @@
-import { join } from 'node:path';
-import { isNoEntryError } from '../../infra/fs-errors.js';
-import type { StoragePort } from '../../infra/port-types.js';
-import type { KbRuntime } from '../contract.js';
 import { noteEntryId, sourceEntryId, wikiEntryId } from '../entry-types.js';
-import { stripMdExt } from '../paths.js';
 import {
   extractBody,
   extractTitle,
@@ -12,7 +7,6 @@ import {
   parseWikiBody,
   parseWikiFrontmatter,
 } from './frontmatter.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
 import {
   computeContentSurfaceHash,
   computeManifestHash,
@@ -26,13 +20,7 @@ export type FullManifestSurfaceHashes = {
   metadata: Map<string, string>;
 };
 
-type ManifestAuthorityTarget = Pick<
-  KbRuntime,
-  'notesDir' | 'wikiDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath' | 'storagePort'
->;
-
 export interface ManifestAuthority {
-  seedFromFullCollectors(target: ManifestAuthorityTarget): void;
   replaceCurrentSurfaceHashes(hashes: FullManifestSurfaceHashes): void;
   updateFromDelta(deltas: Iterable<ManifestAuthorityDelta>): void;
   getCurrentManifestHash(lane: ManifestAuthorityLane): string;
@@ -73,10 +61,6 @@ export function createManifestAuthority(): ManifestAuthority {
   }
 
   return {
-    seedFromFullCollectors(target): void {
-      this.replaceCurrentSurfaceHashes(collectFullManifestSurfaceHashes(target));
-    },
-
     replaceCurrentSurfaceHashes(hashes): void {
       replaceLaneHashes('content', hashes.content);
       replaceLaneHashes('metadata', hashes.metadata);
@@ -373,67 +357,6 @@ export function captureEntityGraphManifestDelta(raw: string | null): ManifestAut
   ];
 }
 
-export function collectFullManifestSurfaceHashes(target: ManifestAuthorityTarget): FullManifestSurfaceHashes {
-  const content = new Map<string, string>();
-  const metadata = new Map<string, string>();
-  const storage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = target.storagePort;
-
-  for (const entry of sortedMarkdownEntries(storage, target.notesDir())) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(target.notesDir(), entry), 'utf-8');
-    applyDeltasToSurfaceHashes(content, metadata, captureNoteManifestDeltas(slug, raw));
-  }
-
-  for (const entry of sortedMarkdownEntries(storage, target.wikiDir())) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(target.wikiDir(), entry), 'utf-8');
-    applyDeltasToSurfaceHashes(content, metadata, captureWikiManifestDeltas(slug, raw));
-  }
-
-  for (const entry of sortedMarkdownEntries(storage, target.sourcesDir())) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(target.sourcesDir(), entry), 'utf-8');
-    applyDeltasToSurfaceHashes(content, metadata, captureSourceManifestDeltas(slug, raw));
-  }
-
-  for (const entry of sortedMarkdownEntries(storage, target.communitiesDir())) {
-    const slug = stripMdExt(entry);
-    applyDeltasToSurfaceHashes(
-      content,
-      metadata,
-      captureCommunityManifestDelta(slug, storage.readFileSync(join(target.communitiesDir(), entry), 'utf-8')),
-    );
-  }
-
-  for (const entry of sortedMarkdownEntries(storage, target.principlesDir())) {
-    const slug = stripMdExt(entry);
-    applyDeltasToSurfaceHashes(
-      content,
-      metadata,
-      capturePrincipleManifestDelta(slug, storage.readFileSync(join(target.principlesDir(), entry), 'utf-8')),
-    );
-  }
-
-  try {
-    applyDeltasToSurfaceHashes(
-      content,
-      metadata,
-      captureEntityGraphManifestDelta(storage.readFileSync(target.entityGraphPath(), 'utf-8')),
-    );
-  } catch (error: unknown) {
-    if (!isNoEntryError(error)) {
-      throw error;
-    }
-  }
-
-  return { content, metadata };
-}
-
-export function computeFullCollectorManifestHash(target: ManifestAuthorityTarget, lane: ManifestAuthorityLane): string {
-  const hashes = collectFullManifestSurfaceHashes(target);
-  return computeManifestHashFromSurfaceHashes(hashes[lane]);
-}
-
 export function computeManifestHashFromSurfaceHashes(hashes: ReadonlyMap<string, string>): string {
   const entries: Array<{ manifestId: string; surfaceHash: string }> = [];
   for (const [manifestId, surfaceHash] of hashes) {
@@ -443,21 +366,6 @@ export function computeManifestHashFromSurfaceHashes(hashes: ReadonlyMap<string,
     });
   }
   return computeManifestHash(entries);
-}
-
-function applyDeltasToSurfaceHashes(
-  content: Map<string, string>,
-  metadata: Map<string, string>,
-  deltas: readonly ManifestAuthorityDelta[],
-): void {
-  for (const delta of deltas) {
-    const target = delta.lane === 'content' ? content : metadata;
-    if (delta.surfaceHash === null) {
-      target.delete(delta.manifestId);
-      continue;
-    }
-    target.set(delta.manifestId, delta.surfaceHash);
-  }
 }
 
 function surfaceHashMapsEqual(left: ReadonlyMap<string, string>, right: ReadonlyMap<string, string>): boolean {

@@ -68,6 +68,7 @@ import { CorpusFreshnessService } from './corpus/freshness-service.js';
 import { CorpusInboundSyncService } from './corpus/inbound-sync-service.js';
 import { CorpusMutationFinalizer, type KbRuntimeMutationLockContext } from './corpus/mutation-finalizer.js';
 import { CorpusPublicationService } from './corpus/publication-service.js';
+import { buildCurrentCorpusSurface } from './corpus/surface.js';
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
@@ -290,12 +291,9 @@ class KbRuntimeImpl implements KbRuntime {
       mutationLockController: this.mutationLockController,
       mutationEffects: this.mutationFinalizer.mutationEffects,
       target: {
+        markdownRoot: this.markdownRoot,
+        corpusStorage: this.corpusStorage,
         storagePort: this.storagePort,
-        notesDir: () => this.notesDir(),
-        wikiDir: () => this.wikiDir(),
-        sourcesDir: () => this.sourcesDir(),
-        communitiesDir: () => this.communitiesDir(),
-        principlesDir: () => this.principlesDir(),
         entityGraphPath: () => this.entityGraphPath(),
         notePath: (note) => this.notePath(note),
         wikiPath: (slug) => this.wikiPath(slug),
@@ -319,7 +317,7 @@ class KbRuntimeImpl implements KbRuntime {
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
     }
-    this.manifestAuthority.seedFromFullCollectors(this);
+    this.manifestAuthority.replaceCurrentSurfaceHashes(buildCurrentCorpusSurface(this).manifest);
   }
 
   notesDir(): string {
@@ -439,16 +437,18 @@ class KbRuntimeImpl implements KbRuntime {
   recordReindexSuccess(
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
     externalMutation?: KbIndexMutationLane,
+    surface?: ReturnType<typeof buildCurrentCorpusSurface>,
   ): KbIndexState {
     const state = this.readIndexState();
     if (!indexStateMatchesSnapshot(state, startState)) {
       return state;
     }
 
-    this.manifestAuthority.seedFromFullCollectors(this);
+    const finalSurface = surface ?? buildCurrentCorpusSurface(this);
+    this.manifestAuthority.replaceCurrentSurfaceHashes(finalSurface.manifest);
     const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation ?? null);
     this.writeIndexState(nextState);
-    this.authorityBaselineRefresh.rebuildAuthorityBaselineFromDisk();
+    this.corpusAuthorityBaseline.replace(finalSurface.baselineRecords);
     return nextState;
   }
 

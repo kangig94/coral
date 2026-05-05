@@ -5,13 +5,13 @@ import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry } from 
 import {
   extractBody,
   extractTitle,
+  parseFrontmatter,
   parseSourceFrontmatter,
   parseWikiBody,
   parseWikiFrontmatter,
 } from '../frontmatter.js';
 import { computeContentSurfaceHash } from '../snapshot.js';
 import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../metadata-hash.js';
-import { loadKbNote } from '../../read.js';
 import { readCurateRetryQueue } from '../../curate/retry.js';
 import type { PendingRepair } from '../../curate/state/model.js';
 import type { KbCorpusSnapshot, KbIndexMutationLane, KbRuntime } from '../../contract.js';
@@ -205,15 +205,16 @@ async function detectStructuredTextDrift(
     {
       entryId: noteEntryId,
       loadEntry: (file) => {
-        const loaded = loadKbNote(kb.storagePort, file.path);
+        const frontmatter = parseFrontmatter(file.content);
+        const title = extractTitle(file.content);
         const next = buildNoteIndexEntry({
           slug: file.slug,
-          title: loaded.title,
-          ...loaded.frontmatter,
+          title,
+          ...frontmatter,
         });
         return {
           next,
-          contentHash: computeContentSurfaceHash({ title: loaded.title, body: loaded.body }),
+          contentHash: computeContentSurfaceHash({ title, body: extractBody(file.content) }),
         };
       },
       isMatchingKind: isNoteEntry,
@@ -232,14 +233,13 @@ async function detectStructuredTextDrift(
     {
       entryId: sourceEntryId,
       loadEntry: (file) => {
-        const raw = kb.storagePort.readFileSync(file.path, 'utf-8');
         const next = buildSourceIndexEntry({
           slug: file.slug,
-          ...parseSourceFrontmatter(raw),
+          ...parseSourceFrontmatter(file.content),
         });
         return {
           next,
-          contentHash: computeContentSurfaceHash({ title: next.title, body: extractBody(raw) }),
+          contentHash: computeContentSurfaceHash({ title: next.title, body: extractBody(file.content) }),
         };
       },
       isMatchingKind: isSourceEntry,
@@ -258,10 +258,9 @@ async function detectStructuredTextDrift(
     {
       entryId: wikiEntryId,
       loadEntry: (file) => {
-        const raw = kb.storagePort.readFileSync(file.path, 'utf-8');
-        const frontmatter = parseWikiFrontmatter(raw);
-        const title = extractTitle(raw);
-        const body = extractBody(raw);
+        const frontmatter = parseWikiFrontmatter(file.content);
+        const title = extractTitle(file.content);
+        const body = extractBody(file.content);
         const sections = parseWikiBody(body);
         const next = buildWikiIndexEntry({
           slug: file.slug,
