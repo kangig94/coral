@@ -1,14 +1,21 @@
-import { deriveNoteIdentity } from '../../corpus/frontmatter.js';
 import { compareLocale } from '../../validation.js';
-import { getEntry, type EntityType, type KbIndex, type RelationshipType } from '../../entry-types.js';
-import { approximateTokenCount, uniqueTrimmedList } from '../content-normalize.js';
+import type { EntityType, KbIndex, RelationshipType } from '../../entry-types.js';
+import { approximateTokenCount } from '../content-normalize.js';
 import type { CurateClaimedEntry } from '../pipeline-types.js';
-import { classificationEntityNameSegments } from './schema.js';
+import {
+  addClassificationContextEntry,
+  ClassificationVocabularyCatalog,
+  cloneClassificationContext,
+  createClassificationContext,
+  normalizeClassificationPromptVocabulary,
+  type ClassificationContext,
+  type ClassificationPromptVocabularyEntry,
+  type ClassificationPromptVocabularyInput,
+} from './vocabulary-catalog.js';
 
 const CLASSIFICATION_BATCH_SIZE = 100;
 const CLASSIFICATION_REQUEST_TOKEN_BUDGET = 16_000;
 const CLASSIFICATION_RESPONSE_TOKEN_HEADROOM = 4_000;
-const CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT = 4_000;
 
 const ENTITY_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [EntityType, string]> = [
   ['technology', 'a concrete technical capability, platform, or system'],
@@ -34,33 +41,14 @@ const RELATIONSHIP_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [RelationshipTyp
   ['replaces', 'source supersedes target'],
 ];
 
-export type ClassificationPromptVocabularyEntry = {
-  name: string;
-  type: EntityType;
-  description: string;
-  relevant: boolean;
-  support: number;
-};
-
-export type ClassificationPromptVocabularyInput = readonly string[] | readonly ClassificationPromptVocabularyEntry[];
-
 export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
-type ClassificationContext = {
-  liveTags: Set<string>;
-  tokenSet: Set<string>;
-};
-
-type ClassificationVocabularyCandidate = {
-  name: string;
-  type: EntityType;
-  description: string;
-  support: number;
-  relatedEntities: readonly string[];
-};
-
-type ClassificationVocabularyFacts = {
-  candidates: readonly ClassificationVocabularyCandidate[];
+type ClassificationBatchPlan = {
+  entries: CurateClaimedEntry[];
+  vocabulary: ClassificationPromptVocabularyEntry[];
+  context: ClassificationContext;
+  entryTokenTotal: number;
+  shape: ClassificationBatchShape | null;
 };
 
 function buildFlatList(values: string[]): string {
@@ -77,230 +65,6 @@ function buildGuidanceList(values: ReadonlyArray<readonly [string, string]>): st
     lines.push(`${type}: ${description}`);
   }
   return buildFlatList(lines);
-}
-
-function tokenizeLowercaseText(value: string): string[] {
-  return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-}
-
-function buildEntitySupportMap(index: KbIndex): Map<string, number> {
-  const support = new Map<string, number>();
-
-  for (const entry of Object.values(index.entries)) {
-    if (!('tags' in entry)) {
-      continue;
-    }
-
-    for (const tag of new Set(entry.tags)) {
-      support.set(tag, (support.get(tag) ?? 0) + 1);
-    }
-  }
-
-  for (const relationship of index.relationships) {
-    const evidenceCount = uniqueTrimmedList(relationship.evidence).length;
-    if (evidenceCount === 0) {
-      continue;
-    }
-
-    support.set(relationship.source, (support.get(relationship.source) ?? 0) + evidenceCount);
-    support.set(relationship.target, (support.get(relationship.target) ?? 0) + evidenceCount);
-  }
-
-  return support;
-}
-
-function createClassificationContext(): ClassificationContext {
-  return {
-    liveTags: new Set<string>(),
-    tokenSet: new Set<string>(),
-  };
-}
-
-function cloneClassificationContext(context: ClassificationContext): ClassificationContext {
-  return {
-    liveTags: new Set(context.liveTags),
-    tokenSet: new Set(context.tokenSet),
-  };
-}
-
-function addClassificationContextEntry(
-  context: ClassificationContext,
-  entry: CurateClaimedEntry,
-  index: KbIndex,
-): void {
-  const addTokens = (value: string) => {
-    for (const token of tokenizeLowercaseText(value)) {
-      context.tokenSet.add(token);
-    }
-  };
-
-  const liveEntry = getEntry(index, entry.entryId);
-  if (liveEntry !== undefined && 'tags' in liveEntry) {
-    for (const tag of liveEntry.tags) {
-      context.liveTags.add(tag);
-      addTokens(tag);
-    }
-  }
-
-  addTokens(entry.title);
-  addTokens(entry.body.slice(0, 4_000));
-
-  if (entry.kind === 'note') {
-    const identity = deriveNoteIdentity(entry.slug);
-    addTokens(identity.domain);
-    addTokens(identity.topic);
-  }
-}
-
-function buildRelationshipNeighborMap(index: KbIndex): Map<string, Set<string>> {
-  const relationshipNeighbors = new Map<string, Set<string>>();
-  const addNeighbor = (entityName: string, relatedEntityName: string) => {
-    const existing = relationshipNeighbors.get(entityName);
-    if (existing !== undefined) {
-      existing.add(relatedEntityName);
-      return;
-    }
-
-    relationshipNeighbors.set(entityName, new Set([relatedEntityName]));
-  };
-
-  for (const relationship of index.relationships) {
-    addNeighbor(relationship.source, relationship.target);
-    addNeighbor(relationship.target, relationship.source);
-  }
-
-  return relationshipNeighbors;
-}
-
-function buildClassificationVocabularyFacts(index: KbIndex): ClassificationVocabularyFacts {
-  const entityMetaEntries = Object.entries(index.entityMeta);
-  if (entityMetaEntries.length === 0) {
-    return { candidates: [] };
-  }
-
-  const support = buildEntitySupportMap(index);
-  const relationshipNeighbors = buildRelationshipNeighborMap(index);
-  const candidates: ClassificationVocabularyCandidate[] = [];
-  for (const [name, meta] of entityMetaEntries) {
-    candidates.push({
-      name,
-      type: meta.type,
-      description: meta.description,
-      support: support.get(name) ?? 0,
-      relatedEntities: [...(relationshipNeighbors.get(name) ?? [])],
-    });
-  }
-
-  return { candidates };
-}
-
-function isClassificationVocabularyCandidateRelevant(
-  candidate: ClassificationVocabularyCandidate,
-  context: ClassificationContext,
-): boolean {
-  if (context.liveTags.has(candidate.name)) {
-    return true;
-  }
-
-  for (const relatedEntity of candidate.relatedEntities) {
-    if (context.liveTags.has(relatedEntity)) {
-      return true;
-    }
-  }
-
-  for (const segment of classificationEntityNameSegments(candidate.name)) {
-    if (context.tokenSet.has(segment)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function buildClassificationPromptVocabularyForContext(
-  context: ClassificationContext,
-  facts: ClassificationVocabularyFacts,
-): ClassificationPromptVocabularyEntry[] {
-  const ranked: ClassificationPromptVocabularyEntry[] = [];
-  for (const candidate of facts.candidates) {
-    ranked.push({
-      name: candidate.name,
-      type: candidate.type,
-      description: candidate.description,
-      relevant: isClassificationVocabularyCandidateRelevant(candidate, context),
-      support: candidate.support,
-    });
-  }
-  ranked.sort(
-    (left, right) =>
-      Number(right.relevant) - Number(left.relevant) ||
-      right.support - left.support ||
-      compareLocale(left.name, right.name),
-  );
-
-  const selected: ClassificationPromptVocabularyEntry[] = [];
-  let consumedTokens = 0;
-
-  for (const candidate of ranked) {
-    const renderedLine =
-      candidate.relevant && candidate.description
-        ? `- ${candidate.name}: ${candidate.type} (${candidate.description})`
-        : `- ${candidate.name}: ${candidate.type}`;
-    const lineTokens = approximateTokenCount(renderedLine);
-    if (selected.length > 0 && consumedTokens + lineTokens > CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT) {
-      continue;
-    }
-
-    selected.push(candidate);
-    consumedTokens += lineTokens;
-  }
-
-  return selected;
-}
-
-function normalizeClassificationPromptVocabulary(
-  vocabulary: ClassificationPromptVocabularyInput,
-): ClassificationPromptVocabularyEntry[] {
-  const seen = new Set<string>();
-  const normalized: ClassificationPromptVocabularyEntry[] = [];
-  let consumedTokens = 0;
-
-  for (const value of vocabulary) {
-    const entry =
-      typeof value === 'string'
-        ? {
-            name: value.trim(),
-            type: 'concept' as const,
-            description: '',
-            relevant: false,
-            support: 0,
-          }
-        : {
-            name: value.name.trim(),
-            type: value.type,
-            description: value.description.trim(),
-            relevant: value.relevant,
-            support: value.support,
-          };
-    if (!entry.name || seen.has(entry.name)) {
-      continue;
-    }
-
-    const renderedLine =
-      entry.relevant && entry.description
-        ? `- ${entry.name}: ${entry.type} (${entry.description})`
-        : `- ${entry.name}: ${entry.type}`;
-    const lineTokens = approximateTokenCount(renderedLine);
-    if (normalized.length > 0 && consumedTokens + lineTokens > CLASSIFICATION_ENTITY_VOCAB_TOKEN_LIMIT) {
-      continue;
-    }
-
-    seen.add(entry.name);
-    normalized.push(entry);
-    consumedTokens += lineTokens;
-  }
-
-  return normalized;
 }
 
 function renderClassificationPromptVocabulary(vocabulary: ClassificationPromptVocabularyInput): string {
@@ -435,6 +199,51 @@ function classificationBatchShapeWithEntry(
   entry: CurateClaimedEntry,
 ): ClassificationBatchShape {
   return currentShape === 'note-or-mixed' || entry.kind === 'note' ? 'note-or-mixed' : 'source-only';
+}
+
+function createClassificationBatchPlan(): ClassificationBatchPlan {
+  return {
+    entries: [],
+    vocabulary: [],
+    context: createClassificationContext(),
+    entryTokenTotal: 0,
+    shape: null,
+  };
+}
+
+function extendClassificationBatchPlan(
+  plan: ClassificationBatchPlan,
+  entry: CurateClaimedEntry,
+  index: KbIndex,
+  vocabularyCatalog: ClassificationVocabularyCatalog,
+): ClassificationBatchPlan {
+  const context = cloneClassificationContext(plan.context);
+  addClassificationContextEntry(context, entry, index);
+
+  return {
+    entries: [...plan.entries, entry],
+    vocabulary: vocabularyCatalog.select(context),
+    context,
+    entryTokenTotal: plan.entryTokenTotal + estimateClassificationEntryTokens(entry),
+    shape: classificationBatchShapeWithEntry(plan.shape, entry),
+  };
+}
+
+function createSingleSourceClassificationBatchPlan(
+  entry: Extract<CurateClaimedEntry, { kind: 'source' }>,
+  index: KbIndex,
+  vocabularyCatalog: ClassificationVocabularyCatalog,
+): ClassificationBatchPlan {
+  const context = createClassificationContext();
+  addClassificationContextEntry(context, entry, index);
+
+  return {
+    entries: [entry],
+    vocabulary: vocabularyCatalog.select(context),
+    context,
+    entryTokenTotal: estimateClassificationEntryTokens(entry),
+    shape: 'source-only',
+  };
 }
 
 export function estimateClassificationBatchTokens(
@@ -606,44 +415,31 @@ export function takeClassificationBatchWithIndex(
     };
   }
 
-  let batch: CurateClaimedEntry[] = [];
-  let vocabulary: ClassificationPromptVocabularyEntry[] = [];
-  let batchContext = createClassificationContext();
-  let batchEntryTokenTotal = 0;
-  let batchShape: ClassificationBatchShape | null = null;
-  const vocabularyFacts = buildClassificationVocabularyFacts(index);
+  let plan = createClassificationBatchPlan();
+  const vocabularyCatalog = ClassificationVocabularyCatalog.fromIndex(index);
   const promptLimit = classificationPromptTokenLimit();
   let indexCursor = 0;
 
   while (indexCursor < entries.length) {
     const entry = entries[indexCursor];
-    const candidateBatch = [...batch, entry];
-    const candidateContext = cloneClassificationContext(batchContext);
-    addClassificationContextEntry(candidateContext, entry, index);
-    const candidateVocabulary = buildClassificationPromptVocabularyForContext(candidateContext, vocabularyFacts);
-    const candidateShape = classificationBatchShapeWithEntry(batchShape, entry);
-    const candidateEntryTokenTotal = batchEntryTokenTotal + estimateClassificationEntryTokens(entry);
-    assertClassificationScaffoldFits(candidateShape, candidateVocabulary, principleNames);
+    const candidate = extendClassificationBatchPlan(plan, entry, index, vocabularyCatalog);
+    assertClassificationScaffoldFits(candidate.shape ?? 'source-only', candidate.vocabulary, principleNames);
 
     if (
-      batch.length < maxEntries &&
+      plan.entries.length < maxEntries &&
       estimateClassificationBatchTokensForTotals(
-        candidateShape,
-        candidateEntryTokenTotal,
-        candidateVocabulary,
+        candidate.shape ?? 'source-only',
+        candidate.entryTokenTotal,
+        candidate.vocabulary,
         principleNames,
       ) <= promptLimit
     ) {
-      batch = candidateBatch;
-      vocabulary = candidateVocabulary;
-      batchContext = candidateContext;
-      batchEntryTokenTotal = candidateEntryTokenTotal;
-      batchShape = candidateShape;
+      plan = candidate;
       indexCursor += 1;
       continue;
     }
 
-    if (batch.length > 0) {
+    if (plan.entries.length > 0) {
       break;
     }
 
@@ -651,17 +447,14 @@ export function takeClassificationBatchWithIndex(
       throw new Error(`Classification note entry ${entry.entryId} exceeds the request budget.`);
     }
 
-    const fittedEntry = fitSourceEntryToPromptBudget(entry, candidateVocabulary, principleNames);
-    const fittedContext = createClassificationContext();
-    addClassificationContextEntry(fittedContext, fittedEntry, index);
-    batch = [fittedEntry];
-    vocabulary = buildClassificationPromptVocabularyForContext(fittedContext, vocabularyFacts);
-    assertClassificationScaffoldFits('source-only', vocabulary, principleNames);
+    const fittedEntry = fitSourceEntryToPromptBudget(entry, candidate.vocabulary, principleNames);
+    plan = createSingleSourceClassificationBatchPlan(fittedEntry, index, vocabularyCatalog);
+    assertClassificationScaffoldFits('source-only', plan.vocabulary, principleNames);
     break;
   }
 
   return {
-    batch,
-    vocabulary,
+    batch: plan.entries,
+    vocabulary: plan.vocabulary,
   };
 }
