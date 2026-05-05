@@ -283,6 +283,38 @@ export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: stri
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
+function sqlPlaceholders(count: number): string {
+  const placeholders: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    placeholders.push('?');
+  }
+  return placeholders.join(', ');
+}
+
+export function readProjectionSessionEntriesById(
+  db: ReadonlyDatabase,
+  sessionIds: readonly string[],
+): Map<string, SessionEntry> {
+  const uniqueSessionIds = [...new Set(sessionIds)];
+  if (uniqueSessionIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT session_id, entry
+         FROM projection_sessions
+        WHERE session_id IN (${sqlPlaceholders(uniqueSessionIds.length)})`,
+    )
+    .all(...uniqueSessionIds) as Array<{ session_id: string; entry: string }>;
+
+  const entries = new Map<string, SessionEntry>();
+  for (const row of rows) {
+    entries.set(row.session_id, parseProjectionSessionEntry(row.session_id, row.entry));
+  }
+  return entries;
+}
+
 export function listProjectionSessionEntries(
   db: ReadonlyDatabase,
   provider?: string,
