@@ -71,11 +71,26 @@ function addLookupValue(lookup: Map<string, Set<string>>, key: string, value: st
 
   const existing = lookup.get(key);
   if (existing === undefined) {
-    lookup.set(key, new Set([value]));
+    const values = new Set<string>();
+    values.add(value);
+    lookup.set(key, values);
     return;
   }
 
   existing.add(value);
+}
+
+function sortedUniqueStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique.sort((left, right) => left.localeCompare(right));
 }
 
 function stableEntityGraph(graph: EntityGraph): EntityGraph {
@@ -90,7 +105,7 @@ function stableEntityGraph(graph: EntityGraph): EntityGraph {
             description: meta.description,
             ...(meta.aliases === undefined
               ? {}
-              : { aliases: [...new Set(meta.aliases)].sort((left, right) => left.localeCompare(right)) }),
+              : { aliases: sortedUniqueStrings(meta.aliases) }),
           },
         ]),
     ),
@@ -100,7 +115,7 @@ function stableEntityGraph(graph: EntityGraph): EntityGraph {
         target: relationship.target,
         type: relationship.type,
         description: relationship.description,
-        evidence: [...new Set(relationship.evidence)].sort((left, right) => left.localeCompare(right)),
+        evidence: sortedUniqueStrings(relationship.evidence),
       }))
       .sort(
         (left, right) =>
@@ -178,9 +193,11 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
       const neighbors = ensureNeighbors(source);
       const existing = neighbors.get(target);
       if (existing === undefined) {
+        const relationshipTypes = new Set<RelationshipType>();
+        relationshipTypes.add(relationship.type);
         neighbors.set(target, {
           weight: relationshipWeight,
-          relationshipTypes: new Set([relationship.type]),
+          relationshipTypes,
         });
         continue;
       }
@@ -270,7 +287,13 @@ function expandGraphEntityScores(seeds: ReadonlyMap<string, number>, graph: Grap
   for (const [seed, seedScore] of seeds.entries()) {
     addBoundedScore(entityScores, seed, seedScore, 1.35);
 
-    for (const neighbor of (graph.adjacency.get(seed) ?? []).slice(0, GRAPH_MAX_NEIGHBORS_PER_SEED)) {
+    const neighbors = graph.adjacency.get(seed) ?? [];
+    const limit = Math.min(neighbors.length, GRAPH_MAX_NEIGHBORS_PER_SEED);
+    for (let index = 0; index < limit; index += 1) {
+      const neighbor = neighbors[index];
+      if (neighbor === undefined) {
+        continue;
+      }
       addBoundedScore(entityScores, neighbor.entity, seedScore * neighbor.weight, 1.1);
     }
   }
@@ -278,11 +301,30 @@ function expandGraphEntityScores(seeds: ReadonlyMap<string, number>, graph: Grap
   return entityScores;
 }
 
-function scoreGraphMatches(matchScores: number[]): number {
-  return [...matchScores]
-    .sort((left, right) => right - left)
-    .slice(0, GRAPH_ENTRY_MATCH_WEIGHTS.length)
-    .reduce((total, score, index) => total + score * GRAPH_ENTRY_MATCH_WEIGHTS[index], 0);
+function scoreGraphMatches(matchScores: readonly number[]): number {
+  const topScores: number[] = [];
+
+  for (const score of matchScores) {
+    let insertAt = topScores.length;
+    while (insertAt > 0 && score > (topScores[insertAt - 1] ?? 0)) {
+      insertAt -= 1;
+    }
+
+    if (insertAt >= GRAPH_ENTRY_MATCH_WEIGHTS.length) {
+      continue;
+    }
+
+    topScores.splice(insertAt, 0, score);
+    if (topScores.length > GRAPH_ENTRY_MATCH_WEIGHTS.length) {
+      topScores.length = GRAPH_ENTRY_MATCH_WEIGHTS.length;
+    }
+  }
+
+  let total = 0;
+  for (let index = 0; index < topScores.length; index += 1) {
+    total += (topScores[index] ?? 0) * (GRAPH_ENTRY_MATCH_WEIGHTS[index] ?? 0);
+  }
+  return total;
 }
 
 function buildGraphHits(
@@ -312,9 +354,20 @@ function buildGraphHits(
       continue;
     }
 
-    const matchScores = [...new Set(entry.tags)]
-      .map((tag) => entityScores.get(tag))
-      .filter((score): score is number => score !== undefined);
+    const seenTags = new Set<string>();
+    const matchScores: number[] = [];
+    for (const tag of entry.tags) {
+      if (seenTags.has(tag)) {
+        continue;
+      }
+      seenTags.add(tag);
+
+      const score = entityScores.get(tag);
+      if (score !== undefined) {
+        matchScores.push(score);
+      }
+    }
+
     if (matchScores.length === 0) {
       continue;
     }
@@ -325,7 +378,7 @@ function buildGraphHits(
     });
   }
 
-  return [...hits].sort(compareRetrievalRoleHits);
+  return hits.sort(compareRetrievalRoleHits);
 }
 
 export class RuntimeGraphRetrieval implements GraphRetrieval {

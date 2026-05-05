@@ -112,16 +112,15 @@ export function validateAssignments(
       continue;
     }
 
-    const related = uniqueTrimmedList(
-      (proposal.related ?? []).flatMap((relatedEntryId) => {
-        const normalized = parseKbEntryId(relatedEntryId);
-        if (normalized === null || normalized === entryId || getEntry(index, normalized) === undefined) {
-          return [];
-        }
-
-        return [normalized];
-      }),
-    );
+    const parsedRelated: string[] = [];
+    for (const relatedEntryId of proposal.related ?? []) {
+      const normalized = parseKbEntryId(relatedEntryId);
+      if (normalized === null || normalized === entryId || getEntry(index, normalized) === undefined) {
+        continue;
+      }
+      parsedRelated.push(normalized);
+    }
+    const related = uniqueTrimmedList(parsedRelated);
     const existing = mergedByEntry.get(entryId);
     if (existing === undefined) {
       const mergedNewEntities = mergeClassificationNewEntities(proposal.newEntities);
@@ -325,12 +324,13 @@ export function buildMetadataTargets(
   index: KbIndex,
   claimedEntries: CurateClaimedEntry[],
 ): MetadataTarget[] {
-  const assignmentsByEntryId = new Map(
-    validatedAssignments.flatMap((assignment) => {
-      const entryId = parseKbEntryId(assignment.entry);
-      return entryId === null ? [] : [[entryId, assignment] as const];
-    }),
-  );
+  const assignmentsByEntryId = new Map<KbEntryId, ClassificationAssignment>();
+  for (const assignment of validatedAssignments) {
+    const entryId = parseKbEntryId(assignment.entry);
+    if (entryId !== null) {
+      assignmentsByEntryId.set(entryId, assignment);
+    }
+  }
   return claimedEntries
     .map((claimedEntry) => {
       const claimTimeMeta = getEntry(index, claimedEntry.entryId);

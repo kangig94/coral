@@ -78,25 +78,31 @@ export function normalizeDiscoverySlug(raw: string): string | null {
 }
 
 function getDiscoveryNotes(index: KbIndex): NoteEntry[] {
-  return Object.values(index.entries).filter(isNoteEntry);
+  const notes: NoteEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (isNoteEntry(entry)) {
+      notes.push(entry);
+    }
+  }
+  return notes;
 }
 
 function collectDiscoveryCandidates(index: KbIndex): NoteClaimCandidate[] {
-  return getDiscoveryNotes(index)
-    .flatMap((noteMeta) =>
-      noteMeta.entrySeq === undefined
-        ? []
-        : [
-            {
-              kind: 'note' as const,
-              entryId: noteEntryId(noteMeta.slug),
-              slug: noteMeta.slug,
-              updatedAt: noteMeta.updatedAt,
-              cursor: noteCursor(noteMeta.slug, noteMeta.entrySeq),
-            },
-          ],
-    )
-    .sort((left, right) => compareCursor(left.cursor, right.cursor));
+  const candidates: NoteClaimCandidate[] = [];
+  for (const noteMeta of getDiscoveryNotes(index)) {
+    if (noteMeta.entrySeq === undefined) {
+      continue;
+    }
+
+    candidates.push({
+      kind: 'note',
+      entryId: noteEntryId(noteMeta.slug),
+      slug: noteMeta.slug,
+      updatedAt: noteMeta.updatedAt,
+      cursor: noteCursor(noteMeta.slug, noteMeta.entrySeq),
+    });
+  }
+  return candidates.sort((left, right) => compareCursor(left.cursor, right.cursor));
 }
 
 export function sameDiscoverySelection(left: NoteClaimCandidate[], right: NoteClaimCandidate[]): boolean {

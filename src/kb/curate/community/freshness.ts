@@ -1,5 +1,5 @@
 import type { KbRuntime } from '../../contract.js';
-import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
+import { isCommunityEntry, type CommunityEntry, type KbIndex } from '../../entry-types.js';
 import { computeCommunityTopologyFingerprint } from './detection.js';
 import { computeCommunitySummaryInputFingerprints } from './summary.js';
 import { readCurateState, type CurateState } from '../state/index.js';
@@ -24,7 +24,12 @@ function isCommunityStateFreshForIndex(
   kb: CommunityFreshnessRuntime,
   index: KbIndex,
 ): boolean {
-  const communityEntries = Object.values(index.entries).filter(isCommunityEntry);
+  const communityEntries: CommunityEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (isCommunityEntry(entry)) {
+      communityEntries.push(entry);
+    }
+  }
   if (communityEntries.length === 0) {
     return true;
   }

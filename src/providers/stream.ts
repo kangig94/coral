@@ -30,6 +30,25 @@ export function streamProviderEvents<TEvent>(
     reject: (error: unknown) => void;
   } | null = null;
   let closed = false;
+  let queueHead = 0;
+
+  const queuedCount = (): number => queue.length - queueHead;
+
+  const dequeue = (): ProviderEventQueueEntry<TEvent> | undefined => {
+    if (queueHead >= queue.length) {
+      queueHead = 0;
+      queue.length = 0;
+      return undefined;
+    }
+
+    const entry = queue[queueHead];
+    queueHead += 1;
+    if (queueHead > 64 && queueHead * 2 >= queue.length) {
+      queue.splice(0, queueHead);
+      queueHead = 0;
+    }
+    return entry;
+  };
 
   const dispatch = (entry: ProviderEventQueueEntry<TEvent>): void => {
     if (waiter) {
@@ -49,7 +68,7 @@ export function streamProviderEvents<TEvent>(
     if (closed) {
       return;
     }
-    if (!waiter && queue.length >= QUEUE_CAP) {
+    if (!waiter && queuedCount() >= QUEUE_CAP) {
       throw new ProviderEventBackpressureError();
     }
     dispatch({ kind: 'event', event });
@@ -84,7 +103,7 @@ export function streamProviderEvents<TEvent>(
     async *[Symbol.asyncIterator](): AsyncIterator<TEvent> {
       while (true) {
         const entry =
-          queue.shift() ??
+          dequeue() ??
           (await new Promise<ProviderEventQueueEntry<TEvent>>((resolve, reject) => {
             waiter = { resolve, reject };
           }));

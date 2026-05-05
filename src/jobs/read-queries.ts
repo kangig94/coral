@@ -547,10 +547,15 @@ export function loadJobProjectionDetails(
   jobIds: string[],
   ctx: StoreReadContext,
 ): Map<string, JobProjectionDetail> {
-  const uniqueJobIds = [...new Set(jobIds)];
-  const details = new Map<string, JobProjectionDetail>(
-    uniqueJobIds.map((jobId) => [jobId, emptyJobProjectionDetail()]),
-  );
+  const uniqueJobIds: string[] = [];
+  const details = new Map<string, JobProjectionDetail>();
+  for (const jobId of jobIds) {
+    if (details.has(jobId)) {
+      continue;
+    }
+    uniqueJobIds.push(jobId);
+    details.set(jobId, emptyJobProjectionDetail());
+  }
 
   if (uniqueJobIds.length === 0) {
     return details;

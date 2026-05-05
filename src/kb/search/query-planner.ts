@@ -23,6 +23,10 @@ export interface QueryPlanner {
   plan(intent: KbSearchIntent, registry: RoleExecutionRegistryView, ctx: RoleQueryContext): QueryPlan;
 }
 
+const LEXICAL_PRIMARY_TAGS = new Set<string>(['lexical']);
+const SEMANTIC_PRIMARY_TAGS = new Set<string>(['semantic']);
+const HYBRID_PRIMARY_TAGS = new Set<string>(['lexical', 'semantic']);
+
 function supportsScope(registeredRole: RegisteredRetrievalRole, ctx: RoleQueryContext): boolean {
   return registeredRole.descriptor.supportsScopes.includes(ctx.scope);
 }
@@ -54,7 +58,7 @@ export function createQueryPlanner(): QueryPlanner {
           primaryInvocations: registeredRoles
             .filter((registeredRole) => hasTag(registeredRole, 'lexical') && supportsScope(registeredRole, ctx))
             .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical']))),
+              invocation(registeredRole, isRequiredCoreContributor(registeredRole, LEXICAL_PRIMARY_TAGS)),
             ),
         };
       }
@@ -68,7 +72,7 @@ export function createQueryPlanner(): QueryPlanner {
           primaryInvocations: registeredRoles
             .filter((registeredRole) => hasTag(registeredRole, 'semantic') && supportsScope(registeredRole, ctx))
             .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['semantic']))),
+              invocation(registeredRole, isRequiredCoreContributor(registeredRole, SEMANTIC_PRIMARY_TAGS)),
             ),
           ...(fallbackInvocations.length === 0 ? {} : { fallbackInvocations }),
         };
@@ -79,7 +83,7 @@ export function createQueryPlanner(): QueryPlanner {
           primaryInvocations: registeredRoles
             .filter((registeredRole) => supportsScope(registeredRole, ctx))
             .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical', 'semantic']))),
+              invocation(registeredRole, isRequiredCoreContributor(registeredRole, HYBRID_PRIMARY_TAGS)),
             ),
         };
       }
@@ -88,7 +92,7 @@ export function createQueryPlanner(): QueryPlanner {
         primaryInvocations: registeredRoles
           .filter((registeredRole) => supportsScope(registeredRole, ctx))
           .map((registeredRole) =>
-            invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical']))),
+            invocation(registeredRole, isRequiredCoreContributor(registeredRole, LEXICAL_PRIMARY_TAGS)),
           ),
       };
     },

@@ -236,7 +236,17 @@ async function repairProjectionArtifactLagOnBoot(
   timeoutMs: number,
 ): Promise<void> {
   const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
-  const targetConsumerIds = [...new Set(lag.flatMap((entry) => entry.targetConsumerIds))];
+  const targetConsumerIds: string[] = [];
+  const seenTargetConsumers = new Set<string>();
+  for (const entry of lag) {
+    for (const consumerId of entry.targetConsumerIds) {
+      if (seenTargetConsumers.has(consumerId)) {
+        continue;
+      }
+      seenTargetConsumers.add(consumerId);
+      targetConsumerIds.push(consumerId);
+    }
+  }
   if (targetConsumerIds.length === 0) {
     return;
   }

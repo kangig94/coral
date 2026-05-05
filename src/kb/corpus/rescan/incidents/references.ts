@@ -5,6 +5,13 @@ import { REPAIR_INCIDENT_ID, type DetectedIncident, type Detector } from './cata
 const ORPHAN_ENTITY_GRAPH_REFS_CANONICAL = REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS;
 const ORPHAN_PRINCIPLE_REFS_CANONICAL = REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS;
 
+type OrphanEntityGraphReference = {
+  relationshipIndex: number;
+  evidenceIndex: number;
+  reference: string;
+  normalizedEntryId?: string;
+};
+
 export const referenceIntegrityDetector: Detector = {
   detect(corpus) {
     const incidents: DetectedIncident[] = [];
@@ -43,23 +50,36 @@ function detectOrphanEntityGraphRefs(corpus: Parameters<Detector['detect']>[0]):
     return null;
   }
 
-  const orphans = corpus.entityGraph.graph.relationships.flatMap((relationship, relationshipIndex) =>
-    relationship.evidence.flatMap((reference, evidenceIndex) => {
-      const normalized = parseKbEntryId(reference);
-      if (normalized !== null && corpus.activeEntryIds.has(normalized)) {
-        return [];
+  const orphans: OrphanEntityGraphReference[] = [];
+  for (
+    let relationshipIndex = 0;
+    relationshipIndex < corpus.entityGraph.graph.relationships.length;
+    relationshipIndex += 1
+  ) {
+    const relationship = corpus.entityGraph.graph.relationships[relationshipIndex];
+    if (relationship === undefined) {
+      continue;
+    }
+
+    for (let evidenceIndex = 0; evidenceIndex < relationship.evidence.length; evidenceIndex += 1) {
+      const reference = relationship.evidence[evidenceIndex];
+      if (reference === undefined) {
+        continue;
       }
 
-      return [
-        {
-          relationshipIndex,
-          evidenceIndex,
-          reference,
-          ...(normalized === null ? {} : { normalizedEntryId: normalized }),
-        },
-      ];
-    }),
-  );
+      const normalized = parseKbEntryId(reference);
+      if (normalized !== null && corpus.activeEntryIds.has(normalized)) {
+        continue;
+      }
+
+      orphans.push({
+        relationshipIndex,
+        evidenceIndex,
+        reference,
+        ...(normalized === null ? {} : { normalizedEntryId: normalized }),
+      });
+    }
+  }
 
   if (orphans.length === 0) {
     return null;

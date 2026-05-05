@@ -96,12 +96,14 @@ function classifyParsedEntries(entries: unknown[], entryMap: Map<string, true>):
     const newEntities = parseClassificationNewEntities(entry.newEntities);
     const relationships = parseClassificationRelationships(entry.relationships);
 
-    const normalizedRelated = uniqueTrimmedList(
-      related.flatMap((relatedEntryId) => {
-        const normalized = parseKbEntryId(relatedEntryId);
-        return normalized === null ? [] : [normalized];
-      }),
-    );
+    const parsedRelated: string[] = [];
+    for (const relatedEntryId of related) {
+      const normalized = parseKbEntryId(relatedEntryId);
+      if (normalized !== null) {
+        parsedRelated.push(normalized);
+      }
+    }
+    const normalizedRelated = uniqueTrimmedList(parsedRelated);
 
     assignments.push({
       entry: parsedEntryId,

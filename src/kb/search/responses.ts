@@ -1,5 +1,6 @@
 import {
   isCommunityEntry,
+  type CommunityEntry,
   type KbEntryId,
   type KbIndex,
   type KbMatchSurface,
@@ -50,42 +51,57 @@ function buildCommunityContextMap(
   }
 
   const contextMap = new Map<KbEntryId, string[]>();
-  const relevantCommunities = Object.values(index.entries)
-    .filter(isCommunityEntry)
-    .filter((community) => typeof community.summary === 'string' && community.summary.trim() !== '')
-    .map((community) => {
-      const memberSet = new Set(community.members);
-      const overlapMembers = new Set<string>();
-      const matchingEntryIds = new Set<KbEntryId>();
+  const relevantCommunities: Array<{
+    community: CommunityEntry;
+    memberSet: Set<string>;
+    overlapMembers: Set<string>;
+    matchingEntryIds: Set<KbEntryId>;
+  }> = [];
 
-      for (const hit of noteSourceHits) {
-        const matchedMembers = hit.tags.filter((tag) => memberSet.has(tag));
-        if (matchedMembers.length === 0) {
+  for (const entry of Object.values(index.entries)) {
+    if (!isCommunityEntry(entry) || typeof entry.summary !== 'string' || entry.summary.trim() === '') {
+      continue;
+    }
+
+    const memberSet = new Set(entry.members);
+    const overlapMembers = new Set<string>();
+    const matchingEntryIds = new Set<KbEntryId>();
+
+    for (const hit of noteSourceHits) {
+      let matched = false;
+      for (const tag of hit.tags) {
+        if (!memberSet.has(tag)) {
           continue;
         }
-
-        matchingEntryIds.add(hit.entryId);
-        for (const member of matchedMembers) {
-          overlapMembers.add(member);
-        }
+        matched = true;
+        overlapMembers.add(tag);
       }
 
-      return {
-        community,
+      if (matched) {
+        matchingEntryIds.add(hit.entryId);
+      }
+    }
+
+    if (matchingEntryIds.size >= GRAPH_COMMUNITY_RESULT_SPAN_MIN) {
+      relevantCommunities.push({
+        community: entry,
         memberSet,
         overlapMembers,
         matchingEntryIds,
-      };
-    })
-    .filter(({ matchingEntryIds }) => matchingEntryIds.size >= GRAPH_COMMUNITY_RESULT_SPAN_MIN)
-    .sort(
-      (left, right) =>
-        right.matchingEntryIds.size - left.matchingEntryIds.size ||
-        right.overlapMembers.size - left.overlapMembers.size ||
-        left.community.level - right.community.level ||
-        left.community.slug.localeCompare(right.community.slug),
-    )
-    .slice(0, GRAPH_CONTEXT_MAX_COMMUNITIES);
+      });
+    }
+  }
+
+  relevantCommunities.sort(
+    (left, right) =>
+      right.matchingEntryIds.size - left.matchingEntryIds.size ||
+      right.overlapMembers.size - left.overlapMembers.size ||
+      left.community.level - right.community.level ||
+      left.community.slug.localeCompare(right.community.slug),
+  );
+  if (relevantCommunities.length > GRAPH_CONTEXT_MAX_COMMUNITIES) {
+    relevantCommunities.length = GRAPH_CONTEXT_MAX_COMMUNITIES;
+  }
 
   for (const { community, memberSet } of relevantCommunities) {
     const summary = community.summary?.trim();

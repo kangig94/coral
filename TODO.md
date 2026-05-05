@@ -18,3 +18,15 @@
 - `src/sessions/shell.ts:438`, `src/sessions/shell.ts:448`, `src/sessions/shell.ts:533`, and `src/sessions/shell.ts:577` use `conversationRef: undefined` / `activeJobId: undefined` to clear state after spreading an existing entry. Replacing this with semantic state shape requires updating tests and callers that currently observe the own-property `undefined` shape.
 - `src/sessions/shell.ts:370` checkpoints provider continuity only when `update.conversationRef` is truthy. Replacing this with an explicit `undefined` check requires deciding whether an empty conversation ref is invalid input or should mark the session ready.
 - `src/discuss/reducer.ts:270` and `src/discuss/state-machine.ts:487` duplicate end-reason fallback precedence. Consolidating the rule requires deciding the canonical owner for forced-end reason resolution between the reducer and state-machine path.
+
+## Optimization Candidates Requiring Logic Decisions
+
+- `src/kb/search/graph-retrieval.ts` rebuilds and JSON-stringifies stable entity graphs during freshness checks. Caching a graph fingerprint or normalized graph needs an invalidation contract tied to index/entity-graph writes so stale structural retrieval cannot be served.
+- `src/kb/search/role-registry.ts` freezes a fresh role list on every `list()` call. Caching that view would reduce allocations, but it needs a clear invalidation rule for register/unregister/dispose ordering.
+- `src/kb/curate/classification/prompt.ts` still rebuilds entity support and prompt vocabulary while probing `takeClassificationBatchWithIndex`. Incremental vocabulary selection would be faster, but it needs tests that lock batch composition and vocabulary relevance ordering.
+- `src/engines/needle/backend.ts` stages all chunks, embedding texts, vectors, and upserts for a snapshot in memory. Streaming or chunked embedding would change batching, partial-failure, and provider call semantics, so it needs an explicit indexing policy.
+- `src/kb/corpus/manifest-authority.ts`, `src/kb/corpus/inbound-sync.ts`, and `src/kb/corpus/rescan/drift.ts` can repeat full manifest/hash scans around external mutations. Avoiding those passes needs a freshness model that defines when cached surface hashes are authoritative.
+- `src/sessions/lifecycle-reactor.ts` does per-session retention/release lookups while draining lifecycle work. Batching those reads would be faster under many sessions, but it needs ordering guarantees for release events and retention attempts.
+- `src/kb/curate/community/detection.ts` performs resolution sweeps and repeated community sorting. Reducing the sweep or caching intermediate graph partitions needs quality thresholds so community topology does not regress silently.
+- `src/kb/search/responses.ts` rebuilds community member sets for contextual search responses. Persisting or caching those sets needs invalidation on community document and entity graph updates.
+- `src/discuss/persona/dpp.ts` uses dense matrix construction for DPP selection. Replacing it with a sparse or library-backed solver needs numerical tolerances and deterministic tie-breaking rules.

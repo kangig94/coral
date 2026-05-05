@@ -259,10 +259,18 @@ function emitFinalContinuityIfDelta(
 }
 
 function* drainContinuity(pending: ContinuitySnapshot[]): Generator<ProviderContinuityEventBody> {
-  while (pending.length > 0) {
-    const snapshot = pending.shift();
-    if (snapshot) {
-      yield continuityEvent(snapshot);
+  let consumed = 0;
+  try {
+    while (consumed < pending.length) {
+      const snapshot = pending[consumed];
+      consumed += 1;
+      if (snapshot !== undefined) {
+        yield continuityEvent(snapshot);
+      }
+    }
+  } finally {
+    if (consumed > 0) {
+      pending.splice(0, consumed);
     }
   }
 }

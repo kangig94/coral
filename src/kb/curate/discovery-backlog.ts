@@ -24,7 +24,16 @@ function backlogEntryId(entry: Pick<PendingDiscovery, 'principle' | 'statement'>
 }
 
 function canonicalNoteIds(noteIds: readonly string[]): string[] {
-  return [...new Set(noteIds)].sort((left, right) => left.localeCompare(right));
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const noteId of noteIds) {
+    if (seen.has(noteId)) {
+      continue;
+    }
+    seen.add(noteId);
+    unique.push(noteId);
+  }
+  return unique.sort((left, right) => left.localeCompare(right));
 }
 
 function canonicalPendingDiscovery(entry: PendingDiscovery): PendingDiscovery {

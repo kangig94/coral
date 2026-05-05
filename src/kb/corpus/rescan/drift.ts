@@ -380,19 +380,19 @@ export function detectProjectionArtifactLag(
   descriptors: readonly EngineArtifactDescriptor[],
 ): readonly ProjectionArtifactLag[] {
   const current = kb.getCorpusStateSnapshot();
-  return descriptors.flatMap((descriptor) => {
+  const lag: ProjectionArtifactLag[] = [];
+  for (const descriptor of descriptors) {
     const diagnostic = projectionLagDiagnostic(descriptor, current);
     if (diagnostic === null) {
-      return [];
+      continue;
     }
-    return [
-      {
-        artifactId: descriptor.artifactId,
-        targetConsumerIds: descriptor.targetConsumerIds,
-        diagnostic,
-      },
-    ];
-  });
+    lag.push({
+      artifactId: descriptor.artifactId,
+      targetConsumerIds: descriptor.targetConsumerIds,
+      diagnostic,
+    });
+  }
+  return lag;
 }
 
 export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Promise<RescanInfo> {

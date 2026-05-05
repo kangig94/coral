@@ -60,7 +60,14 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
 }
 
 export function publishJobEvents(appended: readonly AppendedEvent[]): void {
-  const projected = appended.map((event) => toJobEvent(event)).filter((event): event is JobEvent => event !== null);
+  const projected: JobEvent[] = [];
+  for (const appendedEvent of appended) {
+    const event = toJobEvent(appendedEvent);
+    if (event === null) {
+      continue;
+    }
+    projected.push(event);
+  }
 
   for (const event of projected) {
     for (const subscriber of [...subscribers]) {
@@ -114,12 +121,13 @@ export async function* subscribeJobEvents(options: {
         });
       }
 
-      while (queue.length > 0) {
-        const next = queue.shift();
-        if (next) {
+      for (let index = 0; index < queue.length; index += 1) {
+        const next = queue[index];
+        if (next !== undefined) {
           yield next;
         }
       }
+      queue.length = 0;
     }
   } finally {
     options.abortSignal?.removeEventListener('abort', onAbort);

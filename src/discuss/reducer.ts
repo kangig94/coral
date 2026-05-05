@@ -154,7 +154,13 @@ function applyAgentMutations(
   }
 
   const nextAgents: Record<string, AgentState> = { ...agents };
-  const names = new Set([...Object.keys(fallbackUsed ?? {}), ...Object.keys(quotaRemaining ?? {})]);
+  const names = new Set<string>();
+  for (const name of Object.keys(fallbackUsed ?? {})) {
+    names.add(name);
+  }
+  for (const name of Object.keys(quotaRemaining ?? {})) {
+    names.add(name);
+  }
 
   for (const name of names) {
     const agent = agents[name];

@@ -242,13 +242,22 @@ function readExistingRetentionDiscardState(
 }
 
 export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs) => {
-  const parsed = inputs.map(parseRetentionDiscardInput).filter((input) => input !== null);
+  const parsed: ParsedRetentionDiscardInput[] = [];
+  const sessionIds = new Set<string>();
+  for (const input of inputs) {
+    const event = parseRetentionDiscardInput(input);
+    if (event === null) {
+      continue;
+    }
+    parsed.push(event);
+    sessionIds.add(event.sessionId);
+  }
+
   if (parsed.length === 0) {
     return;
   }
 
-  const sessionIds = [...new Set(parsed.map((input) => input.sessionId))];
-  const state = readExistingRetentionDiscardState(ctx, sessionIds);
+  const state = readExistingRetentionDiscardState(ctx, [...sessionIds]);
 
   for (const event of parsed) {
     if (event.kind !== 'requested') {

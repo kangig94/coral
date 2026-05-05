@@ -18,6 +18,15 @@ export function hasTokenOverlap(queryTokens: readonly string[], fieldTokens: rea
     return false;
   }
 
+  if (queryTokens.length === 1) {
+    const token = queryTokens[0];
+    return token !== undefined && fieldTokens.includes(token);
+  }
+  if (fieldTokens.length === 1) {
+    const token = fieldTokens[0];
+    return token !== undefined && queryTokens.includes(token);
+  }
+
   const fieldTokenSet = new Set(fieldTokens);
   return queryTokens.some((token) => fieldTokenSet.has(token));
 }
@@ -80,10 +89,13 @@ function normalizedOffset(text: string): number {
 
 function findPhraseAnchor(content: string, rawQuery: string, normalizedQuery: string): SnippetAnchor | null {
   const normalizedContent = content.toLowerCase();
-  const candidates = [...new Set([rawQuery.trim(), normalizedQuery].filter((query) => query.length > 0))];
   let bestAnchor: SnippetAnchor | null = null;
 
-  for (const candidate of candidates) {
+  const considerCandidate = (candidate: string): void => {
+    if (candidate.length === 0) {
+      return;
+    }
+
     const matchIndex = normalizedContent.indexOf(candidate.toLowerCase());
     if (matchIndex !== -1 && (bestAnchor === null || matchIndex < bestAnchor.index)) {
       bestAnchor = {
@@ -91,6 +103,12 @@ function findPhraseAnchor(content: string, rawQuery: string, normalizedQuery: st
         length: candidate.length,
       };
     }
+  };
+
+  const rawCandidate = rawQuery.trim();
+  considerCandidate(rawCandidate);
+  if (normalizedQuery !== rawCandidate) {
+    considerCandidate(normalizedQuery);
   }
 
   return bestAnchor;

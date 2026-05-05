@@ -190,8 +190,14 @@ export class ConsumerDriver {
     this.forceGeneration += 1;
     const generation = this.forceGeneration;
     const consumers: string[] = [];
+    const seen = new Set<string>();
 
-    for (const consumerId of [...new Set(options.consumers)]) {
+    for (const consumerId of options.consumers) {
+      if (seen.has(consumerId)) {
+        continue;
+      }
+      seen.add(consumerId);
+
       const state = this.consumers.get(consumerId);
       if (state?.kind !== 'corpus') {
         continue;
@@ -226,9 +232,12 @@ export class ConsumerDriver {
 
   async drainAll(): Promise<void> {
     while (true) {
-      const pending = [...this.consumers.values()].flatMap((state) =>
-        state.kind === 'stateless' || state.inFlight === null ? [] : [state.inFlight],
-      );
+      const pending: Promise<void>[] = [];
+      for (const state of this.consumers.values()) {
+        if (state.kind !== 'stateless' && state.inFlight !== null) {
+          pending.push(state.inFlight);
+        }
+      }
 
       if (pending.length === 0) {
         return;

@@ -384,8 +384,15 @@ export async function runPrincipleDiscovery(
       index = nextIndex;
 
       const targets: MetadataTarget[] = [];
+      const noteEntries: NoteEntry[] = [];
+      for (const entry of Object.values(index.entries)) {
+        if (isNoteEntry(entry)) {
+          noteEntries.push(entry);
+        }
+      }
+
       for (const absorbSlug of absorbs) {
-        for (const noteMeta of Object.values(index.entries).filter(isNoteEntry)) {
+        for (const noteMeta of noteEntries) {
           const note = noteMeta.slug;
           if (!noteMeta.principles.includes(absorbSlug) || noteMeta.entrySeq === undefined) {
             continue;

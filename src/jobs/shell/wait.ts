@@ -196,9 +196,17 @@ export class WaitCoordinator {
 
   private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {
     const { readJobEvents } = this.deps;
-    return [...pending]
-      .flatMap((jobId) => readJobEvents(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
-      .sort(compareProgressSeq);
+    const events: JobEvent[] = [];
+
+    for (const jobId of pending) {
+      for (const event of readJobEvents(jobId)) {
+        if (event.seq > observedSeq && event.seq <= maxSeq) {
+          events.push(event);
+        }
+      }
+    }
+
+    return events.sort(compareProgressSeq);
   }
 
   private toWaitEvent(event: JobEvent, pending: ReadonlySet<string>): WaitStreamEvent {

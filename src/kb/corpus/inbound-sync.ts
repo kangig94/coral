@@ -273,7 +273,47 @@ export function captureCorpusFilesystemSnapshot(target: InboundSyncTarget): Corp
 }
 
 function inboundSnapshotMapsEqual(left: Map<string, string>, right: Map<string, string>): boolean {
-  return left.size === right.size && [...left.entries()].every(([key, value]) => right.get(key) === value);
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [key, value] of left.entries()) {
+    if (right.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function forEachMapKeyUnion<TLeft, TRight>(
+  left: ReadonlyMap<string, TLeft>,
+  right: ReadonlyMap<string, TRight>,
+  visit: (key: string) => void,
+): void {
+  const seen = new Set<string>();
+  for (const key of left.keys()) {
+    seen.add(key);
+    visit(key);
+  }
+  for (const key of right.keys()) {
+    if (seen.has(key)) {
+      continue;
+    }
+    visit(key);
+  }
+}
+
+function uniqueSortedStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique.sort();
 }
 
 export function detectInboundSyncMutation(
@@ -283,18 +323,17 @@ export function detectInboundSyncMutation(
   let lane: KbIndexMutationLane | null = null;
   const changedEntryIds = new Set<string>();
 
-  const noteSlugs = new Set([...before.notes.keys(), ...after.notes.keys()]);
-  for (const slug of noteSlugs) {
+  forEachMapKeyUnion(before.notes, after.notes, (slug) => {
     const beforeEntry = before.notes.get(slug);
     const afterEntry = after.notes.get(slug);
     if (beforeEntry === undefined && afterEntry === undefined) {
-      continue;
+      return;
     }
 
     changedEntryIds.add(noteEntryId(slug));
     if (beforeEntry === undefined || afterEntry === undefined) {
       lane = mergeMutationLane(lane, 'both');
-      continue;
+      return;
     }
     if (beforeEntry.contentHash !== afterEntry.contentHash) {
       lane = mergeMutationLane(lane, 'content');
@@ -302,20 +341,19 @@ export function detectInboundSyncMutation(
     if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
       lane = mergeMutationLane(lane, 'metadata');
     }
-  }
+  });
 
-  const wikiSlugs = new Set([...before.wikis.keys(), ...after.wikis.keys()]);
-  for (const slug of wikiSlugs) {
+  forEachMapKeyUnion(before.wikis, after.wikis, (slug) => {
     const beforeEntry = before.wikis.get(slug);
     const afterEntry = after.wikis.get(slug);
     if (beforeEntry === undefined && afterEntry === undefined) {
-      continue;
+      return;
     }
 
     changedEntryIds.add(wikiEntryId(slug));
     if (beforeEntry === undefined || afterEntry === undefined) {
       lane = mergeMutationLane(lane, 'both');
-      continue;
+      return;
     }
     if (beforeEntry.contentHash !== afterEntry.contentHash) {
       lane = mergeMutationLane(lane, 'content');
@@ -323,20 +361,19 @@ export function detectInboundSyncMutation(
     if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
       lane = mergeMutationLane(lane, 'metadata');
     }
-  }
+  });
 
-  const sourceSlugs = new Set([...before.sources.keys(), ...after.sources.keys()]);
-  for (const slug of sourceSlugs) {
+  forEachMapKeyUnion(before.sources, after.sources, (slug) => {
     const beforeEntry = before.sources.get(slug);
     const afterEntry = after.sources.get(slug);
     if (beforeEntry === undefined && afterEntry === undefined) {
-      continue;
+      return;
     }
 
     changedEntryIds.add(sourceEntryId(slug));
     if (beforeEntry === undefined || afterEntry === undefined) {
       lane = mergeMutationLane(lane, 'both');
-      continue;
+      return;
     }
     if (beforeEntry.contentHash !== afterEntry.contentHash) {
       lane = mergeMutationLane(lane, 'content');
@@ -344,7 +381,7 @@ export function detectInboundSyncMutation(
     if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
       lane = mergeMutationLane(lane, 'metadata');
     }
-  }
+  });
 
   const principlesChanged = !inboundSnapshotMapsEqual(before.principles, after.principles);
   const communitiesChanged = !inboundSnapshotMapsEqual(before.communities, after.communities);
@@ -550,7 +587,7 @@ export function detectInboundSyncMutationFromStructuredDiff(
     );
   }
 
-  mutation.changedEntryIds = [...new Set(mutation.changedEntryIds)].sort();
+  mutation.changedEntryIds = uniqueSortedStrings(mutation.changedEntryIds);
   return mutation;
 }
 
@@ -566,41 +603,41 @@ export function detectInboundSyncMutationFromFullCollectors(
   let requiresFullInstall = false;
   const changedEntryIds = new Set<string>();
 
-  for (const manifestId of new Set([...currentContent.keys(), ...fullHashes.content.keys()])) {
+  forEachMapKeyUnion(currentContent, fullHashes.content, (manifestId) => {
     const previousHash = currentContent.get(manifestId) ?? null;
     const nextHash = fullHashes.content.get(manifestId) ?? null;
     if (previousHash === nextHash) {
-      continue;
+      return;
     }
 
     lane = mergeMutationLane(lane, 'content');
     if (manifestId.startsWith('note:') || manifestId.startsWith('source:') || manifestId.startsWith('wiki:')) {
       changedEntryIds.add(manifestId);
     }
-  }
+  });
 
-  for (const manifestId of new Set([...currentMetadata.keys(), ...fullHashes.metadata.keys()])) {
+  forEachMapKeyUnion(currentMetadata, fullHashes.metadata, (manifestId) => {
     const previousHash = currentMetadata.get(manifestId) ?? null;
     const nextHash = fullHashes.metadata.get(manifestId) ?? null;
     if (previousHash === nextHash) {
-      continue;
+      return;
     }
 
     lane = mergeMutationLane(lane, 'metadata');
     if (manifestId.startsWith('note-meta:')) {
       changedEntryIds.add(noteEntryId(manifestId.slice('note-meta:'.length)));
-      continue;
+      return;
     }
     if (manifestId.startsWith('source-meta:')) {
       changedEntryIds.add(sourceEntryId(manifestId.slice('source-meta:'.length)));
-      continue;
+      return;
     }
     if (manifestId.startsWith('wiki-meta:')) {
       changedEntryIds.add(wikiEntryId(manifestId.slice('wiki-meta:'.length)));
-      continue;
+      return;
     }
     requiresFullInstall = true;
-  }
+  });
 
   if (forceFullInstall && lane !== null) {
     requiresFullInstall = true;
@@ -698,4 +735,3 @@ export function buildInboundSyncIndexDelta(
 
   return nextIndex;
 }
-

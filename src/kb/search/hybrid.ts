@@ -76,20 +76,22 @@ export class ReciprocalRankFusion implements HybridFusion {
           continue;
         }
 
-        fused.set(hit.entryId, {
-          ...previous,
-          document: previous.document ?? hit.document ?? null,
-          score: previous.score + roleEvidence.contribution,
-          evidence: [...previous.evidence, roleEvidence],
-        });
+        previous.document = previous.document ?? hit.document ?? null;
+        previous.score += roleEvidence.contribution;
+        previous.evidence.push(roleEvidence);
+      }
+    }
+
+    const hits = [...fused.values()].sort(compareFusedHits);
+    for (let index = 0; index < hits.length; index += 1) {
+      const hit = hits[index];
+      if (hit !== undefined) {
+        hit.rank = index + 1;
       }
     }
 
     return {
-      hits: [...fused.values()].sort(compareFusedHits).map((hit, index) => ({
-        ...hit,
-        rank: index + 1,
-      })),
+      hits,
     };
   }
 }

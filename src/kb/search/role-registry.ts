@@ -16,7 +16,16 @@ function freezeArray<T>(values: readonly T[]): T[] {
 }
 
 function canonicalSetOrder<T extends string>(values: readonly T[]): T[] {
-  return Object.freeze([...new Set(values)].sort((left, right) => left.localeCompare(right))) as T[];
+  const seen = new Set<T>();
+  const unique: T[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return Object.freeze(unique.sort((left, right) => left.localeCompare(right))) as T[];
 }
 
 export function normalizeRetrievalRoleDescriptor(descriptor: RetrievalRoleDescriptor): RetrievalRoleDescriptor {

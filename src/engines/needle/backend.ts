@@ -215,10 +215,14 @@ function aggregateVectorHits(
     }
   }
 
-  return [...aggregated.values()].sort(compareScoreAndEntryId).map((hit, indexPosition) => ({
-    ...hit,
-    rank: indexPosition + 1,
-  }));
+  const ranked = [...aggregated.values()].sort(compareScoreAndEntryId);
+  for (let indexPosition = 0; indexPosition < ranked.length; indexPosition += 1) {
+    const hit = ranked[indexPosition];
+    if (hit !== undefined) {
+      hit.rank = indexPosition + 1;
+    }
+  }
+  return ranked;
 }
 
 export class NeedleBackend implements NeedleBackendContract {
@@ -399,17 +403,18 @@ export class NeedleBackend implements NeedleBackendContract {
   }
 
   private collectVectorEntries(input: KbProjectionInput): StagedVectorEntry[] {
-    return input.records.flatMap((record) => {
+    const entries: StagedVectorEntry[] = [];
+    for (const record of input.records) {
       if (record.kind !== 'note' && record.kind !== 'source') {
-        return [];
+        continue;
       }
-      return [
-        {
-          entryId: `${record.kind}:${record.entry.slug}` as KbEntryId,
-          chunks: chunkEntry(record.entry, record.body),
-        },
-      ];
-    });
+
+      entries.push({
+        entryId: `${record.kind}:${record.entry.slug}` as KbEntryId,
+        chunks: chunkEntry(record.entry, record.body),
+      });
+    }
+    return entries;
   }
 
   private async stageSnapshot(
@@ -445,7 +450,12 @@ export class NeedleBackend implements NeedleBackendContract {
       }
 
       const vectorEntries = this.collectVectorEntries(input);
-      const chunks = vectorEntries.flatMap((entry) => entry.chunks);
+      const chunks: ChunkSeed[] = [];
+      for (const entry of vectorEntries) {
+        for (const chunk of entry.chunks) {
+          chunks.push(chunk);
+        }
+      }
       if (chunks.length > 0) {
         const vectors = await embedder.service.embedDocuments(chunks.map((chunk) => chunk.text));
         const upserts = chunks.map((chunk, indexPosition) => {

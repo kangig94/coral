@@ -39,7 +39,16 @@ type KbReindexWikiRecord = Omit<WikiEntry, 'kind'> & {
 };
 
 function uniqueTokens(tokens: string[]): string[] {
-  return [...new Set(tokens)];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const token of tokens) {
+    if (seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    unique.push(token);
+  }
+  return unique;
 }
 
 export function normalizeHyphens(raw: string): string {

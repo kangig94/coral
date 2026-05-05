@@ -339,16 +339,33 @@ function estimateClassificationEntryTokens(entry: CurateClaimedEntry): number {
   return approximateTokenCount(`\n\n${renderClassificationEntryBlock(entry)}`);
 }
 
+function estimateClassificationBatchTokensForTotals(
+  shape: ClassificationBatchShape,
+  entryTokenTotal: number,
+  tagVocab: ClassificationPromptVocabularyInput,
+  principleNames: string[],
+): number {
+  return estimateClassificationScaffoldTokens(shape, tagVocab, principleNames) + entryTokenTotal;
+}
+
+function classificationBatchShapeWithEntry(
+  currentShape: ClassificationBatchShape | null,
+  entry: CurateClaimedEntry,
+): ClassificationBatchShape {
+  return currentShape === 'note-or-mixed' || entry.kind === 'note' ? 'note-or-mixed' : 'source-only';
+}
+
 export function estimateClassificationBatchTokens(
   entries: CurateClaimedEntry[],
   tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],
 ): number {
   const shape = classificationBatchShape(entries);
-  return (
-    estimateClassificationScaffoldTokens(shape, tagVocab, principleNames) +
-    entries.reduce((total, entry) => total + estimateClassificationEntryTokens(entry), 0)
-  );
+  let entryTokenTotal = 0;
+  for (const entry of entries) {
+    entryTokenTotal += estimateClassificationEntryTokens(entry);
+  }
+  return estimateClassificationBatchTokensForTotals(shape, entryTokenTotal, tagVocab, principleNames);
 }
 
 function assertClassificationScaffoldFits(
@@ -424,16 +441,32 @@ export function chunkEntriesByPromptBudget(
   const batches: CurateClaimedEntry[][] = [];
   let index = 0;
   let currentBatch: CurateClaimedEntry[] = [];
+  let currentEntryTokenTotal = 0;
+  let currentShape: ClassificationBatchShape | null = null;
+  const promptLimit = classificationPromptTokenLimit();
 
   while (index < entries.length) {
     const entry = entries[index];
-    const nextBatch = [...currentBatch, entry];
-    const canFit =
-      currentBatch.length < maxEntries &&
-      estimateClassificationBatchTokens(nextBatch, tagVocab, principleNames) <= classificationPromptTokenLimit();
+    let canFit = false;
+    let candidateEntryTokenTotal = currentEntryTokenTotal;
+    let candidateShape: ClassificationBatchShape | null = currentShape;
+
+    if (currentBatch.length < maxEntries) {
+      candidateEntryTokenTotal += estimateClassificationEntryTokens(entry);
+      candidateShape = classificationBatchShapeWithEntry(currentShape, entry);
+      canFit =
+        estimateClassificationBatchTokensForTotals(
+          candidateShape,
+          candidateEntryTokenTotal,
+          tagVocab,
+          principleNames,
+        ) <= promptLimit;
+    }
 
     if (canFit) {
       currentBatch.push(entry);
+      currentEntryTokenTotal = candidateEntryTokenTotal;
+      currentShape = candidateShape;
       index += 1;
       continue;
     }
@@ -441,6 +474,8 @@ export function chunkEntriesByPromptBudget(
     if (currentBatch.length > 0) {
       batches.push(currentBatch);
       currentBatch = [];
+      currentEntryTokenTotal = 0;
+      currentShape = null;
       continue;
     }
 
@@ -448,7 +483,10 @@ export function chunkEntriesByPromptBudget(
       throw new Error(`Classification note entry ${entry.entryId} exceeds the request budget.`);
     }
 
-    currentBatch = [fitSourceEntryToPromptBudget(entry, tagVocab, principleNames)];
+    const fittedEntry = fitSourceEntryToPromptBudget(entry, tagVocab, principleNames);
+    currentBatch = [fittedEntry];
+    currentEntryTokenTotal = estimateClassificationEntryTokens(fittedEntry);
+    currentShape = 'source-only';
     index += 1;
   }
 

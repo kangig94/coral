@@ -3,7 +3,7 @@ import { buildCommunityDocuments, generateCommunityFiles, loadExistingCommunityS
 import { buildEntityRelationshipGraph } from './graph.js';
 import { readCurateState } from '../state/index.js';
 import type { KbMutationEffects, KbRuntime } from '../../contract.js';
-import { isCommunityEntry, type KbIndex } from '../../entry-types.js';
+import { isCommunityEntry, type CommunityEntry, type KbIndex } from '../../entry-types.js';
 import { nowIsoString } from '../../../infra/time.js';
 import { curateDb } from '../db-access.js';
 
@@ -44,11 +44,18 @@ export function prepareCommunityTopologyRefresh(
   });
   const topologyHash = computeCommunityTopologyFingerprint(index, graph);
   if (state.communityTopologyHash === topologyHash) {
+    const communityEntries: CommunityEntry[] = [];
+    for (const entry of Object.values(index.entries)) {
+      if (isCommunityEntry(entry)) {
+        communityEntries.push(entry);
+      }
+    }
+
     return {
       topologyHash,
       nextSummaryInputFingerprints: normalizedCommunitySummaryFingerprints(
         state.communitySummaryInputFingerprints,
-        Object.values(index.entries).filter(isCommunityEntry),
+        communityEntries,
       ),
       shouldPersistState: false,
     };

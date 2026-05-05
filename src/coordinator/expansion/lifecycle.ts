@@ -657,12 +657,17 @@ function blockedCatalogRemoval(
     capability,
     dependents: [...dependents],
   }));
+  const dependents: (CapabilityDependent & { readonly capability: KbCapabilityName })[] = [];
+  for (const { capability, dependents: capabilityDependents } of capabilities) {
+    for (const dependent of capabilityDependents) {
+      dependents.push({ capability, ...dependent });
+    }
+  }
+
   return {
     status: 'blocked',
     target,
     capabilities,
-    dependents: capabilities.flatMap(({ capability, dependents }) =>
-      dependents.map((dependent) => ({ capability, ...dependent })),
-    ),
+    dependents,
   };
 }

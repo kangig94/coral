@@ -268,6 +268,7 @@ export async function subscribeIpcMethod<TResult>(
   let rejectHandshake: ((error: Error) => void) | null = null;
   const framer = createLineFramer();
   const queued: IteratorResult<TResult>[] = [];
+  let queuedHead = 0;
   const waiters: Array<{
     resolve: (value: IteratorResult<TResult>) => void;
     reject: (error: unknown) => void;
@@ -298,6 +299,22 @@ export async function subscribeIpcMethod<TResult>(
     for (const waiter of waiters.splice(0)) {
       waiter.reject(error);
     }
+  };
+
+  const dequeue = (): IteratorResult<TResult> | undefined => {
+    if (queuedHead >= queued.length) {
+      queuedHead = 0;
+      queued.length = 0;
+      return undefined;
+    }
+
+    const value = queued[queuedHead];
+    queuedHead += 1;
+    if (queuedHead > 64 && queuedHead * 2 >= queued.length) {
+      queued.splice(0, queuedHead);
+      queuedHead = 0;
+    }
+    return value;
   };
 
   const push = (value: IteratorResult<TResult>) => {
@@ -445,8 +462,9 @@ export async function subscribeIpcMethod<TResult>(
 
   const iterator: AsyncIterator<TResult> = {
     next: async () => {
-      if (queued.length > 0) {
-        return queued.shift() as IteratorResult<TResult>;
+      const queuedValue = dequeue();
+      if (queuedValue !== undefined) {
+        return queuedValue;
       }
       if (failure) {
         throw failure;

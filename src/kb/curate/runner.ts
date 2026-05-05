@@ -29,7 +29,7 @@ import {
   writeCurateState,
   type CurateCursor,
 } from './state/index.js';
-import type { ClaimCandidate, ClassificationAssignment, CurateClaim } from './pipeline-types.js';
+import type { ClaimCandidate, ClassificationAssignment, CurateClaim, CurateClaimedEntry } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 import { curateDb } from './db-access.js';
 
@@ -39,9 +39,13 @@ const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
 
 function getCuratableEntries(index: KbIndex): CuratableEntry[] {
-  return Object.values(index.entries).filter(
-    (entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry),
-  );
+  const entries: CuratableEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (isNoteEntry(entry) || isSourceEntry(entry)) {
+      entries.push(entry);
+    }
+  }
+  return entries;
 }
 
 function sourceCursor(slug: string, entrySeq: number): CurateCursor {
@@ -172,13 +176,14 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     return null;
   }
 
-  const entries = lockResult.claimedCandidates.flatMap((candidate) => {
+  const entries: CurateClaimedEntry[] = [];
+  for (const candidate of lockResult.claimedCandidates) {
     try {
-      return [readClaimedEntry(kb, candidate)];
+      entries.push(readClaimedEntry(kb, candidate));
     } catch {
-      return [];
+      // Skip candidates that disappeared or became unreadable after claiming.
     }
-  });
+  }
   if (entries.length === 0) {
     return null;
   }

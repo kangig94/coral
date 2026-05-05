@@ -159,9 +159,14 @@ function collectEntityCandidates(existingGraph: EntityGraph, delta?: EntityConso
       continue;
     }
 
-    const aliases = uniqueTrimmedList(
-      candidate.aliases.map((alias) => normalizeEntityId(alias)).filter((alias) => isWellFormedEntityId(alias)),
-    );
+    const normalizedAliases: string[] = [];
+    for (const rawAlias of candidate.aliases) {
+      const alias = normalizeEntityId(rawAlias);
+      if (isWellFormedEntityId(alias)) {
+        normalizedAliases.push(alias);
+      }
+    }
+    const aliases = uniqueTrimmedList(normalizedAliases);
 
     candidates.push({
       name,
@@ -322,11 +327,18 @@ function buildCanonicalEntities(
   const entityMetaEntries = [...grouped.entries()]
     .sort(([left], [right]) => compareLocale(left, right))
     .map(([canonicalName, canonicalCandidates]) => {
-      const aliases = uniqueTrimmedList(
-        canonicalCandidates
-          .flatMap((candidate) => [candidate.name, ...candidate.aliases])
-          .filter((alias) => alias !== canonicalName),
-      ).sort(compareLocale);
+      const aliasCandidates: string[] = [];
+      for (const candidate of canonicalCandidates) {
+        if (candidate.name !== canonicalName) {
+          aliasCandidates.push(candidate.name);
+        }
+        for (const alias of candidate.aliases) {
+          if (alias !== canonicalName) {
+            aliasCandidates.push(alias);
+          }
+        }
+      }
+      const aliases = uniqueTrimmedList(aliasCandidates).sort(compareLocale);
       const descriptions = [
         ...canonicalCandidates
           .filter((candidate) => candidate.name === canonicalName)

@@ -30,10 +30,20 @@ export class EngineArtifactRegistry {
   ): EngineArtifactRegistration {
     const id = this.nextId;
     this.nextId += 1;
+    const targetConsumerIds: string[] = [];
+    const seenTargetConsumers = new Set<string>();
+    for (const handle of options.targetConsumerHandles) {
+      if (seenTargetConsumers.has(handle.id)) {
+        continue;
+      }
+      seenTargetConsumers.add(handle.id);
+      targetConsumerIds.push(handle.id);
+    }
+
     const entry: RegistryEntry = {
       id,
       port,
-      targetConsumerIds: [...new Set(options.targetConsumerHandles.map((handle) => handle.id))],
+      targetConsumerIds,
       scope,
     };
     this.entries.set(id, entry);

@@ -444,11 +444,16 @@ function deriveResponseMode(
 }
 
 function responseWarningsFromDiagnostics(diagnostics: readonly RetrievalDiagnostic[]): SearchResponseWarnings {
-  const warnings = [
-    ...new Set(
-      diagnostics.map((diagnostic) => diagnostic.publicText).filter((text): text is string => text !== undefined),
-    ),
-  ];
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (const diagnostic of diagnostics) {
+    const text = diagnostic.publicText;
+    if (text === undefined || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    warnings.push(text);
+  }
   return warnings.length === 0 ? {} : { warnings };
 }
 

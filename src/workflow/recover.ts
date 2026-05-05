@@ -421,10 +421,13 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
           },
         }),
   };
-  const pendingPhases = snapshot.stepSlots.flatMap((slot) => {
+  const pendingPhases: string[] = [];
+  for (const slot of snapshot.stepSlots) {
     const phase = detailForJob(snapshot.slotDetailsByJob, slot.jobId).status?.phase;
-    return phase === null || phase === undefined ? [] : [phase];
-  });
+    if (phase !== null && phase !== undefined) {
+      pendingPhases.push(phase);
+    }
+  }
   const blockingFailure = pendingPhases.some(
     (phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed',
   )

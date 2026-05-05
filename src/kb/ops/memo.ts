@@ -119,36 +119,40 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
 
 export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter?: string): KbMemoListResult {
   const dir = memoDir(projectRoot);
-  const memos = readMemoDir(storage, projectRoot)
-    .filter((filename) => filename.endsWith('.md'))
-    .flatMap((filename) => {
+  const memos: Array<{ filename: string; summary: string; createdAt: string; sortKey: number; owner?: string }> = [];
+
+  for (const filename of readMemoDir(storage, projectRoot)) {
+    if (!filename.endsWith('.md')) {
+      continue;
+    }
+
+    try {
+      const path = join(dir, filename);
+      const raw = storage.readFileSync(path, 'utf-8');
+      const memo = parseTimestampPrefix(filename);
+
+      let owner: string | undefined;
       try {
-        const path = join(dir, filename);
-        const raw = storage.readFileSync(path, 'utf-8');
-        const memo = parseTimestampPrefix(filename);
-
-        let owner: string | undefined;
-        try {
-          const parsed = parseMemoFrontmatter(raw);
-          owner = parsed.owner;
-        } catch {
-          // Memos without valid frontmatter are treated as unowned.
-        }
-
-        if (ownerFilter !== undefined && owner !== ownerFilter) {
-          return [];
-        }
-
-        const mtimeMs = storage.statSync(path).mtimeMs;
-        const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
-        let sortKey = memo?.sortKey;
-        sortKey ??= memo === null ? mtimeMs : Date.parse(createdAt) || 0;
-
-        return [{ filename, summary: extractSummary(raw), createdAt, sortKey, owner }];
+        const parsed = parseMemoFrontmatter(raw);
+        owner = parsed.owner;
       } catch {
-        return [];
+        // Memos without valid frontmatter are treated as unowned.
       }
-    });
+
+      if (ownerFilter !== undefined && owner !== ownerFilter) {
+        continue;
+      }
+
+      const mtimeMs = storage.statSync(path).mtimeMs;
+      const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
+      let sortKey = memo?.sortKey;
+      sortKey ??= memo === null ? mtimeMs : Date.parse(createdAt) || 0;
+
+      memos.push({ filename, summary: extractSummary(raw), createdAt, sortKey, owner });
+    } catch {
+      // Ignore unreadable or malformed memo files while listing.
+    }
+  }
 
   memos.sort((left, right) => right.sortKey - left.sortKey || compareLocale(left.filename, right.filename));
 
